@@ -148,3 +148,7 @@ bb keepgoing pause <loop>
 bb keepgoing resume <loop>
 bb keepgoing stop <loop>
 ```
+
+## License
+
+This plugin is part of keepgoing and is source-available under the [Sustainable Use License 1.0](../../LICENSE); see the [licensing guide](../../LICENSING.md). The plugin at the `v0.1.5` tag, like every release through v0.1.5, remains under Apache-2.0.

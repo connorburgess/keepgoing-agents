@@ -42,6 +42,11 @@ def load(path):
 def fixture(kind, args):
     """Only these stand-ins are reachable; never discover a real provider."""
     root = Path(os.environ["RECOVERY_FIXTURE"])
+    if kind == "cursor" and args == ["--version"]:
+        # keepgoing reads the CLI version when it starts a Cursor turn. That is
+        # not a turn: it carries no task and is not counted as an invocation.
+        print("2026.09.18-9a7762b")
+        return 0
     with (root / "calls.jsonl").open("a") as stream:
         stream.write(json.dumps([kind, *args]) + "\n")
     if kind == "bb":
@@ -166,6 +171,10 @@ class Loop:
             "RECOVERY_SECRET": "fictional-recovery-key",
             # The connectivity check must not reach the real network.
             "KEEPGOING_NET_PROBE": "exit 0",
+            # A home of its own: session claims live under the user's state
+            # directory, and a check without one acts on nothing.
+            "HOME": str(root / "home"),
+            "XDG_STATE_HOME": str(root / "home" / "state"),
         }
         for name, adapter in (("bb", "bb"), ("claude", "claude"), ("codex", "codex"), ("agent", "cursor")):
             stub = self.commands / name

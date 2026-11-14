@@ -48,7 +48,7 @@ func (p PromptSend) Valid() bool {
 	if p.Mode != "auto" && p.Mode != "queue" {
 		return false
 	}
-	if p.Outcome != "adapter_returned" && p.Outcome != "adapter_error" {
+	if p.Outcome != "adapter_returned" && p.Outcome != "adapter_error" && p.Outcome != "not_started" {
 		return false
 	}
 	if p.GoalID == "" {

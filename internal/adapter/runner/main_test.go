@@ -13,6 +13,30 @@ import (
 // The runner re-runs the current executable as the turn wrapper;
 // under go test that executable is the test binary.
 func TestMain(m *testing.M) {
+	// Faults for a process started as a turn wrapper. The agent it starts does
+	// not get the wrapper's variables, so these never apply to the agent.
+	// A binary from another build does not know the question a start asks.
+	if os.Getenv(envTurnProbe) != "" {
+		switch os.Getenv("KEEPGOING_TEST_WRAPPER") {
+		case "other-build":
+			os.Stdout.WriteString("usage: keepgoing <command>\n")
+			os.Exit(2)
+		case "silent": // never answers
+			time.Sleep(20 * time.Second)
+			os.Exit(0)
+		}
+	}
+	if os.Getenv(envTurnDir) != "" {
+		switch fault := os.Getenv("KEEPGOING_TEST_WRAPPER"); fault {
+		case "dead": // ends before it takes the turn lock
+			os.Exit(3)
+		case "late": // takes the turn lock long after Start stopped waiting
+			time.Sleep(1500 * time.Millisecond)
+			onDecline = func() { os.WriteFile(os.Getenv("KEEPGOING_TEST_DECLINED"), nil, 0o600) }
+		case "linger": // stays alive after its exit code can be seen
+			afterPublish = func() { time.Sleep(3 * time.Second) }
+		}
+	}
 	MaybeRunTurn()
 	switch os.Getenv("KEEPGOING_TEST_HELPER") {
 	case "antigravity-acp":
@@ -35,6 +59,18 @@ func TestMain(m *testing.M) {
 		}
 		os.Exit(3)
 	case "cursor":
+		// The version query is not a turn: it records nothing and reads no prompt.
+		if len(os.Args) == 2 && os.Args[1] == "--version" {
+			switch v := os.Getenv("KEEPGOING_CURSOR_FIXTURE_VERSION"); v {
+			case "":
+				_, _ = os.Stdout.WriteString("2026.09.18-9a7762b\n")
+			case "fail":
+				os.Exit(1)
+			default:
+				_, _ = os.Stdout.WriteString(v + "\n")
+			}
+			os.Exit(0)
+		}
 		input, _ := io.ReadAll(os.Stdin)
 		cwd, _ := os.Getwd()
 		capture, _ := json.Marshal(map[string]any{"args": os.Args[1:], "prompt": string(input), "cwd": cwd, "value": os.Getenv("KEEPGOING_CURSOR_FIXTURE_VALUE")})

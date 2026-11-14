@@ -55,6 +55,10 @@ func TestParseRejects(t *testing.T) {
 		"yield w/o command":   valid + "  yield: {}\n",
 		"bad window day":      valid + "  window:\n    tz: UTC\n    days: {Funday: [\"09:00\", \"17:00\"]}\n",
 		"bad window time":     valid + "  window:\n    tz: UTC\n    days: {Mon: [\"9am\", \"17:00\"]}\n",
+		"negative send flag":  valid + "  progress:\n    flag_after_sends: -1\n",
+		"huge error flag":     valid + "  progress:\n    flag_after_errors: 1001\n",
+		"fractional flag":     valid + "  progress:\n    flag_after_sends: 2.5\n",
+		"quoted flag":         valid + "  progress:\n    flag_after_sends: \"6\"\n",
 		"bad exit class": strings.Replace(strings.Replace(valid, "adapter: bb", "adapter: process", 1),
 			"  bb:\n    thread: thr_example123\n",
 			"  process:\n    status_command: [st]\n    resume_command: [re]\n    exit_codes: {3: nonsense}\n", 1),
@@ -283,5 +287,36 @@ func TestNewThreadCandidateConfig(t *testing.T) {
 	}
 	if _, err := Parse([]byte(primary)); err == nil || !strings.Contains(err.Error(), "fallback candidates only") {
 		t.Errorf("primary with new_thread: %v", err)
+	}
+}
+
+// hung_turn is a known event but not a default one: a loop receives it only
+// by naming it, or all, in report.events.
+func TestHungTurnReportIsOptIn(t *testing.T) {
+	if !contains(ReportEvents, "hung_turn") || contains(DefaultReportEvents, "hung_turn") {
+		t.Fatal("hung_turn must be a known event and not a default one")
+	}
+	if (&Report{Events: DefaultReportEvents}).ReportsEvent("hung_turn") || !(&Report{Events: []string{"hung_turn"}}).ReportsEvent("hung_turn") {
+		t.Fatal("subscription to hung_turn")
+	}
+}
+
+// check_gap is a known event, and opt-in: not in the default list.
+func TestCheckGapReportIsOptIn(t *testing.T) {
+	if !contains(ReportEvents, "check_gap") || contains(DefaultReportEvents, "check_gap") {
+		t.Fatal("check_gap must be a known event and not a default one")
+	}
+}
+
+// The no-progress flag's thresholds: unset is the default, 0 is off, and
+// both are read as written.
+func TestNoProgressFlagThresholds(t *testing.T) {
+	cfg, err := Parse([]byte(valid))
+	if err != nil || cfg.Loop.Progress.SendsFlag() != DefaultFlagAfterSends || cfg.Loop.Progress.ErrorsFlag() != DefaultFlagAfterErrors {
+		t.Fatalf("defaults: %v", err)
+	}
+	cfg, err = Parse([]byte(valid + "  progress:\n    flag_after_sends: 0\n    flag_after_errors: 1000\n"))
+	if err != nil || cfg.Loop.Progress.SendsFlag() != 0 || cfg.Loop.Progress.ErrorsFlag() != 1000 {
+		t.Fatalf("%v", err)
 	}
 }

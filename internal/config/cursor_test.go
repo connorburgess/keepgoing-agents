@@ -86,3 +86,38 @@ func TestCursorSchemaIsPrimaryOnly(t *testing.T) {
 		}
 	}
 }
+
+func TestCursorFreshStartVersionsAreValidated(t *testing.T) {
+	many := strings.Repeat("\"2030.01.02-abcdef0\", ", 17)
+	for _, tc := range []struct {
+		name, list string
+		ok         bool
+	}{
+		{"absent", "", true},
+		{"one", "    fresh_start_versions: [\"2030.01.02-abcdef0\"]\n", true},
+		{"two", "    fresh_start_versions: [\"2030.01.02-abcdef0\", \"2031.12.31-0123456789abcdef\"]\n", true},
+		{"prose", "    fresh_start_versions: [\"latest\"]\n", false},
+		{"prefix_only", "    fresh_start_versions: [\"2030.01.02\"]\n", false},
+		{"trailing_text", "    fresh_start_versions: [\"2030.01.02-abcdef0 beta\"]\n", false},
+		{"empty_entry", "    fresh_start_versions: [\"\"]\n", false},
+		{"too_many", "    fresh_start_versions: [" + strings.TrimSuffix(many, ", ") + "]\n", false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			p := filepath.Join(t.TempDir(), "keepgoing.yaml")
+			raw := strings.Replace(cursorConfig, "    model: example-model\n", "    model: example-model\n"+tc.list, 1)
+			if err := os.WriteFile(p, []byte(raw), 0600); err != nil {
+				t.Fatal(err)
+			}
+			cfg, err := Load(p)
+			if (err == nil) != tc.ok {
+				t.Fatalf("load: %v", err)
+			}
+			if err != nil && !strings.Contains(err.Error(), "fresh_start_versions") {
+				t.Fatalf("error does not name the field: %v", err)
+			}
+			if tc.name == "two" && len(cfg.Loop.Agent.Cursor.FreshStartVersions) != 2 {
+				t.Fatalf("%+v", cfg.Loop.Agent.Cursor)
+			}
+		})
+	}
+}

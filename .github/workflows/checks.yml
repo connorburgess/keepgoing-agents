@@ -16,6 +16,27 @@ on:
   pull_request:
     types: [opened, synchronize, reopened]
   workflow_dispatch:
+    inputs:
+      base:
+        description: >-
+          Preview only. Decide what to run as if this ref were a pull request
+          against this commit. The macOS and Windows jobs then report under a
+          "Scope preview" name, so a preview can never stand in for a required
+          check. Leave empty for an ordinary manual run, which runs everything.
+        required: false
+        default: ""
+
+# What runs for a documentation-only change
+#
+# When every file a pull request changes is documentation (scripts/ci-scope.sh
+# decides, and any doubt means "not documentation"), the Ubuntu job still runs
+# everything, and the macOS and Windows jobs skip their work: the first steps
+# decide, and every later step has a condition. The jobs themselves always run
+# and keep their names, because branch protection requires "Build and test
+# (macos-15)" and "Build and test (ubuntu-24.04)" by name and a job that never
+# reported would block the pull request. Pushes to main and ordinary manual
+# runs always run everything. A change to this file or to the script is not
+# documentation, so it runs everything.
 
 permissions:
   contents: read
@@ -53,84 +74,195 @@ jobs:
         env:
           KEEPGOING_TEST_BINARY: ${{ runner.temp }}/keepgoing-plugin-test
 
+  # The Windows tests run as two jobs at once. As one job they took 6 to 8.5
+  # minutes on main and ran into a 10-minute limit; "The Windows jobs' time"
+  # in docs/testing.md has the measurements behind the split and the limits.
+  # Neither is a required check.
   windows-acl:
-    name: Windows access diagnostics
+    name: "${{ inputs.base && 'Scope preview - ' || '' }}Windows access diagnostics (storage and controls)"
     runs-on: windows-2022
-    timeout-minutes: 10
+    permissions:
+      contents: read
+      actions: read # the timeout note reads this run's steps
+    timeout-minutes: 12
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
+          fetch-depth: 0
           persist-credentials: false
+      - name: Decide what this change needs
+        id: scope
+        shell: bash
+        env:
+          EVENT: ${{ github.event_name }}
+          PREVIEW_BASE: ${{ inputs.base }}
+        # Anything but a clean "docs" answer runs everything.
+        run: bash scripts/ci-scope.sh >> "$GITHUB_OUTPUT" || echo "scope=full" >> "$GITHUB_OUTPUT"
       - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        if: steps.scope.outputs.scope != 'docs'
         with:
           go-version-file: go.mod
       - run: go vet ./cmd/keepgoing
+        if: steps.scope.outputs.scope != 'docs'
       - name: Verify registered client status and controls on Windows
+        if: steps.scope.outputs.scope != 'docs'
         run: go test ./cmd/keepgoing -run '^TestClient' -count=1
       - name: Verify local loop registry on Windows
+        if: steps.scope.outputs.scope != 'docs'
         run: go test ./internal/registry ./cmd/keepgoing -run '^TestRegistry' -count=1
       - run: go test -v ./cmd/keepgoing -run '^(TestWindowsACL|TestDoctorACL|TestWindowsAccess|TestDoctorAccess)' -count=1
+        if: steps.scope.outputs.scope != 'docs'
       - name: Verify allowance persistence and replacement on Windows
+        if: steps.scope.outputs.scope != 'docs'
         run: go test -v ./internal/state -run '^Test(SendLedger|ProgressLedger)' -count=1
       - name: Verify runtime records can be replaced while readers poll
         # Report every record even when an earlier step has already failed.
-        if: always()
+        if: always() && (steps.scope.outputs.scope != 'docs')
         run: go test -race -v ./internal/state ./internal/health ./internal/incident ./internal/report ./internal/registry ./internal/daemoninfo ./cmd/keepgoing -run '^(TestStateSnapshot|Test.*SnapshotSavesWhileReadersPoll$|TestTransferRecordReads)' -count=1
       - name: Verify BB transfer and recovery on Windows
+        if: steps.scope.outputs.scope != 'docs'
         run: go test -v ./cmd/keepgoing -run '^TestTransfer' -count=1
       - run: go test -v ./internal/config -run '^TestBBTransfer' -count=1
+        if: steps.scope.outputs.scope != 'docs'
       - name: Verify goal-aware setup on Windows
+        if: steps.scope.outputs.scope != 'docs'
         run: go test -v ./cmd/keepgoing -run '^TestInitGoal' -count=1
       - name: Verify Cursor guided setup on Windows
+        if: steps.scope.outputs.scope != 'docs'
         run: go test -v ./cmd/keepgoing -run '^(TestInitCursor|TestDoctorCursor)' -count=1
       - name: Verify guided fallback setup on Windows
+        if: steps.scope.outputs.scope != 'docs'
         run: go test -v ./cmd/keepgoing -run '^TestFallbacks(Add|Handoff|Remove|Move|Manage)' -count=1
       - name: Verify private goal records on Windows
+        if: steps.scope.outputs.scope != 'docs'
         run: go test -v ./internal/control -run '^TestGoal' -count=1
       - name: Verify control writes across repeated and backwards clock readings
+        if: steps.scope.outputs.scope != 'docs'
         run: go test -v ./internal/control -run '^TestSaveAdvancesLoadedTimestamp$' -count=1
-      - name: Verify native headless runner lifecycle and owned cancellation
-        run: go test -race -v ./internal/adapter/runner -count=1
-      - name: Verify Cursor command recovery and active holds on Windows
-        run: go test -race -v ./cmd/keepgoing -run '^TestCursorCommand' -count=1
-      - name: Verify Cursor idle holds through the real factory on Windows
-        run: go test -race -v ./internal/supervise -run '^TestCursorHolds' -count=1
       - name: Verify daemon control polling with unchanged file metadata
+        if: steps.scope.outputs.scope != 'docs'
         run: go test -v ./cmd/keepgoing -run '^TestDaemonWait' -count=1
       - name: Verify control snapshots permit atomic replacement on Windows
+        if: steps.scope.outputs.scope != 'docs'
         run: go test -race -v ./internal/control ./internal/snapshot ./cmd/keepgoing -run '^(TestControlSnapshot|TestWindowsControlSnapshot|TestDaemonWaitSnapshot)' -count=1
       - name: Verify the run reference graph store and replacement on Windows
+        if: steps.scope.outputs.scope != 'docs'
         run: go test -race -v ./internal/rungraph -count=1
       - name: Verify offline run navigation on Windows
+        if: steps.scope.outputs.scope != 'docs'
         run: go test -race -v ./cmd/keepgoing -run '^TestRuns' -count=1
-      - name: Verify detached background startup with a local process fixture
-        run: go test -v ./cmd/keepgoing -run '^TestStartBackgroundProcess$' -count=20 -timeout=3m
+      - name: Work skipped for a documentation-only change
+        if: steps.scope.outputs.scope == 'docs'
+        shell: bash
+        run: echo "Every changed file is documentation, so this job did no work. The Ubuntu build-and-test job ran every check." >> "$GITHUB_STEP_SUMMARY"
 
+      - name: Say so if the job ran out of time
+        if: cancelled()
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          LIMIT_MINUTES: "12"
+        run: bash scripts/ci-timeout-note.sh
+
+  # The tests that start and stop processes: the headless runners, the Cursor
+  # command journeys and the detached start, repeated 20 times.
+  windows-processes:
+    name: "${{ inputs.base && 'Scope preview - ' || '' }}Windows access diagnostics (processes)"
+    runs-on: windows-2022
+    permissions:
+      contents: read
+      actions: read # the timeout note reads this run's steps
+    timeout-minutes: 12
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Decide what this change needs
+        id: scope
+        shell: bash
+        env:
+          EVENT: ${{ github.event_name }}
+          PREVIEW_BASE: ${{ inputs.base }}
+        # Anything but a clean "docs" answer runs everything.
+        run: bash scripts/ci-scope.sh >> "$GITHUB_OUTPUT" || echo "scope=full" >> "$GITHUB_OUTPUT"
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        if: steps.scope.outputs.scope != 'docs'
+        with:
+          go-version-file: go.mod
+      - name: Verify native headless runner lifecycle and owned cancellation
+        if: steps.scope.outputs.scope != 'docs'
+        run: go test -race -v ./internal/adapter/runner -count=1
+      - name: Verify Cursor command recovery and active holds on Windows
+        if: steps.scope.outputs.scope != 'docs'
+        run: go test -race -v ./cmd/keepgoing -run '^TestCursorCommand' -count=1
+      - name: Verify Cursor idle holds through the real factory on Windows
+        if: steps.scope.outputs.scope != 'docs'
+        run: go test -race -v ./internal/supervise -run '^TestCursorHolds' -count=1
+      - name: Verify detached background startup with a local process fixture
+        if: steps.scope.outputs.scope != 'docs'
+        run: go test -v ./cmd/keepgoing -run '^TestStartBackgroundProcess$' -count=20 -timeout=3m
+      - name: Work skipped for a documentation-only change
+        if: steps.scope.outputs.scope == 'docs'
+        shell: bash
+        run: echo "Every changed file is documentation, so this job did no work. The Ubuntu build-and-test job ran every check." >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Say so if the job ran out of time
+        if: cancelled()
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          LIMIT_MINUTES: "12"
+        run: bash scripts/ci-timeout-note.sh
   go:
-    name: Build and test
+    # The required checks are "Build and test (ubuntu-24.04)" and "Build and
+    # test (macos-15)". A name with an expression does not get the matrix
+    # value appended, so it is written out.
+    name: "${{ inputs.base && 'Scope preview - ' || '' }}Build and test (${{ matrix.os }})"
     strategy:
       matrix:
         os: [ubuntu-24.04, macos-15]
     runs-on: ${{ matrix.os }}
+    permissions:
+      contents: read
+      actions: read # the timeout note reads this run's steps
     timeout-minutes: 15
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
+          fetch-depth: 0
           persist-credentials: false
+      - name: Decide what this change needs
+        id: scope
+        shell: bash
+        env:
+          EVENT: ${{ github.event_name }}
+          PREVIEW_BASE: ${{ inputs.base }}
+        # Anything but a clean "docs" answer runs everything.
+        run: bash scripts/ci-scope.sh >> "$GITHUB_OUTPUT" || echo "scope=full" >> "$GITHUB_OUTPUT"
       - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        if: steps.scope.outputs.scope != 'docs' || matrix.os == 'ubuntu-24.04'
         with:
           go-version-file: go.mod
       - run: test -z "$(gofmt -l .)" || { gofmt -l .; exit 1; }
+        if: steps.scope.outputs.scope != 'docs' || matrix.os == 'ubuntu-24.04'
       - run: go vet ./...
+        if: steps.scope.outputs.scope != 'docs' || matrix.os == 'ubuntu-24.04'
       - run: go build ./...
+        if: steps.scope.outputs.scope != 'docs' || matrix.os == 'ubuntu-24.04'
+      - name: Check third-party notices match the executable's modules
+        if: steps.scope.outputs.scope != 'docs' || matrix.os == 'ubuntu-24.04'
+        run: scripts/third-party-notices.sh --check
       - run: go test -race ./...
+        if: steps.scope.outputs.scope != 'docs' || matrix.os == 'ubuntu-24.04'
       - name: Smoke check setup and recovery with local fixtures
+        if: steps.scope.outputs.scope != 'docs' || matrix.os == 'ubuntu-24.04'
         run: |
           go build -trimpath -ldflags "-X main.version=smoke-${GITHUB_SHA}" -o "$RUNNER_TEMP/keepgoing-smoke" ./cmd/keepgoing
           python3 scripts/smoke-release.py "$RUNNER_TEMP/keepgoing-smoke"
           python3 -u scripts/smoke-recovery.py "$RUNNER_TEMP/keepgoing-smoke" --include-cursor
       - name: Build and test the optional macOS menu preview
-        if: runner.os == 'macOS'
+        if: runner.os == 'macOS' && (steps.scope.outputs.scope != 'docs' || matrix.os == 'ubuntu-24.04')
         run: |
           swift build --package-path integrations/macos
           swift test --package-path integrations/macos
@@ -141,3 +273,20 @@ jobs:
       - name: Cross-compile for Windows
         if: runner.os == 'Linux'
         run: GOOS=windows GOARCH=amd64 go build -o /dev/null ./cmd/keepgoing
+      - name: Work skipped for a documentation-only change
+        if: steps.scope.outputs.scope == 'docs' && matrix.os != 'ubuntu-24.04'
+        shell: bash
+        run: echo "Every changed file is documentation, so this job did no work. The Ubuntu build-and-test job ran every check." >> "$GITHUB_STEP_SUMMARY"
+      - name: Check the rule that decides what a change needs
+        if: runner.os == 'Linux'
+        run: scripts/ci-scope-test.sh
+      - name: Check the note for a job that ran out of time
+        if: runner.os == 'Linux'
+        run: scripts/ci-timeout-note-test.sh
+      - name: Say so if the job ran out of time
+        if: cancelled()
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          LIMIT_MINUTES: "15"
+        run: bash scripts/ci-timeout-note.sh

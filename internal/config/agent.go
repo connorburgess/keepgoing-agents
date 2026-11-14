@@ -2,6 +2,7 @@ package config
 
 import (
 	"fmt"
+	"regexp"
 	"strings"
 	"time"
 )
@@ -17,6 +18,8 @@ type Agent struct {
 	Claude   *Claude  `yaml:"claude,omitempty"`
 	Codex    *Codex   `yaml:"codex,omitempty"`
 	Cursor   *Cursor  `yaml:"cursor,omitempty"`
+	// Custom is an agent defined in configuration.
+	Custom *Custom `yaml:"custom,omitempty"`
 }
 
 // BB configures the BB thread adapter. Model and Reasoning, when set, are
@@ -42,6 +45,52 @@ type BB struct {
 	// RetrySignalTTL bounds how long a provider retry notice on an errored
 	// thread suppresses error recovery. Zero uses the adapter default (15m).
 	RetrySignalTTL Duration `yaml:"retry_signal_ttl,omitempty"`
+	// Children configures what keepgoing may do about the supervised thread's
+	// lanes (its direct child threads). Nil, or retry_errored false, is the
+	// default: lanes are observed and announced, never acted on.
+	Children *BBChildren `yaml:"children,omitempty"`
+}
+
+// BBChildren is the opt-in recovery of failed lanes.
+type BBChildren struct {
+	// RetryErrored lets keepgoing ask BB to retry a lane's failed turn by
+	// reference. It is the only action keepgoing ever takes on a lane.
+	RetryErrored bool `yaml:"retry_errored,omitempty"`
+	// MaxPerCheck is how many lanes one check may work on. Zero means the default.
+	MaxPerCheck int `yaml:"max_per_check,omitempty"`
+	// MaxPerEpisode is how many lane retries one episode may make, where an
+	// episode lasts until every retried lane has stayed out of error for
+	// progress.min_wake_interval. Zero means the default.
+	MaxPerEpisode int `yaml:"max_per_episode,omitempty"`
+}
+
+// Lane recovery defaults and ceilings.
+const (
+	DefaultLanesPerCheck   = 5
+	DefaultLanesPerEpisode = 20
+	MaxLanesPerCheck       = 20
+	MaxLanesPerEpisode     = 100
+)
+
+// RetryErroredLanes reports whether lane recovery is switched on.
+func (b *BB) RetryErroredLanes() bool {
+	return b != nil && b.Children != nil && b.Children.RetryErrored
+}
+
+// LanesPerCheck is the configured or default number of lanes per check.
+func (b *BB) LanesPerCheck() int {
+	if b == nil || b.Children == nil || b.Children.MaxPerCheck <= 0 {
+		return DefaultLanesPerCheck
+	}
+	return b.Children.MaxPerCheck
+}
+
+// LanesPerEpisode is the configured or default number of lane retries per episode.
+func (b *BB) LanesPerEpisode() int {
+	if b == nil || b.Children == nil || b.Children.MaxPerEpisode <= 0 {
+		return DefaultLanesPerEpisode
+	}
+	return b.Children.MaxPerEpisode
 }
 
 // DefaultNewThreadPermission is the permission mode of a thread keepgoing
@@ -97,10 +146,18 @@ type Cursor struct {
 	Workdir string            `yaml:"workdir"`
 	Model   string            `yaml:"model,omitempty"`
 	Env     map[string]string `yaml:"env,omitempty"`
+	// FreshStartVersions lists further CLI versions, beyond the inspected ones,
+	// for which the operator has confirmed that the CLI writes its first stream
+	// records before it submits a prompt. See docs/cursor.md.
+	FreshStartVersions []string `yaml:"fresh_start_versions,omitempty"`
 }
 
+// CursorVersionPattern is the only version token shape accepted from the CLI
+// or from configuration.
+var CursorVersionPattern = regexp.MustCompile(`^[0-9]{4}\.[0-9]{2}\.[0-9]{2}-[0-9a-f]{7,40}$`)
+
 // Adapters lists the supported adapter names.
-var Adapters = []string{"bb", "process", "claude", "codex", "cursor"}
+var Adapters = []string{"bb", "process", "claude", "codex", "cursor", CustomAdapter}
 
 func (a *Agent) applyDefaults() {
 	if a.Cursor != nil && a.Cursor.CLI == "" {
@@ -114,10 +171,17 @@ func (a *Agent) applyDefaults() {
 			a.Provider = "codex"
 		case "cursor":
 			a.Provider = "cursor"
+		case CustomAdapter:
+			if a.Custom != nil {
+				a.Provider = a.Custom.Name
+			}
 		}
 	}
 	if a.Group == "" {
 		a.Group = a.Provider
+	}
+	if a.Custom != nil {
+		a.Custom.applyDefaults()
 	}
 	if a.BB != nil && a.BB.CLI == "" {
 		a.BB.CLI = DefaultBBCLI
@@ -139,7 +203,7 @@ func (a Agent) validate(where string) []error {
 	add := func(format string, args ...any) {
 		errs = append(errs, fmt.Errorf(where+format, args...))
 	}
-	set := map[string]bool{"bb": a.BB != nil, "process": a.Process != nil, "claude": a.Claude != nil, "codex": a.Codex != nil, "cursor": a.Cursor != nil}
+	set := map[string]bool{"bb": a.BB != nil, "process": a.Process != nil, "claude": a.Claude != nil, "codex": a.Codex != nil, "cursor": a.Cursor != nil, CustomAdapter: a.Custom != nil}
 	known := false
 	for _, n := range Adapters {
 		if a.Adapter == n {
@@ -175,6 +239,14 @@ func (a Agent) validate(where string) []error {
 		if d := a.BB.RetrySignalTTL.Duration; d != 0 && d < time.Minute {
 			add("bb.retry_signal_ttl must be at least 1m")
 		}
+		if c := a.BB.Children; c != nil {
+			if c.MaxPerCheck < 0 || c.MaxPerCheck > MaxLanesPerCheck {
+				add("bb.children.max_per_check must be between 0 and %d (zero means %d)", MaxLanesPerCheck, DefaultLanesPerCheck)
+			}
+			if c.MaxPerEpisode < 0 || c.MaxPerEpisode > MaxLanesPerEpisode {
+				add("bb.children.max_per_episode must be between 0 and %d (zero means %d)", MaxLanesPerEpisode, DefaultLanesPerEpisode)
+			}
+		}
 	case a.Adapter == "process" && a.Process != nil:
 		if len(a.Process.StatusCommand) == 0 {
 			add("process.status_command is required")
@@ -191,6 +263,15 @@ func (a Agent) validate(where string) []error {
 		if a.Cursor.Workdir == "" {
 			add("cursor.workdir is required")
 		}
+		if len(a.Cursor.FreshStartVersions) > 16 {
+			add("cursor.fresh_start_versions: at most 16 versions")
+		}
+		for _, v := range a.Cursor.FreshStartVersions {
+			if !CursorVersionPattern.MatchString(v) {
+				add("cursor.fresh_start_versions: each entry must be a Cursor CLI version such as 2030.01.02-abcdef0")
+				break
+			}
+		}
 	case a.Adapter == "claude" && a.Claude != nil:
 		if a.Claude.Workdir == "" {
 			add("claude.workdir is required")
@@ -199,6 +280,8 @@ func (a Agent) validate(where string) []error {
 		if a.Codex.Workdir == "" {
 			add("codex.workdir is required")
 		}
+	case a.Adapter == CustomAdapter && a.Custom != nil:
+		a.Custom.validate(add)
 	}
 	return errs
 }
@@ -214,6 +297,8 @@ func (a Agent) Model() string {
 		return a.Claude.Model
 	case a.Codex != nil:
 		return a.Codex.Model
+	case a.Custom != nil:
+		return a.Custom.Values["model"]
 	}
 	return ""
 }
@@ -232,6 +317,8 @@ func (a Agent) Describe() string {
 		s += " " + a.Claude.Workdir
 	case a.Codex != nil:
 		s += " " + a.Codex.Workdir
+	case a.Custom != nil:
+		s += " " + a.Custom.Name + " " + a.Custom.Workdir
 	}
 	if m := a.Model(); m != "" {
 		s += " (" + m + ")"
@@ -240,6 +327,9 @@ func (a Agent) Describe() string {
 }
 
 func (a *Agent) resolvePaths(base string) {
+	if a.Custom != nil {
+		a.Custom.resolvePaths(base)
+	}
 	if a.Cursor != nil {
 		a.Cursor.Workdir = resolve(base, a.Cursor.Workdir)
 		a.Cursor.CLI = resolveExec(base, a.Cursor.CLI)

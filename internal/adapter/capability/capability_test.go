@@ -153,6 +153,10 @@ func TestRegisteredAdaptersMatchTheFactory(t *testing.T) {
 	for _, spec := range runner.Specs() {
 		built[spec.Name] = true
 	}
+	// And an agent defined in configuration, through the same runner.
+	if a, err := factory.New(definedAgent(t, ""), t.TempDir(), "primary"); err == nil && a.Name() == config.CustomAdapter {
+		built[config.CustomAdapter] = true
+	}
 	if got := sorted(built); !reflect.DeepEqual(got, sorted(want)) {
 		t.Fatalf("the factory builds %v; the capability table registers %v. A new adapter needs a column in every row.", got, sorted(want))
 	}
@@ -206,6 +210,7 @@ func TestOptionalInterfacesMatchTheAdapters(t *testing.T) {
 		"claude":  runner.NewClaude(config.Claude{CLI: "absent"}, dir),
 		"codex":   runner.NewCodex(config.Codex{CLI: "absent"}, dir),
 		"cursor":  runner.NewCursor(config.Cursor{CLI: "absent"}, dir),
+		"custom":  definedRunner(t, "", dir),
 		"process": process.New(config.Process{}),
 	}
 	for _, a := range Adapters {
@@ -228,6 +233,16 @@ func TestOptionalInterfacesMatchTheAdapters(t *testing.T) {
 		_, retries := impl.(adapter.TurnRetrier)
 		if listed := byID("turn_retry").Cells[a.ID].Status == Yes; retries != a.TurnRetrier || retries != listed {
 			t.Errorf("%s: TurnRetrier=%v; the capability table says %v and the turn_retry row says %v", a.ID, retries, a.TurnRetrier, listed)
+		}
+		// And the child_recovery row with whether it can act on a lane at all.
+		_, lanes := impl.(adapter.LaneRecoverer)
+		if listed := byID("child_recovery").Cells[a.ID].Status == Yes; lanes != a.LaneRecoverer || lanes != listed {
+			t.Errorf("%s: LaneRecoverer=%v; the capability table says %v and the child_recovery row says %v", a.ID, lanes, a.LaneRecoverer, listed)
+		}
+		// And the stop_lanes row with whether it can stop lanes at all.
+		_, stops := impl.(adapter.LaneStopper)
+		if listed := byID("stop_lanes").Cells[a.ID].Status == Yes; stops != a.LaneStopper || stops != listed {
+			t.Errorf("%s: LaneStopper=%v; the capability table says %v and the stop_lanes row says %v", a.ID, stops, a.LaneStopper, listed)
 		}
 	}
 	// A process loop can stop only through a configured command.
@@ -335,7 +350,7 @@ func TestSharedRunnerInputsAreAllDeclarable(t *testing.T) {
 		}
 		return true
 	})
-	if got, want := sorted(used), []string{"AwaitingInput", "ErrorClass", "Evidence", "ResetsAt", "State"}; !reflect.DeepEqual(got, want) {
+	if got, want := sorted(used), []string{"DeferredInteraction", "ErrorClass", "Evidence", "Gone", "ResetsAt", "State"}; !reflect.DeepEqual(got, want) {
 		t.Fatalf("the shared runner refers to Observation fields %v, want %v", got, want)
 	}
 }
@@ -443,6 +458,129 @@ func TestPortedAgentsSetExactlyTheirInputs(t *testing.T) {
 		// Waiting on a person is structured exactly when permissions are.
 		if listed := byID("permissions").Cells[spec.Name].Status == Yes; listed != spec.Capabilities.StructuredWaiting {
 			t.Errorf("%s: StructuredWaiting=%v but the permissions row is %s", spec.Name, spec.Capabilities.StructuredWaiting, byID("permissions").Cells[spec.Name].Status)
+		}
+	}
+}
+
+// definedYAML is a loop whose agent is defined in configuration. %s is extra
+// definition text.
+const definedYAML = `version: 1
+loop:
+  name: example-loop
+  state_dir: state
+  prompt: Continue the loop.
+  adapter: custom
+  custom:
+    name: example-agent
+    workdir: /example/project
+    definition:
+      start: [absent-example-agent, run, --json]
+      output: {format: json}
+%s`
+
+// definedFull declares everything a definition can: the most it can produce.
+const definedFull = `      resume: [absent-example-agent, run, --json, --session, "{session}"]
+      session: {field: session}
+      finished: {exit_codes: [0], field: status, equals: [ok]}
+      waiting: {exit_codes: [2], field: status, equals: [needs_input]}
+      errors: {field: error.code, classes: {quota_exceeded: rate_limit}}
+      limits:
+        argv: [absent-example-agent, limits]
+        blocked: {field: blocked, equals: ["true"]}
+      capabilities: {exact_resume: true, can_be_stopped: true, structured_errors: true, structured_waiting: true}
+`
+
+func definedAgent(t *testing.T, extra string) config.Agent {
+	t.Helper()
+	cfg, err := config.Parse([]byte(strings.Replace(definedYAML, "%s", extra, 1)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	return cfg.Loop.Agent
+}
+
+func definedRunner(t *testing.T, extra, dir string) *runner.Headless {
+	t.Helper()
+	h, ok := runner.New(definedAgent(t, extra), dir)
+	if !ok {
+		t.Fatal("no runner for the defined agent")
+	}
+	return h
+}
+
+// The custom column covers every agent defined in configuration. Its Inputs
+// are what a definition that declares everything can produce, and a
+// definition that declares less produces less: what a definition declares,
+// and nothing else, decides which fields its runner sets.
+func TestDefinedAgentsSetOnlyWhatTheyDeclare(t *testing.T) {
+	var listed []string
+	for _, a := range Adapters {
+		if a.ID == config.CustomAdapter {
+			listed = append(listed, a.Inputs...)
+		}
+	}
+	sort.Strings(listed)
+	full, bare := definedRunner(t, definedFull, t.TempDir()).Spec(), definedRunner(t, "", t.TempDir()).Spec()
+	if got := full.ObservationInputs(); !reflect.DeepEqual(got, listed) {
+		t.Fatalf("a full definition can produce %v; the capability table lists %v", got, listed)
+	}
+	// The same turns, read by a definition that declares everything and by
+	// one that declares nothing. The limit lookup's command does not exist,
+	// so no reset time is produced here; the runner's own fixture covers it.
+	// The last turn's saved session file is damaged and the turn reported
+	// none, so the conversation to continue cannot be named.
+	turns := []struct{ out, exit, session string }{
+		{`{"status":"ok","session":"sess_example_1"}`, "0", ""},
+		{`{"status":"needs_input","session":"sess_example_1"}`, "2", ""},
+		{`{"status":"failed","error":{"code":"quota_exceeded"}}`, "1", ""},
+		{`fictional text`, "1", ""},
+		{`fictional text`, "1", "--not-a-session"},
+	}
+	observed := func(extra string) []string {
+		set := map[string]bool{}
+		for _, turn := range turns {
+			dir := t.TempDir()
+			files := map[string]string{"run.json": `{"pid":1,"stopKey":"k","startedAt":"2026-01-01T00:00:00Z","argv0":"absent"}`, "exit": turn.exit + "\n", "stdout": turn.out}
+			if turn.session != "" {
+				files["session"] = turn.session + "\n"
+			}
+			for name, content := range files {
+				if err := os.WriteFile(filepath.Join(dir, name), []byte(content), 0o600); err != nil {
+					t.Fatal(err)
+				}
+			}
+			obs, err := definedRunner(t, extra, dir).Observe(t.Context())
+			if err != nil {
+				t.Fatal(err)
+			}
+			v := reflect.ValueOf(obs)
+			for i := 0; i < v.NumField(); i++ {
+				if !v.Field(i).IsZero() {
+					set[v.Type().Field(i).Name] = true
+				}
+			}
+		}
+		return sorted(set)
+	}
+	if got, want := observed(definedFull), []string{"DeferredInteraction", "ErrorClass", "Evidence", "Gone", "State"}; !reflect.DeepEqual(got, want) {
+		t.Errorf("a full definition's runner set %v, want %v", got, want)
+	}
+	if got, want := observed(""), []string{"ErrorClass", "Evidence", "State"}; !reflect.DeepEqual(got, want) {
+		t.Errorf("a bare definition's runner set %v, want %v", got, want)
+	}
+	if got := bare.ObservationInputs(); !reflect.DeepEqual(got, []string{"ErrorClass", "Evidence", "State"}) {
+		t.Errorf("a bare definition declares %v", got)
+	}
+	// The partial cells are the ones a declaration decides.
+	for row, declared := range map[string]bool{
+		"session_resume": full.Capabilities.ExactResume && !bare.Capabilities.ExactResume,
+		"stop":           full.Capabilities.Stoppable && !bare.Capabilities.Stoppable,
+		"error_classes":  full.Capabilities.StructuredErrors && !bare.Capabilities.StructuredErrors,
+		"permissions":    full.Capabilities.StructuredWaiting && !bare.Capabilities.StructuredWaiting,
+		"probes":         true,
+	} {
+		if c := byID(row).Cells[config.CustomAdapter]; !declared || c.Status != Partial {
+			t.Errorf("%s: a definition decides it (%v) but the cell is %s", row, declared, c.Status)
 		}
 	}
 }
