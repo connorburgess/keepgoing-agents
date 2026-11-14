@@ -28,7 +28,7 @@ func TestTimelineShowsRefusalsAndRecoveries(t *testing.T) {
 	add(2, incident.Record{Action: "none", Refusal: "recovered", Observation: incident.Observation{Availability: "observed", State: "idle"}})
 	add(3, incident.Record{Action: "none", ModelFallback: true, Observation: incident.Observation{Availability: "observed", State: "idle"}})
 	got := timelineJSON(t, dir, "--kind", "refusal")
-	if got.SchemaVersion != 8 || len(got.Events) != 3 {
+	if got.SchemaVersion != 9 || len(got.Events) != 3 {
 		t.Fatalf("%+v", got)
 	}
 	_, out, _ := timelineCLI(t, dir, "--kind", "refusal")

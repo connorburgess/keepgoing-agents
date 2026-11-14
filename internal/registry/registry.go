@@ -55,7 +55,7 @@ func CheckDirectory(dir string) error {
 	return nil
 }
 func privateFile(path string) error {
-	info, err := os.Lstat(path)
+	info, err := snapshot.Lstat(path)
 	if errors.Is(err, os.ErrNotExist) {
 		return nil
 	}
