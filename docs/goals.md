@@ -63,7 +63,7 @@ Offline storage and command fixtures cover reload, competing edits, ownership, h
 
 ## Current goal context in wake messages
 
-With v0.1.4, set `loop.prompt_goal: true` to explicitly share the current private goal specification with the agent on each wake, nudge, recovery re-prompt, handoff and switch-back. In unreleased source a BB recovery made by [retrying the failed turn](operations.md#recovering-a-failed-bb-turn-by-retry) sends no text, so it carries no goal. This sends the title, all current reference lists and next-action metadata, plus the goal ID/revision. Prior revision contents are excluded. The default is false, so existing loops never begin sharing private goals automatically. Goal create/revise/show still send nothing themselves.
+With v0.1.4, set `loop.prompt_goal: true` to explicitly share the current private goal specification with the agent on each wake, nudge, recovery re-prompt, handoff and switch-back. In v0.2.0 a BB recovery made by [retrying the failed turn](operations.md#recovering-a-failed-bb-turn-by-retry) sends no text, so it carries no goal. This sends the title, all current reference lists and next-action metadata, plus the goal ID/revision. Prior revision contents are excluded. The default is false, so existing loops never begin sharing private goals automatically. Goal create/revise/show still send nothing themselves.
 
 ```yaml
 loop:
@@ -78,7 +78,7 @@ The renderer reloads the latest saved revision when composing each message. Coop
 
 Missing, corrupt or wrong-loop goal records refuse the send before reserving its send allowance; no stale cached goal is substituted. Normal status observations or probes may already have occurred. A dry-run previews decisions without validating/composing the goal message. Stop, pause, disabled, awaiting-user and completed controls keep their existing precedence. This does not update already-running turns or queued messages, fence external writers that ignore locks, detect semantic drift in a roadmap, or bind completion to the goal revision.
 
-Offline fixtures cover revised goals across ticks, opt-in privacy, legacy behavior, unavailable records, handoff variants, holds, and logs/reports without private goal text. Live provider adoption remains unverified. In v0.1.5, `init --with-goal` and the wizard choice can create revision 1 and enable this transport during disabled setup; see [goal setup](setup.md#optional-goal-during-setup-unreleased). The rebuilt BB setup UI exposes this choice and displays only recorded identity/revision in ordinary diagnostics. Live setup verification and revision-bound results remain unfinished.
+Offline fixtures cover revised goals across ticks, opt-in privacy, legacy behavior, unavailable records, handoff variants, holds, and logs/reports without private goal text. Live provider adoption remains unverified. In v0.1.5, `init --with-goal` and the wizard choice can create revision 1 and enable this transport during disabled setup; see [goal setup](setup.md#optional-goal-during-setup). The rebuilt BB setup UI exposes this choice and displays only recorded identity/revision in ordinary diagnostics. Live setup verification and revision-bound results remain unfinished.
 
 
 ## Recorded send provenance

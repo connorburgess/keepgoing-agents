@@ -89,12 +89,29 @@ func TestCommandExitCodes(t *testing.T) {
 }
 
 func TestNetProbeCommand(t *testing.T) {
-	t.Setenv("KEEPGOING_NET_PROBE", "exit 0")
+	t.Setenv("LOOPTENDER_NET_PROBE", "exit 0")
 	if !DefaultOnline(context.Background()) {
 		t.Error("exit 0 probe should be online")
 	}
-	t.Setenv("KEEPGOING_NET_PROBE", "exit 3")
+	t.Setenv("LOOPTENDER_NET_PROBE", "exit 3")
 	if DefaultOnline(context.Background()) {
 		t.Error("exit 3 probe should be offline")
+	}
+}
+
+// The probe variables are still read under their earlier names, and the
+// current name wins when both are set.
+func TestNetProbeEarlierName(t *testing.T) {
+	t.Setenv("LOOPTENDER_NET_PROBE", "")
+	t.Setenv("KEEPGOING_NET_PROBE", "exit 3")
+	if DefaultOnline(context.Background()) {
+		t.Error("the earlier name was not read")
+	}
+	if (Probe{}).Check(context.Background()) != CommandFailed {
+		t.Error("a probe with no settings did not read the earlier name")
+	}
+	t.Setenv("LOOPTENDER_NET_PROBE", "exit 0")
+	if !DefaultOnline(context.Background()) {
+		t.Error("the current name did not win")
 	}
 }

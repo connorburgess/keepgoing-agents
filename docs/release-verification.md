@@ -8,11 +8,39 @@ Releases through v0.1.5 are Apache-2.0 and their archives hold the executable, `
 
 - **Archive inventory.** Every archive holds exactly: the executable, `README.md`, `LICENSE` (Sustainable Use License 1.0), `LICENSING.md`, `LICENSES/Apache-2.0.txt` and `THIRD_PARTY_NOTICES`. Nothing else.
 - **Third-party notices.** `THIRD_PARTY_NOTICES` reproduces the terms of the Go runtime and standard library and of every module linked into the executable. `scripts/build-release.sh` runs `scripts/third-party-notices.sh --check` first and stops when the file does not match the modules of the six release targets, so a module added without its notice cannot be released. Pull-request CI runs the same check. After adding or updating a module, run `scripts/third-party-notices.sh`, read the result and commit it.
-- **Homebrew formula.** The tap is a separate repository. Its formula installs v0.1.5 today, which stays Apache-2.0, so its license field is correct until then. The formula update for the first release under the new license must change that field with the URLs and checksums, and its install check should confirm the new files are present. Do not change the field before that release.
+- **Homebrew formula.** The tap is a separate repository. Up to v0.1.5 its license field was Apache-2.0. The v0.2.0 update changed that field with the URLs and checksums, and its install check confirms the new files are present ([v0.2.0 evidence](#v020-release-and-package-evidence)).
+
+## v0.2.0 release and package evidence
+
+[v0.2.0](https://github.com/connorburgess/keepgoing-agents/releases/tag/v0.2.0) tags `d6bcd054de3cfcbe461c0a1542f88339922bf163`, the merge of #226 (the README version guide). It was published on 2026-11-14. Its code is the final candidate's below; since that candidate, only the README and this record have changed. The [six-job PR run](https://github.com/connorburgess/keepgoing-agents/actions/runs/43562312454) passed on #226's head `a3017970577b2b506d523185115e80ed185371d6`: build and tests on Ubuntu and macOS, both Windows access diagnostics jobs, and the BB plugin typecheck. The [contribution metadata check](https://github.com/connorburgess/keepgoing-agents/actions/runs/43562312437) passed too. The tag's [Build and publish job](https://github.com/connorburgess/keepgoing-agents/actions/runs/43563608418) passed: the release-notes check, `go test ./...`, the six archive builds, archive verification with the native Linux amd64 package smoke check, and publication.
+
+**Downloaded assets:**
+- All six published archives matched the published `checksums.txt`.
+- Each held exactly the six files [required above](#archive-contents-and-packaging-from-the-next-release), and both Windows ZIPs passed integrity checks.
+- The downloaded macOS arm64 executable reported `v0.2.0`, with SHA-256 `39a0a039695fbeda0c3d5ce8d5c6accaaa18e6c87449a36995c25548d24cc1d7`. This VCS-stamped executable is the installation reference; the local candidate's digest below differs.
+- Its `README.md` carries the v0.2.0 version guide.
+
+Against that executable, run from the tag with the caller's `HOME` and `XDG_*` pointed at an empty directory, which was still empty afterwards:
+- `scripts/smoke-release.py` passed all six setup variants;
+- `scripts/smoke-recovery.py --include-cursor` passed all five journeys.
+
+No real provider was called.
+
+**Homebrew.** [Homebrew PR #5](https://github.com/connorburgess/homebrew-tap/pull/5) merged as `62f30b9589e18820a99fee0a43960d0108e32470`. It updates the formula to the v0.2.0 URLs and checksums, and changes its licence field to `:cannot_represent`, because Homebrew's SPDX list has no identifier for the Sustainable Use License. It also installs `LICENSING.md`, `THIRD_PARTY_NOTICES` and `LICENSES/`, and its test checks the four licence files and `panel --help`. The four checksums match the published `checksums.txt`. `brew audit --strict --online` passed locally (Homebrew 7.0.12, macOS arm64). Its [Fresh macOS install job](https://github.com/connorburgess/homebrew-tap/actions/runs/43564260085) passed on head `24cc2efb5e1cd1c2603eafb39fb8376d46437620` against base `83afbe550fae1466fe74eff4f4cb39acbe404ba6`. On the macOS arm64 runner it installed the checked-out formula, verified the published checksum, ran `brew test`, and reported `v0.2.0`.
+
+**The BB plugin.** The tag also contains plugin v0.3.0 and its collection; the [pinned Git command](../integrations/bb-plugin-keepgoing/README.md#install) selects it separately. Its bundle checks are the candidate's below.
+
+**Not run:**
+- Linux and Intel macOS Homebrew installs;
+- native execution of the Windows, Linux arm64 and Intel macOS archives;
+- actual Git installation and activation of the plugin;
+- any live provider or first-loop walkthrough, including the [live outage check](testing.md#live-check-a-long-time-offline).
+
+Publication did not change any existing supervisor binary, installed plugin, runtime state, scheduler, target or login.
 
 ## v0.2.0 release preparation
 
-**v0.2.0** is the first release under the [Sustainable Use License 1.0](../LICENSE). [Version-specific notes](releases/v0.2.0.md) explain why it is 0.2.0 rather than 0.1.6, collect the upgrade and going-back notes, and cover BB plugin v0.3.0. **Not yet tagged or published**; tagging is the owner's decision after reading the notes. The Homebrew formula is unchanged and still installs v0.1.5.
+**v0.2.0** is the first release under the [Sustainable Use License 1.0](../LICENSE). [Version-specific notes](releases/v0.2.0.md) explain why it is 0.2.0 rather than 0.1.6, collect the upgrade and going-back notes, and cover BB plugin v0.3.0. This is the pre-release record; the published release is recorded [above](#v020-release-and-package-evidence).
 
 **Scope.** Main `f0bfbc87` is the last in-scope merge (#218); nothing out of scope (timing U4 and U5, the BB New-thread control #181) is in it. Since the first candidate it adds #217, #220, #221, #216, #223, #224 and #218, and the roadmap repair #219.
 
@@ -164,8 +192,8 @@ On macOS/Linux with Python 3, pass a native binary from the same revision as thi
 
 ```sh
 python3 -u scripts/smoke-recovery.py /path/to/keepgoing
-# For a source build containing the unreleased Cursor adapter:
-python3 -u scripts/smoke-recovery.py /path/to/keepgoing-dev --include-cursor
+# v0.2.0 or newer, which has the Cursor adapter:
+python3 -u scripts/smoke-recovery.py /path/to/keepgoing --include-cursor
 ```
 
 This companion to the setup smoke check requires v0.1.3 or newer; v0.1.2 is expected to fail it. It prints the executable SHA-256, version and platform. CI runs it on native macOS/Linux builds; release publication also gates on the unpacked Linux archive passing. Record the revision alongside that output. A local source build is not evidence that an installed supervisor was upgraded.

@@ -9,7 +9,7 @@ version: 1
 loop:
   name: example-loop
   state_dir: ~/.local/state/keepgoing/example-loop
-  adapter: bb                     # bb | process | claude | codex | cursor, custom (unreleased)
+  adapter: bb                     # bb | process | claude | codex | cursor, custom (v0.2.0)
   provider: claude-code           # optional for the primary; used in reports
   group: claude-example-account   # quota pool; same-group fallbacks are skipped on a limit
   bb: {thread: thr_example123}
@@ -30,13 +30,13 @@ loop:
 | --- | --- | --- |
 | `name` | yes | Lowercase letters, digits, and hyphens. It appears in every event and report. |
 | `state_dir` | yes | Where control, state, health, log, lock, and turn files live. Keep it outside any repository. |
-| `adapter` | yes | `bb`, `process`, `claude`, `codex`, or unreleased `cursor` or `custom` ([an agent defined in configuration](#an-agent-defined-in-configuration)), with the matching block below. |
+| `adapter` | yes | `bb`, `process`, `claude`, `codex`, or (v0.2.0) `cursor` or `custom` ([an agent defined in configuration](#an-agent-defined-in-configuration)), with the matching block below. |
 | `provider`, `group` | no | `group` defaults to `provider`, then to `primary`. Set `group` so a limit on this account skips fallbacks that share it. |
 | `prompt_goal` | `false` | Explicitly append the latest private goal specification and revision to automatic messages, including handoffs. A valid goal for this loop is required before sending. See [current goal context](goals.md#current-goal-context-in-wake-messages). |
 | `prompt` or `prompt_file` | one of them | The text sent on wake, nudge, and re-prompt. The file is read on every send, so you can edit it while the loop runs. |
 | `handoff_file` | no | Sent to a fallback when it takes over. When the file is missing, a brief is generated. |
 | `switch_back` | no | Returns the loop to the primary once its limit resets and an exact probe passes. Off by default. See [fallbacks.md](fallbacks.md#switching-back). |
-| `routes` | no | `standard`: follow the person's [standard route list](routes.md) instead of a `fallbacks` file. Unreleased source. Excludes `fallbacks`; for `bb`, `claude` and `codex` loops. |
+| `routes` | no | `standard`: follow the person's [standard route list](routes.md) instead of a `fallbacks` file. v0.2.0. Excludes `fallbacks`; for `bb`, `claude` and `codex` loops. |
 | `routes_allow` | no | With `routes: standard`: `[new_conversation]` lets a standard route that starts a new conversation apply to this loop. Off by default. |
 | `probe` | for switch-back and timing | How to probe the primary, with the same fields as a candidate's `probe`. The kind defaults from `provider`. |
 | `timing` | no | Usage-aware timing. Off by default. Today it only probes the first route on a schedule to collect usage readings of its allowance; it never changes routes. See [timing](#timing). |
@@ -46,10 +46,10 @@ loop:
 | Field | Default | Meaning |
 | --- | --- | --- |
 | `thread` | required, unless `new_thread` | The BB thread id. |
-| `new_thread` | `false` | Fallback candidates only, unreleased source. Instead of `thread`: a handoff to this candidate creates a new BB thread on the candidate's `provider`, with `model` and `reasoning`. Requires `provider`. See [hand off to a new conversation](fallbacks.md#hand-off-to-a-new-conversation). |
+| `new_thread` | `false` | Fallback candidates only, v0.2.0. Instead of `thread`: a handoff to this candidate creates a new BB thread on the candidate's `provider`, with `model` and `reasoning`. Requires `provider`. See [hand off to a new conversation](fallbacks.md#hand-off-to-a-new-conversation). |
 | `project`, `environment` | the continued conversation's | With `new_thread` only: where the new thread is created. |
 | `permission_mode` | `accept-edits` | With `new_thread` only: `accept-edits`, `auto` or `full`. Always passed to `bb thread spawn`, so the new thread never takes a project default. `accept-edits` asks before anything but file edits. |
-| `children.retry_errored` | `false` | Unreleased source. Opt in to [lane recovery](operations.md#lane-recovery): ask BB to retry the failed turn of a direct child thread that was seen working and then failed with a connection, overload or unknown error. Nothing else is ever done to a child. Per lane it uses `errors.max_reprompts` attempts spaced by `errors.backoff`. |
+| `children.retry_errored` | `false` | v0.2.0. Opt in to [lane recovery](operations.md#lane-recovery): ask BB to retry the failed turn of a direct child thread that was seen working and then failed with a connection, overload or unknown error. Nothing else is ever done to a child. Per lane it uses `errors.max_reprompts` attempts spaced by `errors.backoff`. |
 | `children.max_per_check` | `5` | With `retry_errored`: lanes worked on in one check. `1` to `20`; `0` means the default. |
 | `children.max_per_episode` | `20` | With `retry_errored`: retries for one failure across all lanes. `1` to `100`; `0` means the default. |
 | `cli` | `bb` | Path to the bb executable. |
@@ -61,7 +61,7 @@ loop:
 | Field | Default | Meaning |
 | --- | --- | --- |
 | `status_command` | required | argv. Prints a JSON status object on stdout. |
-| `resume_command` | required | argv. Receives the prompt on stdin and the mode, `auto` or `queue`, in `KEEPGOING_MODE`. |
+| `resume_command` | required | argv. Receives the prompt on stdin and the mode, `auto` or `queue`, in `LOOPTENDER_MODE` (and in `KEEPGOING_MODE`, its [earlier name](#environment-variables)). |
 | `stop_command` | none | argv. Without it, a stop request means nothing more is sent. |
 | `exit_codes` | none | Map from a status-command exit code to an error class, for example `{75: rate_limit}`. Any other non-zero exit is an error of class `unknown`. |
 | `env` | none | Extra environment variables for all three commands. |
@@ -106,15 +106,17 @@ Environment overrides inherit the rest of the supervisor's environment. They do 
 
 A running headless turn cannot be steered or queued into. A nudge to a stalled headless turn is recorded as a warning instead. The attempt still counts toward `max_nudges` and `min_wake_interval`, so a headless turn that stays stalled reaches the awaiting-user hold after `max_nudges` warnings.
 
-## cursor (unreleased)
+<a id="cursor-unreleased"></a>
 
-The Cursor CLI adapter is available in source only, not v0.1.5. It accepts `cli` (default `agent`), required `workdir`, optional `model`, optional `env`, and optional `fresh_start_versions`: up to 16 further CLI versions, written as the CLI prints them, for which you have confirmed that it writes its first stream records before submitting a prompt. That list only widens [when a new conversation may follow a turn that failed before starting](cursor.md#turns-identity-and-controls); leave it out unless you have checked. There is no `extra_args` or automatic approval flag. Use guided `init --agent cursor` or write the YAML directly.
+## cursor
+
+The Cursor CLI adapter is in v0.2.0, not v0.1.5. It accepts `cli` (default `agent`), required `workdir`, optional `model`, optional `env`, and optional `fresh_start_versions`: up to 16 further CLI versions, written as the CLI prints them, for which you have confirmed that it writes its first stream records before submitting a prompt. That list only widens [when a new conversation may follow a turn that failed before starting](cursor.md#turns-identity-and-controls); leave it out unless you have checked. There is no `extra_args` or automatic approval flag. Use guided `init --agent cursor` or write the YAML directly.
 
 Only standalone primary loops are accepted: no `fallbacks`, enabled `switch_back`, or Cursor fallback candidates. Failures remain unknown because the reviewed print schema lacks structured error classes/reset times. See [Cursor supervision](cursor.md) for stdin transport, exact identity, output bounds, permission behavior and unverified live acceptance.
 
 ## An agent defined in configuration
 
-Unreleased source (roadmap K2); **fixture-tested with stand-in agents only, no real agent has been run from a definition**. `adapter: custom` describes an agent keepgoing has no built-in runner for, from its documented command-line interface. It runs one turn per process through the same runner as headless Claude Code and Codex: a detached turn, a private prompt file, per-target session storage and the owned stop.
+v0.2.0 (roadmap K2); **fixture-tested with stand-in agents only, no real agent has been run from a definition**. `adapter: custom` describes an agent keepgoing has no built-in runner for, from its documented command-line interface. It runs one turn per process through the same runner as headless Claude Code and Codex: a detached turn, a private prompt file, per-target session storage and the owned stop.
 
 Three rules hold for every definition:
 
@@ -222,7 +224,7 @@ Idle wakes follow the supervisor's check cadence, subject to other gates. `min_w
 
 ## limits
 
-These three optional fields are the only loop-wide bounds on repeated automatic work. None has a default: with all three omitted, an idle session is woken on every eligible ordinary check for as long as the loop stays enabled and no control hold applies. The `progress` and `errors` caps bound one stalled turn or one error episode and reset afterwards. See [bounds on repeated work](operations.md#bounds-on-repeated-work). In unreleased source, `validate` and `status` warn when all three are unset; the warning changes no behavior or exit code.
+These three optional fields are the only loop-wide bounds on repeated automatic work. None has a default: with all three omitted, an idle session is woken on every eligible ordinary check for as long as the loop stays enabled and no control hold applies. The `progress` and `errors` caps bound one stalled turn or one error episode and reset afterwards. See [bounds on repeated work](operations.md#bounds-on-repeated-work). In v0.2.0, `validate` and `status` warn when all three are unset; the warning changes no behavior or exit code.
 
 | Field | Default | Holds the loop when |
 | --- | --- | --- |
@@ -244,7 +246,7 @@ loop:
     max_sends: 20
 ```
 
-At or after this time, the next ordinary check persists an awaiting-user hold before automatic provider observation, yield commands, fingerprints or probes. Stop and existing control holds retain precedence. Omission or an empty string leaves existing behavior unchanged. Past timestamps are allowed and hold on the next check. See [operations](operations.md#loop-deadline) for restart, resume, manual-command and clock semantics. This field is available in v0.1.3 or newer. Optional `max_sends` is a nonnegative integer (zero/omitted disables accounting). It caps total automatic send attempts made while enabled, including failed sends, recovery and handoffs; the count survives restart and resume. See [send allowance behavior](operations.md#total-send-allowance). Optional `no_progress_timeout` is zero/off or a duration of at least `1m`, and requires `progress.repositories`. It holds after elapsed time without verified Git metadata changes, including idle turns. Downtime counts through v0.1.5; unreleased source does not count time in which no check ran (beyond one usual interval) or in which the connectivity check found the network down. See [no-progress semantics](operations.md#no-progress-timeout). These limits require v0.1.3 or newer; monetary enforcement is not implemented.
+At or after this time, the next ordinary check persists an awaiting-user hold before automatic provider observation, yield commands, fingerprints or probes. Stop and existing control holds retain precedence. Omission or an empty string leaves existing behavior unchanged. Past timestamps are allowed and hold on the next check. See [operations](operations.md#loop-deadline) for restart, resume, manual-command and clock semantics. This field is available in v0.1.3 or newer. Optional `max_sends` is a nonnegative integer (zero/omitted disables accounting). It caps total automatic send attempts made while enabled, including failed sends, recovery and handoffs; the count survives restart and resume. See [send allowance behavior](operations.md#total-send-allowance). Optional `no_progress_timeout` is zero/off or a duration of at least `1m`, and requires `progress.repositories`. It holds after elapsed time without verified Git metadata changes, including idle turns. Downtime counts through v0.1.5; v0.2.0 does not count time in which no check ran (beyond one usual interval) or in which the connectivity check found the network down. See [no-progress semantics](operations.md#no-progress-timeout). These limits require v0.1.3 or newer; monetary enforcement is not implemented.
 
 ## window
 
@@ -255,11 +257,11 @@ Times are read on the local clock in `tz`, including on the days it changes for 
 - A time the clock skips when it is set forward (for example `02:30` in New York on Sun 10 Mar 2030, when 01:59 is followed by 03:00) opens or closes the window at that jump. A span that lies wholly inside the skipped time is empty that day.
 - A time the clock shows twice when it is set back (for example `01:30` in New York on Sun 3 Nov 2030) means its first occurrence. A span ending at `01:30` is closed through the repeated hour; a span starting at `01:30` stays open through it.
 
-Unreleased source; before, a span's times on a day the clock changed were counted in hours from midnight, so every edge after the change was off by the size of the change.
+Released in v0.2.0; before, a span's times on a day the clock changed were counted in hours from midnight, so every edge after the change was off by the size of the change.
 
 ## timing
 
-Unreleased source, and the first part of the planned [usage-aware timing](roadmap.md#usage-aware-timing-planned) (U3). Off by default. Turned on, it probes the loop's first route on a schedule, including while the loop runs on it, so that its allowance has usage readings to [project](fallbacks.md#reading-history-and-projection). **It does not change routes yet**: nothing decides from the readings until the step decision (U4) exists. `validate`, `status` and `doctor` say so: `timing: collecting usage readings for the first route (…); it does not change routes yet`.
+v0.2.0, and the first part of the planned [usage-aware timing](roadmap.md#usage-aware-timing-planned) (U3). Off by default. Turned on, it probes the loop's first route on a schedule, including while the loop runs on it, so that its allowance has usage readings to [project](fallbacks.md#reading-history-and-projection). **It does not change routes yet**: nothing decides from the readings until the step decision (U4) exists. `validate`, `status` and `doctor` say so: `timing: collecting usage readings for the first route (…); it does not change routes yet`.
 
 ```yaml
 loop:
@@ -298,11 +300,11 @@ When timing probes run:
 
 | Field | Default | Meaning |
 | --- | --- | --- |
-| `max_reprompts` | `3` | Re-prompt attempts, delivered or not, allowed while the session stays in error, before the loop waits for a person. In unreleased source it is also the cap on [rejected takeover briefs](operations.md#rejected-takeover-briefs) per fallback, and on rejected switch-back briefs. |
+| `max_reprompts` | `3` | Re-prompt attempts, delivered or not, allowed while the session stays in error, before the loop waits for a person. In v0.2.0 it is also the cap on [rejected takeover briefs](operations.md#rejected-takeover-briefs) per fallback, and on rejected switch-back briefs. |
 | `backoff` | `10m` | Minimum gap between re-prompt attempts, and between handoff briefs to a fallback that rejected one. |
 | `failover_on` | `[rate_limit]` | Error classes that may trigger a handoff: `rate_limit`, `auth`, `overloaded`, or `network`. `unknown` is not allowed. |
 | `wait_if_reset_within` | `30m` | When the provider reports a limit reset this soon, wait instead of handing off. |
-| `report_wait_after` | `6h` | Unreleased source. When a limit is being waited out with no handoff possible and its reported reset is further away than this, send one `limit_wait` report for that wait. The loop is not held and no decision changes. There is no off value: leaving it out or setting `0` uses the default. To receive nothing, give `report.events` an explicit list without `limit_wait`. See [a long limit wait](operations.md#a-long-limit-wait-with-no-way-out). |
+| `report_wait_after` | `6h` | v0.2.0. When a limit is being waited out with no handoff possible and its reported reset is further away than this, send one `limit_wait` report for that wait. The loop is not held and no decision changes. There is no off value: leaving it out or setting `0` uses the default. To receive nothing, give `report.events` an explicit list without `limit_wait`. See [a long limit wait](operations.md#a-long-limit-wait-with-no-way-out). |
 
 The re-prompt budget resets when the session is seen idle, or when it is active and the Git fingerprint changes; seeing it active is not enough, because a re-prompt itself makes it active. An `auth` error goes to awaiting user unless a handoff happens, because retrying cannot fix it. For a class listed in `failover_on`, a reported reset time is honored: the loop waits for the reset instead of spending re-prompts when no fallback is available. For other classes the reset time is ignored. `failover_on: []` turns handoff off.
 
@@ -321,7 +323,7 @@ The connectivity check made before an error re-prompt, a handoff, a stall nudge 
 | Field | Default | Meaning |
 | --- | --- | --- |
 | `check` | `on` | `off` disables the check; nothing is gated. Quote the value, since YAML reads bare `on` and `off` as booleans. |
-| `url` | none | An `http` or `https` URL with a host that answers a GET itself when the network is up. Any status counts except a redirect or `511`; redirects are not followed. With neither `url` nor `command`, the `KEEPGOING_NET_PROBE` (a shell command line) and `KEEPGOING_NET_PROBE_URL` variables apply, then `https://api.github.com/zen`. |
+| `url` | none | An `http` or `https` URL with a host that answers a GET itself when the network is up. Any status counts except a redirect or `511`; redirects are not followed. With neither `url` nor `command`, the `LOOPTENDER_NET_PROBE` (a shell command line) and `LOOPTENDER_NET_PROBE_URL` [variables](#environment-variables) apply, then `https://api.github.com/zen`. |
 | `command` | none | An argv whose exit 0 means online. Set this or `url`, not both. |
 | `timeout` | `8s` | Between `1s` and `30s`. It applies to every kind of check. |
 | `verify_after` | `1h` | Once the check has failed this long, ask the provider directly with one probe and attempt a `network_wait` report; then again after twice as long each time, up to a week. If the probe passes or is refused with `rate_limit` or `overloaded`, the check is set aside for that outage. At least `1m`. |
@@ -332,16 +334,53 @@ See [operations.md](operations.md).
 
 | Field | Default |
 | --- | --- |
-| `report.url_env`, `report.secret_env` | `KEEPGOING_WEBHOOK_URL`, `KEEPGOING_WEBHOOK_SECRET` |
+| `report.url_env`, `report.secret_env` | `LOOPTENDER_WEBHOOK_URL`, `LOOPTENDER_WEBHOOK_SECRET`; each is also read under its [earlier name](#environment-variables) |
 | `report.secret_file` | none |
 | `report.source` | the loop name |
 | `report.scheme` | `standard-webhooks` (or `bearer`) |
 | `report.format` | `standard` (or `text`) |
-| `report.events` | `handoff, switch_back, degraded, recovered, await_user, limit_wait, network_wait, child_error, child_recovery, complete, stop, error` (the `complete` event requires v0.1.3 or newer; `limit_wait`, `network_wait`, `child_error` and `child_recovery` are unreleased source; `child_recovery` is sent only by a loop with `bb.children.retry_errored`; `check_gap`, also unreleased, is not a default and must be named) |
+| `report.events` | `handoff, switch_back, degraded, recovered, await_user, limit_wait, network_wait, child_error, child_recovery, complete, stop, error` (the `complete` event requires v0.1.3 or newer; `limit_wait`, `network_wait`, `child_error` and `child_recovery` are v0.2.0; `child_recovery` is sent only by a loop with `bb.children.retry_errored`; `check_gap`, also v0.2.0, is not a default and must be named) |
 | `report.timeout` | `20s` |
 | `yield.busy_command`, `yield.timeout` | required, `10s` |
 | `daemon.interval`, `daemon.control_poll` | `5m`, `2s` |
 | `tick_timeout` | `3m`, or `probe.timeout` plus `90s` when that is longer. A check ends within this plus 90 seconds. Minimum `2m40s`; the connectivity check needs `network.timeout` more than that to have its full time; with fallbacks an explicit value must be at least `probe.timeout` plus `90s`. See [check time budget](operations.md#check-time-budget) |
+
+## Environment variables
+
+Every variable has two names: `LOOPTENDER_X`, and `KEEPGOING_X`, its name before the tool was renamed. The earlier names keep working; nothing needs to change in an existing setup. Releases up to v0.2.0 read only the `KEEPGOING_` names.
+
+Variables you set:
+
+| Variable | Earlier name | What it does |
+|---|---|---|
+| `LOOPTENDER_SESSION_DIR` | `KEEPGOING_SESSION_DIR` | The directory for [session claims](operations.md#one-loop-per-session), in place of the default. |
+| `LOOPTENDER_REGISTRY_DIR` | `KEEPGOING_REGISTRY_DIR` | The [loop registry](local-clients.md) to use when no `--directory` is given. |
+| `LOOPTENDER_ROUTES_FILE` | `KEEPGOING_ROUTES_FILE` | The [standard route list](routes.md), in place of the default. |
+| `LOOPTENDER_PANEL_OPENER` | `KEEPGOING_PANEL_OPENER` | A program that opens the [panel](dock.md)'s page, in place of the default browser. |
+| `LOOPTENDER_NET_PROBE` | `KEEPGOING_NET_PROBE` | A shell command line whose exit 0 means [online](operations.md#network-outages). |
+| `LOOPTENDER_NET_PROBE_URL` | `KEEPGOING_NET_PROBE_URL` | An address that must answer for the network to count as up. |
+| `LOOPTENDER_WEBHOOK_URL` | `KEEPGOING_WEBHOOK_URL` | Where reports are sent, when `report.url_env` is not set. |
+| `LOOPTENDER_WEBHOOK_SECRET` | `KEEPGOING_WEBHOOK_SECRET` | The reports' secret, when `report.secret_env` is not set. |
+
+When only one name is set, it is read. When both are set:
+
+- **The three that name a place** (`SESSION_DIR`, `REGISTRY_DIR`, `ROUTES_FILE`) must agree. Set to different places, they are refused, and the message names both variables: a command that honoured one and a command that honoured the other would work in different places without saying so. Until one is unset, a check acts on nothing (a requested stop still goes ahead), registry commands refuse, and the standard route list reads as unusable (`named_twice`). Two spellings of the same path are the same place.
+- **The others**: the `LOOPTENDER_` name is used, and `doctor` warns that the two differ.
+
+`doctor` also lists the earlier names in use (`environment.earlier_names`). It never prints a variable's value.
+
+The webhook pair is read from the environment first and then from `report.secret_file`, as before; in each, the `LOOPTENDER_` name comes first. This applies only to the default names: a name you give in `report.url_env` or `report.secret_env` is read exactly as written, including a `KEEPGOING_` one.
+
+Variables set for the commands you configure, each under both names with the same value, so a script written for either keeps working:
+
+| Variable | Earlier name | Set for | Value |
+|---|---|---|---|
+| `LOOPTENDER_MODE` | `KEEPGOING_MODE` | `process.resume_command` | `auto` or `queue` |
+| `LOOPTENDER_PROBE_TIER` | `KEEPGOING_PROBE_TIER` | a probe command | `scheduled`, `exact` or `manual` |
+| `LOOPTENDER_PROBE_MODEL` | `KEEPGOING_PROBE_MODEL` | a probe command | the model to check |
+| `LOOPTENDER_CANDIDATE` | `KEEPGOING_CANDIDATE` | a probe command | the fallback's `id` |
+
+**Going back to v0.2.0 or earlier:** those releases read only the `KEEPGOING_` names. Before going back, set any variable you gave only its `LOOPTENDER_` name under its `KEEPGOING_` name as well, and have your resume and probe commands read the `KEEPGOING_` names.
 
 ## Tick output
 
