@@ -319,7 +319,7 @@ const (
 )
 
 // ReportEvents lists the events a report may subscribe to.
-var ReportEvents = []string{"wake", "nudge", "reprompt", "handoff", "degraded", "recovered", "await_user", "complete", "stop", "error", "probe_failed", "switch_back", "network_wait", "limit_wait", "child_error", "test"}
+var ReportEvents = []string{"wake", "nudge", "reprompt", "handoff", "degraded", "recovered", "await_user", "complete", "stop", "error", "probe_failed", "switch_back", "network_wait", "limit_wait", "child_error", "check_gap", "test"}
 
 // DefaultReportEvents are sent when report.events is empty. limit_wait and
 // child_error are among them because, like await_user, they say a person may

@@ -228,6 +228,13 @@ func doctor(e env, args []string, run doctorRun) int {
 	}
 	doctorCheckVersion(&r, st.LastCheck, stateErr == nil)
 	doctorFailedChecks(&r, st, stateErr == nil)
+	if stateErr == nil {
+		if ctl, err := control.Load(cfg.Loop.StateDir); err == nil {
+			if level, text, fix, ok := scheduleDoctorLine(describeSchedule(&cfg.Loop, st, ctl, &d, r.CheckedAt)); ok {
+				r.add("supervisor.schedule", level, text, fix)
+			}
+		}
+	}
 	if _, err := state.LoadLedger(cfg.Loop.StateDir); err != nil {
 		r.add("supervisor.send_record", "error", "The send record sends.json cannot be read, so no check sends anything.", "Restore sends.json from a copy. Deleting it loses the record of sends not yet counted, which may then be repeated, and resets the count against loop.limits.max_sends.")
 	} else {

@@ -290,6 +290,13 @@ func TestNewThreadCandidateConfig(t *testing.T) {
 	}
 }
 
+// check_gap is a known event, and opt-in: not in the default list.
+func TestCheckGapReportIsOptIn(t *testing.T) {
+	if !contains(ReportEvents, "check_gap") || contains(DefaultReportEvents, "check_gap") {
+		t.Fatal("check_gap must be a known event and not a default one")
+	}
+}
+
 // The no-progress flag's thresholds: unset is the default, 0 is off, and
 // both are read as written.
 func TestNoProgressFlagThresholds(t *testing.T) {
