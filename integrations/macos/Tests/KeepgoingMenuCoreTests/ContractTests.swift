@@ -77,5 +77,8 @@ final class ContractTests: XCTestCase {
         XCTAssertTrue(lines.contains("Loop status: unknown")); XCTAssertFalse(lines.contains("fictional-private-provider-output"))
         XCTAssertEqual(Contract.text("one\n\t\u{1b}two"), "onetwo")
         XCTAssertLessThanOrEqual(Contract.text(String(repeating: "a", count: 500)).count, 180)
+        // A cut ends in an ellipsis; a text that fits is whole.
+        XCTAssertEqual(Contract.text(String(repeating: "a", count: 181)), String(repeating: "a", count: 179) + "…")
+        XCTAssertEqual(Contract.text(String(repeating: "a", count: 180)), String(repeating: "a", count: 180))
     }
 }

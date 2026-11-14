@@ -134,25 +134,6 @@ func (w *laneWorld) laneReports() []report.Event {
 	return out
 }
 
-// everythingKept is all keepgoing wrote for the loop, to search for what
-// must never be kept.
-func everythingKept(t *testing.T, w *world) string {
-	t.Helper()
-	var all strings.Builder
-	entries, err := os.ReadDir(w.dir)
-	if err != nil {
-		t.Fatal(err)
-	}
-	for _, e := range entries {
-		if b, err := os.ReadFile(filepath.Join(w.dir, e.Name())); err == nil {
-			all.Write(b)
-		}
-	}
-	reports, _ := json.Marshal(w.reports)
-	all.Write(reports)
-	return all.String()
-}
-
 // Off by default: with children in error after an outage nothing is
 // inspected, retried or remembered. Switching the option off again forgets.
 func TestLaneRecoveryIsOffUnlessConfigured(t *testing.T) {
@@ -218,7 +199,7 @@ func TestLaneMustHaveBeenSeenWorkingFirst(t *testing.T) {
 	// A lane that leaves the listing is forgotten; coming back in error it is new.
 	w.a.obs.ErroredChildren = ids[:1]
 	w.tick(t, t0.Add(42*time.Minute))
-	if _, kept := w.lanes(t).SeenActive[laneHasher(w.lanes(t).Key)(ids[1])]; kept {
+	if _, kept := w.lanes(t).SeenActive[laneName(t, w.world, ids[1])]; kept {
 		t.Fatal("a lane no longer listed is still remembered as seen working")
 	}
 }
@@ -402,7 +383,7 @@ func TestLanesAreDeferredWhenTheCheckIsShortOfTime(t *testing.T) {
 	if res.Lanes.Retried != 5 || res.Lanes.Deferred != 0 || len(next) != 5 {
 		t.Fatalf("%+v %v", res.Lanes, next)
 	}
-	name := laneHasher(w.lanes(t).Key)
+	name := func(id string) string { return laneName(t, w.world, id) }
 	for i, h := range deferred { // the deferred lanes lead the next check, in order
 		if name(next[i]) != h {
 			t.Fatalf("deferred lanes were not taken first: %v then %v", deferred, next)
@@ -718,7 +699,7 @@ func TestLaneRetriesLeaveTheSessionItsSends(t *testing.T) {
 	w.cfg.Loop.Limits.MaxSends = 10
 	w.working(t, t0, ids...)
 	for i := 0; i < 8; i++ {
-		if err := state.ReserveSend(w.dir, 10); err != nil {
+		if _, err := state.Reserve(w.dir, 10, 0, state.SendIntent{At: t0, Action: "wake", Target: state.Primary}); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -957,4 +938,15 @@ func TestLaneReportPutOffIsSentLater(t *testing.T) {
 	if reports := w.laneReports(); len(reports) != 1 || reports[0].Data["givenUp"] != 1 {
 		t.Fatalf("%+v", reports)
 	}
+}
+
+// laneName is a lane's name in the loop's records: its ID hashed with the
+// loop's lanes.key.
+func laneName(t *testing.T, w *world, id string) string {
+	t.Helper()
+	key, err := state.LaneKey(w.dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return state.LaneHash(key, id)
 }

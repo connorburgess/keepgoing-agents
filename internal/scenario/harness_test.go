@@ -24,12 +24,23 @@ import (
 
 	"github.com/connorburgess/keepgoing-agents/internal/adapter/runner"
 	"github.com/connorburgess/keepgoing-agents/internal/report"
+	"github.com/connorburgess/keepgoing-agents/internal/testexec"
 )
 
-// keepgoingBin and standinBin are built once for the whole suite.
-var keepgoingBin, standinBin string
+// keepgoingBin is built once for the whole suite. standinDir holds the
+// stand-ins (bb, claude, codex, example-agent) and a link to git: one directory shared by
+// every scenario, and the whole PATH each scenario's commands see.
+var keepgoingBin, standinDir string
 
 func TestMain(m *testing.M) {
+	// The suite builds the command and its stand-in, so it cannot run from
+	// the test bundle for machines without Go. Say so instead of failing.
+	if _, err := exec.LookPath("go"); err != nil {
+		if _, err := os.Stat(filepath.Join(runtime.GOROOT(), "bin", "go"+exe)); err != nil {
+			fmt.Fprintln(os.Stderr, "scenario suite NOT RUN: it builds the keepgoing command and a stand-in, and the Go toolchain is not available")
+			os.Exit(0)
+		}
+	}
 	dir, err := os.MkdirTemp("", "keepgoing-scenario-build-")
 	if err != nil {
 		fmt.Fprintln(os.Stderr, err)
@@ -39,8 +50,13 @@ func TestMain(m *testing.M) {
 		defer os.RemoveAll(dir)
 		keepgoingBin = os.Getenv("KEEPGOING_TEST_BINARY")
 		if keepgoingBin == "" {
-			keepgoingBin = filepath.Join(dir, "keepgoing"+exe)
-			if err := goBuild(keepgoingBin, "../../cmd/keepgoing"); err != nil {
+			// Built beside the stand-ins but not among them: the command
+			// under test is never on a scenario's PATH.
+			built, err := testexec.NewDir(filepath.Join(dir, "built"))
+			if err == nil {
+				keepgoingBin, err = built.Build("keepgoing", "../../cmd/keepgoing", nil, "version")
+			}
+			if err != nil {
 				fmt.Fprintln(os.Stderr, err)
 				return 2
 			}
@@ -48,8 +64,7 @@ func TestMain(m *testing.M) {
 			fmt.Fprintln(os.Stderr, "KEEPGOING_TEST_BINARY must be an absolute path")
 			return 2
 		}
-		standinBin = filepath.Join(dir, "standin"+exe)
-		if err := goBuild(standinBin, "./standin"); err != nil {
+		if err := installStandins(filepath.Join(dir, "bin"), filepath.Join(dir, "warm")); err != nil {
 			fmt.Fprintln(os.Stderr, err)
 			return 2
 		}
@@ -60,16 +75,41 @@ func TestMain(m *testing.M) {
 
 var exe = map[bool]string{true: ".exe"}[runtime.GOOS == "windows"]
 
-func goBuild(out, pkg string) error {
-	gobin, err := exec.LookPath("go")
+// installStandins puts everything the scenarios run in one testexec.Dir,
+// shared by every scenario: the stand-in under each name it plays, and a
+// link to git. Each is run once here, and so is the keepgoing binary, so no
+// scenario is the first to run a file. When every scenario had its own copy
+// of the stand-ins, macOS refused about one launch in a few thousand on a
+// busy machine and killed the process; see "Executables that tests run" in
+// docs/testing.md.
+func installStandins(bin, scratch string) error {
+	if err := os.MkdirAll(scratch, 0o700); err != nil {
+		return err
+	}
+	d, err := testexec.NewDir(bin)
 	if err != nil {
-		gobin = filepath.Join(runtime.GOROOT(), "bin", "go"+exe)
+		return err
 	}
-	cmd := exec.Command(gobin, "build", "-o", out, pkg)
-	if b, err := cmd.CombinedOutput(); err != nil {
-		return fmt.Errorf("go build %s: %v\n%s", pkg, err, b)
+	env := []string{"SCENARIO_WORLD=" + scratch}
+	if _, err := d.Build("bb", "./standin", env, "thread", "show", "thr_example_warm", "--json"); err != nil {
+		return err
 	}
-	return nil
+	for name, args := range map[string][]string{
+		"claude":        {"-p", "warm"},
+		"codex":         {"app-server"},
+		"example-agent": {"warm"},
+	} {
+		if _, err := d.Alias("bb", name, env, args...); err != nil {
+			return err
+		}
+	}
+	// Only git comes from the host, so a real agent CLI that happens to sit
+	// beside it on the host PATH can never be found.
+	if err := d.Host("git"); err != nil {
+		return err
+	}
+	standinDir = d.Path
+	return testexec.RunOnce(keepgoingBin, nil, "version")
 }
 
 // Thread IDs in every scenario. Fictional.
@@ -97,13 +137,20 @@ type World struct {
 	Config  string
 	Now     time.Time
 	// AllowHostKills lets a scenario kill a stand-in on purpose. Otherwise a
-	// stand-in the host killed fails the scenario at once, as its own failure.
+	// stand-in that did not end on its own fails the step as an environment
+	// failure (standinTrouble).
 	AllowHostKills bool
 	Net            *Connectivity
 	Hooks          *Receiver
 	Threads        map[string]*Thread
+	// otherLoops is set when another loop sends to the same stand-ins, so
+	// this loop's runs do not account for every send.
+	otherLoops bool
 	// Headless is the CLI of a headless loop, or "" for a BB loop.
 	Headless string
+	// sendsUnrecordable is set when the scenario makes keepgoing unable to
+	// write its records, so its run history cannot account for every send.
+	sendsUnrecordable bool
 
 	bin, world, home string
 	env              []string
@@ -121,17 +168,13 @@ func NewWorld(t *testing.T, start time.Time) *World {
 		t.Fatal(err)
 	}
 	w := &World{t: t, Name: t.Name(), Root: root, Now: start.UTC(), Threads: map[string]*Thread{},
-		bin: filepath.Join(root, "bin"), world: filepath.Join(root, "world"), home: filepath.Join(root, "home"),
+		bin: standinDir, world: filepath.Join(root, "world"), home: filepath.Join(root, "home"),
 		Project: filepath.Join(root, "project")}
-	for _, d := range []string{w.bin, w.world, w.home, w.Project, filepath.Join(root, "tmp")} {
+	for _, d := range []string{w.world, w.home, w.Project, filepath.Join(root, "tmp")} {
 		if err := os.MkdirAll(d, 0o700); err != nil {
 			t.Fatal(err)
 		}
 	}
-	w.install("bb")
-	w.install("claude")
-	w.install("codex")
-	w.linkGit()
 	w.Net = newConnectivity(t)
 	w.Net.world = w.world
 	w.Hooks = newReceiver(t)
@@ -163,33 +206,6 @@ func NewWorld(t *testing.T, start time.Time) *World {
 		}
 	})
 	return w
-}
-
-func (w *World) install(name string) {
-	w.t.Helper()
-	dst := filepath.Join(w.bin, name+exe)
-	if err := os.Link(standinBin, dst); err != nil {
-		b, err := os.ReadFile(standinBin)
-		if err != nil {
-			w.t.Fatal(err)
-		}
-		if err := os.WriteFile(dst, b, 0o700); err != nil {
-			w.t.Fatal(err)
-		}
-	}
-}
-
-// linkGit exposes only git from the host, so a real agent CLI that happens to
-// sit beside it on the host PATH can never be found.
-func (w *World) linkGit() {
-	w.t.Helper()
-	git, err := exec.LookPath("git")
-	if err != nil {
-		w.t.Fatal("scenario tests need git: ", err)
-	}
-	if err := os.Symlink(git, filepath.Join(w.bin, "git"+exe)); err != nil {
-		w.t.Fatal(err)
-	}
 }
 
 func (w *World) git(args ...string) {
@@ -430,6 +446,35 @@ func (w *World) HeadlessMode(mode string) {
 	}
 }
 
+// standinTrouble says whether a stand-in process was ended early during the
+// last command: it reports one that started and did not end on its own, and a
+// command whose error output says a process it ran was killed. On a loaded
+// machine the operating system, or another program signalling a stale process
+// ID, has killed a stand-in about once in a few thousand runs. A check then
+// records that it could not observe, which is correct, and the scenario's
+// expectation fails for a reason that has nothing to do with the product.
+func standinTrouble(world, stderr string) string {
+	size := func(name string) int64 {
+		info, err := os.Stat(filepath.Join(world, name))
+		if err != nil {
+			return 0
+		}
+		return info.Size()
+	}
+	started, ended := size("standin.started"), size("standin.ended")
+	// A stand-in a test holds at the show gate is still running on purpose.
+	held := size("standin.held") - size("standin.released")
+	switch {
+	case started-ended != held && held > 0:
+		return fmt.Sprintf("%d stand-in processes started and %d ended on their own, with %d held at the show gate", started, ended, held)
+	case started-ended != held:
+		return fmt.Sprintf("%d stand-in processes started and %d ended on their own", started, ended)
+	case strings.Contains(stderr, "signal: killed"):
+		return "a process the command ran was killed: " + strings.TrimSpace(stderr)
+	}
+	return ""
+}
+
 // Step is everything observable after one command: what was sent to the
 // agents, what holds exist, what was reported, and what status, timeline and
 // runs say.
@@ -583,6 +628,10 @@ func (w *World) record(label string, r Result, line map[string]any) *Step {
 	// A headless turn started by this command runs detached; let it end so
 	// this step records what it sent and the next one sees its result.
 	w.settle()
+	if trouble := standinTrouble(w.world, r.Stderr); trouble != "" && !w.AllowHostKills {
+		w.t.Fatalf("ENVIRONMENT FAILURE in %s at %s (%s): %s. Nothing in keepgoing or in this harness ends a stand-in early, so this step's result says nothing about the product. Run the scenario again; if it keeps happening, look for what is killing processes on this machine.",
+			w.Name, w.stamp(), label, trouble)
+	}
 	s := &Step{Label: label, At: w.Now, Result: r, Tick: line}
 	var sends []Send
 	readLines(w.t, filepath.Join(w.world, "sends.jsonl"), &sends)
@@ -603,12 +652,6 @@ func (w *World) record(label string, r Result, line map[string]any) *Step {
 	s.NetChecks = w.Net.take()
 	w.read(s)
 	w.Journal = append(w.Journal, s)
-	if killed := hostKilled(s); killed != "" && !w.AllowHostKills {
-		// Not an assertion about keepgoing: the machine killed a stand-in
-		// process, which changes what the check could read. Say so, instead
-		// of failing later on whatever product assertion that upsets.
-		w.t.Fatalf("HOST KILLED A STAND-IN at %s (%s): %s\nThis is the machine running the tests (overloaded or out of memory), not keepgoing's behaviour. Run the scenario again on a quieter machine.", s.At.Format(time.RFC3339), label, killed)
-	}
 	// The stand-in agents respond to what they were sent, so the next step
 	// observes the consequence.
 	for _, m := range s.Sent {
@@ -681,7 +724,7 @@ func (w *World) invariants(s *Step) {
 	}
 	// Every delivery is recorded as an attempt. An attempt that failed
 	// before anything arrived (a refused creation) has no delivery.
-	if got := s.Runs.Attempts(); got < w.sendsTotal {
+	if got := s.Runs.Attempts(); got < w.sendsTotal && !w.sendsUnrecordable && !w.otherLoops {
 		w.Failf(s, "runs records %d send attempts; the agents received %d", got, w.sendsTotal)
 	}
 	for _, c := range s.Calls {
@@ -708,10 +751,9 @@ func (w *World) Check(s *Step, name string, err error) {
 	}
 }
 
-// hostKilled returns what a step says about a provider command the host
-// killed, or "". keepgoing reports it in two places: a warning on a check
-// that went on with the read unverified, and the error of a check that
-// could not observe its target at all.
+// hostKilled returns what keepgoing said about a provider command the host
+// killed, or "": a warning on a check that went on with the read unverified,
+// or the error of a check that could not observe its target at all.
 func hostKilled(s *Step) string {
 	if warnings, _ := s.Tick["warnings"].([]any); len(warnings) > 0 {
 		for _, w := range warnings {
@@ -733,10 +775,6 @@ const (
 	// WaitChildRecovery is lane recovery, which retries a direct child's
 	// failed turn. It is opt-in, so a loop without it keeps these failures.
 	WaitChildRecovery Waiting = "lane recovery is opt-in and off here (bb.children.retry_errored)"
-	// WaitResumeEpisode is the reliability lane's decision that an explicit
-	// resume starts a new error episode. Until then resume keeps the spent
-	// re-prompts, so a loop held on an error is held again at once.
-	WaitResumeEpisode Waiting = "resume starts a new error episode, reliability lane"
 )
 
 // Known records an assertion that fails today because of open work. It never
@@ -1022,7 +1060,11 @@ func (c *Connectivity) take() int { return int(c.hits.Swap(0)) }
 // Receiver is the fake webhook receiver. It accepts only correctly signed
 // reports.
 type Receiver struct {
-	URL    string
+	URL string
+	// onReport, when set, runs as each report arrives, before it is
+	// answered; fault injection uses it to kill the sender mid-delivery.
+	onReport func(typ string)
+
 	mu     sync.Mutex
 	events []Report
 	bad    int
@@ -1052,6 +1094,9 @@ func newReceiver(t *testing.T) *Receiver {
 		json.Unmarshal(body, &v)
 		typ, _ := v["type"].(string)
 		r.events = append(r.events, Report{Type: typ, Body: v})
+		if r.onReport != nil {
+			r.onReport(typ)
+		}
 		rw.WriteHeader(http.StatusAccepted)
 	}))
 	t.Cleanup(srv.Close)
@@ -1064,6 +1109,14 @@ func newReceiver(t *testing.T) *Receiver {
 	})
 	r.URL = srv.URL
 	return r
+}
+
+// OnReport sets a function run, under the receiver's lock, as each report
+// arrives and before it is answered.
+func (r *Receiver) OnReport(f func(typ string)) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.onReport = f
 }
 
 // Events returns every report delivered so far.

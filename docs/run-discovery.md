@@ -20,7 +20,7 @@ A run is one opened episode of supervision for a loop. It can span many checks, 
 | --- | --- | --- |
 | External routine and invocation (optional) | Source, routine and optional invocation tokens supplied by a structured integration | Names the scheduler entry and one trigger. Never derived from a timestamp. An invocation ID is a reference on a run, not the run's ID. |
 | Registered loop reference | Existing registry `loop_` plus 32 hex digits | A removable reference to a config/runtime binding. Re-registering creates a new one. It maps to a durable loop only through an explicit, caller-verified record. |
-| Durable loop | `supervision_` plus 32 hex digits | Enrollment identity that owns runs. Distinct from the registry reference, loop name and runtime path. Nothing allocates it yet. |
+| Durable loop | `supervision_` plus 32 hex digits | Enrollment identity that owns runs. Distinct from the registry reference, loop name and runtime path. Allocated by the first graph write for a state directory; see [where identity lives](#where-identity-lives). |
 | Goal and revision | Existing `goal_` ID and revision 1–128 | A run records each revision in effect; an attempt carries a revision only when it was composed into that prompt. |
 | Execution run | `run_` plus 32 hex digits | One supervision episode. Never a daemon process, PID, poll, scheduled tick, provider turn or wake. |
 | Attempt | `attempt_` plus 32 hex digits | One adapter-send intent in one run: a wake, re-prompt, handoff or switch-back, or a queued nudge that may not start a provider turn. A daemon process is not an identity. |
@@ -86,7 +86,7 @@ A registry reference maps to a durable loop through its entry's runtime director
 | Send attempt, `intent` | Before every automatic adapter send | `adapter_call` |
 | Attempt outcome `adapter_returned` or `adapter_error` | After that adapter call returns | `adapter_call` |
 | Run → goal revision | A check finds a valid `goal.json` while the run is open | `goal_record` |
-| Run → chat/session | A check's target is a BB thread (its configured thread ID) or a headless Claude, Codex or Cursor runner with a saved UUID-shaped resume ID | `configured_target` or `runner_session_file` |
+| Run → chat/session | A check's target is a BB thread (its configured thread ID, or the thread keepgoing created for a handoff to a `bb.new_thread` candidate) or a headless Claude, Codex or Cursor runner with a saved UUID-shaped resume ID | `configured_target`, `created_thread` or `runner_session_file` |
 | Run's opening invocation | An accepted `enable` or `resume` that opens a run carries `--routine` | the run's own source |
 | Run → routine invocation (trigger) | `tick`, `enable` or `resume` carries `--routine` while a run is already open | `external` |
 | Registry reference | `registry add` finds an existing graph | `registry_add` |
@@ -105,6 +105,8 @@ keepgoing tick   -c loop.yaml --routine example-scheduler/nightly/2026-11-13
 keepgoing enable -c loop.yaml --routine example-scheduler/nightly/2026-11-13
 keepgoing resume -c loop.yaml --routine example-scheduler/nightly/2026-11-14
 ```
+
+A BB script automation that runs `keepgoing tick` should pass `--routine bb-automation/<automation id>`: `status`, `doctor`, the panel and the `check_gap` report then name that automation when checks stop. The check also records the identity it was started with in `state.json` (`startedBy`), replaced at every check.
 
 The value is `source/routine` or `source/routine/invocation`. Each part is 1–128 letters, digits and `. _ : @ -`, starting with a letter or digit. A timestamp with `+00:00`, a name with a space or an ID containing `/` does not fit; pass an identifier that does. `start`, `daemon` and the other commands do not take the flag.
 
@@ -368,7 +370,7 @@ Restart must retain the appropriate run reference while recording a new process/
 | Saved headless session ID | A locally recorded resume reference when valid | Provider existence, resumability, a UI URL or successful execution |
 | Last automatic prompt provenance | The latest returned send's target, goal revision and outcome | Pre-send intent, complete attempt history or confirmed provider delivery |
 | Incident journal and `runs.jsonl` | Structured diagnostic observations and events | A durable run-episode ID merely because the file is called `runs.jsonl` |
-| Read-only native menu preview | A view of registered status | Current-run/chat traversal or open-thread support |
+| Native menu preview | A view of registered status, with pause, stop and resume after a confirmation | Current-run/chat traversal or open-thread support |
 | `keepgoing runs` (unreleased) | Recorded runs, sends and chat/session references by exact ID; the child conversations and owner a loop is waiting on | Live session state, an openable link, who holds a lock, or which chat a send reached when its alias named several |
 
 D4–D6 must preserve these evidence boundaries. Local registration remains explicit; graph records live outside repositories. Separate identifiers and safe display labels from private task text, paths, credentials and URLs containing sensitive components. Private display is opt-in, and graph relationships or provider links must not silently extend webhook/report payloads or introduce central analytics. A future client uses the same versioned resolver; it must not infer more certainty than CLI output provides.

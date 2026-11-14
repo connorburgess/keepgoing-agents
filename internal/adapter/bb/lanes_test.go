@@ -242,7 +242,7 @@ func TestDecodedFieldsAreAnAllowlist(t *testing.T) {
 		diagnostic error errorInfo hashRefs httpStatusCode id initiator interaction item itemId kind lastEventAt lastSeq
 		observedAt ok outcomes parentThreadId pending providerCode providerThread providerThreadId queuedMessageCount
 		rateLimits resetsAt resetsAtMs retries retryOfRequestId retrySchema scannedAt seq status systemMessageKind
-		systemMessageSubject thread threadId turnSeq turnStartedMs type willRetry windows childOutcomeSeq blocked key lanes
+		systemMessageSubject thread threadId turnSeq turnStartedMs type willRetry windows childOutcomeSeq blocked key lanes answeringRequest
 		evidence at class retryKnown activeBackgroundAgentCount`)
 	want := map[string]bool{}
 	for _, tag := range allowed {

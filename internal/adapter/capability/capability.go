@@ -68,6 +68,9 @@ type Adapter struct {
 	// conversation) and ask its provider to retry that lane's failed turn by
 	// reference (adapter.LaneRecoverer).
 	LaneRecoverer bool
+	// LaneStopper says the adapter can find and stop the conversation's
+	// lanes for keepgoing stop --lanes (adapter.LaneStopper).
+	LaneStopper bool
 	// SessionEvidence says a check records a chat/session reference for it.
 	SessionEvidence bool
 }
@@ -82,7 +85,7 @@ type Behaviour struct {
 
 // Adapters in column order.
 var Adapters = []Adapter{
-	{ID: "bb", Title: "BB thread", Registered: true, Activator: true, WakePoller: true, TurnRetrier: true, LaneRecoverer: true, SessionEvidence: true,
+	{ID: "bb", Title: "BB thread", Registered: true, Activator: true, WakePoller: true, TurnRetrier: true, LaneRecoverer: true, LaneStopper: true, SessionEvidence: true,
 		Files: []string{"internal/adapter/bb/bb.go", "internal/adapter/bb/children.go", "internal/adapter/bb/cursor.go", "internal/adapter/bb/lanes.go", "internal/adapter/bb/wake.go"},
 		Inputs: []string{"ActiveChildIDs", "ActiveChildren", "AwaitingChildren", "AwaitingInput", "Background", "ChildrenUnverified", "ErrorClass", "ErroredChildren", "Evidence",
 			"Gone", "HealthyChildren", "Queued", "ResetsAt", "RetryDeclined", "RetryExpired", "RetryKnown", "RetryUnverified", "Retrying", "State"}},
@@ -101,6 +104,11 @@ var Adapters = []Adapter{
 	{ID: "process", Title: "Generic process", Registered: true,
 		Files:  []string{"internal/adapter/process/process.go"},
 		Inputs: []string{"AwaitingInput", "Background", "ErrorClass", "Evidence", "Gone", "Queued", "State"}},
+	// An agent defined in configuration. Its Inputs are the most a
+	// definition can produce; a definition that declares less produces less.
+	{ID: "custom", Title: "Agent defined in configuration", Registered: true,
+		Files:  []string{"internal/adapter/runner/definition.go", "internal/adapter/runner/spec.go"},
+		Inputs: []string{"DeferredInteraction", "ErrorClass", "Evidence", "Gone", "ResetsAt", "State"}},
 }
 
 // ObservationFields is every field of decide.Observation. A new field must be
@@ -160,7 +168,7 @@ var Matrix = []Behaviour{
 			"bb":      {Yes, Live, "Thread status, log events and the interaction list.", []Ref{d(providers), t(bbTest, "TestObserveIdle")}},
 			"claude":  {Yes, Fixture, "The turn's process state, exit code and result object.", []Ref{t(runnerTest, "TestClaudeTurnLifecycle")}},
 			"codex":   {Yes, Fixture, "The turn's process state, exit code and event stream.", []Ref{t(runnerTest, "TestCodexTurn")}},
-			"cursor":  {Yes, Fixture, "The turn's process state, exit code and bounded event stream.", []Ref{t(cursorTest, "TestCursorLifecycleOnThisPlatform")}},
+			"cursor":  {Yes, Live, "The turn's process state, exit code and bounded event stream. Live once, on one CLI version on macOS.", []Ref{d("docs/cursor.md"), t(cursorTest, "TestCursorLifecycleOnThisPlatform")}},
 			"process": {Yes, Fixture, "The JSON the status command prints.", []Ref{t(processTest, "TestObserveJSON")}},
 		})},
 	{ID: "error_classes", Title: "Structured error classes", What: "Classify a failure as rate_limit, auth, overloaded or network from structured fields. Anything else is unknown, and unknown never fails over.",
@@ -168,7 +176,7 @@ var Matrix = []Behaviour{
 			"bb":      {Yes, Live, "From real provider error and rate-limit events.", []Ref{d(providers), t(bbTest, "TestObserveStructuredRateLimit")}},
 			"claude":  {Yes, Fixture, "From api_error_status, terminal_reason and subtype. A real usage-limit result has not been captured.", []Ref{t(runnerTest, "TestClaudeErrorClassification")}},
 			"codex":   {Yes, Live, "Live for a usage limit, read from the app-server's structured snapshot because the event stream carries it only as prose. Other classes are fixture-only.", []Ref{d(providers), t(runnerTest, "TestCodexTurnLimitClassifiedFromAppServerNotProse")}},
-			"cursor":  {Missing, Fixture, "Every failure is unknown: no structured error contract is mapped.", []Ref{t(cursorTest, "TestCursorFailuresRemainUnknown")}},
+			"cursor":  {Missing, Live, "Every failure is unknown: the CLI has no structured error contract. A live usage limit and an untrusted directory were both an exit code and stderr text. Connection records add a diagnostic category only.", []Ref{d("docs/cursor.md"), t(cursorTest, "TestCursorFailuresRemainUnknown"), t(cursorTest, "TestCursorConnectionRecordsAreDiagnosticOnly")}},
 			"process": {Yes, Fixture, "From errorClass in the status JSON or the exit_codes map.", []Ref{t(processTest, "TestObserveExitCodeMap")}},
 		})},
 	{ID: "retry_expiry", Title: "Stale retry-notice expiry", What: "Stop honouring a provider's \"retrying\" notice when nothing fresh stands behind it.",
@@ -181,7 +189,7 @@ var Matrix = []Behaviour{
 			"bb":      {Yes, Fixture, fakeDecision + " A real retry exhaustion and explicit resume were observed once.", []Ref{t(superTest, "TestErrorRepromptsThenAwaitsUser"), d(providers)}},
 			"claude":  {Yes, Fixture, "Run end to end with a stand-in CLI.", []Ref{t(offlineTest, "TestScenarioHeadlessOutage")}},
 			"codex":   {Yes, Fixture, "Run end to end with a stand-in CLI.", []Ref{t(offlineTest, "TestScenarioHeadlessOutage")}},
-			"cursor":  {Yes, Fixture, "A failed turn is re-prompted in its verified session.", []Ref{t("internal/adapter/runner/cursor_recovery_test.go", "TestCursorRecoversInitializedSessionAfterWrapperCrash")}},
+			"cursor":  {Yes, Live, "A failed turn is re-prompted in its verified session. Live once after a usage-limit failure and after a stop; connection loss is fixture-only.", []Ref{d("docs/cursor.md"), t("internal/adapter/runner/cursor_recovery_test.go", "TestCursorRecoversInitializedSessionAfterWrapperCrash"), t(cursorTest, "TestCursorConnectionLossKeepsSessionAndStaysUnknown")}},
 			"process": {Yes, Fixture, fakeDecision, []Ref{t(superTest, "TestErrorRepromptsThenAwaitsUser")}},
 		})},
 	{ID: "session_resume", Title: "Recover a failed turn: exact session resume", What: "Continue the same conversation by its saved identifier, never \"the most recent\".",
@@ -189,7 +197,7 @@ var Matrix = []Behaviour{
 			"bb":      {NA, None, "The configured thread is the conversation; every message goes to that thread ID.", nil},
 			"claude":  {Yes, Fixture, "--resume with the saved session ID. If no turn ever reported one, the next turn starts a new session.", []Ref{t(runnerTest, "TestClaudeTurnLifecycle"), t(offlineTest, "TestScenarioHeadlessOutage")}},
 			"codex":   {Yes, Fixture, "exec resume with the saved thread ID. If no turn ever reported one, the next turn starts a new session.", []Ref{t(runnerTest, "TestCodexResumeArgs"), t(offlineTest, "TestScenarioHeadlessOutage")}},
-			"cursor":  {Yes, Fixture, "--resume with the saved session ID, and a refusal to start a new conversation when the previous turn's identity is unverified.", []Ref{t(cursorTest, "TestCursorSessionSafety")}},
+			"cursor":  {Yes, Live, "--resume with the saved session ID, live once across three turns. A new conversation is refused when the previous turn's identity is unverified, unless that turn exited 1 having written nothing on a CLI version whose start order is verified.", []Ref{d("docs/cursor.md"), t(cursorTest, "TestCursorSessionSafety"), t(cursorTest, "TestCursorFreshStartNeedsExactShapeAndVerifiedVersion")}},
 			"process": {NA, None, "The resume command owns session identity.", nil},
 		})},
 	{ID: "turn_retry", Title: "Recover a failed turn: retry the turn", What: "Ask the provider to retry the failed turn itself, instead of sending a new prompt.",
@@ -278,17 +286,65 @@ var Matrix = []Behaviour{
 			"bb":      {Yes, Live, "bb thread stop on the configured thread.", []Ref{d(providers), t(bbTest, "TestSendStopActivate")}},
 			"claude":  {Yes, Fixture, "The live turn wrapper stops its own process group on a private per-turn request. A saved PID never authorizes a signal.", []Ref{t(runnerTest, "TestStopKillsTurnAndCrashIsUnknown"), d("docs/testing.md#lifecycle-and-platform-review")}},
 			"codex":   {Yes, Fixture, "The same wrapper as Claude Code.", []Ref{t(runnerTest, "TestStopKillsTurnAndCrashIsUnknown")}},
-			"cursor":  {Yes, Fixture, "The same wrapper.", []Ref{t(cursorTest, "TestCursorOwnedStopOnThisPlatform")}},
+			"cursor":  {Yes, Live, "The same wrapper. Live once on macOS; a helper process Cursor leaves running per project is not managed.", []Ref{d("docs/cursor.md"), t(cursorTest, "TestCursorOwnedStopOnThisPlatform")}},
 			"process": {Partial, Fixture, "Only if a stop command is configured; keepgoing owns no process to cancel.", []Ref{t(processTest, "TestStopUnsupported")}},
 		})},
+	{ID: "stop_lanes", Title: "Stop the lanes too", What: "On a person's request (keepgoing stop --lanes), stop the conversations the supervised one started, and theirs, along with it.",
+		Cells: merge(map[string]Cell{
+			"bb": {Yes, Fixture, "Verified descendants by parentThreadId, 3 levels and 50 threads at most; running ones and those in error with a retry queued are stopped with `bb thread stop`, a queued provider retry is cancelled with `bb provider-retry cancel`, only with `--drop-queued`, the messages queued in a lane that has not started or is idle are deleted with `bb thread queue delete`, and another loop's lane is left to that loop. Each stop is recorded first. Run against a stand-in bb only.",
+				[]Ref{t("internal/supervise/lanestop_test.go", "TestStopWithLanesStopsTheRunningLanesOnce"), t("internal/supervise/lanestop_test.go", "TestLaneStopRecoversAfterACheckKilledMidStop"), t("internal/scenario/stop_lanes_test.go", "TestScenarioStopLanesNow"), d("docs/operations.md#stopping-the-lanes-too")}},
+		}, same(Cell{NA, None, "Not applicable: a headless turn has no child conversations outside its own process. The stop goes ahead and its report says lanes do not apply.", nil}, headless...),
+			same(Cell{NA, None, "Not applicable: no child identities are reported. The stop goes ahead and its report says lanes do not apply.", nil}, "process"))},
 	{ID: "permissions", Title: "Permission prompts", What: "Notice that the agent is waiting for a person to approve something, hold, and report it once.",
 		Cells: merge(map[string]Cell{
 			"bb":      {Yes, Live, "From the interaction list; shapes come from real lifecycle events.", []Ref{d(providers), t(bbTest, "TestPendingInteractionMeansWaitingOnAPerson")}},
 			"claude":  {Missing, None, "permission_mode is passed to the CLI. A headless turn cannot wait for approval and reports no typed permission state.", []Ref{d("docs/configuration.md")}},
 			"codex":   {Missing, None, "The sandbox setting is passed to the CLI. No typed permission state is read.", []Ref{d("docs/configuration.md")}},
-			"cursor":  {Missing, None, "No force or approval flag is added, and print mode has no typed permission-wait signal.", []Ref{d("docs/cursor.md")}},
+			"cursor":  {Missing, None, "No force or approval flag is added, and print mode has no typed permission-wait signal. A rejection has not been observed live.", []Ref{d("docs/cursor.md")}},
 			"process": {Yes, Fixture, "awaitingInput in the status JSON.", []Ref{t(processTest, "TestObserveAwaitingInput")}},
 		}, map[string]Cell{"antigravity": {Missing, Fixture, "An internal ACP gate cancels permission requests and saves a hold, and an unregistered runner reports that hold once its worker has exited, with stand-in fixtures only. No adapter is registered.", []Ref{d("docs/antigravity.md")}}})},
+}
+
+const (
+	definedTest     = "internal/adapter/runner/definition_unix_test.go"
+	definedReadTest = "internal/adapter/runner/definition_test.go"
+	definedScenario = "internal/scenario/defined_agent_test.go"
+	definedDoc      = "docs/configuration.md#an-agent-defined-in-configuration"
+)
+
+// customCells is the column for an agent defined in configuration. What it
+// can do depends on what its definition declares, so most cells are partial:
+// the note says which declaration the behaviour needs. Every fixture uses a
+// stand-in; no real agent has been run from a definition.
+var customCells = map[string]Cell{
+	"observe":          {Yes, Fixture, "The turn's process state, its exit code and the JSON fields the definition names. Output over the definition's limit is not read.", []Ref{t(definedTest, "TestDefinedAgentTurnLifecycle"), t(definedTest, "TestDefinedAgentOutputBound")}},
+	"error_classes":    {Partial, Fixture, "With structured_errors: the codes, HTTP status field and exit codes the definition maps. Everything else, and every failure without that declaration, is unknown.", []Ref{t(definedTest, "TestDefinedAgentErrorClassification"), t(definedReadTest, "TestDefinitionReadings")}},
+	"retry_expiry":     {NA, None, "A turn is one process that is running, finished or gone, as for the built-in headless agents.", nil},
+	"reprompt":         {Yes, Fixture, "Run end to end with a stand-in agent.", []Ref{t(definedScenario, "TestDefinedAgentJourney")}},
+	"session_resume":   {Partial, Fixture, "With exact_resume: the resume command with the saved session identifier, read from a declared field or file. A saved identifier that is no longer usable holds the loop for a person; no new conversation is started in its place. Without exact_resume every turn starts a new session.", []Ref{t(definedTest, "TestDefinedAgentTurnLifecycle"), t(definedTest, "TestDefinedAgentLostSessionHoldsInsteadOfStartingAnother"), t(definedReadTest, "TestDefinitionSessionFile")}},
+	"turn_retry":       {Missing, None, "A re-prompt is always a new turn.", nil},
+	"network":          {Yes, Fixture, "As for the built-in headless agents. The turn that ran into the outage is spent; nothing else is sent and no hold is raised until the network returns. Run end to end with a stand-in agent.", []Ref{t(definedScenario, "TestDefinedAgentOutage"), d(networkDoc)}},
+	"child_awareness":  {NA, None, "A definition cannot declare work that outlives a turn, so none is assumed.", nil},
+	"child_notice":     {NA, None, "No child conversations.", nil},
+	"handoff_source":   {Yes, Fixture, fakeDecision, []Ref{t(superTest, "TestHandoffToFirstCandidatePassingExactProbe")}},
+	"handoff_target":   {Partial, Fixture, "With a probe in the definition, or a command probe. Guided setup does not create it; the candidate is written by hand.", []Ref{t("internal/config/custom_test.go", "TestCustomAgentDefinition"), d(definedDoc)}},
+	"switch_back":      {Yes, Fixture, fakeDecision, []Ref{t(superTest, "TestSwitchBackAfterThePrimaryResets")}},
+	"probes":           {Partial, Fixture, "With a probe in the definition: one small request with the prompt passed as a turn's is, judged by the finished and error rules.", []Ref{t("internal/probe/custom_test.go", "TestCustomProbe")}},
+	"quota":            {Missing, None, "No usage reading is taken. A limit lookup, when defined, only says whether an unclassified failure is a usage limit and when it resets.", []Ref{t(definedTest, "TestDefinedAgentLimitLookup")}},
+	"new_conversation": {Yes, Fixture, "A candidate has no saved session, so the handoff brief starts one.", []Ref{t(definedTest, "TestDefinedAgentTurnLifecycle")}},
+	"run_graph":        {Partial, Fixture, "Runs and sends are recorded. The session identifier is the agent's own shape and is not shown.", []Ref{t(definedReadTest, "TestDefinitionBecomesASpecification")}},
+	"stop":             {Partial, Fixture, "With can_be_stopped: the same wrapper as the built-in headless agents. Without it a stop is refused and nothing is signalled.", []Ref{t(definedTest, "TestDefinedAgentStop")}},
+	"child_recovery":   {Missing, None, "A defined agent reports no child conversations to recover.", nil},
+	"stop_lanes":       {NA, None, "Not applicable: a defined agent reports no child conversations. The stop goes ahead and its report says lanes do not apply.", nil},
+	"permissions":      {Partial, Fixture, "With structured_waiting: a turn that ends on the declared waiting rule raises one awaiting-user hold. Nothing is approved or answered.", []Ref{t(definedTest, "TestDefinedAgentWaitingRaisesOneHold")}},
+}
+
+func init() {
+	for i := range Matrix {
+		if c, ok := customCells[Matrix[i].ID]; ok {
+			Matrix[i].Cells["custom"] = c
+		}
+	}
 }
 
 // Render returns the generated part of docs/adapters.md.

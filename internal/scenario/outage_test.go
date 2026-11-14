@@ -206,10 +206,8 @@ func runOutage(t *testing.T, o outage) {
 	var intervened error
 	if primary.Status() == "error" {
 		intervened = fmt.Errorf("the session was still failed %s after the network returned; a person had to retry it in BB and resume the loop", w.Now.Sub(drop.Add(o.length)))
-		// `resume` alone is not enough on main: it does not refund the
-		// re-prompts (docs/operations.md, "re-prompt caps"), so the next
-		// check holds again while the session is in error. The person
-		// retries the turn in BB first, outside keepgoing.
+		// The person retries the turn in BB, outside keepgoing, and resumes
+		// the loop.
 		w.Advance(time.Minute)
 		primary.StartTurn()
 		s = w.Control("resume")

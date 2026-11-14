@@ -2,10 +2,6 @@ package supervise
 
 import (
 	"context"
-	"crypto/hmac"
-	"crypto/rand"
-	"crypto/sha256"
-	"encoding/hex"
 	"errors"
 	"fmt"
 	"sort"
@@ -103,17 +99,14 @@ func (t *tick) recoverLanes(a adapter.Adapter, agent config.Agent, obs decide.Ob
 	if !canRecover || obs.Gone {
 		return
 	}
-	rec := copyLanes(t.st.Lanes)
-	if rec.Key == "" {
-		key := make([]byte, 32)
-		if _, err := rand.Read(key); err != nil {
-			t.warn("lane recovery: no random source for the lane key; no lane was looked at")
-			return
-		}
-		rec.Key = hex.EncodeToString(key)
+	key, err := state.LaneKey(t.loop.StateDir)
+	if err != nil {
+		t.warn("lane recovery: the lane key cannot be read or made (%v); no lane was looked at", err)
+		return
 	}
+	rec := copyLanes(t.st.Lanes)
 	t.st.Lanes = rec
-	hash := laneHasher(rec.Key)
+	hash := func(id string) string { return state.LaneHash(key, id) }
 	set := func(ids []string) map[string]bool {
 		out := map[string]bool{}
 		for _, id := range ids {
@@ -337,9 +330,14 @@ func (t *tick) tryLane(lr adapter.LaneRecoverer, rec *state.LaneRecovery, check 
 		check.NotRetried[string(verdict)]++
 		return true
 	}
-	if err := state.ReserveSend(t.loop.StateDir, t.loop.Limits.MaxSends); err != nil {
-		// The allowance is spent or unreadable. Lanes raise no hold of their
-		// own; the session's next send does.
+	// Recorded before it is made, under the lane's keyed hash: a check that
+	// cannot save what happened leaves the record, and the next check counts
+	// the retry as made (countUnrecordedSends), so it is spaced and capped,
+	// never repeated blindly.
+	seq, err := t.reserveSend(laneRetryAction, t.res.Target, hash)
+	if err != nil {
+		// The allowance is spent or the record cannot be saved. Lanes raise
+		// no hold of their own; the session's next send does.
 		rec.Blocked = "send_allowance"
 		check.NotRetried["send_allowance"]++
 		t.warn("lane retries stopped: %v", err)
@@ -351,7 +349,7 @@ func (t *tick) tryLane(lr adapter.LaneRecoverer, rec *state.LaneRecovery, check 
 	res, err := lr.RetryLane(ctx, id)
 	var unsupported adapter.ErrUnsupported
 	refund := func() {
-		if err := state.RefundSend(t.loop.StateDir, t.loop.Limits.MaxSends); err != nil {
+		if err := state.RefundSend(t.loop.StateDir, t.loop.Limits.MaxSends, seq); err != nil {
 			t.warn("lane retry: %v", err)
 		}
 	}
@@ -487,7 +485,7 @@ func copyLanes(l *state.LaneRecovery) *state.LaneRecovery {
 	if l == nil {
 		return out
 	}
-	out.Key, out.Blocked, out.EpisodeRetries, out.Reports, out.Last = l.Key, l.Blocked, l.EpisodeRetries, l.Reports, l.Last
+	out.Blocked, out.EpisodeRetries, out.Reports, out.Last = l.Blocked, l.EpisodeRetries, l.Reports, l.Last
 	out.Deferred = append([]string{}, l.Deferred...)
 	for h, at := range l.SeenActive {
 		out.SeenActive[h] = at
@@ -496,17 +494,6 @@ func copyLanes(l *state.LaneRecovery) *state.LaneRecovery {
 		out.Retries[h] = r
 	}
 	return out
-}
-
-// laneHasher names lanes for one loop: a keyed hash of the lane's ID, with
-// the record's own random key. See state.LaneRecovery.Key.
-func laneHasher(key string) func(id string) string {
-	secret, _ := hex.DecodeString(key)
-	return func(id string) string {
-		mac := hmac.New(sha256.New, secret)
-		mac.Write([]byte(id))
-		return hex.EncodeToString(mac.Sum(nil)[:12])
-	}
 }
 
 // trimLanes bounds the lane records. Lanes no longer in error go first, then

@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"os/exec"
+	"path/filepath"
 	"strings"
 	"time"
 
@@ -35,7 +36,14 @@ type Adapter struct {
 	laneKey []byte
 	// hostKills counts bb commands ended by a signal this adapter did not send.
 	hostKills int
+	// cliPath is the absolute path of the bb executable this adapter last
+	// started: where the system found the configured command.
+	cliPath string
 }
+
+// CLIPath implements adapter.CLIPather: the absolute path of the bb
+// executable this adapter last started, or "" before it started one.
+func (a *Adapter) CLIPath() string { return a.cliPath }
 
 // New returns an adapter for the thread.
 func New(cfg config.BB) *Adapter {
@@ -469,6 +477,13 @@ func (a *Adapter) exec(ctx context.Context, stdin string, args ...string) ([]byt
 	cmd.WaitDelay = 2 * time.Second
 	// Only the JSON envelope on stdout is trusted; stderr may hold prose.
 	err := cmd.Run()
+	if cmd.Process != nil {
+		// It started: cmd.Path is the executable the system resolved. A
+		// structural fact about this machine, nothing read from its output.
+		if p, perr := filepath.Abs(cmd.Path); perr == nil {
+			a.cliPath = p
+		}
+	}
 	var exit *exec.ExitError
 	if errors.As(err, &exit) && exit.ExitCode() == -1 && ctx.Err() == nil {
 		// Ended by a signal that was not this adapter's time limit: the host

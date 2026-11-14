@@ -102,6 +102,59 @@ type LaneRecoverer interface {
 	ForgetLanes()
 }
 
+// CLIPather is implemented by adapters that run a provider executable: the
+// absolute path the system resolved for it on the last command started, or
+// "" before one was. A check records it, so a caller with a shorter PATH (the
+// panel, the menu) can find the same executable for a stop.
+type CLIPather interface {
+	CLIPath() string
+}
+
+// LaneStopper is implemented by adapters whose conversations have lanes:
+// child conversations the supervised one started, and their own children.
+// It is used only for a stop a person asked to cover the lanes
+// (keepgoing stop --lanes), and it can do nothing to a lane but read its
+// status and stop it.
+type LaneStopper interface {
+	// LaneRoot is the supervised conversation the lanes hang from.
+	LaneRoot() string
+	// LaneChildren lists the direct children of parent and re-reads each on
+	// its own, at most max of them. notChecked counts those listed but not
+	// read because of max. An error means the listing itself failed.
+	LaneChildren(ctx context.Context, parent string, max int) (kids []LaneInfo, notChecked int, err error)
+	// StopLane stops one lane's work. It sends nothing else.
+	StopLane(ctx context.Context, id string) error
+	// CancelLaneRetry cancels a provider retry waiting in the lane's queue.
+	// cancelled is false when there was none to cancel. ErrUnsupported means
+	// the provider has no structured way to do it.
+	CancelLaneRetry(ctx context.Context, id string) (cancelled bool, err error)
+	// DeleteLaneQueue deletes the messages queued in a lane that has not
+	// started, or is idle, so that it does not start. deleted counts them.
+	// It reads no message: only each queued row's ID and thread.
+	DeleteLaneQueue(ctx context.Context, id string) (deleted int, err error)
+}
+
+// LaneInfo is one listed child, as re-read on its own.
+type LaneInfo struct {
+	ID string
+	// Verified: the thread names itself and the expected parent and is
+	// neither archived nor deleted.
+	Verified bool
+	Status   string
+	Queued   int
+}
+
+// LaneStopError is a lane stop the provider refused or that did not finish,
+// with a short class from a structured source: an error code, "timeout" for
+// a command stopped at its time limit, or "failed".
+type LaneStopError struct {
+	Class string
+	Err   error
+}
+
+func (e *LaneStopError) Error() string { return "lane stop " + e.Class + ": " + e.Err.Error() }
+func (e *LaneStopError) Unwrap() error { return e.Err }
+
 // TurnRetryOutcome is what the provider reported for a retry request.
 type TurnRetryOutcome string
 

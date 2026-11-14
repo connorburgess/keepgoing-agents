@@ -128,10 +128,11 @@ func TestEndToEndFailedLaneIsRetriedByReferenceWhenOptedIn(t *testing.T) {
 	if code != exitOK || !strings.Contains(out, `"laneRecovery": {`) || !strings.Contains(out, `"enabled": true`) || !strings.Contains(out, `"retried": 1`) {
 		t.Fatalf("status json %d\n%s%s", code, out, errs)
 	}
-	// The saved record holds a hash per lane and their key. status shows the
-	// counts and never the record.
+	// The saved record holds a hash per lane, keyed with the loop's
+	// lanes.key. status shows the counts and never the record or the key.
 	saved, err := state.Load(state_)
-	if err != nil || saved.Lanes == nil || len(saved.Lanes.Key) != 64 || len(saved.Lanes.Retries) != 2 {
+	key, kerr := os.ReadFile(filepath.Join(state_, state.LaneKeyName))
+	if err != nil || kerr != nil || len(strings.TrimSpace(string(key))) != 64 || saved.Lanes == nil || len(saved.Lanes.Retries) != 2 {
 		t.Fatalf("%+v %v", saved.Lanes, err)
 	}
 	// The lane record is keyed: it does not use the unkeyed hash that the
@@ -154,7 +155,7 @@ func TestEndToEndFailedLaneIsRetriedByReferenceWhenOptedIn(t *testing.T) {
 			}
 		}
 	}
-	if strings.Contains(out, saved.Lanes.Key) || strings.Contains(out, `"seenActive"`) {
+	if strings.Contains(out, strings.TrimSpace(string(key))) || strings.Contains(out, `"seenActive"`) {
 		t.Fatalf("status shows the lane record:\n%s", out)
 	}
 	code, out, errs = f.run("timeline", "--kind", "child_retry")

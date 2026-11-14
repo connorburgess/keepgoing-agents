@@ -27,6 +27,7 @@ type fakeLaunchd struct {
 	loaded, disabled bool
 	calls            [][]string
 	before           func([]string)
+	after            func([]string) // called when a command has been answered
 	fail             string
 	exit             int
 	unknown          bool
@@ -36,6 +37,9 @@ func (f *fakeLaunchd) run(ctx context.Context, args ...string) (int, error) {
 	f.calls = append(f.calls, append([]string(nil), args...))
 	if f.before != nil {
 		f.before(args)
+	}
+	if f.after != nil {
+		defer f.after(args)
 	}
 	if ctx.Err() != nil {
 		return -1, ctx.Err()
@@ -459,8 +463,27 @@ func TestServiceRemovalWaitsForDaemonExit(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer l.Release()
-	ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
+	// Removal must get through disable, bootout and the absence check, and
+	// only then give up waiting for the daemon's lock. A deadline on the
+	// whole command timed the host instead: on a slow machine it ran out
+	// before the first manager command, which failed the test with "disable
+	// unavailable or timed out". The wait is cut short only once the manager
+	// has answered the last absence check, so nothing before it has a
+	// deadline. If the host stalls for the whole 100 ms after that, the wait
+	// ends without having tried the lock and the test still passes; the
+	// retry below shows the lock is what gates removal.
+	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
+	bootedOut := false
+	f.manager.after = func(args []string) {
+		switch {
+		case args[0] == "bootout":
+			bootedOut = true
+		case bootedOut && args[0] == "print" && strings.Count(args[1], "/") == 1:
+			bootedOut = false
+			time.AfterFunc(100*time.Millisecond, cancel)
+		}
+	}
 	var out, errs bytes.Buffer
 	c := serviceCommand(env{ctx, &out, &errs}, []string{"remove", "-c", f.f.cfg}, f.host)
 	if c != exitFailed || !strings.Contains(errs.String(), "daemon exit not verified") || !f.manager.disabled || f.manager.loaded {
@@ -469,6 +492,7 @@ func TestServiceRemovalWaitsForDaemonExit(t *testing.T) {
 	if _, err := os.Stat(p.Definition); err != nil {
 		t.Fatal("recovery definition removed")
 	}
+	f.manager.after = nil
 	l.Release()
 	if c, o, e := f.call(t, "remove"); c != 0 {
 		t.Fatalf("retry %d %s %s", c, o, e)
