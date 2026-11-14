@@ -291,10 +291,9 @@ func TestPanelReviewsSayWhenAConversationOwnsTheLoop(t *testing.T) {
 	}
 }
 
-// The change functions directly: the page acts as no BB thread even when the
-// server's environment names one; a busy loop is refused and nothing is
-// retried; an expired review is refused.
-func TestPanelChangesActAsNoThreadAndRetryNothing(t *testing.T) {
+// The change functions retain the startup thread; a busy loop is refused,
+// nothing is retried, and an expired review is refused.
+func TestPanelChangesRetainCallerAndRetryNothing(t *testing.T) {
 	d, _ := dockFixtureReader(t)
 	t.Setenv("BB_THREAD_ID", "thr_example_owner")
 	now := time.Now()
@@ -313,9 +312,7 @@ func TestPanelChangesActAsNoThreadAndRetryNothing(t *testing.T) {
 		}
 	}
 	key := dockKey(held.ID)
-	// The loop is owned by one thread and the server's environment names
-	// another. Acting as the environment's thread would be refused by the
-	// owner check; acting as no thread, as a terminal outside BB, is not.
+	// Another thread owns the loop: review refuses before making a ticket.
 	if _, err := control.Update(held.StateDir, func(f *control.File) { f.Ownership = &control.Ownership{ThreadID: "thr_example_other", Generation: 1} }); err != nil {
 		t.Fatal(err)
 	}
@@ -323,6 +320,16 @@ func TestPanelChangesActAsNoThreadAndRetryNothing(t *testing.T) {
 		t.Fatalf("the environment's thread could prepare a resume of another thread's loop: %+v", r)
 	}
 	p := c.prepare("session-a", key, "resume")
+	if p.Preview != nil || p.Result == nil || p.Result.Outcome != "refused" || !controlOf(t, held).AwaitingUser {
+		t.Fatalf("%+v", p)
+	}
+	// A new owner matching the startup caller may resume. Changing the ambient
+	// environment after startup must not grant a different caller's authority.
+	if _, err := control.Update(held.StateDir, func(f *control.File) { f.Ownership.ThreadID = "thr_example_owner" }); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("BB_THREAD_ID", "thr_example_other")
+	p = c.prepare("session-a", key, "resume")
 	if p.Preview == nil {
 		t.Fatalf("%+v", p.Result)
 	}
