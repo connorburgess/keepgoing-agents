@@ -18,6 +18,10 @@ loop:
       - ~/src/example-web
     stall_after: 30m
     min_wake_interval: 60m
+    # The panel's no-progress flag: raised at this many sends, or this many
+    # checks with an error or retry, with no change to the repositories. 0 is off.
+    flag_after_sends: 6
+    flag_after_errors: 4
   window:
     tz: America/New_York
     days:
@@ -31,7 +35,7 @@ loop:
     backoff: 10m
     failover_on: [rate_limit]
     wait_if_reset_within: 30m
-    report_wait_after: 6h        # report once when a limit wait with no handoff possible resets later than this
+    report_wait_after: 6h        # report once when a limit wait with no handoff possible resets later than this; needs limit_wait in report.events
   fallbacks: fallbacks.yaml
   report:
     secret_file: ~/.config/keepgoing/example-bb-loop.env   # KEEPGOING_WEBHOOK_URL and KEEPGOING_WEBHOOK_SECRET

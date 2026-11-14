@@ -135,7 +135,7 @@ func summarize(cfg *config.Config, reg *health.Registry, now time.Time) fallback
 		if en, ok := reg.Candidates[c.ID]; ok {
 			row.Last = en.Last
 		}
-		row.Usage = usageOf(reg, c, now)
+		row.Usage = usageOf(reg, c, now, projectionRules(fb))
 		out.Candidates = append(out.Candidates, row)
 	}
 	return out
@@ -176,7 +176,7 @@ func printFallbacks(e env, out fallbacksOut, asJSON bool, cfgPath string) {
 	}
 	fmt.Fprintln(e.stdout)
 	for _, r := range out.Candidates {
-		printUsage(e.stdout, "usage ", []usageView{r.Usage})
+		printUsage(e.stdout, "usage ", "projected ", []usageView{r.Usage})
 	}
 	fmt.Fprintf(e.stdout, "\n%d healthy of %d eligible, %d distinct by %s, need %d: %s\n", len(s.Healthy), len(s.Eligible), s.Distinct, s.Span, s.Min, verdict)
 	var unprobed []string
