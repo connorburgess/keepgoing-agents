@@ -76,6 +76,24 @@ type TurnRetrier interface {
 	StillFailed(ctx context.Context) (bool, error)
 }
 
+// LaneRecoverer is implemented by adapters that can recover a failed lane: a
+// direct child conversation of the supervised session. The supervisor uses
+// it only when the loop has opted in. It is the only way the supervisor acts
+// on a lane, and neither method sends text, stops, creates or re-parents
+// anything.
+type LaneRecoverer interface {
+	// InspectLane re-reads one lane and reports what is established about
+	// it. It reads the lane's status, its pending interactions and the typed
+	// fields of its error events. It never decodes or stores message text.
+	InspectLane(ctx context.Context, id string) decide.LaneFacts
+	// RetryLane asks the provider to retry the lane's failed turn by
+	// reference. Errors mean what they mean for TurnRetrier.RetryFailedTurn.
+	RetryLane(ctx context.Context, id string) (TurnRetry, error)
+	// ForgetLanes removes everything the adapter keeps about lanes. It is
+	// called when lane recovery is switched off.
+	ForgetLanes()
+}
+
 // CLIPather is implemented by adapters that run a provider executable: the
 // absolute path the system resolved for it on the last command started, or
 // "" before one was. A check records it, so a caller with a shorter PATH (the
@@ -151,6 +169,15 @@ type TurnRetry struct {
 type ErrUnsupported struct{ Op string }
 
 func (e ErrUnsupported) Error() string { return e.Op + " is not supported by this adapter" }
+
+// ErrNotStarted marks a send the adapter refused before anything could reach
+// the agent: nothing was sent and nothing was started, for a reason outside
+// the agent and the provider that a person has to put right. Reason is a
+// fixed text with no path, command or agent output in it. A check does not
+// count such a send against any limit.
+type ErrNotStarted struct{ Reason string }
+
+func (e ErrNotStarted) Error() string { return "nothing was sent: " + e.Reason }
 
 // ClassifyCode maps a structured error code (a string token or an HTTP or
 // exit status) to an error class. It is deliberately strict: only well-known

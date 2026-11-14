@@ -55,6 +55,7 @@ To change the matrix, edit the table and run `KEEPGOING_UPDATE_ADAPTERS_DOC=1 go
 | [Connection loss and the network check](#connection-loss-and-the-network-check) | yes · fixture | yes · fixture | yes · fixture | yes · fixture | missing · none | yes · fixture | yes · fixture |
 | [Child-work awareness](#child-work-awareness) | yes · live | n/a | n/a | n/a | missing · none | partial · fixture | n/a |
 | [Child failure notice and report](#child-failure-notice-and-report) | yes · fixture | n/a | n/a | n/a | missing · none | n/a | n/a |
+| [Lane recovery: retry a failed child's turn](#lane-recovery-retry-a-failed-childs-turn) | yes · fixture | missing · none | missing · none | missing · none | missing · none | missing · none | missing · none |
 | [Handoff away from it](#handoff-away-from-it) | yes · live | yes · fixture | yes · fixture | missing · none | missing · none | yes · fixture | yes · fixture |
 | [Handoff to it](#handoff-to-it) | yes · live | yes · fixture | yes · fixture | missing · none | missing · none | yes · fixture | partial · fixture |
 | [Switch-back](#switch-back) | yes · fixture | yes · fixture | yes · fixture | missing · none | missing · none | yes · fixture | yes · fixture |
@@ -142,7 +143,7 @@ Ask the provider to retry the failed turn itself, instead of sending a new promp
 
 Tell an outage from a provider failure, wait it out without spending re-prompts or probes, and act on the first check after it returns.
 
-- **BB thread:** yes, evidence fixture. The supervisor checks connectivity before a re-prompt, handoff, hold for an errored thread or probe, and waits while it fails. Run for outages of 20 minutes to 3 weeks with a stand-in bb. [`TestOfflineForAnyLengthThenRecoversOnce`](../internal/supervise/offline_scenario_unix_test.go) [operations.md#network-outages](operations.md#network-outages)
+- **BB thread:** yes, evidence fixture. The supervisor checks connectivity before a re-prompt, handoff, hold for an errored thread or probe, and waits while it fails. Run for outages of 20 minutes to 3 weeks with a stand-in bb. A turn whose log (Turn) shows it silent since before an outage or a sleep has the nudges due to it held back, not sent; a log that cannot be read (TurnUnknown) changes nothing. [`TestOfflineForAnyLengthThenRecoversOnce`](../internal/supervise/offline_scenario_unix_test.go) [`TestHungTurnActsAsTheStallRuleExceptForTheNudges`](../internal/supervise/hungturn_vs_main_test.go) [operations.md#network-outages](operations.md#network-outages) [operations.md#a-turn-that-hung-through-an-outage](operations.md#a-turn-that-hung-through-an-outage)
 - **Claude Code headless:** yes, evidence fixture. As for BB. The wake that ran into the outage is spent; nothing else is, and no hold is raised. Run end to end with a stand-in CLI. [`TestScenarioHeadlessOutage`](../internal/scenario/headless_outage_test.go) [operations.md#network-outages](operations.md#network-outages)
 - **Codex headless:** yes, evidence fixture. As for Claude Code. [`TestScenarioHeadlessOutage`](../internal/scenario/headless_outage_test.go) [operations.md#network-outages](operations.md#network-outages)
 - **Cursor headless:** yes, evidence fixture. The decision is the same for every adapter and is tested with a fake adapter, not with this one. [`TestOutageDoesNotSpendRepromptsOrProbes`](../internal/supervise/network_test.go) [operations.md#network-outages](operations.md#network-outages)
@@ -173,6 +174,18 @@ Tell the parent conversation, and optionally the owner, when a child fails.
 - **Antigravity:** missing, evidence none. No adapter is registered, so a loop cannot use it. [antigravity.md](antigravity.md)
 - **Generic process:** n/a. No child identities are reported.
 - **Agent defined in configuration:** n/a. No child conversations.
+
+### Lane recovery: retry a failed child's turn
+
+Ask the provider to retry the failed turn of a lane (a direct child conversation) that was seen working and then failed with a connection, overload or unknown error.
+
+- **BB thread:** yes, evidence fixture. Opt-in with `bb.children.retry_errored`, off by default. Runs `bb thread retry` on the lane, by reference and with no message, at most 5 lanes a check, 3 attempts a lane 10 minutes apart and 20 retries a failure (all configurable). To tell what failed, the typed fields of the lane's event log are read (event type, error category and codes, will-retry flag); message text is never decoded or stored. Lane recovery never messages, stops, creates or moves a lane (only an explicit `stop --lanes` stops one), leaves another loop's lane alone, and one waiting on a person, rate limited or needing a login is left alone. No live lane has been retried by keepgoing. [`TestInspectLaneEstablishesEachFact`](../internal/adapter/bb/lanes_test.go) [`TestLaneMessageTextIsNeverDecodedOrStored`](../internal/adapter/bb/lanes_test.go) [`TestLaneRetriesAreBoundedPerCheckPerLaneAndReportedOnce`](../internal/supervise/lanes_test.go) [`TestLanesWaitOutAnOutageOfAnyLength`](../internal/supervise/lanes_test.go) [`TestEndToEndFailedLaneIsRetriedByReferenceWhenOptedIn`](../cmd/keepgoing/lane_recovery_test.go) [`TestScenarioOutage`](../internal/scenario/outage_test.go) [operations.md#lane-recovery](operations.md#lane-recovery)
+- **Claude Code headless:** missing, evidence none. No child conversations to recover.
+- **Codex headless:** missing, evidence none. No child conversations to recover.
+- **Cursor headless:** missing, evidence none. No child conversations to recover.
+- **Antigravity:** missing, evidence none. No adapter is registered, so a loop cannot use it. [antigravity.md](antigravity.md)
+- **Generic process:** missing, evidence none. No child identities are reported.
+- **Agent defined in configuration:** missing, evidence none. A defined agent reports no child conversations to recover.
 
 ### Handoff away from it
 
@@ -318,7 +331,9 @@ The four questions:
 - **Can a re-prompt duplicate work?** Yes, in two ways. Every re-prompt carries the whole task prompt again, into the same conversation, so the agent is asked to do the task again and it is the agent that must notice what is done. And if the very first turn fails before the CLI reports a session ID, nothing is saved, so each re-prompt starts a new conversation with the whole task: up to four conversations for one task ([`TestScenarioHeadlessFirstTurnFails`](../internal/scenario/headless_outage_test.go)). Files the earlier turns changed are still on disk either way.
 - **What does a weeks-old session do on resume?** keepgoing always resumes the saved ID and never falls back to a new session. If the provider no longer has that session, the resume fails like any other error, three re-prompts are spent, and the loop holds. Whether the real CLIs keep a session for weeks was not tested.
 
-Not exercised: the host sleeping. A sleeping host suspends the turn's process with everything else, so a check after wake-up sees the turn still running until the CLI exits; this is reasoning from the code, not a test. A reboot is different: see the stale turn record below.
+Not exercised: the host sleeping. A sleeping host suspends the turn's process with everything else, so a check after wake-up sees the turn still running until the CLI exits; this is reasoning from the code, not a test.
+
+A reboot, or anything else that ends the turn's wrapper before it records an exit code, is read as a crashed turn, which a check treats as an unknown error and re-prompts. A turn is "running" only while its wrapper holds the turn lock, which the operating system releases when the wrapper ends. The saved PID is not consulted, so an unrelated process that later gets that PID cannot make a dead turn look alive ([`TestKilledWrapperIsCrashedEvenWhenItsPIDIsReused`](../internal/adapter/runner/liveness_unix_test.go)). The one exception is a turn started by a build from before this change, which holds no lock and is still judged by its PID until it ends, unless the machine has restarted since it began ([upgrading](operations.md#owned-headless-cancellation)).
 
 ## Gaps this exposed
 
@@ -328,7 +343,6 @@ Unless a row says otherwise, none of these is fixed. Each needs a decision or is
 | --- | --- | --- |
 | **Closed in unreleased source: an outage ended in a hold that needed a person.** Re-prompts were spent into a dead network, and nothing acted when it returned. The connectivity check now waits the outage out. What remains: the idle wake that runs into the outage is still sent, and a provider outage with a working network is still re-prompted into. | Every adapter | The scenario above; [network outages](operations.md#network-outages) |
 | **Closed in unreleased source: `resume` did not recover an error hold on a headless loop.** The spent re-prompts were kept, so the loop held again at once and the way out was `retarget primary`, then `resume`. An explicit `resume` now starts a new error episode. | Headless Claude Code, Codex, Cursor | [`TestScenarioHeadlessFirstTurnFails`](../internal/scenario/headless_outage_test.go); [what `resume` starts over](operations.md#what-resume-starts-over) |
-| **A stale turn record with a reused PID reads as a running turn.** After a reboot, a turn that never wrote its exit code is judged by whether its saved PID exists. If an unrelated process has that PID, the loop sees an active session and sends nothing for as long as that process lives. | Headless Claude Code, Codex, Cursor | [`TestTurnRecordAfterTheWrapperIsGone`](../internal/adapter/runner/reboot_gap_test.go) |
 | **A first turn that fails before a session is reported starts a new conversation on every re-prompt.** | Headless Claude Code, Codex | [`TestScenarioHeadlessFirstTurnFails`](../internal/scenario/headless_outage_test.go) |
 | **An idle headless session is woken at every check**, with the whole task prompt, until it declares completion or a limit stops it. | Headless Claude Code, Codex, Cursor | The scenario above; [operations](operations.md#bounds-on-repeated-work) |
 | **No typed permission state.** A headless turn cannot wait for approval, and a denial is not reported as waiting on a person. | Headless Claude Code, Codex, Cursor | Matrix, permission prompts |

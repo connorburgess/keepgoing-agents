@@ -180,6 +180,25 @@ func SettleIntoEpisode(dir string, f *File) error {
 		if p.Action == "handoff" || p.Action == "switch_back" {
 			break
 		}
+		if p.Action == LaneRetryAction {
+			// A lane's failed turn retried by reference: counted for that
+			// lane as a made retry, as a check would count it. It is not a
+			// send to the supervised session.
+			if f.Lanes != nil {
+				r := f.Lanes.Retries[p.Key]
+				if r.DayStart.IsZero() {
+					r.DayStart = p.At
+				}
+				r.Attempts, r.DayRetries, r.LastAt, r.NoOps = r.Attempts+1, r.DayRetries+1, p.At, 0
+				if f.Lanes.Retries == nil {
+					f.Lanes.Retries = map[string]LaneRetry{}
+				}
+				f.Lanes.Retries[p.Key] = r
+				f.Lanes.EpisodeRetries++
+			}
+			f.SendsRecorded = max(f.SendsRecorded, p.Seq)
+			continue
+		}
 		agentSend := p.Action != "stop" && !strings.HasPrefix(p.Action, "stop:") && p.Action != "new_thread" && !strings.HasPrefix(p.Action, "report:")
 		if agentSend && p.At.After(f.LastWakeAt) {
 			f.LastWakeAt = p.At
@@ -188,6 +207,10 @@ func SettleIntoEpisode(dir string, f *File) error {
 	}
 	return nil
 }
+
+// LaneRetryAction is a lane retry's record (lane recovery, keyed by the
+// lane's hash).
+const LaneRetryAction = "child_retry"
 
 // trimPending keeps at most limit records, dropping the oldest first. A
 // brief to another conversation (handoff, switch_back) is never dropped: the
@@ -209,8 +232,9 @@ func trimPending(p []SendIntent, limit int) []SendIntent {
 }
 
 // RefundSend gives back the reservation seq. It is only for an attempt the
-// provider answered, in a structured result, that it did not act on at all:
-// nothing was sent and nothing was started. The intent is dropped, and with
+// provider answered, in a structured result, that it did not act on at all,
+// or that the adapter refused on this machine before anything could reach
+// the agent: nothing was sent and nothing was started. The intent is dropped, and with
 // max_sends set the attempt is no longer counted. A failed or uncertain send
 // is never refunded.
 func RefundSend(dir string, max, seq int64) error {

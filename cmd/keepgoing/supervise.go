@@ -368,6 +368,7 @@ type statusOut struct {
 	PromptSend        promptSendStatus         `json:"promptSend"`
 	LimitWait         limitWaitStatus          `json:"limitWait"`
 	TurnRetry         turnRetryStatus          `json:"turnRetry"`
+	Lanes             lanesStatus              `json:"laneRecovery"`
 	ChildErrorReport  childReportStatus        `json:"childErrorReport"`
 	NewThreads        newThreadStatus          `json:"newThreads"`
 	Goal              *control.GoalSummary     `json:"goal,omitempty"`
@@ -551,6 +552,7 @@ func status(e env, cfg *config.Config, now time.Time, asJSON bool, staleAfter ti
 	printLimitWait(w, out.LimitWait)
 	fmt.Fprintf(w, "progress flag: %s\n", out.NoProgress.Text)
 	printTurnRetry(w, out.TurnRetry)
+	printLanes(w, out.Lanes)
 	printChildReport(w, out.ChildErrorReport)
 	fmt.Fprintf(w, "task:      %s", out.TaskSource)
 	if out.TaskFile != "" {
@@ -654,7 +656,11 @@ func status(e env, cfg *config.Config, now time.Time, asJSON bool, staleAfter ti
 			if c.ErroredChildrenPartial {
 				count = "at least " + count + " (child discovery was incomplete)"
 			}
-			fmt.Fprintf(w, "children:  %s direct child thread(s) in error at that check (historical); keepgoing does not retry, message or stop them\n", count)
+			does := "keepgoing does not retry or message them, and stops them only for stop --lanes"
+			if out.Lanes.Enabled {
+				does = "keepgoing does not message them, and stops them only for stop --lanes; lane recovery is on and may ask BB to retry a failed turn (see lane recovery above)"
+			}
+			fmt.Fprintf(w, "children:  %s direct child thread(s) in error at that check (historical); %s\n", count, does)
 		}
 		if c.ChildErrorNoticeStopped {
 			fmt.Fprintf(w, "child notice: not accepted after %d attempts; keepgoing has stopped sending it until another child fails or resume\n", st.ChildErrorNoticeAttempts)
@@ -664,6 +670,9 @@ func status(e env, cfg *config.Config, now time.Time, asJSON bool, staleAfter ti
 		}
 	} else {
 		fmt.Fprintln(w, "decision:  unavailable; no detailed check record")
+	}
+	if st.StartRefused != nil {
+		fmt.Fprintf(w, "turns:     none can be started, since %s: %s. Nothing is sent or counted while this stands\n", st.StartRefused.Since.Format(time.RFC3339), st.StartRefused.Reason)
 	}
 	switch {
 	case st.NetworkDownSince.IsZero():
@@ -695,7 +704,15 @@ func status(e env, cfg *config.Config, now time.Time, asJSON bool, staleAfter ti
 		fmt.Fprintf(w, "schedule:  %s\n", out.Schedule.Message)
 	}
 	fmt.Fprintf(w, "progress:  %s\n", when(st.LastProgressAt))
-	fmt.Fprintf(w, "last sent: %s\n", when(st.LastWakeAt))
+	// A held-back nudge moves LastWakeAt without sending anything.
+	lastSent := st.LastSentAt
+	if lastSent.IsZero() && st.LastHeldNudgeAt.IsZero() {
+		lastSent = st.LastWakeAt // recorded before lastSentAt existed
+	}
+	fmt.Fprintf(w, "last sent: %s\n", when(lastSent))
+	if st.HeldNudges > 0 {
+		fmt.Fprintf(w, "last nudge held back: %s (the turn looked hung; %d of %d nudges held back, not sent)\n", when(st.LastHeldNudgeAt), st.HeldNudges, st.Nudges)
+	}
 	if st.Reprompts > 0 {
 		fmt.Fprintf(w, "reprompts: %d (last %s)\n", st.Reprompts, when(st.LastRepromptAt))
 	}
@@ -786,6 +803,10 @@ func readStatus(ctx context.Context, cfg *config.Config, now time.Time, staleAft
 	out.PromptSend = describePromptSend(st.LastPromptSend, out.Goal)
 	out.LimitWait = describeLimitWait(st.LimitWaitReport, l, now)
 	out.TurnRetry = describeTurnRetry(st.LastTurnRetry)
+	out.Lanes = describeLanes(st.Lanes, activeBB(cfg, st.Target()))
+	// The lane record is per-lane hashes and their key. Status shows its
+	// counts above and never the record itself.
+	out.State.Lanes = nil
 	out.ChildErrorReport = describeChildReport(st.ChildErrorReport, l)
 	if _, err := state.LoadLedger(l.StateDir); err != nil {
 		out.SendRecord = sendRecordProblem
@@ -1279,4 +1300,15 @@ func retarget(e env, cfg *config.Config, id, note string, discardPending bool) i
 		return exitFailed
 	}
 	return exitOK
+}
+
+// activeBB is the BB settings of the loop's active target, or nil.
+func activeBB(cfg *config.Config, target string) *config.BB {
+	if target == state.Primary {
+		return cfg.Loop.Agent.BB
+	}
+	if c, ok := cfg.FallbackSet.Find(target); ok {
+		return c.Agent.BB
+	}
+	return nil
 }

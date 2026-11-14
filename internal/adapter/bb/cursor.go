@@ -2,6 +2,8 @@ package bb
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"os"
 	"path/filepath"
@@ -24,8 +26,14 @@ const pageSize = 500
 
 // Cursor is the persisted scan position and summary for one thread.
 type Cursor struct {
-	RetrySchema     int    `json:"retrySchema,omitempty"`
-	ProviderThread  string `json:"providerThread,omitempty"`
+	RetrySchema    int    `json:"retrySchema,omitempty"`
+	ProviderThread string `json:"providerThread,omitempty"`
+	// HashRefs makes the summary keep a hash of the provider thread reference
+	// in place of the reference. It is set for a lane's summary, which must
+	// hold no identifier of the lane.
+	HashRefs bool `json:"hashRefs,omitempty"`
+	// hashRef is the keyed hash HashRefs uses. It is set by the lane scan.
+	hashRef         func(string) string
 	ChildOutcomeSeq int64  `json:"childOutcomeSeq,omitempty"`
 	Thread          string `json:"thread"`
 	LastSeq         int64  `json:"lastSeq"`
@@ -47,6 +55,80 @@ type Cursor struct {
 	// provider/unhandled event is BB's answer to that request and is not
 	// activity. It is saved because a scan can end between the two.
 	AnsweringRequest bool `json:"answeringRequest,omitempty"`
+	// TurnStartSeq is the sequence of the latest turn/started event, and so
+	// names the current turn. OpenTools are the tool items that turn started
+	// and has not completed, by a hash of the item ID (itemKey). ToolsUncertain says the bookkeeping
+	// cannot be trusted for this turn: an item without an ID or type, an item
+	// type not recognised, or more open items than are kept. A turn with an
+	// open or uncertain tool item is waiting on a tool, not on the model.
+	TurnStartSeq   int64           `json:"turnStartSeq,omitempty"`
+	OpenTools      map[string]bool `json:"openTools,omitempty"`
+	ToolsUncertain bool            `json:"toolsUncertain,omitempty"`
+}
+
+// modelItems are items the model itself produces; an open one is the model
+// answering, or failing to. toolItems are items that run outside the model
+// and end with their own completion. The types are those a real BB 0.48 log
+// records. Any other type makes the turn's bookkeeping uncertain.
+var (
+	modelItems = map[string]bool{"reasoning": true, "agentMessage": true, "userMessage": true}
+	toolItems  = map[string]bool{"commandExecution": true, "fileRead": true, "fileChange": true, "toolCall": true, "backgroundTask": true, "webSearch": true, "mcpToolCall": true}
+)
+
+// maxOpenTools bounds the open tool items kept for one turn.
+const maxOpenTools = 64
+
+// trackItem keeps the turn's open tool items.
+func (c *Cursor) trackItem(e event) {
+	var d struct {
+		ProviderThread string `json:"providerThreadId"`
+		Item           struct {
+			ID   string `json:"id"`
+			Type string `json:"type"`
+		} `json:"item"`
+	}
+	if json.Unmarshal(e.Data, &d) != nil {
+		c.ToolsUncertain = true
+		return
+	}
+	if d.ProviderThread != "" && c.ProviderThread != "" && d.ProviderThread != c.ProviderThread {
+		return // another provider thread's item
+	}
+	if e.Type != "item/started" {
+		delete(c.OpenTools, itemKey(d.Item.ID)) // a completion of an item never seen closes nothing
+		return
+	}
+	switch {
+	case d.Item.ID == "" || d.Item.Type == "":
+		c.ToolsUncertain = true
+	case modelItems[d.Item.Type]:
+	case !toolItems[d.Item.Type] || len(c.OpenTools) >= maxOpenTools:
+		c.ToolsUncertain = true
+	default:
+		if c.OpenTools == nil {
+			c.OpenTools = map[string]bool{}
+		}
+		c.OpenTools[itemKey(d.Item.ID)] = true
+	}
+}
+
+// itemKey names an open tool item in the cursor by a hash of its ID, so no
+// item ID is kept between checks.
+func itemKey(id string) string {
+	sum := sha256.Sum256([]byte(id))
+	return hex.EncodeToString(sum[:12])
+}
+
+// ref returns a provider reference as the summary keeps it: as given, or as a
+// short hash when HashRefs is set.
+func (c *Cursor) ref(id string) string {
+	if !c.HashRefs || id == "" {
+		return id
+	}
+	if c.hashRef == nil {
+		return "h:" // no key to hash with: keep nothing rather than the reference
+	}
+	return "h:" + c.hashRef(id)
 }
 
 // eventTime bounds BB's createdAt for an event by what this supervisor knows
@@ -131,6 +213,9 @@ func (c *Cursor) apply(e event, seenAt time.Time) {
 		c.AnsweringRequest = false
 		c.LastEventAt = when
 	}
+	if e.Type == "item/started" || e.Type == "item/completed" || e.Type == "item/backgroundTask/completed" {
+		c.trackItem(e)
+	}
 	if childOutcome(e, c.Thread) {
 		c.ChildOutcomeSeq = e.Seq
 	}
@@ -141,6 +226,7 @@ func (c *Cursor) apply(e event, seenAt time.Time) {
 	case e.Type == "turn/started":
 		// A new turn makes earlier errors stale.
 		c.TurnSeq, c.Error = e.Seq, nil
+		c.TurnStartSeq, c.OpenTools, c.ToolsUncertain = e.Seq, nil, false
 		c.TurnStartedMs = 0
 		if at := e.time(); !at.IsZero() {
 			c.TurnStartedMs = at.UnixMilli()
@@ -149,7 +235,7 @@ func (c *Cursor) apply(e event, seenAt time.Time) {
 			ProviderThread string `json:"providerThreadId"`
 		}
 		_ = json.Unmarshal(e.Data, &d)
-		c.ProviderThread = d.ProviderThread
+		c.ProviderThread = c.ref(d.ProviderThread)
 	case e.Type == "provider/error":
 		var d struct {
 			ProviderThread string `json:"providerThreadId"`
@@ -161,11 +247,11 @@ func (c *Cursor) apply(e event, seenAt time.Time) {
 			} `json:"errorInfo"`
 		}
 		if json.Unmarshal(e.Data, &d) == nil {
-			if d.ProviderThread != "" && c.ProviderThread != "" && d.ProviderThread != c.ProviderThread {
+			if d.ProviderThread != "" && c.ProviderThread != "" && c.ref(d.ProviderThread) != c.ProviderThread {
 				return
 			}
 			if c.ProviderThread == "" {
-				c.ProviderThread = d.ProviderThread
+				c.ProviderThread = c.ref(d.ProviderThread)
 			}
 			c.Error = &errorSignal{Evidence: evidence.Clean(evidence.Detail{Source: "bb_provider_error", Category: d.Info.Category, Code: d.Info.ProviderCode, HTTPStatus: d.Info.HTTPStatus}), Seq: e.Seq, Class: firstKnown(d.Info.Category, httpCode(d.Info.HTTPStatus), d.Info.ProviderCode), WillRetry: d.WillRetry != nil && *d.WillRetry, RetryKnown: d.WillRetry != nil, At: when}
 		}
@@ -187,7 +273,7 @@ func (c *Cursor) apply(e event, seenAt time.Time) {
 				Type string `json:"type"`
 			} `json:"item"`
 		}
-		if json.Unmarshal(e.Data, &d) != nil || c.ProviderThread == "" || d.ProviderThread != c.ProviderThread || c.Error == nil {
+		if json.Unmarshal(e.Data, &d) != nil || c.ProviderThread == "" || c.ref(d.ProviderThread) != c.ProviderThread || c.Error == nil {
 			return
 		}
 		switch {

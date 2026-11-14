@@ -378,3 +378,39 @@ func TestTurnRetryMarkerIsTypedAndAbsentFromOlderJournals(t *testing.T) {
 		t.Fatalf("%+v", j.Records)
 	}
 }
+
+// Lane work is counts on ticks only. A check that did any is not collapsed
+// into its neighbours and is kept in the condition tier, and a journal
+// written before lane recovery existed cannot claim any.
+func TestLaneWorkIsCountsOnlyAndAbsentFromOlderJournals(t *testing.T) {
+	r := retentionTick(0)
+	r.Lanes = LaneWork{Retried: 2, GivenUp: -1, Deferred: 3}
+	got := clean(r)
+	if got.Lanes != (LaneWork{Retried: 2, Deferred: 3}) || repeatable(got) || got.Tier != TierCondition {
+		t.Fatalf("%+v tier %s", got.Lanes, got.Tier)
+	}
+	if quiet := clean(retentionTick(0)); quiet.Lanes != (LaneWork{}) || !repeatable(quiet) {
+		t.Fatalf("%+v", quiet.Lanes)
+	}
+	c := clean(Record{Kind: "control", CheckStartedAt: retentionStart, Lanes: LaneWork{Retried: 1}, ControlBefore: &Controls{}, ControlAfter: &Controls{}, ControlChange: &ControlChange{Operation: "pause", SaveObservedAt: retentionStart}})
+	if c.Lanes != (LaneWork{}) {
+		t.Fatal("a control save carried lane work")
+	}
+	dir := t.TempDir()
+	old := retentionTick(0)
+	old.Lanes, old.Sequence = LaneWork{Retried: 4}, 1
+	b, _ := json.Marshal(Journal{SchemaVersion: 8, NextSequence: 2, Records: []Record{old}})
+	if err := os.WriteFile(filepath.Join(dir, FileName), b, 0600); err != nil {
+		t.Fatal(err)
+	}
+	j, err := Load(dir)
+	if err != nil || j.SchemaVersion != 8 || j.Records[0].Lanes != (LaneWork{}) {
+		t.Fatalf("%+v %v", j.Records, err)
+	}
+	next := retentionTick(1)
+	next.Lanes = LaneWork{Retried: 1}
+	mustAppend(t, dir, next)
+	if j = loadAccounted(t, dir); j.SchemaVersion != SchemaVersion || j.Records[0].Lanes != (LaneWork{}) || j.Records[1].Lanes.Retried != 1 {
+		t.Fatalf("%+v", j.Records)
+	}
+}
