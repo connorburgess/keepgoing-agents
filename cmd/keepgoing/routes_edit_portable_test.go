@@ -102,3 +102,44 @@ func TestRouteEditReplacesTheListWhileItIsRead(t *testing.T) {
 		t.Fatalf("%d reads failed while the list was replaced", n)
 	}
 }
+
+// timelineOps lists the route_change events in a loop's timeline, as
+// operation/caller.
+func timelineOps(t *testing.T, cfg string) []string {
+	t.Helper()
+	var out, errb bytes.Buffer
+	if code := run(context.Background(), []string{"timeline", "--json", "-c", cfg}, &out, &errb); code != 0 {
+		t.Fatal(errb.String())
+	}
+	var tl timelineReport
+	if err := json.Unmarshal(out.Bytes(), &tl); err != nil {
+		t.Fatal(err)
+	}
+	var ops []string
+	for _, ev := range tl.Events {
+		if ev.Incident != nil && ev.Incident.RouteChange != nil {
+			ops = append(ops, ev.Incident.RouteChange.Operation+"/"+ev.Incident.RouteChange.Caller)
+		}
+	}
+	return ops
+}
+
+// The keepgoing.yaml edits of follow-standard and own keep a byte order mark,
+// \r\n line endings and a comment on the changed line, on every platform.
+func TestRouteEditSwitchesTheRoutesLineWithCRLFAndBOM(t *testing.T) {
+	own := "\xef\xbb\xbfversion: 1\r\nloop:\r\n  name: example-loop\r\n  fallbacks: fallbacks.yaml # mine\r\n  prompt: Continue.\r\n"
+	got, ok := setLoopRoutes([]byte(own), true, "")
+	if want := strings.Replace(own, "fallbacks: fallbacks.yaml # mine", "routes: standard # mine", 1); !ok || string(got) != want {
+		t.Fatalf("follow-standard: %v %q", ok, got)
+	}
+	none := "\xef\xbb\xbfversion: 1\r\nloop:\r\n  name: example-loop\r\n  prompt: Continue.\r\n"
+	got, ok = setLoopRoutes([]byte(none), true, "")
+	if want := strings.Replace(none, "  name: example-loop\r\n", "  name: example-loop\r\n  routes: standard\r\n", 1); !ok || string(got) != want {
+		t.Fatalf("follow-standard, no list: %v %q", ok, got)
+	}
+	following := "\xef\xbb\xbfversion: 1\r\nloop:\r\n  name: example-loop\r\n  routes: standard\r\n  routes_allow: [new_conversation]\r\n  prompt: Continue.\r\n"
+	got, ok = setLoopRoutes([]byte(following), false, "own-routes.yaml")
+	if want := "\xef\xbb\xbfversion: 1\r\nloop:\r\n  name: example-loop\r\n  fallbacks: own-routes.yaml\r\n  prompt: Continue.\r\n"; !ok || string(got) != want {
+		t.Fatalf("own: %v %q", ok, got)
+	}
+}

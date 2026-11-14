@@ -33,8 +33,36 @@ test("preview, disabled create, diagnostics, and explicit start remain separate"
   assert.equal(created.ok, true); assert.equal(created.canStart, true); assert.equal(f.records().length, 1);
   assert.ok(!f.calls.includes("start"));
   const started = await f.controller.call({ action: "start", threadId: "thr_example" });
-  assert.equal(started.ok, true); assert.equal(started.canStart, false); assert.equal(f.calls.filter(x => x === "start").length, 1);
+  assert.equal(started.ok, true); assert.equal(started.started, true); assert.equal(started.canStart, false); assert.equal(f.calls.filter(x => x === "start").length, 1);
+  // A second start is declined by the re-check: ok, and explicitly not a start.
+  f.state.controlState = "paused";
+  const declined = await f.controller.call({ action: "start", threadId: "thr_example" });
+  assert.equal(declined.ok, true); assert.notEqual(declined.started, true); assert.equal(f.calls.filter(x => x === "start").length, 1);
   assert.equal((await f.create(p.ticket)).ok, false);
+});
+
+test("loop-wide bounds given at preview are passed to every init and cannot be dropped or changed at creation", async () => {
+  const f = fixture();
+  const seen: unknown[] = [];
+  const init = f.d.init;
+  // The CLI reports the limits it was asked for, as it does.
+  f.d.init = async (bin, target, name, task, dry, goal, bounds) => {
+    seen.push(bounds);
+    const r = await init(bin, target, name, task, dry, goal, bounds);
+    return bounds && "plan" in r ? { plan: { ...r.plan, limits: { ...r.plan.limits, maxSends: bounds.maxSends, noProgressTimeout: `${parseInt(bounds.noProgressTimeout)}h0m0s` } } } : r;
+  };
+  const bounds = { maxSends: 40, noProgressTimeout: "24h" as const };
+  const call = (action: "preview" | "create", ticket?: string, b?: typeof bounds) => f.controller.call({ action, threadId: "thr_example", name: "example-loop", task: "Fictional private task", ticket }, b);
+  const dropped = await call("preview", undefined, bounds);
+  assert.equal((await call("create", dropped.ticket)).ok, false, "a bounded preview is not created unbounded");
+  const changed = await call("preview", undefined, bounds);
+  assert.equal((await call("create", changed.ticket, { maxSends: 400, noProgressTimeout: "24h" })).ok, false);
+  const added = await call("preview");
+  assert.equal((await call("create", added.ticket, bounds)).ok, false, "an unbounded preview is not created bounded");
+  assert.equal(f.records().length, 0); assert.ok(!f.calls.includes("create"));
+  const kept = await call("preview", undefined, bounds);
+  assert.equal((await call("create", kept.ticket, bounds)).ok, true);
+  assert.deepEqual(seen.slice(-3), [bounds, bounds, bounds]); assert.equal(f.records().length, 1);
 });
 
 test("changed task, target, binary, and resolved plan invalidate a preview", async () => {
@@ -108,4 +136,97 @@ test("goal selection binds the preview and is passed through every init call", a
   const held = await f.controller.call({ action: "start", threadId: f.target.threadId });
   assert.equal(held.canStart, false); assert.equal(held.goalState, "unavailable");
   assert.ok(!f.calls.includes("start")); assert.ok(!JSON.stringify(held).includes("PRIVATE"));
+});
+
+const refused = { code: "second_loop_on_session" as const, otherLoop: "other-loop" };
+
+test("keepgoing's refusal to set up a second loop is shown in plain words with the other loop's name, and nothing is created", async () => {
+  for (const at of ["preview", "create"] as const) {
+    const f = fixture();
+    const init = f.d.init;
+    f.d.init = async (bin, target, name, task, dry, goal, bounds) => {
+      // Refused at preview, or only when creation re-checks (another loop was enabled in between).
+      if ((at === "preview" && dry) || (at === "create" && !dry)) { f.calls.push(dry ? "preview" : "create"); return { refused }; }
+      return init(bin, target, name, task, dry, goal, bounds);
+    };
+    const p = await f.preview();
+    const r = at === "preview" ? p : await f.create(p.ticket);
+    assert.equal(r.ok, false, at); assert.deepEqual(r.refused, refused);
+    assert.equal(r.message, "looptender refused to set up this loop: loop other-loop already supervises this thread's session, and two loops on one session would both prompt it. Nothing was created. To have this thread supervised here instead, pause or disable other-loop first.");
+    assert.equal(f.records().length, 0, `${at}: no reference is saved`);
+    assert.ok(!f.calls.includes("start"), `${at}: nothing is started`);
+    assert.ok(!/allow-second-loop|override|anyway/i.test(r.message), "the plugin offers no way around the refusal");
+  }
+});
+
+test("keepgoing's refusal to start is shown with the other loop's name and is not retried", async () => {
+  const f = fixture();
+  const p = await f.preview(); await f.create(p.ticket);
+  const command = f.d.command;
+  f.d.command = async (bin, record, op) => op === "start"
+    ? (f.calls.push("start"), { code: 1, data: { schemaVersion: 1, outcome: "refused", refusal: refused } })
+    : command(bin, record, op);
+  const r = await f.controller.call({ action: "start", threadId: "thr_example" });
+  assert.equal(r.ok, false); assert.equal(r.started, false); assert.equal(r.canStart, false); assert.deepEqual(r.refused, refused);
+  assert.match(r.message, /^looptender refused to start this loop: loop other-loop already supervises this thread's session/);
+  assert.match(r.message, /Nothing was started\./);
+  assert.equal(f.calls.filter(c => c === "start").length, 1);
+  // A start failure without a structured reason keeps the existing wording.
+  f.d.command = async (bin, record, op) => op === "start" ? { code: 1, data: null } : command(bin, record, op);
+  const plain = await f.controller.call({ action: "start", threadId: "thr_example" });
+  assert.equal(plain.refused, undefined); assert.match(plain.message, /Start could not be confirmed/);
+});
+
+test("start gets --json only when the preview it was created from advertised it, with the same binary", async () => {
+  for (const tc of [
+    { name: "advertised", advertised: true, laterBin: "keepgoing", json: true },
+    { name: "not advertised", advertised: false, laterBin: "keepgoing", json: false },
+    { name: "advertised, then a different binary configured", advertised: true, laterBin: "/opt/other/keepgoing", json: false },
+  ]) {
+    const f = fixture();
+    const init = f.d.init;
+    f.d.init = async (...args) => {
+      const r = await init(...args);
+      return tc.advertised && "plan" in r ? { plan: { ...r.plan, startJson: true as const } } : r;
+    };
+    const seen: (true | undefined)[] = [];
+    const command = f.d.command;
+    f.d.command = async (bin, record, op, json) => { if (op === "start") seen.push(json); return command(bin, record, op, json); };
+    const p = await f.preview(); const created = await f.create(p.ticket);
+    assert.equal(created.ok, true, tc.name);
+    assert.equal(f.records()[0].startJson, tc.advertised ? true : undefined, tc.name);
+    f.d.binary = async () => tc.laterBin;
+    // The fixture's target check does not depend on the binary.
+    await f.controller.call({ action: "start", threadId: "thr_example" });
+    assert.deepEqual(seen, [tc.json ? true : undefined], tc.name);
+  }
+});
+
+test("with --json a start is confirmed only by its own report, not by its exit code alone", async () => {
+  for (const tc of [
+    { name: "report says started", data: { schemaVersion: 1, outcome: "started" }, started: true },
+    { name: "exit 0 with no report", data: null, started: false },
+    { name: "exit 0 with another outcome", data: { schemaVersion: 1, outcome: "refused" }, started: false },
+  ]) {
+    const f = fixture();
+    const init = f.d.init;
+    f.d.init = async (...args) => {
+      const r = await init(...args);
+      return "plan" in r ? { plan: { ...r.plan, startJson: true as const } } : r;
+    };
+    const command = f.d.command;
+    f.d.command = async (bin, record, op, json) => op === "start" ? (f.calls.push("start"), { code: 0, data: tc.data }) : command(bin, record, op, json);
+    const p = await f.preview(); await f.create(p.ticket);
+    const r = await f.controller.call({ action: "start", threadId: "thr_example" });
+    assert.equal(r.started === true, tc.started, tc.name); assert.equal(r.ok, tc.started, tc.name);
+    if (!tc.started) assert.match(r.message, /could not be confirmed/, tc.name);
+  }
+});
+
+test("a preview whose plan does not report the asked-for limits is refused before anything is created", async () => {
+  const f = fixture();
+  const bounds = { maxSends: 40, noProgressTimeout: "24h" as const };
+  const p = await f.controller.call({ action: "preview", threadId: "thr_example", name: "example-loop", task: "Fictional private task" }, bounds);
+  assert.equal(p.ok, false); assert.match(p.message, /did not report the loop-wide limits/); assert.equal(p.ticket, undefined);
+  assert.equal(f.records().length, 0); assert.ok(!f.calls.includes("create"));
 });

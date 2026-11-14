@@ -414,11 +414,12 @@ Some files belong to you and to no single loop. They are kept in one directory u
 
 - *Decides:* one of the tool's own entries in a directory named `keepgoing` under the configuration directory or the state directory: `registry/`, `routes.yaml`, `loops/`, `sessions/` or `panel/`. One is enough, in either place: session claims in `~/.local/state/keepgoing/sessions` keep the registry in `~/.config/keepgoing/registry`. A place that cannot be inspected counts as having one.
 - *Does not decide:* anything else in a directory named `keepgoing`. A loop's `state_dir`, its configuration file, a secrets file or a log that you keep in `~/.local/state/keepgoing/…` or `~/.config/keepgoing/…` changes nothing, whether it was there before or appears later. Nor does a directory named `looptender`.
+- *The exceptions, both left by [`keepgoing migrate`](#moving-to-looptender-keepgoing-migrate):* a place where `keepgoing` is only a link to the `looptender` directory beside it counts as `looptender`; and while a move is between its steps in a place, `looptender` is in use.
 - Otherwise both are named `looptender`.
 
 When the tool's own entries exist under both names, the `keepgoing` ones are used. A registry or a route list under `looptender` is then not read: a loop registered only there is not listed, and a route list there is not followed. `doctor` warns (`user.directory`) and names them. Nothing is removed for you, and either directory may also hold a loop's own files, so do not delete one to tidy up.
 
-Where one name is a link to the other, in either direction, the two are one directory with one set of files and claims, and everything works as with a single name. `doctor` says so.
+Where one name is a link to the other, in either direction, the two are one directory with one set of files and claims, and everything works as with a single name. `doctor` says so. A release from before the rename reaches the same files through such a link, and takes its session claims in the same files, so loops run by both releases do not act on one session at once there.
 
 **When two commands can disagree, and what still holds.** Every command decides afresh from what is on disk and remembers nothing. Usually they all decide the same. They can differ in two cases:
 
@@ -437,14 +438,48 @@ What does not hold:
 
 The rule covers only these default places. A loop's own files are wherever its configuration puts them (`state_dir`, the path given to `-c`), services and registry entries record full paths, and `--directory`, `--panel-directory` and the [environment variables](#environment-variables) name a place outright. None of those is affected by the name, and none of them is moved.
 
+### Moving to looptender: `keepgoing migrate`
+
+Nothing is ever moved for you. `keepgoing migrate` is the one command that moves the per-user directories to the new name, and only when you ask:
+
+```sh
+keepgoing migrate                  # say what would be moved; change nothing
+keepgoing migrate --apply          # move
+keepgoing migrate --undo           # say what moving back would do; change nothing
+keepgoing migrate --undo --apply   # move back
+```
+
+`--json` prints the same as versioned JSON: each place with its `status` and `action`, the `refusals`, and an `outcome` of `nothing_to_do`, `ready`, `refused`, `done` or `failed`. The command exits 0 unless it is refused or fails.
+
+**What it does.** In the configuration directory and then in the state directory (one place on macOS), it renames `keepgoing` to `looptender` and leaves `keepgoing` as a link to it. On Linux and macOS the two names are swapped in one step, so no other program ever finds `keepgoing` missing; elsewhere, or on a file system that cannot, it renames and then links. Then it rewrites the loop registry's references to loops kept inside the moved directory, because the registry records where each loop's files resolve to; a reference is recognised whatever spelling its path has (through a link, `/var` against `/private/var`, a dotfiles directory). It edits no other file: a loop's own configuration that names `…/keepgoing/…`, a service, a scheduler entry and a script all keep working through the link. Keep the link for as long as anything names the earlier path. A loop's own files kept in a `keepgoing` directory move with it, and are reached through the link the same way. A loop already registered stays registered: with this release, `registry add` through the earlier path returns its existing ID once the loop's state directory exists. (v0.2.0's `registry add` refuses it as a runtime directory registered through another config.)
+
+**When it refuses.** It moves nothing, and says why, while anything is using the directories or any loop it can find is running:
+
+- a lock inside a directory to be moved is held: a session claim (a check is running), the panel (`keepgoing panel stop` ends it), a registry edit, a route list edit (`routes.lock`), or the check or daemon of a loop kept there;
+- a loop named in the registry or in the session claim records, wherever its files are, is being checked or has a daemon running;
+- a loop kept inside has an installed service, whose record names its files by their full path: remove the service, move, and install it again;
+- directories of both names exist, or `keepgoing` is a file or a link to somewhere else;
+- a link cannot be made (on Windows that needs Developer Mode or an elevated prompt): without the link an earlier release would not find the files. The preview says so too.
+
+On Linux and macOS, the locks it finds free are held until the directories have moved, so no check, daemon, panel or registry edit of a loop it found can start meanwhile; one that tries is turned away and runs at its next tick. On Windows an open file keeps its directory from being renamed, so the locks are only looked at there. Lock files are only the tool's own, by name; a `._…` file, which macOS writes beside files on FAT, exFAT and some network volumes, is never one. A lock that cannot be tried within a few seconds, as on some such volumes, is taken to be in use, and the move is refused, naming it.
+
+**On Windows, `keepgoing` is missing for a moment.** Windows has no call that swaps two names in one step, so each place is renamed and then linked, and between the two `keepgoing` is not there. This release then uses `looptender`, where the files are. A check that starts in that moment and whose configuration file is under `keepgoing` cannot open it: it stops with `config: open …: no such file or directory` (exit 2), records nothing, and the next check runs normally. A release from before the rename run in that moment may create `keepgoing` again; the move then stops, saying where the files are and how to finish.
+
+It finds running loops by their locks, so it cannot see a loop that is in no registry, has never claimed a session and keeps its files elsewhere; such a loop does not use these directories between checks. Stop your loops' daemons and schedulers before moving, and start them again after.
+
+**If it stops halfway.** Each place is moved in steps (a marker file, then the swap, or the rename and the link), the configuration directory first, and a move back goes through the state directory first. Stopped at any point, the registry and the standard route list are under the name in use, and the session claims and the panel's files are found under either name: a place already moved is reached through its link, and while a place is between its steps `looptender` is in use. If the second place fails, the run says which place was moved and why the other was not. Run the same command again to finish: every run rewrites the registry references that are still left, so a run that stopped after moving and before rewriting (killed, or the registry busy) is finished by the next, and a run that finds everything done clears the marker. If another command, such as a release from before the rename, creates `keepgoing` again in the instant it is absent (possible only where the names are not swapped in one step), or something appears at the other name before a rename, nothing is renamed over it and no link can be left: the command says where the files are and how to finish, and `doctor` reports both names.
+
+**Undo.** `--undo --apply` moves back every place where `keepgoing` is a link to the `looptender` directory beside it, whoever made the link, and rewrites the registry back, under the same refusals and one more: it refuses, changing nothing, while a loop's configuration names a path under `looptender` by its full path, because that path would not exist afterwards and the loop's state would be left behind. It looks at the configurations inside the directories and wherever the registry and the session records say a loop is configured, and lists each file and path. It cannot see a loop that is in no registry, has never been checked, and is configured outside both directories; check such a loop's paths yourself before moving back. Every loop `init` creates after the move names such a path, and so does every loop on a computer that started on `looptender`. Change those paths to `keepgoing` ones or relative ones first, or keep the directories as they are. A place that was never moved (no link) is left alone.
+
 **Going back to v0.2.0 or earlier.** Those releases know only `keepgoing`.
 
 - On a computer where the `keepgoing` directories are in use, there is nothing to do.
+- On a computer moved with `keepgoing migrate`, there is nothing to do either: an earlier release reaches every file through the link, reads the rewritten registry, and takes its claims in the same files. (`keepgoing migrate --undo --apply` also puts everything back.)
 - On a computer that uses `looptender`, an earlier release does not find the registry, the standard route list or the session claims, and it creates `keepgoing` ones as soon as it runs (its panel, which the menu polls, and `init` do so even if you only meant to look). Loops still run, because their configuration and state paths are explicit. Before running an earlier release, stop the daemons and the panel, wait for any check to end, and do one of these in the configuration directory and in the state directory:
-  - **Link.** Where no `keepgoing` directory exists, make `keepgoing` a link to `looptender` (`ln -s looptender keepgoing`, run in that directory). Nothing moves, every recorded path stays valid, and both releases reach the same files.
+  - **Link.** Where no `keepgoing` directory exists, make `keepgoing` a link to `looptender` (`ln -s looptender keepgoing`, run in that directory), as `keepgoing migrate` leaves it. Nothing moves, every recorded path stays valid, both releases reach the same files, and this release keeps using `looptender`.
   - **Move the tool's entries.** Otherwise, move only `registry/`, `routes.yaml`, `sessions/` and `panel/` from `looptender` into `keepgoing` (create it if it is not there). Leave `looptender/loops/` where it is: the loops `init` created there are named by full path in their own configuration (`state_dir`), in the registry and in any installed service, and moving them would break all three.
 
-  Either way this release then uses `keepgoing` too, so both find the same files.
+  Either way both releases then find the same files.
 - Setting `KEEPGOING_SESSION_DIR`, `KEEPGOING_REGISTRY_DIR` and `KEEPGOING_ROUTES_FILE` is not a way back: they do not cover the panel's directory or `init`, and services and the menu do not inherit variables from your shell.
 
 ## Tick output

@@ -43,6 +43,8 @@ type fallbackAddPlan struct {
 	fallbacksPath string
 	createFile    bool
 	candidate     config.Candidate
+	written       bool               // the fallback was written
+	historyFailed bool               // ...but not recorded in the loop's timeline
 	order         []config.Candidate // resulting handoff order, new candidate included
 	position      int                // 1-based position of the new candidate
 	rules         *config.Fallbacks  // redundancy and probe policy that will apply
@@ -244,6 +246,10 @@ func fallbacksAdd(e env, args []string, input io.Reader, lookPath func(string) (
 		}
 	}
 	// Advisory: the same checks run again under the tick lock before writing.
+	if ref := ownListAuthority(cfg.Loop.StateDir, os.Getenv("BB_THREAD_ID")); ref != nil {
+		e.errf("fallbacks add: refused, nothing written.\n  %s", ref.Text)
+		return exitUsage
+	}
 	if code, err := fallbackAddAllowed(cfg); err != nil {
 		e.errf("fallbacks add: refused, nothing written.\n  %v", err)
 		return code
@@ -294,6 +300,9 @@ func fallbacksAdd(e env, args []string, input io.Reader, lookPath func(string) (
 		return fail(code, "%v", err)
 	}
 	printFallbackAddNext(e.stdout, plan)
+	if plan.historyFailed {
+		fmt.Fprintln(e.stdout, "Note: the fallback was added, but could not be recorded in the loop's history (keepgoing timeline).")
+	}
 	return exitOK
 }
 
@@ -993,9 +1002,20 @@ func writeFallbackAdd(p *fallbackAddPlan) (int, error) {
 		return exitFailed, fmt.Errorf("lock: %w", err)
 	}
 	defer l.Release()
+	caller := os.Getenv("BB_THREAD_ID")
+	if ref := ownListAuthority(p.cfg.Loop.StateDir, caller); ref != nil {
+		return exitUsage, fmt.Errorf("%s Nothing written", ref.Text)
+	}
 	if code, err := fallbackAddAllowed(p.cfg); err != nil {
 		return code, fmt.Errorf("%w; nothing written", err)
 	}
+	// Recorded once the files are written; a record that cannot be written
+	// leaves the change standing and says so.
+	defer func() {
+		if p.written {
+			p.historyFailed = recordRouteChange(p.cfg.Loop.StateDir, "add", p.candidate.ID, caller) != nil
+		}
+	}()
 	if p.createFile {
 		f, err := os.OpenFile(p.fallbacksPath, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
 		if err != nil {
@@ -1015,11 +1035,13 @@ func writeFallbackAdd(p *fallbackAddPlan) (int, error) {
 			_ = os.Remove(p.fallbacksPath) // created above, by this command
 			return exitFailed, errors.New("could not update keepgoing.yaml; nothing written")
 		}
+		p.written = true
 		return exitOK, nil
 	}
 	if err := fallbackAddReplace(p.fallbacksPath, p.fallbacksYAML); err != nil {
 		return exitFailed, errors.New("could not update the fallbacks file; nothing written")
 	}
+	p.written = true
 	if p.configYAML != nil {
 		if err := fallbackAddReplace(p.cfgPath, p.configYAML); err != nil {
 			return exitFailed, errors.New("the fallback was added, but errors.failover_on could not be updated in keepgoing.yaml; automatic handoff is unchanged")

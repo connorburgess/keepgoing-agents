@@ -4,6 +4,8 @@
 
 A thin [BB](https://getbb.app) plugin for [keepgoing](../../README.md). It shows keepgoing's state on every thread a loop supervises, with Pause/Resume controls, guided setup and explicit held transfers. It also adds a `bb keepgoing` command. All decisions stay in keepgoing; the plugin only runs the `keepgoing` CLI and renders its JSON.
 
+The plugin reports its version with `--client bb-plugin@VERSION` when it reads a loop's status, so the keepgoing panel's Versions view can say which plugin and which keepgoing build it runs. The version is a constant in `client-flag.ts`, kept equal to `package.json` by a test. A keepgoing too old to know the flag answers with a usage error. The plugin then asks again without it, and stops sending it to that executable only if that second call succeeds. It sends the flag again once the executable changes: a different path, size or modification time, as after an upgrade. A plugin reload also resets this.
+
 ## Install
 
 Use **CLI v0.2.0 + plugin v0.3.0** (its labels say keepgoing). Verify that the [v0.2.0 tag and release](https://github.com/connorburgess/keepgoing-agents/releases/tag/v0.2.0) are available before using this pinned installation command:
@@ -41,7 +43,7 @@ The **Setup** control / expanded banner can refresh diagnostics later. Pause/res
 
 The setup service never spawns, forks, re-parents, sends to, or changes the provider/model of a BB thread. Preview tickets expire after five minutes or plugin reload, are bound to the task hash, goal choice, target metadata, binary selection and resolved plan, and permit one creation attempt. Task text is not persisted in plugin storage, logged, or put in subprocess arguments; it remains in private `task.md` for goal setup or `prompt.md` for task-only setup after creation. Task input is limited to 256 KiB in the UI flow. Paths and target references in private plugin storage are operational metadata.
 
-Existing configured supervision or a failed status lookup blocks creating another loop through this flow. This only covers loops known to the plugin, not arbitrary timers/configurations elsewhere. Setup does not detect or replace an external timer. Do not start a second supervisor for a loop already run by another schedule.
+Existing configured supervision or a failed status lookup blocks creating another loop through this flow. When keepgoing itself refuses a second loop on the same session and reports that in a structured form, **Supervise this thread** shows its reason with the other loop's name; it never offers to override it. This only covers loops known to the plugin, not arbitrary timers/configurations elsewhere. Setup does not detect or replace an external timer. Do not start a second supervisor for a loop already run by another schedule.
 
 ### Recovery and verification limits
 
@@ -52,6 +54,51 @@ Existing configured supervision or a failed status lookup blocks creating anothe
 - The plugin retains at most 32 UI-created setup references. There is no UI deletion/import operation yet; CLI-created configurations use the existing server-local setting. Identical loop names on different hosts are ambiguous to `bb keepgoing <action> <name>` and are refused; use the thread's controls instead.
 
 Verification uses SDK fake-host/RPC tests, local subprocess fixtures, controller tests, DOM interaction tests, typechecking, and plugin bundle builds. Tests cover host routing, preview changes/replay/concurrency, holds, failed diagnostics, reload, privacy, and the separate preview/create/start clicks. No live BB thread, remote host deployment, paid request, account handoff, or end-to-end install-to-completion walkthrough was exercised. The existing conversation timer was not changed.
+
+## Keep going from the New thread screen
+
+Unreleased source, tested only with BB's SDK test hosts and stand-ins. It has not been run in a real BB, so nothing below is live-verified. It uses BB plugin APIs that BB marks experimental (`composer.submit`'s `experimental_data`, `bb.experimental_hooks` and its `experimental_submission`); they can change between BB versions.
+
+The New thread composer gets a **Keep going** switch in its action row, and a **Keep going…** row in the menu beside Send for the compact layout, where BB draws no action row. Turning it on shows a banner that says what will happen and holds one button, **Send and keep going**. That button is the send that asks for supervision. A plain Enter sends the message without supervision and turns the switch off; the new thread then shows the ordinary **Supervise this thread** offer.
+
+What happens after **Send and keep going**:
+
+1. The plugin asks its server for a single-use request (valid for two minutes, one per draft) and sends the message through BB's own composer with that request attached. BB creates the thread and delivers the message as usual.
+2. BB hands the request back to the plugin's `message.dispatch` hook together with the thread it created. That is the only link the plugin accepts. It never guesses from project, time or text. If the request is unknown, expired, already used, or does not describe a person's first message on a thread created after the button was pressed, nothing is created, and the thread says so.
+3. Setup waits until the thread's first turn has started, which is what shows that BB delivered the message, and until its environment and host are ready. Then the plugin runs the same setup as **Supervise this thread**: preview, then create. The first message is the task, recorded as the loop's goal and passed on stdin. Later wakes point the agent at that saved task (`task.md`); the first message is not sent again.
+4. Supervision starts, once, when setup's own diagnostics allow it. Pressing **Send and keep going** is the consent to that start. The thread's banner or card then shows `looptender: keeping this going`, the loop's limit, and **Pause** and **Stop**. A start is reported only when the start command confirmed it.
+
+If anything about the start is uncertain, the setup is left switched off and the thread shows `looptender: ready, not started`, the reason, and one button, **Start keeping this going**. That covers diagnostics that report an error, a start that could not be confirmed, and a hold or a responding supervisor already present. A start is never tried a second time by the plugin.
+
+**The loop's name** is the project directory's name and a short random suffix, such as `example-app-k3f9`. It is never taken from the message or from the thread's title, which BB makes from the message: a loop name reaches command arguments, plugin storage and a directory name, and task text must not. The plugin has no rename; the name is the `name` in the loop's `keepgoing.yaml`.
+
+**A loop-wide limit, always.** Every loop created this way stops for a person after 40 automatic messages, or after 24 hours without progress, which keepgoing measures as a Git change. The numbers are defined once, in `new-thread-contract.ts`, and both can be changed under **Details** in the banner before sending (1 to 1000 messages; 2, 6, 12, 24 or 72 hours). Edited limits apply to that send only. The limits the thread shows afterwards are the ones keepgoing's own setup plan reports, not the request; if that plan does not carry exactly the limits asked for, nothing is created or started.
+
+**The setting** *Keep going from the New thread screen* has two values. *Start automatically* is the default and is described above. *Review first; I start it* always creates the setup switched off and leaves the start to the button on the thread. The mode the banner showed when the button was pressed is the most that happens: if the setting has since become stricter, the stricter one applies, and a stored value the plugin cannot read is treated as review-first.
+
+**A send BB did not deliver never leads to supervision.** If BB's send fails, the control withdraws the request and says the message may not have been sent (BB may already have delivered it); a request withdrawn while setup is running stops at its next step, so nothing more is created, and a setup already created is not started. Setup does not run before the thread's first turn has started; a different message starting that turn while the thread is still pending ends the request (a follow-up after the first turn has started does not); and a request whose thread never starts expires after ten minutes, with its task text.
+
+When it cannot go ahead, it says why and does nothing else:
+
+- The keepgoing program does not run on the BB server: the switch stays off and the banner explains. This check runs on the BB server, not on the host a new thread will use; a host without keepgoing is reported on the thread, after creation.
+- This BB does not offer the dispatch hook, or refuses it: the control is unavailable with that reason. Status, Pause, Stop and **Supervise this thread** on existing threads do not depend on the hook and keep working.
+- The plugin already holds 32 setups: the switch stays off and says so. Details shows the count before that. The plugin cannot remove a setup yet (see the limits below).
+- Another loop already supervises the thread, or that could not be checked: nothing is created or started.
+- The thread does not work in a Git repository: nothing is created.
+- The message has no text, or more than 256 KiB.
+- keepgoing itself refuses, for example because another loop already supervises the thread's session: the thread shows keepgoing's reason in plain words with the other loop's name, and nothing else from the CLI. The plugin offers no way to override the refusal. keepgoing reports the refusal on stdout as `{"schemaVersion":1,"outcome":"refused","refusal":{"code":"second_loop_on_session","otherLoop":"<name>"}}` from `init --json` and `start --json` (v0.2.0 and later); an older keepgoing reports it only as text, and the plugin then shows its ordinary "could not complete" message. For `start`, the plugin passes `--json` only when the setup preview that created the loop advertised `startJson: true`, and only while the same keepgoing binary is configured; otherwise it starts the loop exactly as before. With `--json` a start counts as confirmed only when keepgoing's own report says `started`. The plugin never tries a flag to find out whether it works.
+- Creation was asked for and could not be confirmed: the thread names the loop and shows its configuration path, because a switched-off setup may exist on the host. Check it there with `keepgoing status -c <path>`; to discard it, delete its directory. It is never started and never created again automatically.
+
+Limits of this flow:
+
+- The plugin never creates, sends to, re-parents or changes a thread. BB creates the thread; the plugin only learns of it.
+- The task text is held in the plugin server's memory from the send until setup has been asked to create the loop (at most ten minutes), and is never written to plugin storage, logged, or put in subprocess arguments. Reloading the plugin in that window drops the request; the thread then shows the ordinary offer.
+- The plugin's dispatch hook runs for every message BB dispatches and always answers "proceed". It reads the text only of a message that carries its own request. It does not delay, queue or reject a send.
+- No removal of setups. The plugin keeps at most 32 references and each **Send and keep going** uses one. keepgoing has no command that removes a loop, so the plugin cannot offer one for a switched-off, never-started setup; what is needed is a CLI command that removes such a loop's private directory, and a plugin action that calls it and drops the reference. There is no supported way to free a slot by hand: the references are in the plugin's private storage, which BB does not offer for editing, deleting a loop's directory does not free its slot, and `bb plugin remove` would also delete the plugin's settings. If the slots run out, stop using **Send and keep going** and set loops up with the CLI, which has no such limit.
+- There is no keyboard shortcut for **Send and keep going**.
+- The limits and the cadence shown on the thread after creation are kept in memory; after a plugin reload the thread shows the ordinary status row and **Setup** panel instead.
+
+Not verified: the fakes do not prove that BB delivers experimental_submission for a New thread send, or that createdAt shares the server clock; every break traced fails closed, silently if BB drops experimental_data. Nothing here was run in a real BB.
 
 ## Move supervision here
 

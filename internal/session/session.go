@@ -361,7 +361,9 @@ func Note(dir string, id Identity, s Supervisor, wait time.Duration) error {
 	list := known(dir, id)
 	out := []Supervisor{s}
 	for _, e := range list {
-		if e.StateDir != s.StateDir {
+		// A record written before a directory was renamed names the same
+		// loop by its earlier spelling; resolved, it is this one.
+		if e.StateDir != s.StateDir && CleanPath(e.StateDir) != s.StateDir {
 			out = append(out, e)
 		}
 	}
@@ -409,6 +411,15 @@ func Sibling(dir string) string {
 	return ""
 }
 
+// resolvedKey is a state directory as it resolves now, so one loop recorded
+// under two spellings (before and after its directory was renamed) is one.
+func resolvedKey(dir string) string {
+	if key := CleanPath(dir); key != "" {
+		return key
+	}
+	return dir
+}
+
 // both is dir and, after it, its Sibling when there is one.
 func both(dir string) []string {
 	if other := Sibling(dir); other != "" {
@@ -425,8 +436,8 @@ func Known(dir string, id Identity) []Supervisor {
 	seen := map[string]bool{}
 	for _, d := range both(dir) {
 		for _, s := range known(d, id) {
-			if !seen[s.StateDir] && len(out) < maxSupervisors {
-				seen[s.StateDir] = true
+			if key := resolvedKey(s.StateDir); !seen[key] && len(out) < maxSupervisors {
+				seen[key] = true
 				out = append(out, s)
 			}
 		}
@@ -459,8 +470,8 @@ func Recorded(dir string, id Identity) ([]Supervisor, error) {
 			return nil, err
 		}
 		for _, s := range list {
-			if !seen[s.StateDir] {
-				seen[s.StateDir] = true
+			if key := resolvedKey(s.StateDir); !seen[key] {
+				seen[key] = true
 				out = append(out, s)
 			}
 		}
@@ -512,8 +523,8 @@ func all(dir string, limit int, seen map[string]bool, out []Supervisor) []Superv
 			continue
 		}
 		for _, s := range r.Supervisors {
-			if !seen[s.StateDir] && len(out) < limit {
-				seen[s.StateDir] = true
+			if key := resolvedKey(s.StateDir); !seen[key] && len(out) < limit {
+				seen[key] = true
 				out = append(out, s)
 			}
 		}

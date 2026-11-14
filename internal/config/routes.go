@@ -275,6 +275,10 @@ func checkRoutesFile(info os.FileInfo) error {
 	return nil
 }
 
+// OwnedByUser reports whether this user owns the file or directory; on
+// Windows, where access is governed by ACLs, it is always true.
+func OwnedByUser(info os.FileInfo) bool { return ownedByUser(info) }
+
 // PrivateFile reports whether info is a regular file this user owns that no
 // one else may read or write: the rule for the standard list and the files
 // kept beside it.

@@ -49,8 +49,10 @@ import (
 // already makes, and stopping the server never affects supervision.
 
 const (
-	panelRecordName  = "panel.json"
-	panelSocketName  = "panel.sock"
+	panelRecordName = "panel.json"
+	panelSocketName = "panel.sock"
+	// Both are listed in migrateLockNames (migrate.go); so must any new
+	// lock file in the panel directory.
 	panelOpenLock    = "panel-open"
 	panelServerLock  = "panel-server"
 	panelDefaultIdle = 30 * time.Minute
@@ -1052,10 +1054,13 @@ func panelListCommand(e env, args []string) int {
 	directory := fs.String("directory", "", "private registry directory")
 	staleAfter := fs.Duration("stale-after", defaultStaleAfter, "age at which a check is shown as stale")
 	offline := fs.Bool("offline", false, "do not ask each loop's local daemon for its next check")
+	client := fs.String("client", "", "the calling program's NAME@VERSION (bb-plugin, macos-menu), recorded for the panel's Versions view in a panel directory that already exists")
 	if err := fs.Parse(args); err != nil || fs.NArg() != 0 || *staleAfter <= 0 {
-		e.errf("panel list: invalid arguments; usage: keepgoing panel list [--json] [--directory private-registry]")
+		e.errf("panel list: invalid arguments; usage: keepgoing panel list [--json] [--directory private-registry] [--client NAME@VERSION]")
 		return exitUsage
 	}
+	// Recorded after the answer, and never changing it.
+	defer noteClient(*client, "")
 	if _, err := registryDirectory(*directory); err != nil {
 		e.errf("panel list: registry directory unavailable")
 		return exitUsage
