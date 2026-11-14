@@ -47,7 +47,23 @@ Every commit needs a `Signed-off-by:` line matching its author:
 git commit -s -m "fix(bb): read thread status from JSON instead of exit text"
 ```
 
-The sign-off records contribution origin under the [Developer Certificate of Origin 1.1](https://developercertificate.org/). Use your real name and an address you control. A GitHub `noreply` address is fine. Contributions are licensed under [Apache-2.0](LICENSE).
+By signing off, you confirm that you created the contribution or have the right and any necessary employer authorization to submit it under the applicable contribution terms. Use your real name and an address you control. A GitHub `noreply` address is fine; use the same identity for author and sign-off.
+
+The sign-off records contribution origin and is different from cryptographically signing a commit. New contributions are distributed under the [Sustainable Use License](LICENSE), subject to any preserved third-party terms, and require the contributor agreement below. A sign-off alone does not accept that agreement. Historical DCO sign-offs remain associated with their original commits; the unchanged [DCO 1.1 text](LICENSES/DCO-1.1.txt) is retained for reference and is no longer the current sign-off policy.
+
+The pull-request check requires an author-matching sign-off on each commit and rejects common tool-attribution credits. It does not establish a contributor's legal identity or verify contributor-agreement acceptance.
+
+## Contributor agreement
+
+Read the short [Contributor License Agreement](CONTRIBUTOR_LICENSE_AGREEMENT.md). You retain copyright and give Connor Burgess permission to license your contribution under other terms, including commercial terms. This supports the project's free personal and internal-business use and separate commercial licensing. It is not a copyright assignment.
+
+For each PR, every contributor other than the project steward must personally post the following statement in their own PR description or comment, linking the agreement revision they read:
+
+> I have read and agree to the keepgoing Contributor License Agreement at [link to the agreement revision] for my contributions in this pull request.
+
+Use a GitHub permalink to the agreement at a specific commit, and confirm you have any necessary employer authorization. For a substantial contribution from someone employed elsewhere, the maintainer will ask for the employer's written confirmation that the contributor may make it on these terms before merging. Do not accept for another contributor. The maintainer must verify acceptance from every contributor before merging and retain the public record. The metadata check only verifies sign-offs; it does not automate this review. The steward does not need to grant rights to themself.
+
+This agreement does not apply retroactively. Do not assume that an earlier DCO sign-off grants commercial relicensing permission. Preserve third-party notices and disclose imported material and its license in the PR. See the [licensing guide](LICENSING.md).
 
 ## Public data
 

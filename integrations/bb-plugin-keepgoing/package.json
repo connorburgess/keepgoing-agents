@@ -37,7 +37,7 @@
     "typescript": "^5.7.0"
   },
   "description": "Shows keepgoing's state beside the BB threads it supervises.",
-  "license": "Apache-2.0",
+  "license": "SEE LICENSE IN ../../LICENSE",
   "scripts": {
     "build": "bb plugin build",
     "typecheck": "tsc --noEmit",

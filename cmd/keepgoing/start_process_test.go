@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -9,9 +10,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
-	"regexp"
 	"runtime"
-	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -21,6 +20,7 @@ import (
 	"github.com/connorburgess/keepgoing-agents/internal/daemoninfo"
 	"github.com/connorburgess/keepgoing-agents/internal/lock"
 	"github.com/connorburgess/keepgoing-agents/internal/state"
+	"github.com/connorburgess/keepgoing-agents/internal/testexec"
 )
 
 // Build the real entrypoint and a local process fixture. No provider CLI is
@@ -31,20 +31,22 @@ func TestStartBackgroundProcess(t *testing.T) {
 	}
 	dir := t.TempDir()
 	t.Setenv("BB_THREAD_ID", "thr_start_fixture")
-	build := func(name, source string) string {
+	// Both programs are built here and run by this test. testexec runs each
+	// once as it is built, so a refusal by the host of a file it has not
+	// seen is retried there and never reaches an assertion below.
+	tools, err := testexec.NewDir(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	build := func(name, source string, firstRun ...string) string {
 		t.Helper()
-		bin := filepath.Join(dir, name)
-		if runtime.GOOS == "windows" {
-			bin += ".exe"
-		}
-		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
-		defer cancel()
-		if out, err := exec.CommandContext(ctx, "go", "build", "-o", bin, source).CombinedOutput(); err != nil {
-			t.Fatalf("build: %v %s", err, out)
+		bin, err := tools.Build(name, source, nil, firstRun...)
+		if err != nil {
+			t.Fatal(err)
 		}
 		return bin
 	}
-	bin := build("keepgoing", ".")
+	bin := build("keepgoing", ".", "version")
 	fixtureSource := filepath.Join(dir, "fixture.go")
 	if err := os.WriteFile(fixtureSource, []byte(`package main
 import ("fmt"; "os"; "path/filepath")
@@ -109,18 +111,44 @@ loop:
 	if ctl, err := control.Load(stateDir); err != nil || ctl.Enabled || ctl.Ownership != nil {
 		t.Fatalf("failed startup changed control: %+v %v", ctl, err)
 	}
+	// With --json the same failure is one object on stdout.
+	invokeJSON := func(args ...string) (int, map[string]any, string) {
+		t.Helper()
+		ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+		defer cancel()
+		cmd := exec.CommandContext(ctx, bin, append(args, "-c", "keepgoing.yaml")...)
+		cmd.Dir = dir
+		var stdout, stderr bytes.Buffer
+		cmd.Stdout, cmd.Stderr = &stdout, &stderr
+		err := cmd.Run()
+		code := 0
+		var x *exec.ExitError
+		if errors.As(err, &x) {
+			code = x.ExitCode()
+		} else if err != nil {
+			t.Fatalf("invoke: %v", err)
+		}
+		var v map[string]any
+		if json.Unmarshal(stdout.Bytes(), &v) != nil || strings.Count(strings.TrimSpace(stdout.String()), "\n") != 0 {
+			t.Fatalf("start --json printed %q", stdout.String())
+		}
+		return code, v, stderr.String()
+	}
+	if code, v, errs := invokeJSON("start", "--background", "--json"); code != exitFailed || v["schemaVersion"] != float64(1) || v["outcome"] != "failed" || v["exitCode"] != float64(exitFailed) || !strings.Contains(errs, "not executable") {
+		t.Fatalf("failed startup --json: %d %v %s", code, v, errs)
+	}
 	if err := os.WriteFile(cfg, []byte(contents), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	code, out := invoke("start", "--background")
-	if code != 0 {
-		t.Fatalf("start: %d %s", code, out)
+	code, v, errs := invokeJSON("start", "--background", "--json")
+	if code != 0 || v["outcome"] != "started" || v["schemaVersion"] != float64(1) {
+		t.Fatalf("start: %d %v %s", code, v, errs)
 	}
-	match := regexp.MustCompile(`PID (\d+)`).FindStringSubmatch(out)
-	if len(match) != 2 {
-		t.Fatalf("no PID: %s", out)
+	pidValue, _ := v["pid"].(float64)
+	pid := int(pidValue)
+	if pid <= 0 || v["control"] == "" {
+		t.Fatalf("no PID or control: %v", v)
 	}
-	pid, _ := strconv.Atoi(match[1])
 	proc, err := os.FindProcess(pid)
 	if err != nil {
 		t.Fatal(err)

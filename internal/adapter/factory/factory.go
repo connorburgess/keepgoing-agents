@@ -28,7 +28,7 @@ func New(a config.Agent, stateDir, target string) (adapter.Adapter, error) {
 	if h, ok := runner.New(a, dir); ok {
 		return h, nil
 	}
-	if _, registered := runner.SpecFor(a.Adapter); registered {
+	if _, registered := runner.SpecFor(a.Adapter); registered || a.Adapter == config.CustomAdapter {
 		return nil, fmt.Errorf("the %s adapter needs its %s settings, and the agent definition has none", a.Adapter, a.Adapter)
 	}
 	return nil, fmt.Errorf("unknown adapter %q", a.Adapter)

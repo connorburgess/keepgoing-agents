@@ -6,6 +6,7 @@ import (
 	"errors"
 	"io"
 	"path/filepath"
+	"runtime"
 	"unicode/utf8"
 
 	"github.com/connorburgess/keepgoing-agents/internal/config"
@@ -14,7 +15,7 @@ import (
 
 const initTaskLimit = 1 << 20
 
-const initCursorNotice = "Cursor starts a separate CLI conversation; existing IDE chats are not attached. Interactive permission bridging, quota/reset detection and fallback recovery are unavailable. Existing permissions are inherited; live compatibility and a supported CLI version range have not been verified."
+const initCursorNotice = "Cursor starts a separate CLI conversation; existing IDE chats are not attached. Interactive permission bridging, quota/reset detection and fallback recovery are unavailable. Existing permissions are inherited. Doctor can check the stored login; models, quota and permissions stay unverified. One CLI version has been inspected and walked through live once on macOS; other versions and platforms are unverified."
 
 const initTaskBindingNotice = "Task binding: snapshot imported into prompt.md at creation. Later edits to the original task source are not tracked; supervision rereads the saved prompt.md when preparing task prompts."
 
@@ -58,24 +59,27 @@ func readInitTask(ctx context.Context, input io.Reader) (string, error) {
 // account-directory paths, and raw configuration never enter this report.
 // Next commands are argv arrays, not shell strings, and are never executed here.
 type initReport struct {
-	SchemaVersion int               `json:"schemaVersion"`
-	Version       string            `json:"version"`
-	Outcome       string            `json:"outcome"` // preview or created
-	Loop          string            `json:"loop"`
-	Project       string            `json:"project"`
-	ConfigPath    string            `json:"configPath"`
-	StateDir      string            `json:"stateDir"`
-	PromptPath    string            `json:"promptPath"`
-	TaskPath      string            `json:"taskPath,omitempty"`
-	Goal          *initGoalReport   `json:"goal,omitempty"`
-	TaskSource    string            `json:"taskSource"`  // stdin, file, inline
-	TaskBinding   string            `json:"taskBinding"` // snapshot
-	Primary       initTarget        `json:"primary"`
-	Fallbacks     []initFallbackRef `json:"fallbacks"`
-	Limits        initLimits        `json:"limits"`
-	Probes        *initProbePolicy  `json:"probes,omitempty"`
-	Next          initNextCommands  `json:"next"`
-	Limitations   []string          `json:"limitations"`
+	SchemaVersion int    `json:"schemaVersion"`
+	Version       string `json:"version"`
+	Outcome       string `json:"outcome"` // preview or created
+	// StartJSON says this build's start accepts --background --json, which
+	// reports a refusal as a code and the other loop's name.
+	StartJSON   bool              `json:"startJson"`
+	Loop        string            `json:"loop"`
+	Project     string            `json:"project"`
+	ConfigPath  string            `json:"configPath"`
+	StateDir    string            `json:"stateDir"`
+	PromptPath  string            `json:"promptPath"`
+	TaskPath    string            `json:"taskPath,omitempty"`
+	Goal        *initGoalReport   `json:"goal,omitempty"`
+	TaskSource  string            `json:"taskSource"`  // stdin, file, inline
+	TaskBinding string            `json:"taskBinding"` // snapshot
+	Primary     initTarget        `json:"primary"`
+	Fallbacks   []initFallbackRef `json:"fallbacks"`
+	Limits      initLimits        `json:"limits"`
+	Probes      *initProbePolicy  `json:"probes,omitempty"`
+	Next        initNextCommands  `json:"next"`
+	Limitations []string          `json:"limitations"`
 }
 
 type initTarget struct {
@@ -109,6 +113,10 @@ type initNextCommands struct {
 	Doctor          []string `json:"doctor"`
 	StartForeground []string `json:"startForeground"`
 	StartBackground []string `json:"startBackground"`
+	// Service is the recommended way to keep checks running, instead of
+	// start: it does not enable the loop, so `enable` comes first. On macOS and
+	// Linux: a service the operating system restarts. Absent elsewhere.
+	Service []string `json:"service,omitempty"`
 }
 
 func initTargetOf(a config.Agent) initTarget {
@@ -122,7 +130,7 @@ func initTargetOf(a config.Agent) initTarget {
 func printInitJSON(e env, o initOptions, cfg *config.Config, goal *control.Goal) int {
 	cfgPath := filepath.Join(o.directory, "keepgoing.yaml")
 	r := initReport{
-		SchemaVersion: 1, Version: version, Outcome: "created", Loop: o.name,
+		SchemaVersion: 1, Version: version, Outcome: "created", StartJSON: true, Loop: o.name,
 		Project: o.project, ConfigPath: cfgPath, StateDir: cfg.Loop.StateDir,
 		PromptPath: filepath.Join(o.directory, "prompt.md"), TaskSource: "inline", TaskBinding: "snapshot",
 		Primary: initTargetOf(cfg.Loop.Agent), Fallbacks: []initFallbackRef{},
@@ -131,6 +139,7 @@ func printInitJSON(e env, o initOptions, cfg *config.Config, goal *control.Goal)
 			Doctor:          []string{keepgoingExecutable(), "doctor", "--json", "-c", cfgPath},
 			StartForeground: []string{keepgoingExecutable(), "start", "--foreground", "-c", cfgPath},
 			StartBackground: []string{keepgoingExecutable(), "start", "--background", "-c", cfgPath},
+			Service:         serviceInstallCommand(cfgPath),
 		},
 		Limitations: []string{
 			initBindingNotice(o),
@@ -174,4 +183,13 @@ func printInitJSON(e env, o initOptions, cfg *config.Config, goal *control.Goal)
 		return exitFailed
 	}
 	return exitOK
+}
+
+// serviceInstallCommand is `keepgoing service install` for the configuration, where
+// a managed service exists (macOS and Linux).
+func serviceInstallCommand(cfgPath string) []string {
+	if runtime.GOOS != "darwin" && runtime.GOOS != "linux" {
+		return nil
+	}
+	return []string{keepgoingExecutable(), "service", "install", "-c", cfgPath}
 }

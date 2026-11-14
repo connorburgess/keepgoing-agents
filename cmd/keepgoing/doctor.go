@@ -17,6 +17,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/connorburgess/keepgoing-agents/internal/adapter/runner"
 	"github.com/connorburgess/keepgoing-agents/internal/config"
 	"github.com/connorburgess/keepgoing-agents/internal/control"
 	"github.com/connorburgess/keepgoing-agents/internal/daemoninfo"
@@ -94,6 +95,27 @@ func doctor(e env, args []string, run doctorRun) int {
 	}
 	r.Loop = cfg.Loop.Name
 	r.add("config", "ok", "Configuration and configured fallbacks validate.", "")
+	// Timing probes are paid requests the owner turned on; doctor says what
+	// they are for, what they cost and where their readings come from.
+	if ts := cfg.TimingSummary(); ts != nil {
+		r.add("timing", "ok", ts.Collecting+". "+ts.Cost+".", "Set loop.timing.enabled to false to stop these probes.")
+		for i, w := range ts.Warnings {
+			fix := "Check that this computer's CLI is signed in to the account BB uses for this thread; the readings describe whichever account the CLI uses."
+			if strings.Contains(w, "scheduled_disabled") {
+				fix = "Remove probe.scheduled_disabled from the fallbacks file, or turn timing off."
+			}
+			r.add(fmt.Sprintf("timing.warning.%d", i+1), "warning", w+".", fix)
+		}
+	}
+	// The variables move what every command reads, so doctor says where.
+	if dir := os.Getenv(registryDirEnv); dir != "" {
+		r.add("registry.directory", "ok", "KEEPGOING_REGISTRY_DIR is set: commands use the registry in "+dir+" when no --directory is given.", "Unset it to use the default registry.")
+	}
+	// A check claims its session before acting on it. Doctor says what is
+	// wrong with the claim directory, in terms of its real cause.
+	if status, message, fix := sessionDirectoryCheck(); status != "" {
+		r.add("session.directory", status, message, fix)
+	}
 	doctorFile(&r, "config.permissions", *path, false)
 	if cfg.Loop.Fallbacks != "" {
 		doctorFile(&r, "fallbacks.permissions", cfg.Loop.Fallbacks, false)
@@ -177,6 +199,15 @@ func doctor(e env, args []string, run doctorRun) int {
 			r.add("agent."+id+".session", status, s.Message, "")
 		}
 		doctorAgent(e.ctx, &r, id, a, *offline, *timeout, run)
+		if a.Custom != nil {
+			// A defined agent's own mapping decides what moves work to a
+			// fallback, so every such mapping is said in words.
+			if moves := a.Custom.FailoverMappings(cfg.Loop.Errors.FailoverOn); len(moves) > 0 {
+				r.add("agent."+id+".failover", "warning", "This definition decides what moves work to a fallback: "+strings.Join(moves, "; ")+".", "Map only a real provider limit to a class the loop fails over on. Leave a refusal, a policy block or an account restriction unmapped: it is then unknown, which never moves work.")
+			} else {
+				r.add("agent."+id+".failover", "ok", "Nothing in this definition maps the agent's output to a class the loop fails over on.", "")
+			}
+		}
 	}
 	checkAgent("primary", cfg.Loop.Agent)
 	if cfg.FallbackSet != nil {
@@ -209,6 +240,18 @@ func doctor(e env, args []string, run doctorRun) int {
 	}
 	doctorCheckVersion(&r, st.LastCheck, stateErr == nil)
 	doctorFailedChecks(&r, st, stateErr == nil)
+	if stateErr == nil {
+		if ctl, err := control.Load(cfg.Loop.StateDir); err == nil {
+			if level, text, fix, ok := scheduleDoctorLine(describeSchedule(&cfg.Loop, st, ctl, &d, r.CheckedAt)); ok {
+				r.add("supervisor.schedule", level, text, fix)
+			}
+		}
+	}
+	if _, err := state.LoadLedger(cfg.Loop.StateDir); err != nil {
+		r.add("supervisor.send_record", "error", "The send record sends.json cannot be read, so no check sends anything.", "Restore sends.json from a copy. Deleting it loses the record of sends not yet counted, which may then be repeated, and resets the count against loop.limits.max_sends.")
+	} else {
+		r.add("supervisor.send_record", "ok", "The send record sends.json is readable.", "")
+	}
 	doctorTickBudget(&r, cfg.Loop)
 	doctorNetworkCheck(e.ctx, &r, cfg.Loop, st, *offline)
 	r.add("probes", "unavailable", "No model requests or paid probes were made. Login status does not establish credential validity, model access, or quota health.", "Preview with fallbacks check --dry-run. Run fallbacks check without --dry-run only when you intend paid probes; manual probes are outside the scheduled daily cap.")
@@ -425,8 +468,66 @@ func doctorAgent(ctx context.Context, r *doctorReport, id string, a config.Agent
 		workdir, extraArgs = a.Codex.Workdir, a.Codex.ExtraArgs
 	case a.Cursor != nil:
 		cli, workdir, env = a.Cursor.CLI, a.Cursor.Workdir, a.Cursor.Env
-		r.add(prefix+".account", "unavailable", "Cursor account identity and quota state are not verified; existing CLI configuration and environment are inherited.", "")
+		r.add(prefix+".account", "unavailable", "Cursor quota, usage windows and reset times have no structured interface and are not checked. Account identity is never displayed; existing CLI configuration and environment are inherited.", "")
+		r.add(prefix+".models", "unavailable", doctorCursorModels(a.Cursor.Model), "Check the model with Cursor's own model listing; doctor does not parse it.")
+		r.add(prefix+".workspace", "unavailable", "Whether Cursor trusts the configured project directory cannot be checked. In a directory it does not trust, every turn exits with an error before it starts; keepgoing never passes a trust or approval flag.", "Open the project once with Cursor's own CLI and answer its trust question before starting supervision.")
 		r.add(prefix+".capabilities", "unavailable", initCursorNotice, "Review the Cursor integration limits before starting supervision.")
+	case a.Custom != nil:
+		// A defined agent declares no version or login interface, and doctor
+		// runs nothing a definition does not declare: it resolves the
+		// executable and says what the definition lets keepgoing do.
+		workdir, env = a.Custom.Workdir, a.Custom.Env
+		spec, set, ok := runner.Resolve(a)
+		if !ok {
+			r.add(prefix+".cli", "error", "The defined agent has no usable definition.", "Run validate and correct the custom agent's definition.")
+			return
+		}
+		if info, err := os.Stat(workdir); err != nil || !info.IsDir() {
+			r.add(prefix+".workdir", "error", "The defined agent's working directory is missing or not a directory.", "Correct custom.workdir; a relative path resolves against the configuration file.")
+		} else {
+			r.add(prefix+".workdir", "ok", "The defined agent's working directory exists.", "")
+		}
+		// Every command the definition names is checked, not only start.
+		d := a.Custom.Definition
+		commands := []struct {
+			id, name string
+			argv     config.Argv
+		}{{".cli", "start", d.Start}, {".cli.resume", "resume", d.Resume}}
+		if d.Probe != nil {
+			commands = append(commands, struct {
+				id, name string
+				argv     config.Argv
+			}{".cli.probe", "probe", d.Probe.Argv})
+		}
+		if d.Limits != nil {
+			commands = append(commands, struct {
+				id, name string
+				argv     config.Argv
+			}{".cli.limits", "limits", d.Limits.Argv})
+		}
+		for _, c := range commands {
+			if len(c.argv) == 0 || len(c.argv[0].Parts) != 1 {
+				continue
+			}
+			if c.id != ".cli" && c.argv[0].Parts[0] == set.CLI {
+				continue // the same executable as start, already checked
+			}
+			if _, err := exec.LookPath(c.argv[0].Parts[0]); err != nil {
+				r.add(prefix+c.id, "error", "The defined agent's "+c.name+" executable is missing or not executable.", "Install it or correct the first argument of the definition's "+c.name+" command and the scheduler PATH. A path resolves against the configuration file.")
+			} else {
+				r.add(prefix+c.id, "ok", "The defined agent's "+c.name+" executable resolves. It was not run.", "")
+			}
+		}
+		can, cannot := spec.Abilities()
+		r.add(prefix+".capabilities", "ok", "Defined agent "+spec.Provider+". keepgoing can: "+strings.Join(can, "; ")+".", "")
+		if len(cannot) > 0 {
+			r.add(prefix+".limits", "unavailable", "With this definition keepgoing cannot: "+strings.Join(cannot, "; ")+".", "Declare the capability with the rule that lets it be observed, if the agent's documented interface supports it.")
+		}
+		if spec.Probe.Command != nil {
+			r.add(prefix+".probe", "warning", "The probe is the command the definition gives, with a fixed short prompt. keepgoing cannot tell what it does: if it is the agent's ordinary turn command, each probe is a full paid turn with tools and side effects.", "Use the agent's cheapest documented check for the probe, and see fallbacks check --dry-run for when probes run.")
+		}
+		r.add(prefix+".account", "unavailable", "A defined agent's account and login are not queried; its environment is passed through.", "")
+		return
 	case a.Process != nil:
 		r.add(prefix+".cli", "unavailable", "Custom process commands are not executed by doctor.", "Check their structured status contract separately.")
 		return
@@ -479,7 +580,9 @@ func doctorAgent(ctx context.Context, r *doctorReport, id string, a config.Agent
 	out, err := call("--version")
 	if err != nil {
 		r.add(prefix+".version", "unavailable", "CLI version command failed, timed out, or exceeded its output limit.", "Check the executable and supported --version interface; raw output is withheld.")
-	} else if v := doctorAgentVersion(a.Adapter, out); v != "" {
+	} else if v := doctorAgentVersion(a.Adapter, out); v != "" && a.Cursor != nil {
+		doctorCursorVersion(r, prefix+".version", v)
+	} else if v != "" {
 		r.add(prefix+".version", "ok", "CLI version: "+v+". Compatibility is not inferred from the version alone.", "")
 	} else {
 		r.add(prefix+".version", "unavailable", "CLI returned an unrecognized version format; raw output is withheld.", "Check the installed CLI version manually.")
@@ -499,7 +602,12 @@ func doctorAgent(ctx context.Context, r *doctorReport, id string, a config.Agent
 		out, err := call("auth", "status", "--json")
 		doctorClaudeLogin(r, prefix+".login", out, err)
 	} else if a.Cursor != nil {
-		r.add(prefix+".login", "unavailable", "Cursor has no verified structured login-status contract; human-readable status is not parsed.", "Check authentication through Cursor; doctor does not change logins.")
+		if doctorCursorEnvCredential(env) {
+			r.add(prefix+".login", "unavailable", "A Cursor API key or token is supplied through the environment. The status command describes the stored login, which may not be the credential a turn uses, so it was not queried.", "Verify the key with Cursor; doctor does not read or test it.")
+		} else {
+			out, err := call("status", "--format", "json")
+			doctorCursorLogin(r, prefix+".login", out, err)
+		}
 	} else if a.Codex != nil {
 		_, err := call("login", "status")
 		doctorCodexLogin(r, prefix+".login", err)
@@ -592,12 +700,10 @@ func (b *doctorBuffer) Write(p []byte) (int, error) {
 
 func (b *doctorBuffer) Bytes() []byte { return b.buffer.Bytes() }
 
-var doctorCursorVersionPattern = regexp.MustCompile(`^[0-9]{4}\.[0-9]{2}\.[0-9]{2}-[0-9a-f]{7,40}$`)
-
 func doctorAgentVersion(adapter string, raw []byte) string {
 	if adapter == "cursor" {
 		v := strings.TrimSpace(string(raw))
-		if doctorCursorVersionPattern.MatchString(v) {
+		if config.CursorVersionPattern.MatchString(v) {
 			return v
 		}
 		return ""

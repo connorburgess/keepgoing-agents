@@ -204,3 +204,104 @@ func TestHealthFilesWithoutOrWithBadUsageStillLoad(t *testing.T) {
 		}
 	}
 }
+
+// Every probe that carries a reading adds it to the candidate's history for
+// that window instance; a probe without one adds nothing, and a probe of
+// another account starts over. The history survives a save and load.
+func TestUsageHistoryAccumulatesPerAccount(t *testing.T) {
+	dir := t.TempDir()
+	r := &Registry{Candidates: map[string]*Entry{}}
+	resets := now.Add(72 * time.Hour)
+	probeAt := func(at time.Time, identity string, used float64) probe.Result {
+		res := ok(at)
+		res.UsageIdentity = identity
+		if used >= 0 {
+			res.Usage = &probe.Usage{At: at, Source: probe.UsageSourceClaude, Identity: identity, Windows: []probe.UsageWindow{{Key: "seven_day", Used: used, ResetsAt: &resets}}}
+		}
+		return res
+	}
+	r.Record("claude-alt", probeAt(now.Add(-12*time.Hour), "account-a", 0.1))
+	r.Record("claude-alt", probeAt(now.Add(-8*time.Hour), "account-a", -1))
+	r.Record("claude-alt", probeAt(now.Add(-6*time.Hour), "account-a", 0.15))
+	r.Record("claude-alt", probeAt(now, "account-a", 0.2))
+	if err := r.Save(dir); err != nil {
+		t.Fatal(err)
+	}
+	got, err := Load(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	h := got.Candidates["claude-alt"].UsageHistory
+	if s := h.Find("seven_day"); !h.For("account-a") || s == nil || len(s.Samples) != 3 || s.Samples[2].Used != 0.2 || !s.ResetsAt.Equal(resets) {
+		t.Fatalf("history: %+v", h)
+	}
+	b, _ := os.ReadFile(filepath.Join(dir, FileName))
+	if strings.Count(string(b), `"usageHistory"`) != 1 {
+		t.Fatalf("stored record: %s", b)
+	}
+	got.Record("claude-alt", probeAt(now.Add(time.Hour), "account-b", -1))
+	if got.Candidates["claude-alt"].UsageHistory != nil {
+		t.Fatal("history kept after the account identity changed")
+	}
+	// A stored history that is not one loads as absent and leaves health intact.
+	if err := os.WriteFile(filepath.Join(dir, FileName), []byte(`{"candidates":{"claude-alt":{"last":{"at":"2026-11-09T11:00:00Z","tier":"scheduled","kind":"claude","ok":true,"latencyMs":5,"exitCode":0},"usageHistory":"seven_day 20%"}}}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if got, err := Load(dir); err != nil || got.Candidates["claude-alt"].UsageHistory != nil || !got.Healthy("claude-alt", now, 6*time.Hour) {
+		t.Fatalf("%+v %v", got, err)
+	}
+}
+
+// When the first route's timing probe is due, in table form.
+func TestTimingProbeTable(t *testing.T) {
+	c := config.Candidate{ID: "primary"}
+	timing := config.Timing{Enabled: true, Windows: []string{"seven_day"}, NearReset: config.Duration{Duration: 6 * time.Hour}, ProbeEvery: config.Duration{Duration: 12 * time.Hour}}
+	policy := config.ProbePolicy{DailyCap: 2}
+	week := now.Add(5 * time.Hour)
+	reading := func(at time.Time, identity string, windows ...probe.UsageWindow) *probe.Usage {
+		return &probe.Usage{At: at, Source: probe.UsageSourceClaude, Identity: identity, Windows: windows}
+	}
+	weekWin := probe.UsageWindow{Key: "seven_day", Used: 0.4, ResetsAt: &week}
+	shortWin := probe.UsageWindow{Key: "five_hour", Used: 0.4, ResetsAt: &week}
+	for name, tc := range map[string]struct {
+		entry  *Entry
+		policy config.ProbePolicy
+		due    bool
+		why    string
+		near   bool
+	}{
+		"never probed":                                   {nil, policy, true, TimingDue, false},
+		"scheduled probes off":                           {nil, config.ProbePolicy{DailyCap: 2, Disabled: true}, false, TimingScheduledOff, false},
+		"probed 11 h ago":                                {&Entry{LastSched: now.Add(-11 * time.Hour)}, policy, false, TimingRecent, false},
+		"passed a probe of any tier 11 h ago":            {&Entry{Last: &probe.Result{At: now.Add(-11 * time.Hour), OK: true}}, policy, false, TimingRecent, false},
+		"probed 12 h ago":                                {&Entry{LastSched: now.Add(-12 * time.Hour)}, policy, true, TimingDue, false},
+		"cap reached today":                              {&Entry{ProbeDay: now.Format("2006-01-02"), ProbesToday: 2}, policy, false, TimingCapReached, false},
+		"named window resets in 5 h, last read 11 h ago": {&Entry{LastSched: now.Add(-11 * time.Hour), Usage: reading(now.Add(-11*time.Hour), "account-a", weekWin)}, policy, true, TimingNearReset, true},
+		"that instance already had its probe": {&Entry{LastSched: now.Add(-11 * time.Hour), Usage: reading(now.Add(-11*time.Hour), "account-a", weekWin),
+			NearReset: []NearResetMark{{Key: "seven_day", ResetsAt: week}}}, policy, false, TimingRecent, false},
+		"already read within the near period":   {&Entry{LastSched: now.Add(-11 * time.Hour), Usage: reading(now.Add(-time.Hour), "account-a", weekWin)}, policy, false, TimingRecent, false},
+		"a window not named":                    {&Entry{LastSched: now.Add(-11 * time.Hour), Usage: reading(now.Add(-11*time.Hour), "account-a", shortWin)}, policy, false, TimingRecent, false},
+		"a reading of another account":          {&Entry{LastSched: now.Add(-11 * time.Hour), Usage: reading(now.Add(-11*time.Hour), "account-b", weekWin)}, policy, false, TimingRecent, false},
+		"near the reset but the cap is reached": {&Entry{ProbeDay: now.Format("2006-01-02"), ProbesToday: 2, Usage: reading(now.Add(-11*time.Hour), "account-a", weekWin)}, policy, false, TimingCapReached, false},
+	} {
+		r := &Registry{Candidates: map[string]*Entry{}}
+		if tc.entry != nil {
+			r.Candidates["primary"] = tc.entry
+		}
+		due, why, near := r.TimingProbe(c, timing, tc.policy, "account-a", now)
+		if due != tc.due || why != tc.why || (near != nil) != tc.near {
+			t.Errorf("%s: due %v %q near %+v", name, due, why, near)
+		}
+		if near != nil && (near.Key != "seven_day" || !near.ResetsAt.Equal(week)) {
+			t.Errorf("%s: mark %+v", name, near)
+		}
+	}
+	// Marks of instances that have reset are dropped; the newest are kept.
+	r := &Registry{Candidates: map[string]*Entry{}}
+	r.MarkNearReset("primary", NearResetMark{Key: "seven_day", ResetsAt: now.Add(-time.Hour)}, now.Add(-2*time.Hour))
+	r.MarkNearReset("primary", NearResetMark{Key: "seven_day", ResetsAt: week}, now)
+	r.MarkNearReset("primary", NearResetMark{Key: "seven_day", ResetsAt: week}, now)
+	if m := r.Candidates["primary"].NearReset; len(m) != 1 || !m[0].ResetsAt.Equal(week) {
+		t.Fatalf("marks: %+v", m)
+	}
+}

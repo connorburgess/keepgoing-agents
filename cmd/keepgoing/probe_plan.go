@@ -22,6 +22,9 @@ type probePlan struct {
 	CostStatus          string               `json:"costStatus"`
 	CostNote            string               `json:"costNote"`
 	Candidates          []probePlanCandidate `json:"candidates"`
+	// Timing is the scheduled timing probes of the first route, which this
+	// plan does not run; absent when timing is off.
+	Timing *config.TimingSummary `json:"timing,omitempty"`
 }
 
 type probePlanCandidate struct {
@@ -50,6 +53,9 @@ func planProbes(fb *config.Fallbacks, only string, exact bool) (probePlan, []con
 		cost := "One CLI probe turn; may consume subscription quota or API credit. Billing, context overhead, and provider retries are not estimated."
 		if c.Probe.Kind == "command" {
 			cost = "Custom command; monetary cost, model requests, and side effects are unknown."
+		}
+		if c.Probe.Kind == config.CustomAdapter {
+			cost = "The probe command from the agent's definition, given the fixed probe prompt. keepgoing cannot tell what it does: it may be a full paid turn of the agent, with tools and side effects. Cost and model requests are unknown."
 		}
 		p.Candidates = append(p.Candidates, probePlanCandidate{ID: c.ID, Kind: c.Probe.Kind, Provider: c.Provider, Group: c.Group, Model: c.ProbeModel(exact), Disabled: c.Disabled, Timeout: fb.Probe.Timeout.Duration.String(), CostNote: cost})
 		selected = append(selected, c)
@@ -88,6 +94,9 @@ func printProbePlan(w io.Writer, p probePlan, asJSON bool) error {
 			model = "provider default (unresolved)"
 		}
 		fmt.Fprintf(&b, "  %s: %s; provider %s; quota group %s; model %s; timeout %s; disabled %t\n    %s\n", c.ID, c.Kind, c.Provider, c.Group, model, c.Timeout, c.Disabled, c.CostNote)
+	}
+	if t := p.Timing; t != nil {
+		fmt.Fprintf(&b, "Not in this plan, scheduled by checks: %s\n", strings.TrimPrefix(t.Cost, "timing: "))
 	}
 	_, err := io.WriteString(w, b.String())
 	return err
