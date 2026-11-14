@@ -46,9 +46,10 @@ type Snapshot struct {
 	// LastPassAt is when the daemon's latest completed pass ended, and
 	// LastPassStartedAt when it began, whether or not it recorded a check.
 	// A pass that began after a check finished is not that check's pass.
-	LastPassAt        *time.Time `json:"lastPassAt,omitempty"`
-	LastPassStartedAt *time.Time `json:"lastPassStartedAt,omitempty"`
-	DryRun            bool       `json:"dryRun"`
+	LastPassAt             *time.Time `json:"lastPassAt,omitempty"`
+	LastPassStartedAt      *time.Time `json:"lastPassStartedAt,omitempty"`
+	DryRun                 bool       `json:"dryRun"`
+	ConfigUnavailableSince *time.Time `json:"configUnavailableSince,omitempty"`
 }
 
 type response struct {
@@ -328,4 +329,18 @@ func Query(ctx context.Context, stateDir string) (Snapshot, error) {
 		return Snapshot{}, errors.New("daemon response belongs to another state directory")
 	}
 	return snap, nil
+}
+
+// SetConfigUnavailable publishes only a dated configuration diagnostic.
+func (s *Server) SetConfigUnavailable(since *time.Time) {
+	if s == nil {
+		return
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.snapshot.ConfigUnavailableSince = nil
+	if since != nil {
+		at := since.UTC()
+		s.snapshot.ConfigUnavailableSince = &at
+	}
 }

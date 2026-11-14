@@ -129,7 +129,8 @@ type File struct {
 	Degraded      bool      `json:"degraded,omitempty"`
 	// RoutesUnreadable is true while a loop that follows the standard route
 	// list cannot read it, so that beginning and ending are each reported once.
-	RoutesUnreadable bool `json:"routesUnreadable,omitempty"`
+	RoutesUnreadable        bool                     `json:"routesUnreadable,omitempty"`
+	DaemonConfigUnavailable *DaemonConfigUnavailable `json:"daemonConfigUnavailable,omitempty"`
 	// RoutesDigest identifies the standard list this loop last read, so a
 	// change to it is noted once in the loop's timeline.
 	RoutesDigest string `json:"routesDigest,omitempty"`
@@ -855,4 +856,12 @@ func (g RefusalGauge) Since(now time.Time) time.Duration {
 // InLastDay returns the refusals and recoveries of the last 24 hours.
 func (g RefusalGauge) InLastDay(now time.Time) (refused, recovered int) {
 	return len(keepRecent(g.Recent, now)), len(keepRecent(g.RecentRecovered, now))
+}
+
+// DaemonConfigUnavailable is one episode in which a running daemon lost a
+// configuration source. ReportAttempted is saved before a single delivery.
+// Only a successful reload clears it; no configuration contents are kept.
+type DaemonConfigUnavailable struct {
+	Since           time.Time `json:"since"`
+	ReportAttempted bool      `json:"reportAttempted"`
 }
