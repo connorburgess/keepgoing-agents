@@ -240,6 +240,7 @@
                   "switch_back",
                   "limit_wait",
                   "check_gap",
+                  "hung_turn",
                   "network_wait",
                   "child_error",
                   "child_recovery",

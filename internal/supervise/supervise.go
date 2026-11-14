@@ -175,6 +175,8 @@ type Result struct {
 }
 
 type tick struct {
+	heldNudge   bool      // this check held back a nudge
+	wakeAtStart time.Time // LastWakeAt as this check found it
 	// claims are the session claims this check holds, by key. A check holds
 	// its active session's claim from before it first observes it until it
 	// ends, and a fallback's or the primary's before it probes or sends there.
@@ -597,6 +599,7 @@ func (t *tick) run() error {
 		return err
 	}
 	t.incidentStateLoaded = true
+	t.wakeAtStart = t.st.LastWakeAt
 	t.savedSends = t.st.SendsRecorded
 	// Whether a check was overdue is judged from the records as they were
 	// before this check, and nothing is sent or reserved for it here: the
@@ -901,6 +904,9 @@ func (t *tick) run() error {
 	if obs.State != decide.Active {
 		t.st.Nudges = 0 // the turn ended; a new one starts a fresh count
 	}
+	if t.st.Nudges == 0 {
+		t.st.HeldNudges = 0 // held-back nudges are part of the same count
+	}
 
 	failover := decide.Failover{
 		Eligible:          contains(loop.Errors.FailoverOn, string(obs.ErrorClass)),
@@ -916,11 +922,12 @@ func (t *tick) run() error {
 		ProgressTracked: len(loop.Progress.Repositories) > 0, RetrySilentFor: t.retrySilentFor(obs, target),
 		StallAfter: loop.Progress.StallAfter.Duration, MinWakeInterval: loop.Progress.MinWakeInterval.Duration,
 		Failover: failover,
-		Nudges:   t.st.Nudges, MaxNudges: loop.Progress.MaxNudges,
+		Nudges:   t.st.Nudges, HeldNudges: t.st.HeldNudges, MaxNudges: loop.Progress.MaxNudges,
 		Reprompts: t.st.Reprompts, MaxReprompts: loop.Errors.MaxReprompts,
 		SinceLastReprompt: sinceReprompt, Backoff: loop.Errors.Backoff.Duration,
 		SwitchBackReady: t.switchBackReady(target),
 	}
+	in.HungTurn = t.hungTurn(obs, progressed, in)
 	if failover.Eligible && obs.State == decide.Error && t.fb != nil && !summary.Meets {
 		t.warn("handoff refused: %d of the required %d distinct healthy fallbacks", summary.Distinct, summary.Min)
 	}
@@ -984,7 +991,7 @@ func (t *tick) run() error {
 	// switch-back does not trigger a check, but is not sent when this check
 	// has already found the network down.
 	recovering := obs.State == decide.Error || obs.State == decide.Active
-	needsNetwork := d.Action == decide.Reprompt || d.Action == decide.Handoff || d.Action == decide.Nudge || (recovering && d.Action == decide.AwaitUser)
+	needsNetwork := d.HeldNudge || d.Action == decide.Reprompt || d.Action == decide.Handoff || d.Action == decide.Nudge || (recovering && d.Action == decide.AwaitUser)
 	sendsAnyway := d.Action == decide.Wake || d.Action == decide.SwitchBack || obs.State == decide.Active
 	if (needsNetwork && t.networkDown()) || (sendsAnyway && t.networkGated) {
 		in.NetworkDown = true
@@ -1688,6 +1695,20 @@ func (t *tick) keepFailure(id string, r probe.Result) {
 
 func (t *tick) act(a adapter.Adapter, d decide.Decision) error {
 	loop := t.loop
+	if d.HeldNudge {
+		// Recorded exactly as a nudge is, and not sent: the stall rule's
+		// spacing, count and hold then follow as if it had been.
+		c := decide.Attempted(decide.Nudge, decide.Counters{
+			Nudges: t.st.Nudges, Reprompts: t.st.Reprompts, LastSendAt: t.st.LastWakeAt, LastRepromptAt: t.st.LastRepromptAt,
+		}, t.now)
+		t.st.Nudges, t.st.Reprompts, t.st.LastWakeAt, t.st.LastRepromptAt = c.Nudges, c.Reprompts, c.LastSendAt, c.LastRepromptAt
+		t.st.HeldNudges++
+		t.st.LastHeldNudgeAt, t.heldNudge = t.now, true
+		if t.st.HungTurn != nil {
+			t.st.HungTurn.HeldNudges++
+		}
+		return nil
+	}
 	switch d.Action {
 	case decide.Wake, decide.Nudge, decide.Reprompt:
 		reserved := false
@@ -1869,6 +1890,11 @@ type failureReport struct {
 }
 
 func (t *tick) record(actErr error) error {
+	// Something was sent this check when the time of the last wake moved
+	// and it was not for a held-back nudge.
+	if t.st.LastWakeAt.After(t.wakeAtStart) && !t.heldNudge {
+		t.st.LastSentAt = t.st.LastWakeAt
+	}
 	t.noteCheckGap()
 	state.NoteScheduleGap(&t.st, t.schedule, t.now)
 	reportGap := t.markCheckGap()
@@ -2330,6 +2356,11 @@ func (t *tick) countUnrecordedSends() error {
 			agentSend = false
 		case "report:awaiting_input":
 			t.st.AwaitingReported, agentSend = true, false
+		case "report:hung_turn":
+			if t.st.HungTurn != nil {
+				t.st.HungTurn.Reported = true
+			}
+			agentSend = false
 		case "report:degraded", "report:recovered":
 			t.st.Degraded, agentSend = p.Action == "report:degraded", false
 		case "report:switch_back_stopped":
@@ -2813,7 +2844,7 @@ func (t *tick) noteNetwork() {
 // re-prompt) describe routine work.
 var essentialReports = map[string]bool{
 	"await_user": true, "error": true, "stop": true, "handoff": true, "switch_back": true,
-	"complete": true, limitWaitEvent: true, childErrorEvent: true, laneRecoveryEvent: true, "network_wait": true, checkGapEvent: true,
+	"complete": true, limitWaitEvent: true, childErrorEvent: true, laneRecoveryEvent: true, "network_wait": true, checkGapEvent: true, hungTurnEvent: true,
 }
 
 // maxLateReports bounds how many reports a check may start after its budget
