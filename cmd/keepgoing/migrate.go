@@ -8,8 +8,11 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"runtime"
 	"sort"
 	"strings"
+
+	"gopkg.in/yaml.v3"
 
 	"github.com/connorburgess/keepgoing-agents/internal/envvar"
 	"github.com/connorburgess/keepgoing-agents/internal/lock"
@@ -58,8 +61,21 @@ type migrateOutput struct {
 }
 
 // migrateWalkLimit bounds how many entries of a directory are looked at
-// before moving it.
-const migrateWalkLimit = 200000
+// before moving it, and migrateHoldLimit how many locks are held through it.
+const (
+	migrateWalkLimit = 200000
+	migrateHoldLimit = 4096
+)
+
+// migrateHoldLocks says whether the locks found free are held through the
+// move. On Windows an open file keeps its directory from being renamed, so
+// they are only looked at there.
+var migrateHoldLocks = runtime.GOOS != "windows"
+
+// Moments in a run, for tests: after the directories are looked at and
+// before anything moves, and after the moves and before the registry is
+// rewritten.
+var migrateBeforeMoves, migrateBeforeRewrite func()
 
 func migrateCommand(e env, args []string) int {
 	fl := flag.NewFlagSet("migrate", flag.ContinueOnError)
@@ -93,15 +109,20 @@ func migrateCommand(e env, args []string) int {
 		out.Outcome, out.Message = "failed", err.Error()
 		return finish(exitFailed)
 	}
+	held := &migrateHeld{hold: *apply && migrateHoldLocks}
+	defer held.release()
 
-	// What each place needs, and what in it must not be in use.
-	var todo []userdir.Place
+	// What each place needs, and what in it must not be in use. A place
+	// already in the state this run leaves it in is "done": its registry
+	// references are still rewritten, so a run that stopped before the
+	// rewrite is finished by running it again.
+	var todo, done []userdir.Place
 	var walked []string
 	for _, p := range places {
 		mp := migratePlace{Base: p.Base, Status: string(p.Status), Action: "none"}
-		from, to, moves := p.Earlier, p.Current, userdir.Earlier
+		from, to, moves, finished := p.Earlier, p.Current, userdir.Earlier, userdir.Moved
 		if *undo {
-			from, to, moves = p.Current, p.Earlier, userdir.Moved
+			from, to, moves, finished = p.Current, p.Earlier, userdir.Moved, userdir.Earlier
 		}
 		switch p.Status {
 		case moves:
@@ -109,6 +130,8 @@ func migrateCommand(e env, args []string) int {
 		case userdir.Interrupted:
 			// The files are under the current name whichever way it was going.
 			mp.Action, mp.From, mp.To = "finish", p.Current, to
+		case finished:
+			done = append(done, p)
 		case userdir.Both, userdir.Blocked:
 			out.Refusals = append(out.Refusals, migrateRefusal{Code: string(p.Status), Path: p.Base, Message: p.Describe()})
 		}
@@ -119,65 +142,163 @@ func migrateCommand(e env, args []string) int {
 				holds = p.Current
 			}
 			walked = append(walked, holds)
-			out.Refusals = append(out.Refusals, migrateInUse(holds)...)
+			out.Refusals = append(out.Refusals, held.inUse(holds)...)
+			// A link is needed to move forward; whether one can be made is
+			// known before anything moves, in a preview too.
+			if !*undo && p.Status == userdir.Earlier {
+				if err := p.CanLink(); err != nil {
+					out.Refusals = append(out.Refusals, migrateRefusal{Code: "no_link", Path: p.Base, Message: "a link cannot be made here, and without one a build from before the rename and paths recorded with the earlier name would not find the files. On Windows, making a link needs Developer Mode or an elevated prompt"})
+				}
+			}
 		}
 		out.Places = append(out.Places, mp)
 	}
 	if len(todo) > 0 {
-		out.Refusals = append(out.Refusals, migrateLoopsInUse(places, walked)...)
+		out.Refusals = append(out.Refusals, held.loopsInUse(places, walked)...)
+		if *undo {
+			out.Refusals = append(out.Refusals, migrateNamesCurrent(places, todo)...)
+		}
 	}
-	switch {
-	case len(out.Refusals) > 0:
+	if len(out.Refusals) > 0 {
 		out.Outcome = "refused"
 		return finish(exitFailed)
-	case len(todo) == 0:
+	}
+	// References to rewrite in places already done.
+	pending, err := migrateRebase(places, done, *undo, true)
+	if err != nil {
+		out.Outcome, out.Message = "failed", "The loop registry could not be read: "+err.Error()+"."
+		return finish(exitFailed)
+	}
+	switch {
+	case len(todo) == 0 && pending == 0:
+		if *apply {
+			for _, p := range places {
+				p.Finish() // a marker or link a stopped run left behind
+			}
+		}
 		out.Outcome = "nothing_to_do"
 		return finish(exitOK)
 	case !*apply:
-		out.Outcome = "ready"
+		out.Outcome, out.References = "ready", pending
 		return finish(exitOK)
 	}
 
+	if migrateBeforeMoves != nil {
+		migrateBeforeMoves()
+	}
+	var moved []userdir.Place
+	var failed error
+	var failedAt userdir.Place
 	for _, p := range userdir.InMoveOrder(todo, *undo) {
 		move := p.Move
 		if *undo {
 			move = p.MoveBack
 		}
 		if err := move(); err != nil {
-			out.Outcome, out.Message = "failed", err.Error()
-			if errors.Is(err, userdir.ErrNoLink) {
-				out.Message = "A link could not be made in " + p.Base + ", so nothing there was moved: without the link, a build from before the rename and paths recorded with the earlier name would not find the files. On Windows, making a link needs Developer Mode or an elevated prompt."
-			}
-			return finish(exitFailed)
+			failed, failedAt = err, p
+			break
 		}
+		moved = append(moved, p)
 		for i := range out.Places {
 			if out.Places[i].Base == p.Base {
 				out.Places[i].Done = true
 			}
 		}
 	}
+	// Checks may run again from here; the registry is rewritten under its
+	// own lock.
+	held.release()
+	if migrateBeforeRewrite != nil {
+		migrateBeforeRewrite()
+	}
 	// The registry records full paths. References to loops kept inside a
 	// moved directory are rewritten to its new name, so they still match
-	// what a command resolves the loop's files to.
-	n, err := migrateRebase(places, *undo)
+	// what a command resolves the loop's files to. Places done before this
+	// run are included, so a rewrite that did not happen then happens now.
+	n, rerr := migrateRebase(places, append(done, moved...), *undo, false)
 	out.References = n
-	if err != nil {
-		out.Outcome, out.Message = "failed", "The directories were moved, but the loop registry could not be updated: "+err.Error()+". Run the same command again."
+	movedText := migrateMovedText(moved)
+	switch {
+	case failed != nil:
+		out.Outcome = "failed"
+		out.Message = movedText + failedAt.Base + " was not moved: " + failed.Error() + "."
+		if errors.Is(failed, userdir.ErrNoLink) {
+			out.Message = movedText + "A link could not be made in " + failedAt.Base + ", so nothing there was moved: without the link, a build from before the rename and paths recorded with the earlier name would not find the files. On Windows, making a link needs Developer Mode or an elevated prompt."
+		}
+		if rerr != nil {
+			out.Message += " The loop registry could not be updated either: " + rerr.Error() + "."
+		}
+		out.Message += " Run the same command again to finish; what is done is kept."
 		return finish(exitFailed)
+	case rerr != nil:
+		out.Outcome, out.Message = "failed", movedText+"The loop registry could not be updated: "+rerr.Error()+". Run the same command again: it rewrites what is left."
+		return finish(exitFailed)
+	}
+	for _, p := range places {
+		userdir.PlaceAt(p.Base).Finish()
 	}
 	out.Outcome = "done"
 	return finish(exitOK)
 }
 
-// migrateInUse looks through a directory that is about to be renamed for
-// anything that says it is in use: a lock some process holds (a check or a
-// daemon of a loop kept there, a session claim, the panel, a registry edit)
-// and the record of an installed service, which names the loop's files by
-// their full path. It reads directory entries and probes lock files; it
-// creates and changes nothing.
-func migrateInUse(root string) []migrateRefusal {
+// migrateMovedText says which places were moved, for a run that stopped.
+func migrateMovedText(moved []userdir.Place) string {
+	if len(moved) == 0 {
+		return "Nothing was moved. "
+	}
+	var bases []string
+	for _, p := range moved {
+		bases = append(bases, p.Base)
+	}
+	return "Moved " + strings.Join(bases, " and ") + ". "
+}
+
+// migrateHeld collects the locks a run holds through its move, so no check,
+// daemon, panel or registry edit can start in a directory while it moves.
+// When hold is false locks are only looked at.
+type migrateHeld struct {
+	hold  bool
+	locks []*lock.Lock
+}
+
+func (h *migrateHeld) release() {
+	for _, l := range h.locks {
+		_ = l.Release()
+	}
+	h.locks = nil
+}
+
+// probe looks at one lock file: busy when another holds it. When holding,
+// a free lock is taken and kept.
+func (h *migrateHeld) probe(path string) (busy bool, err error) {
+	if !h.hold {
+		return lock.HeldFile(path)
+	}
+	if len(h.locks) >= migrateHoldLimit {
+		return false, errors.New("too many locks to hold")
+	}
+	l, err := lock.HoldFile(path)
+	switch {
+	case errors.Is(err, lock.ErrHeld):
+		return true, nil
+	case errors.Is(err, os.ErrNotExist):
+		return false, nil
+	case err != nil:
+		return false, err
+	}
+	h.locks = append(h.locks, l)
+	return false, nil
+}
+
+// inUse looks through a directory that is about to be renamed for anything
+// that says it is in use: a lock some process holds (a check or a daemon of
+// a loop kept there, a session claim, the panel, a registry or route list
+// edit) and the record of an installed service, which names the loop's
+// files by their full path. It reads directory entries and probes lock
+// files, holding the free ones when h holds; it creates nothing.
+func (h *migrateHeld) inUse(root string) []migrateRefusal {
 	var out []migrateRefusal
-	held, services, seen := 0, 0, 0
+	busyCount, services, seen := 0, 0, 0
 	err := filepath.WalkDir(root, func(path string, d fs.DirEntry, err error) error {
 		if err != nil {
 			return err
@@ -191,12 +312,12 @@ func migrateInUse(root string) []migrateRefusal {
 		name := d.Name()
 		switch {
 		case strings.HasSuffix(name, ".lock"):
-			busy, err := lock.HeldFile(path)
+			busy, err := h.probe(path)
 			if err != nil {
 				return err
 			}
 			if busy {
-				if held++; held <= 5 {
+				if busyCount++; busyCount <= 5 {
 					out = append(out, migrateRefusal{Code: "in_use", Path: path, Message: migrateLockMeaning(root, path)})
 				}
 			}
@@ -210,7 +331,7 @@ func migrateInUse(root string) []migrateRefusal {
 	if err != nil {
 		out = append(out, migrateRefusal{Code: "not_inspected", Path: root, Message: "it could not be looked through for files in use, so it is not moved"})
 	}
-	if extra := held + services - len(out); extra > 0 && err == nil {
+	if extra := busyCount + services - len(out); extra > 0 && err == nil {
 		out = append(out, migrateRefusal{Code: "in_use", Path: root, Message: fmt.Sprintf("and %d more in use", extra)})
 	}
 	return out
@@ -227,6 +348,8 @@ func migrateLockMeaning(root, path string) string {
 		return "the panel is running; stop it with keepgoing panel stop"
 	case strings.HasPrefix(dir, "registry/"):
 		return "the loop registry is being changed"
+	case dir == "" && name == "routes.lock":
+		return "the standard route list is being changed"
 	case name == lock.Daemon+".lock":
 		return "a daemon is running for a loop kept here; stop it or remove its service first"
 	case name == lock.Tick+".lock":
@@ -240,7 +363,7 @@ func migrateLockMeaning(root, path string) string {
 // session claims that are about to move. The loops are those in the
 // registry and those that have ever claimed a session. A loop kept inside a
 // directory that was just looked through (walked) has been covered already.
-func migrateLoopsInUse(places []userdir.Place, walked []string) []migrateRefusal {
+func (h *migrateHeld) loopsInUse(places []userdir.Place, walked []string) []migrateRefusal {
 	type loop struct{ name, stateDir string }
 	seen := map[string]bool{}
 	var loops []loop
@@ -278,7 +401,7 @@ func migrateLoopsInUse(places []userdir.Place, walked []string) []migrateRefusal
 			{lock.Daemon, "its daemon is running; stop it or remove its service first"},
 			{lock.Tick, "it is being checked right now; try again in a moment"},
 		} {
-			busy, err := lock.Held(l.stateDir, probe.name)
+			busy, err := h.probe(filepath.Join(l.stateDir, probe.name+".lock"))
 			if err != nil {
 				out = append(out, migrateRefusal{Code: "not_inspected", Loop: l.name, Message: "whether it is running could not be told"})
 				break
@@ -315,28 +438,28 @@ func migrateRegistries(places []userdir.Place) []string {
 	return dirs
 }
 
-// migrateRebase rewrites registry references into the moved directories.
-// It is run after every move, including one that only finished an
-// interrupted move, and rewrites nothing that is already right.
-func migrateRebase(places []userdir.Place, undo bool) (int, error) {
+// migrateRebase rewrites registry references to loops kept inside the given
+// places, from one name to the other, and returns how many it rewrote (or,
+// with dryRun, would rewrite). It is safe to repeat.
+func migrateRebase(places, in []userdir.Place, undo, dryRun bool) (int, error) {
+	if len(in) == 0 {
+		return 0, nil
+	}
+	rewrite := func(path string) string {
+		for _, p := range in {
+			if moved := p.Rewrite(path, undo); moved != path {
+				return moved
+			}
+		}
+		return path
+	}
 	total := 0
 	for _, dir := range migrateRegistries(places) {
-		for _, p := range places {
-			// As the registry resolved them when the references were added.
-			base, err := filepath.EvalSymlinks(p.Base)
-			if err != nil {
-				continue
-			}
-			from, to := filepath.Join(base, userdir.LegacyName), filepath.Join(base, userdir.Name)
-			if undo {
-				from, to = to, from
-			}
-			n, err := registry.Rebase(dir, from, to)
-			if err != nil {
-				return total, err
-			}
-			total += n
+		n, err := registry.Rebase(dir, rewrite, dryRun)
+		if err != nil {
+			return total, err
 		}
+		total += n
 	}
 	return total, nil
 }
@@ -351,6 +474,8 @@ func migratePrint(e env, out migrateOutput) {
 		switch {
 		case p.Action == "none":
 			fmt.Fprintf(w, "%s: nothing to move (%s)\n", p.Base, migrateStatusText(p.Status, out.Operation))
+		case p.Done && p.Action == "finish":
+			fmt.Fprintf(w, "Finished the move in %s: the files are in %s\n", p.Base, p.To)
 		case p.Done:
 			fmt.Fprintf(w, "Moved %s to %s\n", p.From, p.To)
 		case p.Action == "finish":
@@ -372,6 +497,17 @@ func migratePrint(e env, out migrateOutput) {
 	case "nothing_to_do":
 		fmt.Fprintln(w, "Nothing to do.")
 	case "ready":
+		moves := false
+		for _, p := range out.Places {
+			moves = moves || p.Action != "none"
+		}
+		if out.References > 0 {
+			fmt.Fprintf(w, "Would rewrite %d loop registry reference(s) left from an earlier run.\n", out.References)
+		}
+		if !moves {
+			fmt.Fprintln(w, "Nothing was changed. Run the same command with --apply to finish.")
+			break
+		}
 		if out.Operation == "undo" {
 			fmt.Fprintf(w, "The link under the earlier name would be removed and the directory renamed back. Nothing was changed. Run keepgoing migrate --undo --apply to move %s.\n", moving)
 		} else {
@@ -398,9 +534,116 @@ func migrateStatusText(status, operation string) string {
 	case userdir.Current:
 		return "already under " + userdir.Name + ", and was never moved"
 	case userdir.Moved:
+		if operation == "undo" {
+			return "moved, with " + userdir.LegacyName + " a link to " + userdir.Name
+		}
 		return "already moved"
 	case userdir.Earlier:
+		if operation == "undo" {
+			return "already under " + userdir.LegacyName
+		}
 		return "under " + userdir.LegacyName + ", and was never moved"
 	}
 	return status
+}
+
+// migrateNamesCurrent is what stops a move back: a loop configuration that
+// names, by its full path, something under a looptender directory about to
+// be renamed back. That path would not exist afterwards, and the loop's state
+// would be left behind. Configurations are looked for inside those
+// directories, and wherever the registry and the session records say a loop
+// is configured. A relative path moves with its configuration and is fine.
+func migrateNamesCurrent(places, todo []userdir.Place) []migrateRefusal {
+	var configs []string
+	seen := map[string]bool{}
+	add := func(path string) {
+		if key := session.CleanPath(path); key != "" && !seen[key] {
+			seen[key] = true
+			configs = append(configs, path)
+		}
+	}
+	for _, p := range todo {
+		for _, pattern := range []string{"*.yaml", filepath.Join("loops", "*", "*.yaml")} {
+			found, _ := filepath.Glob(filepath.Join(p.Current, pattern))
+			for _, f := range found {
+				add(f)
+			}
+		}
+	}
+	for _, dir := range migrateRegistries(places) {
+		if f, err := registry.Load(dir); err == nil {
+			for _, entry := range f.Entries {
+				add(entry.ConfigPath)
+			}
+		}
+	}
+	for _, p := range places {
+		for _, name := range []string{userdir.LegacyName, userdir.Name} {
+			for _, s := range session.All(filepath.Join(p.Base, name, "sessions"), 4*maxOtherLoops) {
+				add(s.Config)
+			}
+		}
+	}
+	home, _ := os.UserHomeDir()
+	var out []migrateRefusal
+	for _, path := range configs {
+		info, err := os.Stat(path)
+		if err != nil || !info.Mode().IsRegular() || info.Size() > 1<<20 {
+			continue
+		}
+		raw, err := os.ReadFile(path)
+		if err != nil {
+			continue
+		}
+		var doc any
+		if yaml.Unmarshal(raw, &doc) != nil {
+			continue
+		}
+		var named []string
+		migrateStrings(doc, func(s string) {
+			if strings.HasPrefix(s, "~/") && home != "" {
+				s = filepath.Join(home, s[2:])
+			}
+			if !filepath.IsAbs(s) {
+				return
+			}
+			for _, p := range todo {
+				if p.Under(s, userdir.Name) {
+					named = append(named, s)
+					return
+				}
+			}
+		})
+		if len(named) > 0 {
+			sort.Strings(named)
+			if len(named) > 3 {
+				named = append(named[:3], fmt.Sprintf("and %d more", len(named)-3))
+			}
+			out = append(out, migrateRefusal{Code: "names_current_path", Path: path, Message: "this loop configuration names " + strings.Join(named, ", ") + ", under " + userdir.Name + "; after moving back that path would not exist and the loop's files would be left behind. Change it to a path under " + userdir.LegacyName + " or to a relative one first, or keep the directories as they are"})
+		}
+		if len(out) >= 10 {
+			break
+		}
+	}
+	return out
+}
+
+// migrateStrings calls f with every string value in a decoded YAML document.
+func migrateStrings(v any, f func(string)) {
+	switch t := v.(type) {
+	case string:
+		f(t)
+	case []any:
+		for _, x := range t {
+			migrateStrings(x, f)
+		}
+	case map[string]any:
+		for _, x := range t {
+			migrateStrings(x, f)
+		}
+	case map[any]any:
+		for _, x := range t {
+			migrateStrings(x, f)
+		}
+	}
 }

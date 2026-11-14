@@ -5,7 +5,9 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"runtime"
 	"strings"
+	"syscall"
 	"testing"
 )
 
@@ -279,6 +281,7 @@ func TestAnInterruptedMoveIsFinishedEitherWay(t *testing.T) {
 func TestMoveWhenTheEarlierDirectoryComesBack(t *testing.T) {
 	base := t.TempDir()
 	needLinks(t, base)
+	noSwap(t) // the gap exists only where the two names cannot be swapped
 	write(t, filepath.Join(base, LegacyName, "registry", "loops.json"), "registry")
 	betweenSteps = func() { mkdir(t, base, LegacyName, "sessions") }
 	t.Cleanup(func() { betweenSteps = nil })
@@ -293,6 +296,13 @@ func TestMoveWhenTheEarlierDirectoryComesBack(t *testing.T) {
 	p := status(t, base, Both)
 	if p.Move() == nil {
 		t.Fatal("moved over the directory that came back")
+	}
+	// The marker is still there, so the place says what happened, where
+	// the files are and how to finish.
+	for _, want := range []string{"a move stopped between its steps", "The files are in " + filepath.Join(base, Name), "keepgoing migrate --apply"} {
+		if !strings.Contains(p.Describe(), want) {
+			t.Fatalf("%q does not say %q", p.Describe(), want)
+		}
 	}
 	if _, err := os.Lstat(filepath.Join(base, LegacyName, "sessions")); err != nil {
 		t.Fatal("the other command's directory was removed")
@@ -362,6 +372,17 @@ func b2i(b bool) int {
 // session claims are under one of the two names. The wrong order would leave
 // a moment in which the registry is under the name not in use.
 func TestEveryMomentOfAMoveFindsTheRegistry(t *testing.T) {
+	for _, swapped := range []bool{true, false} {
+		t.Run(map[bool]string{true: "swapped", false: "renamed and linked"}[swapped], func(t *testing.T) {
+			if !swapped {
+				noSwap(t)
+			}
+			everyMomentOfAMove(t, swapped)
+		})
+	}
+}
+
+func everyMomentOfAMove(t *testing.T, swapped bool) {
 	bases := layoutsOf(t)["Linux"]
 	config, state := bases[0], bases[1]
 	needLinks(t, config)
@@ -417,8 +438,12 @@ func TestEveryMomentOfAMoveFindsTheRegistry(t *testing.T) {
 	if NameIn(config, state) != LegacyName {
 		t.Fatal("the earlier name is not in use after the move back")
 	}
-	if moments != 9 { // the start, four in between, four after each step
-		t.Fatalf("%d moments checked", moments)
+	want := 9 // the start, four in between, four after each step
+	if swapped {
+		want = 5 // a swap has no moment in between
+	}
+	if moments != want {
+		t.Fatalf("%d moments checked, want %d", moments, want)
 	}
 }
 
@@ -439,5 +464,162 @@ func TestOnlyAMoveBetweenItsStepsKeepsTheCurrentName(t *testing.T) {
 	mkdir(t, state, LegacyName, "sessions")
 	if got := NameIn(config, state); got != Name {
 		t.Fatalf("between the steps: %q", got)
+	}
+}
+
+// noSwap makes the system's one-step swap unavailable, as on Windows and on
+// file systems without it, so a move renames and then links.
+func noSwap(t *testing.T) {
+	t.Helper()
+	prev := swap
+	swap = func(string, string) error { return errNoExchange }
+	t.Cleanup(func() { swap = prev })
+}
+
+// Where the two names can be swapped in one step, the earlier name is never
+// missing: a move never reaches the moment between a rename and a link.
+// Where they cannot, the move renames and links, with the same result.
+func TestMoveSwapsWhereItCanAndRenamesWhereItCannot(t *testing.T) {
+	for _, swapped := range []bool{true, false} {
+		t.Run(map[bool]string{true: "swapped", false: "renamed and linked"}[swapped], func(t *testing.T) {
+			base := t.TempDir()
+			needLinks(t, base)
+			if !swapped {
+				noSwap(t)
+			}
+			write(t, filepath.Join(base, LegacyName, "registry", "loops.json"), "registry")
+			gap := false
+			betweenSteps = func() { gap = true }
+			t.Cleanup(func() { betweenSteps = nil })
+			if err := status(t, base, Earlier).Move(); err != nil {
+				t.Fatal(err)
+			}
+			p := status(t, base, Moved)
+			if wantGap := !swapped && (runtime.GOOS == "darwin" || runtime.GOOS == "linux"); runtime.GOOS == "darwin" || runtime.GOOS == "linux" {
+				if gap != wantGap {
+					t.Fatalf("a moment without the earlier name: %v, want %v", gap, wantGap)
+				}
+			}
+			if p.marked() || isSelfLink(p.Current) || read(t, filepath.Join(p.Earlier, "registry", "loops.json")) != "registry" {
+				t.Fatalf("not moved cleanly: %+v", p)
+			}
+			gap = false
+			if err := p.MoveBack(); err != nil {
+				t.Fatal(err)
+			}
+			p = status(t, base, Earlier)
+			if p.marked() || isSelfLink(p.Current) {
+				t.Fatal("something was left behind by the move back")
+			}
+			if _, err := os.Lstat(p.Current); err == nil {
+				t.Fatal("the current name is still there after the move back")
+			}
+		})
+	}
+}
+
+// A swap that stopped leaves the current name as a link to itself, with the
+// directory still under the earlier name (forward) or already back under it
+// (a move back). The place reads as not moved, every file is under the
+// earlier name, and the next move or move back clears the link.
+func TestASwapThatStoppedIsCleared(t *testing.T) {
+	needLinks(t, t.TempDir())
+	stopped := func(t *testing.T) string {
+		base := t.TempDir()
+		write(t, filepath.Join(base, LegacyName, "registry", "loops.json"), "registry")
+		write(t, filepath.Join(base, markerName), "")
+		if err := os.Symlink(Name, filepath.Join(base, Name)); err != nil {
+			t.Fatal(err)
+		}
+		if got := NameIn(base); got != LegacyName {
+			t.Fatalf("NameIn = %q", got)
+		}
+		return base
+	}
+	t.Run("then moved", func(t *testing.T) {
+		base := stopped(t)
+		p := status(t, base, Earlier)
+		if !p.Stopped() {
+			t.Fatal("a stopped swap is not reported")
+		}
+		if err := p.Move(); err != nil {
+			t.Fatal(err)
+		}
+		p = status(t, base, Moved)
+		if p.marked() || read(t, filepath.Join(p.Current, "registry", "loops.json")) != "registry" {
+			t.Fatal("not moved")
+		}
+	})
+	t.Run("then finished as it is", func(t *testing.T) {
+		base := stopped(t)
+		if !status(t, base, Earlier).Finish() {
+			t.Fatal("nothing was cleared")
+		}
+		p := status(t, base, Earlier)
+		if p.Stopped() || isSelfLink(p.Current) {
+			t.Fatal("the leftover link or marker is still there")
+		}
+	})
+}
+
+// Two spellings of one directory, as through a link, are one place.
+func TestOneDirectoryUnderTwoSpellingsIsOnePlace(t *testing.T) {
+	root := t.TempDir()
+	real := mkdir(t, root, "state")
+	alias := filepath.Join(root, "alias")
+	if err := os.Symlink(real, alias); err != nil {
+		t.Skip("links are not available here")
+	}
+	if got := placesAt(real, alias, ""); len(got) != 1 || got[0].Base != real {
+		t.Fatalf("%+v", got)
+	}
+	if got := placesAt(real, mkdir(t, root, "other")); len(got) != 2 {
+		t.Fatalf("%+v", got)
+	}
+}
+
+// A path is rewritten by its directory's name and its parent being the
+// place, whatever spelling the parent has.
+func TestRewriteMatchesEverySpellingOfThePlace(t *testing.T) {
+	root := t.TempDir()
+	base := mkdir(t, root, "config")
+	mkdir(t, base, Name, "loops", "example-loop")
+	alias := filepath.Join(root, "dotfiles-config")
+	if err := os.Symlink(base, alias); err != nil {
+		t.Skip("links are not available here")
+	}
+	p := Place{Base: base}
+	for _, tc := range []struct{ in, want string }{
+		{filepath.Join(base, LegacyName, "loops", "example-loop", "keepgoing.yaml"), filepath.Join(base, Name, "loops", "example-loop", "keepgoing.yaml")},
+		{filepath.Join(alias, LegacyName, "loops", "example-loop", "state"), filepath.Join(alias, Name, "loops", "example-loop", "state")},
+		{filepath.Join(base, LegacyName), filepath.Join(base, Name)},
+		{filepath.Join(base, LegacyName+"-old", "x"), filepath.Join(base, LegacyName+"-old", "x")},
+		{filepath.Join(root, "elsewhere", LegacyName, "x"), filepath.Join(root, "elsewhere", LegacyName, "x")},
+		{filepath.Join(base, "loops", LegacyName, "x"), filepath.Join(base, "loops", LegacyName, "x")},
+		{"relative/" + LegacyName, "relative/" + LegacyName},
+	} {
+		if got := p.Rewrite(tc.in, false); got != tc.want {
+			t.Errorf("Rewrite(%s) = %s, want %s", tc.in, got, tc.want)
+		}
+	}
+	back := filepath.Join(alias, Name, "loops", "example-loop", "state")
+	if got := p.Rewrite(back, true); got != filepath.Join(alias, LegacyName, "loops", "example-loop", "state") {
+		t.Errorf("back: %s", got)
+	}
+	if !p.Under(back, Name) || p.Under(back, LegacyName) {
+		t.Error("Under")
+	}
+}
+
+// The cause of a failed rename is named from the system's own error.
+func TestRenameProblemNamesTheCause(t *testing.T) {
+	for err, want := range map[error]string{
+		&os.LinkError{Op: "rename", Err: syscall.EXDEV}:    "another file system or is a mount point",
+		&os.LinkError{Op: "rename", Err: syscall.EBUSY}:    "mount point",
+		&os.LinkError{Op: "rename", Err: os.ErrPermission}: "permission denied",
+	} {
+		if got := renameProblem(err); !strings.Contains(got, want) {
+			t.Errorf("%v: %q", err, got)
+		}
 	}
 }

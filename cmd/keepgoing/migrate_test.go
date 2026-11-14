@@ -384,3 +384,246 @@ func TestMigrateUsage(t *testing.T) {
 		t.Fatalf("%d", code)
 	}
 }
+
+// A run stopped after the move and before the registry was rewritten (here:
+// the move done by hand, as a killed run leaves it) is finished by running
+// the same command again, which rewrites what is left, in a preview first.
+func TestMigrateRewritesTheRegistryLeftByAStoppedRun(t *testing.T) {
+	h := newMigrateHome(t)
+	places, err := userdir.Places()
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, p := range places {
+		if err := p.Move(); err != nil {
+			t.Fatal(err)
+		}
+	}
+	code, out, text := migrateRun(t)
+	if code != exitOK || out.Outcome != "ready" || out.References != 1 || !strings.Contains(text, "Would rewrite 1 loop registry reference") {
+		t.Fatalf("preview: %d %+v %s", code, out, text)
+	}
+	code, out, _ = migrateRun(t, "--apply")
+	if code != exitOK || out.Outcome != "done" || out.References != 1 {
+		t.Fatalf("apply: %d %+v", code, out)
+	}
+	f, err := registry.Load(filepath.Join(h.config, "looptender", "registry"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, e := range f.Entries {
+		if e.ID == h.inside.ID && !strings.Contains(e.StateDir, string(filepath.Separator)+"looptender"+string(filepath.Separator)) {
+			t.Fatalf("not rewritten: %+v", e)
+		}
+	}
+	if code, out, _ := migrateRun(t, "--apply"); code != exitOK || out.Outcome != "nothing_to_do" {
+		t.Fatalf("a third run: %d %+v", code, out)
+	}
+}
+
+// The registry's lock taken by another command at the moment of the
+// rewrite: the move is kept, the run says the registry was not updated and
+// to run again, and running again rewrites it.
+func TestMigrateRewriteRetriedAfterAHeldRegistryLock(t *testing.T) {
+	h := newMigrateHome(t)
+	var held *lock.Lock
+	migrateBeforeRewrite = func() {
+		var err error
+		held, err = lock.AcquireNamed(filepath.Join(h.config, "looptender", "registry"), registry.LockName)
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+	t.Cleanup(func() { migrateBeforeRewrite = nil })
+	var buf bytes.Buffer
+	code := run(context.Background(), []string{"migrate", "--json", "--apply"}, &buf, &bytes.Buffer{})
+	migrateBeforeRewrite = nil
+	var out migrateOutput
+	if err := json.Unmarshal(buf.Bytes(), &out); err != nil {
+		t.Fatal(err)
+	}
+	if code != exitFailed || out.Outcome != "failed" || out.References != 0 || !strings.Contains(out.Message, "registry could not be updated") || !strings.Contains(out.Message, "Run the same command again") {
+		t.Fatalf("%d %+v", code, out)
+	}
+	for _, p := range out.Places {
+		if !p.Done {
+			t.Fatalf("not reported as moved: %+v", p)
+		}
+	}
+	held.Release()
+	if code, out, _ := migrateRun(t, "--apply"); code != exitOK || out.Outcome != "done" || out.References != 1 {
+		t.Fatalf("run again: %d %+v", code, out)
+	}
+}
+
+// A move back refuses, changing nothing, while a loop's configuration names
+// a path under looptender by its full path, as every loop init creates after
+// the move does: the path would not exist afterwards. It names the file and
+// the path. A configuration elsewhere, found through the registry, counts
+// too.
+func TestMigrateUndoRefusesWhileAConfigurationNamesTheCurrentName(t *testing.T) {
+	for _, where := range []string{"inside", "registered elsewhere"} {
+		t.Run(where, func(t *testing.T) {
+			h := newMigrateHome(t)
+			if code, out, _ := migrateRun(t, "--apply"); code != exitOK || out.Outcome != "done" {
+				t.Fatalf("move: %d %+v", code, out)
+			}
+			current := filepath.Join(h.config, "looptender")
+			named := filepath.Join(h.state, "looptender", "example-new", "state")
+			cfg := filepath.Join(current, "loops", "example-new", "keepgoing.yaml")
+			if where == "registered elsewhere" {
+				cfg = filepath.Join(filepath.Dir(h.outsideState), "new", "keepgoing.yaml")
+			}
+			if err := os.MkdirAll(filepath.Dir(cfg), 0o700); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(cfg, []byte("version: 1\nloop:\n  name: example-new\n  state_dir: "+named+"\n  prompt: Continue the fictional task.\n"), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			if where == "registered elsewhere" {
+				if _, err := registry.Add(filepath.Join(current, "registry"), "example-new", cfg, filepath.Join(filepath.Dir(cfg), "state")); err != nil {
+					t.Fatal(err)
+				}
+			}
+			before := h.tree(t)
+			for _, args := range [][]string{{"--undo"}, {"--undo", "--apply"}} {
+				code, out, text := migrateRun(t, args...)
+				if code != exitFailed || out.Outcome != "refused" || len(out.Refusals) != 1 || out.Refusals[0].Code != "names_current_path" || out.Refusals[0].Path != cfg || !strings.Contains(out.Refusals[0].Message, named) {
+					t.Fatalf("%v: %d %+v", args, code, out)
+				}
+				if !strings.Contains(text, "Nothing was changed") {
+					t.Fatalf("%v: %s", args, text)
+				}
+			}
+			if after := h.tree(t); !same(before, after) {
+				t.Fatal("a refused move back changed something")
+			}
+			// A relative state_dir moves with its configuration: no refusal.
+			if err := os.WriteFile(cfg, []byte("version: 1\nloop:\n  name: example-new\n  state_dir: state\n  prompt: Continue the fictional task.\n"), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			if code, out, _ := migrateRun(t, "--undo"); code != exitOK || out.Outcome != "ready" {
+				t.Fatalf("with a relative path: %d %+v", code, out)
+			}
+		})
+	}
+}
+
+// On Unix the locks found free are held through the move: no check, daemon,
+// panel or registry edit can start in the directories while they move, and
+// they are free again afterwards.
+func TestMigrateHoldsTheLocksThroughTheMove(t *testing.T) {
+	if !migrateHoldLocks {
+		t.Skip("locks are only looked at here: an open file keeps a directory from being renamed")
+	}
+	h := newMigrateHome(t)
+	locks := []string{filepath.Join(h.inside.StateDir, lock.Tick+".lock"), filepath.Join(h.outsideState, lock.Daemon+".lock"), filepath.Join(h.state, "keepgoing", "sessions", "0123456789abcdef0123456789abcdef.lock")}
+	for _, l := range locks {
+		if err := os.WriteFile(l, nil, 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	checked := false
+	migrateBeforeMoves = func() {
+		checked = true
+		for _, l := range locks {
+			if held, err := lock.HeldFile(l); err != nil || !held {
+				t.Errorf("%s is not held through the move: %v %v", l, held, err)
+			}
+		}
+	}
+	t.Cleanup(func() { migrateBeforeMoves = nil })
+	if code, out, _ := migrateRun(t, "--apply"); code != exitOK || out.Outcome != "done" {
+		t.Fatalf("%d %+v", code, out)
+	}
+	if !checked {
+		t.Fatal("the moment before the moves was not reached")
+	}
+	for _, l := range []string{filepath.Join(h.config, "looptender", "loops", "example-inside", "state", lock.Tick+".lock"), locks[1], filepath.Join(h.state, "looptender", "sessions", "0123456789abcdef0123456789abcdef.lock")} {
+		if held, err := lock.HeldFile(l); err != nil || held {
+			t.Errorf("%s is still held after the move: %v %v", l, held, err)
+		}
+	}
+}
+
+// The second place failing after the first was moved: the run says which
+// place was moved and which was not and why, rewrites the moved place's
+// references, and running again finishes.
+func TestMigrateSecondPlaceFails(t *testing.T) {
+	h := newMigrateHome(t)
+	if h.config == h.state {
+		t.Skip("one place here")
+	}
+	blocker := filepath.Join(h.state, "looptender")
+	migrateBeforeMoves = func() {
+		if err := os.WriteFile(blocker, nil, 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	t.Cleanup(func() { migrateBeforeMoves = nil })
+	var buf bytes.Buffer
+	code := run(context.Background(), []string{"migrate", "--json", "--apply"}, &buf, &bytes.Buffer{})
+	migrateBeforeMoves = nil
+	var out migrateOutput
+	if err := json.Unmarshal(buf.Bytes(), &out); err != nil {
+		t.Fatal(err)
+	}
+	if code != exitFailed || out.Outcome != "failed" || !strings.HasPrefix(out.Message, "Moved "+h.config+". "+h.state+" was not moved") || out.References != 1 {
+		t.Fatalf("%d %+v", code, out)
+	}
+	if err := os.Remove(blocker); err != nil {
+		t.Fatal(err)
+	}
+	if code, out, _ := migrateRun(t, "--apply"); code != exitOK || out.Outcome != "done" {
+		t.Fatalf("run again: %d %+v", code, out)
+	}
+}
+
+// The little things: a marker a stopped run left behind is cleared by a run
+// that finds everything done; a held route list lock is named as such; and
+// a preview says when no link can be made, before anything moves.
+func TestMigrateSmallCases(t *testing.T) {
+	t.Run("a leftover marker", func(t *testing.T) {
+		h := newMigrateHome(t)
+		if code, out, _ := migrateRun(t, "--apply"); code != exitOK || out.Outcome != "done" {
+			t.Fatalf("%d %+v", code, out)
+		}
+		marker := filepath.Join(h.config, "keepgoing.moving")
+		if err := os.WriteFile(marker, nil, 0o600); err != nil {
+			t.Fatal(err)
+		}
+		if code, out, _ := migrateRun(t, "--apply"); code != exitOK || out.Outcome != "nothing_to_do" {
+			t.Fatalf("%d %+v", code, out)
+		}
+		if _, err := os.Lstat(marker); err == nil {
+			t.Fatal("the marker was left")
+		}
+	})
+	t.Run("the route list is being changed", func(t *testing.T) {
+		h := newMigrateHome(t)
+		l, err := lock.AcquireNamed(filepath.Join(h.config, "keepgoing"), "routes")
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer l.Release()
+		code, out, _ := migrateRun(t)
+		if code != exitFailed || len(out.Refusals) != 1 || out.Refusals[0].Message != "the standard route list is being changed" {
+			t.Fatalf("%d %+v", code, out)
+		}
+	})
+	t.Run("no link can be made", func(t *testing.T) {
+		h := newMigrateHome(t)
+		// Something where the probe link goes makes the probe fail everywhere.
+		if err := os.MkdirAll(filepath.Join(h.config, "keepgoing.linktest", "kept"), 0o700); err != nil {
+			t.Fatal(err)
+		}
+		before := h.tree(t)
+		code, out, _ := migrateRun(t)
+		if code != exitFailed || out.Outcome != "refused" || len(out.Refusals) != 1 || out.Refusals[0].Code != "no_link" {
+			t.Fatalf("%d %+v", code, out)
+		}
+		if after := h.tree(t); !same(before, after) {
+			t.Fatal("the preview changed something")
+		}
+	})
+}

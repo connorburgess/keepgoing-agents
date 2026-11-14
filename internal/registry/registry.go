@@ -171,6 +171,12 @@ func Add(dir, loop, configPath, stateDir string) (Entry, error) {
 	}
 	err := update(dir, func(f *File) (bool, error) {
 		for _, current := range f.Entries {
+			// The same files under another spelling, as through the link a
+			// renamed directory leaves, are the same registration.
+			if current.ConfigPath != configPath && sameFile(current.ConfigPath, configPath) && sameFile(current.StateDir, stateDir) && current.Loop == loop {
+				entry = current
+				return false, nil
+			}
 			if current.ConfigPath == configPath {
 				if current.Loop != loop || current.StateDir != stateDir {
 					return false, errors.New("registered config binding changed; inspect and remove its old ID before registering again")
@@ -248,31 +254,23 @@ func WithEntry(dir, id string, fn func(Entry) error) error {
 	})
 }
 
-// Rebase rewrites the paths of every reference whose config path or runtime
-// directory is inside the directory from, to the same place inside to, and
-// returns how many references changed. It is for a directory that has been
-// renamed as a whole. A registry that does not exist is left absent.
-func Rebase(dir, from, to string) (int, error) {
+// Rebase rewrites the paths of every reference with rewrite, which returns
+// a path unchanged when it is not to move, and returns how many references
+// changed. It is for a directory that has been renamed as a whole. It is
+// safe to repeat: a second run finds nothing left to rewrite. A registry that
+// does not exist is left absent. With dryRun it only counts.
+func Rebase(dir string, rewrite func(string) string, dryRun bool) (int, error) {
 	if _, err := os.Lstat(filepath.Join(dir, FileName)); errors.Is(err, os.ErrNotExist) {
 		return 0, nil
 	}
-	if !filepath.IsAbs(from) || !filepath.IsAbs(to) || filepath.Clean(from) != from || filepath.Clean(to) != to {
-		return 0, errors.New("invalid directory")
-	}
-	move := func(p string) string {
-		if rel, err := filepath.Rel(from, p); err == nil && rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator)) && !filepath.IsAbs(rel) {
-			return filepath.Join(to, rel)
-		}
-		return p
-	}
-	changed := 0
-	err := update(dir, func(f *File) (bool, error) {
+	plan := func(f *File) (int, error) {
+		changed := 0
 		paths, states := map[string]bool{}, map[string]bool{}
 		for i, e := range f.Entries {
 			moved := e
-			moved.ConfigPath, moved.StateDir = move(e.ConfigPath), move(e.StateDir)
+			moved.ConfigPath, moved.StateDir = rewrite(e.ConfigPath), rewrite(e.StateDir)
 			if !validEntry(moved) || paths[moved.ConfigPath] || states[moved.StateDir] {
-				return false, errors.New("the references cannot be rewritten without two of them naming one place; nothing was changed")
+				return 0, errors.New("the references cannot be rewritten without two of them naming one place; nothing was changed")
 			}
 			paths[moved.ConfigPath], states[moved.StateDir] = true, true
 			if moved != e {
@@ -280,10 +278,33 @@ func Rebase(dir, from, to string) (int, error) {
 				changed++
 			}
 		}
-		return changed > 0, nil
+		return changed, nil
+	}
+	if dryRun {
+		f, err := Load(dir)
+		if err != nil {
+			return 0, err
+		}
+		return plan(&f)
+	}
+	changed := 0
+	err := update(dir, func(f *File) (bool, error) {
+		var err error
+		changed, err = plan(f)
+		return changed > 0, err
 	})
 	if err != nil {
 		return 0, err
 	}
 	return changed, nil
+}
+
+// sameFile reports whether two paths lead to one existing file.
+func sameFile(a, b string) bool {
+	ia, err := os.Stat(a)
+	if err != nil {
+		return false
+	}
+	ib, err := os.Stat(b)
+	return err == nil && os.SameFile(ia, ib)
 }

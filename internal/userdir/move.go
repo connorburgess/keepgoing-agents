@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"syscall"
 )
 
 // Status is what one place holds, as far as a move is concerned.
@@ -42,7 +43,52 @@ type Place struct {
 	Earlier string // Base/keepgoing
 	Current string // Base/looptender
 	Status  Status
-	Problem string // why, when Status is Blocked
+	Problem string // why, when Status is Blocked or Both
+	stray   bool   // the current name is a link to itself, left by a swap that stopped
+}
+
+// Stopped reports whether a move in either direction stopped here partway:
+// the marker is there, the move's own leftover link is, or the move is
+// between its steps.
+func (p Place) Stopped() bool { return p.marked() || p.stray || p.Status == Interrupted }
+
+// isSelfLink reports whether path is a symbolic link whose target is its own
+// name, as a swap makes and leaves for a moment.
+func isSelfLink(path string) bool {
+	info, err := os.Lstat(path)
+	if err != nil || info.Mode()&os.ModeSymlink == 0 {
+		return false
+	}
+	target, err := os.Readlink(path)
+	return err == nil && target == filepath.Base(path)
+}
+
+// errNoExchange means the operating system or file system cannot swap two
+// names in one step; a move then renames and links in two.
+var errNoExchange = errors.New("no atomic exchange here")
+
+// swap is exchange, replaced by tests.
+var swap = exchange
+
+// clearStray removes the leftover self-link, if there is one.
+func (p Place) clearStray() {
+	if isSelfLink(p.Current) {
+		_ = os.Remove(p.Current)
+	}
+}
+
+// Finish clears what a finished move can leave behind: its marker and a
+// leftover link. It changes nothing in a place a move has not finished.
+func (p Place) Finish() bool {
+	switch p.Status {
+	case Fresh, Current, Moved, Earlier:
+	default:
+		return false
+	}
+	cleared := p.marked() || p.stray
+	p.clearStray()
+	p.unmark()
+	return cleared
 }
 
 // Places returns this user's configuration and state directories, once each,
@@ -50,19 +96,102 @@ type Place struct {
 func Places() ([]Place, error) {
 	config, _ := ConfigHome()
 	state, _ := StateHome()
-	var out []Place
-	seen := map[string]bool{}
-	for _, base := range []string{config, state} {
-		if base == "" || seen[base] {
-			continue
-		}
-		seen[base] = true
-		out = append(out, PlaceAt(base))
-	}
+	out := placesAt(config, state)
 	if len(out) == 0 {
 		return nil, errors.New("the user configuration and state directories could not be determined")
 	}
 	return out, nil
+}
+
+// Rewrite returns path with this place's directory of one name replaced by
+// the other: from the earlier name to the current one, or back. The
+// directory is recognised by its name and by its parent being this place,
+// whatever spelling the parent has (through a link, /var against
+// /private/var, a dotfiles directory). A path elsewhere is returned as it is.
+func (p Place) Rewrite(path string, back bool) string {
+	from, to := LegacyName, Name
+	if back {
+		from, to = Name, LegacyName
+	}
+	if !filepath.IsAbs(path) {
+		return path
+	}
+	base, err := os.Stat(p.Base)
+	if err != nil {
+		return path
+	}
+	clean := filepath.Clean(path)
+	for a := clean; ; a = filepath.Dir(a) {
+		parent := filepath.Dir(a)
+		if parent == a {
+			return path
+		}
+		if filepath.Base(a) != from {
+			continue
+		}
+		if info, err := os.Stat(parent); err == nil && os.SameFile(info, base) {
+			rel, err := filepath.Rel(a, clean)
+			if err != nil {
+				return path
+			}
+			return filepath.Join(parent, to, rel)
+		}
+	}
+}
+
+// Under reports whether path is inside this place's directory of the given
+// name, by the same test as Rewrite.
+func (p Place) Under(path, name string) bool {
+	back := name == Name
+	if name != Name && name != LegacyName {
+		return false
+	}
+	return p.Rewrite(path, back) != path
+}
+
+// placesAt describes each base once: two spellings of one directory, as
+// through a link, are one place.
+func placesAt(bases ...string) []Place {
+	var out []Place
+	var seen []os.FileInfo
+	for _, base := range bases {
+		if base == "" {
+			continue
+		}
+		info, err := os.Stat(base)
+		dup := false
+		for _, s := range seen {
+			dup = dup || (err == nil && os.SameFile(s, info))
+		}
+		if dup {
+			continue
+		}
+		if err == nil {
+			seen = append(seen, info)
+		}
+		out = append(out, PlaceAt(base))
+	}
+	return out
+}
+
+// renameProblem names why a rename failed, from the operating system's own
+// error: another file system or a mount point, permission, a file in use.
+func renameProblem(err error) string {
+	var le *os.LinkError
+	if errors.As(err, &le) {
+		err = le.Err
+	}
+	switch {
+	case errors.Is(err, syscall.EXDEV):
+		return "it is on another file system or is a mount point"
+	case errors.Is(err, syscall.EBUSY):
+		return "it is a mount point, or the system is using it"
+	case errors.Is(err, os.ErrPermission):
+		return "permission denied"
+	case isSharingViolation(err):
+		return "a file in it is open in another program"
+	}
+	return "the system said: " + err.Error()
 }
 
 // PlaceAt describes base as it is now. It changes nothing.
@@ -72,8 +201,16 @@ func PlaceAt(base string) Place {
 		p.Status, p.Problem = Blocked, why
 		return p
 	}
+	// A swap (see Move) first makes the current name a link to itself, and
+	// a move back leaves one for a moment after its swap. Stopped there, the
+	// link is all that is under the current name: it is left over, not a
+	// directory of that name, and the move or the move back removes it.
+	p.stray = isSelfLink(p.Current)
 	earlier, eerr := os.Lstat(p.Earlier)
 	current, cerr := os.Lstat(p.Current)
+	if p.stray {
+		current, cerr = nil, os.ErrNotExist
+	}
 	if (eerr != nil && !errors.Is(eerr, os.ErrNotExist)) || (cerr != nil && !errors.Is(cerr, os.ErrNotExist)) {
 		return blocked("it cannot be inspected")
 	}
@@ -99,6 +236,9 @@ func PlaceAt(base string) Place {
 		return blocked(p.Earlier + " is not a directory")
 	case cerr == nil:
 		p.Status = Both
+		if p.marked() {
+			p.Problem = "a move stopped between its steps, and " + p.Earlier + " was created again since. The files are in " + p.Current + "; " + p.Earlier + " holds only what was made there since. To finish: stop every loop's checks and the panel, move what is in " + p.Earlier + " into " + p.Current + ", remove the empty " + p.Earlier + ", then run keepgoing migrate --apply"
+		}
 	default:
 		p.Status = Earlier
 	}
@@ -161,18 +301,31 @@ func (p Place) CanLink() error {
 func (p Place) Move() error {
 	switch p.Status {
 	case Fresh, Current, Moved:
-		p.unmark()
+		p.Finish()
 		return nil
 	case Earlier:
+		p.clearStray()
 		if err := p.CanLink(); err != nil {
 			return err
 		}
 		if err := p.mark(); err != nil {
 			return fmt.Errorf("could not write beside %s; nothing was moved", p.Earlier)
 		}
+		// Where the system can swap two names in one step, the current name
+		// is first made a link to itself, then swapped with the directory:
+		// the directory arrives under the current name and the earlier name
+		// becomes the link in the same instant. Nothing ever finds either
+		// name missing.
+		if err := os.Symlink(Name, p.Current); err == nil {
+			if err := swap(p.Earlier, p.Current); err == nil {
+				p.unmark()
+				return nil
+			}
+			_ = os.Remove(p.Current)
+		}
 		if err := os.Rename(p.Earlier, p.Current); err != nil {
 			p.unmark()
-			return fmt.Errorf("%s could not be renamed (something may have a file in it open); nothing was moved", p.Earlier)
+			return fmt.Errorf("%s could not be renamed (%s); nothing was moved", p.Earlier, renameProblem(err))
 		}
 	case Interrupted:
 	default:
@@ -222,11 +375,21 @@ func InMoveOrder(places []Place, back bool) []Place {
 func (p Place) MoveBack() error {
 	switch p.Status {
 	case Fresh, Current, Earlier:
-		p.unmark()
+		p.Finish()
 		return nil
 	case Moved:
 		if err := p.mark(); err != nil {
 			return fmt.Errorf("could not write beside %s; nothing was moved", p.Current)
+		}
+		// Swapped in one step where the system can: the directory is back
+		// under the earlier name, and the link, now under the current name,
+		// points to itself and is removed.
+		if err := swap(p.Earlier, p.Current); err == nil {
+			if isSelfLink(p.Current) {
+				_ = os.Remove(p.Current)
+			}
+			p.unmark()
+			return nil
 		}
 		if err := os.Remove(p.Earlier); err != nil {
 			p.unmark()
@@ -246,7 +409,7 @@ func (p Place) MoveBack() error {
 				p.unmark()
 			}
 		}
-		return fmt.Errorf("%s could not be renamed (something may have a file in it open); the files are still there", p.Current)
+		return fmt.Errorf("%s could not be renamed (%s); the files are still there", p.Current, renameProblem(err))
 	}
 	p.unmark()
 	return nil
@@ -255,6 +418,9 @@ func (p Place) MoveBack() error {
 func (p Place) describe() string {
 	switch p.Status {
 	case Both:
+		if p.Problem != "" {
+			return p.Problem
+		}
 		return "directories of both names exist (" + p.Earlier + " and " + p.Current + ")"
 	case Blocked:
 		return p.Problem

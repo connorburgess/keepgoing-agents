@@ -84,3 +84,18 @@ func HeldFile(path string) (bool, error) {
 	}
 	return false, unlockFile(f)
 }
+
+// HoldFile takes the lock in an existing lock file without waiting and
+// without creating anything. It returns ErrHeld when another holder has it,
+// and an error satisfying os.ErrNotExist when there is no such file.
+func HoldFile(path string) (*Lock, error) {
+	f, err := os.OpenFile(path, os.O_RDWR, 0)
+	if err != nil {
+		return nil, err
+	}
+	if err := lockFile(f); err != nil {
+		f.Close()
+		return nil, err
+	}
+	return &Lock{f: f}, nil
+}

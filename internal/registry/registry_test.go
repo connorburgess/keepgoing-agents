@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -221,16 +222,26 @@ func TestRegistryPinnedEntry(t *testing.T) {
 	}
 }
 
-// Rebase rewrites references into a renamed directory and no others, is
-// safe to repeat, refuses a rewrite that would make two references name one
-// place, and never creates a registry.
+// Rebase rewrites references with the rule it is given and no others, is
+// safe to repeat, counts without writing on a dry run, refuses a rewrite
+// that would make two references name one place, and never creates a
+// registry.
 func TestRegistryRebase(t *testing.T) {
 	root := t.TempDir()
 	dir := filepath.Join(root, "user", "registry")
 	from, to := filepath.Join(root, "user", "keepgoing"), filepath.Join(root, "user", "looptender")
+	rule := func(from, to string) func(string) string {
+		return func(p string) string {
+			if p == from || strings.HasPrefix(p, from+string(filepath.Separator)) {
+				return to + p[len(from):]
+			}
+			return p
+		}
+	}
+	forward, back := rule(from, to), rule(to, from)
 
 	// No registry: none is made.
-	if n, err := Rebase(dir, from, to); n != 0 || err != nil {
+	if n, err := Rebase(dir, forward, false); n != 0 || err != nil {
 		t.Fatalf("no registry: %d %v", n, err)
 	}
 	if _, err := os.Lstat(dir); !errors.Is(err, os.ErrNotExist) {
@@ -244,18 +255,23 @@ func TestRegistryRebase(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	// Only its runtime directory is inside.
 	half, err := Add(dir, "half", filepath.Join(root, "elsewhere", "half.yaml"), filepath.Join(from, "half-state"))
 	if err != nil {
 		t.Fatal(err)
 	}
-	// A sibling whose name only begins the same is not inside.
 	outside, err := Add(dir, "outside", filepath.Join(from+"-old", "outside.yaml"), filepath.Join(root, "elsewhere", "outside-state"))
 	if err != nil {
 		t.Fatal(err)
 	}
+	before, _ := os.ReadFile(filepath.Join(dir, FileName))
+	if n, err := Rebase(dir, forward, true); n != 2 || err != nil {
+		t.Fatalf("dry run: %d %v", n, err)
+	}
+	if after, _ := os.ReadFile(filepath.Join(dir, FileName)); string(after) != string(before) {
+		t.Fatal("a dry run changed the registry")
+	}
 
-	n, err := Rebase(dir, from, to)
+	n, err := Rebase(dir, forward, false)
 	if err != nil || n != 2 {
 		t.Fatalf("Rebase: %d %v", n, err)
 	}
@@ -273,14 +289,10 @@ func TestRegistryRebase(t *testing.T) {
 			t.Fatalf("%+v, want %+v", e, want[e.ID])
 		}
 	}
-	if len(f.Entries) != 3 {
-		t.Fatalf("%d references", len(f.Entries))
-	}
-	// Again: nothing left to rewrite. And back again.
-	if n, err := Rebase(dir, from, to); n != 0 || err != nil {
+	if n, err := Rebase(dir, forward, false); n != 0 || err != nil {
 		t.Fatalf("a second Rebase: %d %v", n, err)
 	}
-	if n, err := Rebase(dir, to, from); n != 2 || err != nil {
+	if n, err := Rebase(dir, back, false); n != 2 || err != nil {
 		t.Fatalf("Rebase back: %d %v", n, err)
 	}
 	if f, _ := Load(dir); len(f.Entries) != 3 || f.Entries[0] != inside {
@@ -291,15 +303,52 @@ func TestRegistryRebase(t *testing.T) {
 	if _, err := Add(dir, "clash", filepath.Join(to, "loops", "inside", "keepgoing.yaml"), filepath.Join(root, "elsewhere", "clash-state")); err != nil {
 		t.Fatal(err)
 	}
-	before, _ := os.ReadFile(filepath.Join(dir, FileName))
-	if n, err := Rebase(dir, from, to); err == nil || n != 0 {
+	before, _ = os.ReadFile(filepath.Join(dir, FileName))
+	if n, err := Rebase(dir, forward, false); err == nil || n != 0 {
 		t.Fatalf("a clash was rewritten: %d %v", n, err)
 	}
 	if after, _ := os.ReadFile(filepath.Join(dir, FileName)); string(after) != string(before) {
 		t.Fatal("a refused rewrite changed the registry")
 	}
-	// Directories that are not clean absolute paths are refused.
-	if _, err := Rebase(dir, "relative", to); err == nil {
-		t.Fatal("a relative directory was accepted")
+	// A held registry lock: the rewrite does not happen, and says so.
+	held, err := lock.AcquireNamed(dir, LockName)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := Rebase(dir, back, false); !errors.Is(err, lock.ErrHeld) {
+		t.Fatalf("with the lock held: %v", err)
+	}
+	held.Release()
+}
+
+// The same files registered under another spelling, as through the link a
+// renamed directory leaves, are the same registration: Add returns its ID.
+func TestRegistryAddThroughAnotherSpelling(t *testing.T) {
+	root := t.TempDir()
+	dir := filepath.Join(root, "registry")
+	if err := os.MkdirAll(dir, 0700); err != nil {
+		t.Fatal(err)
+	}
+	loop := filepath.Join(root, "looptender", "loops", "example")
+	if err := os.MkdirAll(filepath.Join(loop, "state"), 0700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(loop, "keepgoing.yaml"), nil, 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink("looptender", filepath.Join(root, "keepgoing")); err != nil {
+		t.Skip("links are not available here")
+	}
+	first, err := Add(dir, "example", filepath.Join(loop, "keepgoing.yaml"), filepath.Join(loop, "state"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	through := filepath.Join(root, "keepgoing", "loops", "example")
+	again, err := Add(dir, "example", filepath.Join(through, "keepgoing.yaml"), filepath.Join(loop, "state"))
+	if err != nil || again.ID != first.ID {
+		t.Fatalf("%+v %v, want %s", again, err, first.ID)
+	}
+	if f, _ := Load(dir); len(f.Entries) != 1 {
+		t.Fatalf("%+v", f.Entries)
 	}
 }
