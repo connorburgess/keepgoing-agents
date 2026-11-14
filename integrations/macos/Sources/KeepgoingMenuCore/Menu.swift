@@ -327,7 +327,7 @@ public enum MenuBuilder {
         rows.append(separator)
         if let panel, panel.exposure != nil {
             rows.append(action("Open Panel with Controls…", .openPanelWithChanges, symbol: "slider.horizontal.3",
-                               help: "Opens the panel so its page can pause, stop and resume loops. Asks first."))
+                               help: "Opens the panel so its page can pause, stop and resume loops and offer a separate review to replace a loop’s own build. Asks first."))
         }
         if let panel, panel.running {
             // Named for what it stops, the page, so it is not taken for

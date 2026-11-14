@@ -26,6 +26,7 @@ type buildWorld struct {
 	entry          registry.Entry
 	target, source string
 	t0             time.Time
+	builds         *buildSession
 }
 
 func newBuildWorld(t *testing.T, dirName string) *buildWorld {
@@ -57,6 +58,8 @@ func newBuildWorld(t *testing.T, dirName string) *buildWorld {
 	t.Cleanup(func() {
 		version, buildSource, buildOS, buildOwnedByUser, buildLockWait, buildBackupLimit = prevVersion, prevSource, prevOS, prevOwned, prevWait, prevLimit
 	})
+	w.builds = newBuildSession(filepath.Join(f.dir, "private-panel"), filepath.Join(f.dir, "empty-registry"))
+	t.Cleanup(w.builds.close)
 	return w
 }
 
@@ -68,7 +71,7 @@ func (w *buildWorld) review(t *testing.T, action string) buildReviewed {
 	if why != "" {
 		t.Fatal(why)
 	}
-	r, refused := buildReview(context.Background(), w.entry, panelLoop{dockLoop{Name: w.entry.Loop}}, ctl, action, noBuildDaemon, w.t0)
+	r, refused := w.builds.review(context.Background(), w.entry, panelLoop{dockLoop{Name: w.entry.Loop}}, ctl, action, noBuildDaemon, w.t0)
 	if refused != nil {
 		t.Fatalf("refused: %+v", refused)
 	}
@@ -103,12 +106,12 @@ func TestBuildReplacementIsOfferedOnlyWhereSafe(t *testing.T) {
 		}
 	}
 	w := newBuildWorld(t, "bin")
-	offer := func() dockBuildChange { c, _ := buildAssess(w.entry.StateDir, noBuildDaemon); return c }
+	offer := func() dockBuildChange { c, _ := w.builds.assess(w.entry, noBuildDaemon, w.t0); return c }
 	if c := offer(); c.Action != buildReplaceAction || c.Kind != "newer" || strings.Contains(c.Text, w.target) {
 		t.Fatalf("%+v", c)
 	}
 	// A daemon of the loop is running: a restart would be needed.
-	if c, _ := buildAssess(w.entry.StateDir, daemonStatus{State: "responsive"}); c.Action != "" || !strings.Contains(c.Text, "needs a restart") {
+	if c, _ := w.builds.assess(w.entry, daemonStatus{State: "responsive"}, w.t0); c.Action != "" || !strings.Contains(c.Text, "needs a restart") {
 		t.Errorf("%+v", c)
 	}
 	// Windows, a file that is not the user's, a symlink, this panel's own file, a missing file.
@@ -134,7 +137,8 @@ func TestBuildReplacementIsOfferedOnlyWhereSafe(t *testing.T) {
 	if c := offer(); c.Action != "" || !strings.Contains(c.Text, "this panel's own file") {
 		t.Errorf("%+v", c)
 	}
-	_ = state.SaveCheckExecutable(w.entry.StateDir, filepath.Join(w.f.dir, "gone"), "v0.2.1", w.t0)
+	_ = state.SaveCheckExecutable(w.entry.StateDir, w.target, "v0.2.1", w.t0)
+	_ = os.Remove(w.target)
 	if c := offer(); c.Action != "" || !strings.Contains(c.Text, "no longer there") {
 		t.Errorf("%+v", c)
 	}
@@ -177,7 +181,7 @@ func TestBuildReplaceAndUndo(t *testing.T) {
 			t.Errorf("the review does not say %q:\n%s", want, lines)
 		}
 	}
-	res := buildApply(context.Background(), w.entry, buildReplaceAction, r.digest, noBuildDaemon, func() time.Time { return w.t0 })
+	res := w.builds.apply(context.Background(), w.entry, buildReplaceAction, r.digest, noBuildDaemon, func() time.Time { return w.t0 })
 	if res.Outcome != "done" {
 		t.Fatalf("%+v", res)
 	}
@@ -187,11 +191,11 @@ func TestBuildReplaceAndUndo(t *testing.T) {
 	if info, _ := os.Stat(w.target); info.Mode().Perm() != 0o750 {
 		t.Errorf("mode %v", info.Mode().Perm())
 	}
-	backups, _ := os.ReadDir(filepath.Join(w.entry.StateDir, buildBackupsDir))
+	backups, _ := os.ReadDir(filepath.Join(w.builds.recordDir(w.entry), buildBackupsDir))
 	if len(backups) != 1 {
 		t.Fatalf("%d backups", len(backups))
 	}
-	bdir := filepath.Join(w.entry.StateDir, buildBackupsDir, backups[0].Name())
+	bdir := filepath.Join(w.builds.recordDir(w.entry), buildBackupsDir, backups[0].Name())
 	if read(t, filepath.Join(bdir, buildBackupFile)) != old || read(t, filepath.Join(bdir, "config.yaml")) != read(t, w.f.cfg) {
 		t.Error("the backup does not hold the old file and the configuration")
 	}
@@ -199,7 +203,7 @@ func TestBuildReplaceAndUndo(t *testing.T) {
 		t.Error("the backup does not hold the state")
 	}
 	// Waiting for the next check, with Undo offered.
-	if c, _ := buildAssess(w.entry.StateDir, noBuildDaemon); c.Action != buildUndoAction || !c.Pending {
+	if c, _ := w.builds.assess(w.entry, noBuildDaemon, w.t0); c.Action != buildUndoAction || !c.Pending {
 		t.Fatalf("%+v", c)
 	}
 	// The history says what was done, with no path.
@@ -213,14 +217,14 @@ func TestBuildReplaceAndUndo(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(w.entry.StateDir, "written-by-the-new-build.json"), []byte("{}"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	if c, _ := buildAssess(w.entry.StateDir, noBuildDaemon); c.Pending || !strings.Contains(c.Text, "now run") {
+	if c, _ := w.builds.assess(w.entry, noBuildDaemon, w.t0); c.Pending || !strings.Contains(c.Text, "now run") {
 		t.Errorf("%+v", c)
 	}
 	u := w.review(t, buildUndoAction)
-	if !strings.Contains(u.preview.Lines[2].render(w.t0), "Checks have run") || u.preview.Confirm != "Restore the file and its state" {
+	if u.preview.Confirm != "Restore only the file" {
 		t.Errorf("%+v", u.preview)
 	}
-	res = buildApply(context.Background(), w.entry, buildUndoAction, u.digest, noBuildDaemon, func() time.Time { return w.t0.Add(2 * time.Hour) })
+	res = w.builds.apply(context.Background(), w.entry, buildUndoAction, u.digest, noBuildDaemon, func() time.Time { return w.t0.Add(2 * time.Hour) })
 	if res.Outcome != "done" {
 		t.Fatalf("%+v", res)
 	}
@@ -230,18 +234,18 @@ func TestBuildReplaceAndUndo(t *testing.T) {
 	if info, _ := os.Stat(w.target); info.Mode().Perm() != 0o750 {
 		t.Errorf("mode %v", info.Mode().Perm())
 	}
-	if _, err := os.Stat(filepath.Join(w.entry.StateDir, "written-by-the-new-build.json")); !os.IsNotExist(err) {
-		t.Error("a file the new build wrote was left")
+	if _, err := os.Stat(filepath.Join(w.entry.StateDir, "written-by-the-new-build.json")); err != nil {
+		t.Error("Undo removed a record")
 	}
-	if rec, _ := state.LoadCheckExecutable(w.entry.StateDir); rec == nil || rec.Label != "v0.2.1" {
-		t.Errorf("the state was not restored: %+v", rec)
+	if rec, _ := state.LoadCheckExecutable(w.entry.StateDir); rec == nil || rec.Label != "v0.2.2" {
+		t.Errorf("Undo changed the executable record: %+v", rec)
 	}
-	if u, _ := loadBuildUpdate(w.entry.StateDir); u != nil {
+	if u, _ := loadBuildUpdate(w.builds.recordDir(w.entry)); u != nil {
 		t.Error("the update record was left")
 	}
 	j, _ = incident.Load(w.entry.StateDir)
 	b, _ = json.Marshal(j)
-	if !bytes.Contains(b, []byte("panel_undo_replace_build")) {
+	if bytes.Contains(b, []byte("panel_undo_replace_build")) {
 		t.Errorf("history: %s", b)
 	}
 }
@@ -254,7 +258,7 @@ func TestBuildReplaceRefusals(t *testing.T) {
 		if err := os.WriteFile(w.target, []byte("someone else's build"), 0o750); err != nil {
 			t.Fatal(err)
 		}
-		if res := buildApply(context.Background(), w.entry, buildReplaceAction, r.digest, noBuildDaemon, time.Now); res.Outcome != "review_again" || read(t, w.target) != "someone else's build" {
+		if res := w.builds.apply(context.Background(), w.entry, buildReplaceAction, r.digest, noBuildDaemon, time.Now); res.Outcome != "review_again" || read(t, w.target) != "someone else's build" {
 			t.Fatalf("%+v", res)
 		}
 	})
@@ -267,7 +271,7 @@ func TestBuildReplaceRefusals(t *testing.T) {
 		}
 		defer lk.Release()
 		old := read(t, w.target)
-		if res := buildApply(context.Background(), w.entry, buildReplaceAction, r.digest, noBuildDaemon, time.Now); res.Outcome != "refused" || !strings.Contains(res.Text, "A check is running") || read(t, w.target) != old {
+		if res := w.builds.apply(context.Background(), w.entry, buildReplaceAction, r.digest, noBuildDaemon, time.Now); res.Outcome != "refused" || !strings.Contains(res.Text, "A check is running") || read(t, w.target) != old {
 			t.Fatalf("%+v", res)
 		}
 	})
@@ -281,11 +285,11 @@ func TestBuildReplaceRefusals(t *testing.T) {
 		// The check finishes inside the wait, having recorded itself.
 		go func() {
 			time.Sleep(100 * time.Millisecond)
-			_ = state.SaveCheckExecutable(w.entry.StateDir, w.target, "v0.2.1", w.t0.Add(time.Minute))
+			_ = state.SaveCheckExecutable(w.entry.StateDir, w.target, "v0.2.1-dev.fixture", w.t0.Add(time.Minute))
 			lk.Release()
 		}()
 		old := read(t, w.target)
-		if res := buildApply(context.Background(), w.entry, buildReplaceAction, r.digest, noBuildDaemon, time.Now); res.Outcome != "review_again" || read(t, w.target) != old {
+		if res := w.builds.apply(context.Background(), w.entry, buildReplaceAction, r.digest, noBuildDaemon, time.Now); res.Outcome != "review_again" || read(t, w.target) != old {
 			t.Fatalf("%+v", res)
 		}
 	})
@@ -296,7 +300,7 @@ func TestBuildReplaceRefusals(t *testing.T) {
 			t.Fatal(err)
 		}
 		old := read(t, w.target)
-		res := buildApply(context.Background(), w.entry, buildReplaceAction, r.digest, noBuildDaemon, time.Now)
+		res := w.builds.apply(context.Background(), w.entry, buildReplaceAction, r.digest, noBuildDaemon, time.Now)
 		if res.Outcome == "done" || read(t, w.target) != old {
 			t.Fatalf("%+v", res)
 		}
@@ -306,25 +310,25 @@ func TestBuildReplaceRefusals(t *testing.T) {
 		r := w.review(t, buildReplaceAction)
 		buildBackupLimit = 16
 		old := read(t, w.target)
-		res := buildApply(context.Background(), w.entry, buildReplaceAction, r.digest, noBuildDaemon, time.Now)
+		res := w.builds.apply(context.Background(), w.entry, buildReplaceAction, r.digest, noBuildDaemon, time.Now)
 		if res.Outcome != "refused" || !strings.Contains(res.Text, "Replace it by hand") || read(t, w.target) != old {
 			t.Fatalf("%+v", res)
 		}
-		if entries, _ := os.ReadDir(filepath.Join(w.entry.StateDir, buildBackupsDir)); len(entries) != 0 {
+		if entries, _ := os.ReadDir(filepath.Join(w.builds.recordDir(w.entry), buildBackupsDir)); len(entries) != 0 {
 			t.Errorf("a partial backup was left: %d", len(entries))
 		}
 	})
 	t.Run("Undo after someone else changed the file", func(t *testing.T) {
 		w := newBuildWorld(t, "bin")
 		r := w.review(t, buildReplaceAction)
-		if res := buildApply(context.Background(), w.entry, buildReplaceAction, r.digest, noBuildDaemon, time.Now); res.Outcome != "done" {
+		if res := w.builds.apply(context.Background(), w.entry, buildReplaceAction, r.digest, noBuildDaemon, time.Now); res.Outcome != "done" {
 			t.Fatalf("%+v", res)
 		}
 		if err := os.WriteFile(w.target, []byte("a later build"), 0o750); err != nil {
 			t.Fatal(err)
 		}
 		ctl, _ := panelReadControl(w.entry.StateDir)
-		if _, refused := buildReview(context.Background(), w.entry, panelLoop{}, ctl, buildUndoAction, noBuildDaemon, time.Now()); refused == nil || !strings.Contains(refused.Text, "someone else's change") {
+		if _, refused := w.builds.review(context.Background(), w.entry, panelLoop{}, ctl, buildUndoAction, noBuildDaemon, time.Now()); refused == nil || !strings.Contains(refused.Text, "someone else's change") {
 			t.Fatalf("%+v", refused)
 		}
 	})
@@ -412,26 +416,27 @@ func TestAFailedCheckAfterAReplacementIsANeed(t *testing.T) {
 // review names both files, the confirmation replaces the file and the history
 // says so; a change to every loop is refused.
 func TestBuildReplaceThroughThePage(t *testing.T) {
-	w := newPanelChangeWorld(t, true)
-	e := w.entry(t, "docs-site-refresh")
-	key := dockKey(e.ID)
-	target := filepath.Join(w.root, "Bïn 二进制 files", "keepgoing")
-	source := filepath.Join(w.root, "panel-keepgoing")
-	if err := os.MkdirAll(filepath.Dir(target), 0o700); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(target, []byte("#!/bin/sh\n# fictional v0.2.1\n"), 0o700); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(source, []byte("#!/bin/sh\n# fictional v0.2.2\n"), 0o700); err != nil {
-		t.Fatal(err)
-	}
-	if err := state.SaveCheckExecutable(e.StateDir, target, "v0.2.1", time.Now().Add(-time.Minute)); err != nil {
+
+	source := filepath.Join(t.TempDir(), "panel-keepgoing")
+	if err := os.WriteFile(source, []byte("#!/bin/sh\n# fictional v0.2.2\n"), 0700); err != nil {
 		t.Fatal(err)
 	}
 	prevVersion, prevSource := version, buildSource
 	version, buildSource = "v0.2.2", func() (string, error) { return source, nil }
 	t.Cleanup(func() { version, buildSource = prevVersion, prevSource })
+	w := newPanelChangeWorld(t, true)
+	e := w.entry(t, "docs-site-refresh")
+	key := dockKey(e.ID)
+	target := filepath.Join(filepath.Dir(e.ConfigPath), "Bïn 二进制 files", "keepgoing")
+	if err := os.MkdirAll(filepath.Dir(target), 0700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(target, []byte("#!/bin/sh\n# fictional v0.2.1\n"), 0700); err != nil {
+		t.Fatal(err)
+	}
+	if err := state.SaveCheckExecutable(e.StateDir, target, "v0.2.1", time.Now().Add(-time.Minute)); err != nil {
+		t.Fatal(err)
+	}
 
 	_, body := dockRequest(t, http.MethodGet, w.page+dockAPIPath, withCookie(w.cookie))
 	var r dockReport

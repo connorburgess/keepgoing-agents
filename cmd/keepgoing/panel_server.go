@@ -633,6 +633,10 @@ func runPanelServer(parent context.Context, c panelServerConfig) int {
 	defer cancel()
 
 	reader := &dockReader{ctx: ctx, directory: c.registry, refresh: c.refresh, staleAfter: c.staleAfter, query: inspectDaemon, versions: true, panelDir: c.dir}
+	if c.changes {
+		reader.builds = newBuildSession(c.dir, c.registry)
+		defer reader.builds.close()
+	}
 	if c.offline {
 		reader.query = func(ctx context.Context, dir, current string, _ bool) daemonStatus {
 			return inspectDaemon(ctx, dir, current, true)

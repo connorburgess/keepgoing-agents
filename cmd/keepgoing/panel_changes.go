@@ -314,7 +314,7 @@ func (c *panelChanges) prepareBuild(ctx context.Context, session, key, action st
 	now := c.now().UTC()
 	loop := panelLoopNow(ctx, c.reader, dir, entry, all, now)
 	daemon := c.reader.query(ctx, entry.StateDir, version, false)
-	r, refused := buildReview(ctx, entry, loop, ctl, action, daemon, now)
+	r, refused := c.reader.builds.review(ctx, entry, loop, ctl, action, daemon, now)
 	if refused != nil {
 		return panelChangeReply{Result: refused}
 	}
@@ -330,14 +330,14 @@ func (c *panelChanges) prepareBuild(ctx context.Context, session, key, action st
 
 // confirmBuild makes a confirmed build change, bound to what was reviewed.
 func (c *panelChanges) confirmBuild(f panelForm) panelChangeReply {
-	ctx, cancel := context.WithTimeout(c.ctx, buildChangeTimout)
+	ctx, cancel := context.WithTimeout(c.ctx, buildChangeTimeout)
 	defer cancel()
 	entry, _, _, ok := panelEntry(c.registry, f.key)
 	if !ok || entry.ID != f.id {
 		return panelChangeReply{Result: &panelResult{Outcome: "refused", Text: "This loop is no longer registered. Nothing was changed."}}
 	}
 	daemon := c.reader.query(ctx, entry.StateDir, version, false)
-	res := buildApply(ctx, entry, f.action, f.digest, daemon, c.now)
+	res := c.reader.builds.apply(ctx, entry, f.action, f.digest, daemon, c.now)
 	c.reader.forget()
 	return panelChangeReply{Result: &res}
 }
