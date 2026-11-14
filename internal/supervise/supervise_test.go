@@ -30,12 +30,16 @@ type fakeAdapter struct {
 	activated   int
 	activateErr error
 	onSend      func() // runs after a send is recorded by the fake
+	onObserve   func() // runs when the fake is observed
 	observed    int
 }
 
 func (f *fakeAdapter) Name() string { return "fake" }
 func (f *fakeAdapter) Observe(context.Context) (decide.Observation, error) {
 	f.observed++
+	if f.onObserve != nil {
+		f.onObserve()
+	}
 	return f.obs, f.obsErr
 }
 func (f *fakeAdapter) Send(_ context.Context, p string, m adapter.Mode) error {

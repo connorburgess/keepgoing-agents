@@ -240,6 +240,7 @@
                   "switch_back",
                   "limit_wait",
                   "check_gap",
+                  "timing",
                   "network_wait",
                   "child_error",
                   "test"
