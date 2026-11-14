@@ -798,6 +798,7 @@
       body.appendChild(line);
       if (x.update) body.appendChild(el("p", "allow-next", x.update));
       if (x.seen) body.appendChild(el("p", "allow-next sub", x.seen));
+      if (x.seenAt) body.appendChild(el("p", "allow-next sub", "Last reported " + fmt(dateYearFmt, x.seenAt) + "."));
       li.appendChild(body);
       ul.appendChild(li);
     });

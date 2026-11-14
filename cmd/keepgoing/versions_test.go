@@ -35,16 +35,16 @@ func TestBundledComponentVersions(t *testing.T) {
 func TestVersionWordsCompareWholeLabels(t *testing.T) {
 	for _, c := range []struct{ label, ref, kind, want, text string }{
 		{"", "v0.2.1", "newest_release", "not_recorded", "Not recorded."},
-		{"v0.2.1", "v0.2.1", "newest_release", "current", "keepgoing v0.2.1, the newest build here."},
-		{"v0.2.0", "v0.2.1", "newest_release", "older", "keepgoing v0.2.0, older than the newest build here (v0.2.1)."},
-		{"v0.1.9", "v0.1.10", "newest_release", "older", "keepgoing v0.1.9, older than the newest build here (v0.1.10)."},
-		{"v0.2.1-dev.26f91db", "v0.2.1", "newest_release", "different", "keepgoing v0.2.1-dev.26f91db, a different build from the newest build here (v0.2.1); which of them is newer is not known."},
-		{"v0.2.1-dev.abc1234", "v0.2.0", "newest_release", "different", "keepgoing v0.2.1-dev.abc1234, a different build from the newest build here (v0.2.0); which of them is newer is not known."},
-		{"dev", "v0.2.1", "newest_release", "unknown", "A keepgoing build with no version recorded (dev), so whether it is the newest build here (v0.2.1) is unknown."},
+		{"v0.2.1", "v0.2.1", "newest_release", "current", "keepgoing v0.2.1, the newest release here."},
+		{"v0.2.0", "v0.2.1", "newest_release", "older", "keepgoing v0.2.0, older than the newest release here (v0.2.1)."},
+		{"v0.1.9", "v0.1.10", "newest_release", "older", "keepgoing v0.1.9, older than the newest release here (v0.1.10)."},
+		{"v0.2.1-dev.26f91db", "v0.2.1", "newest_release", "different", "keepgoing v0.2.1-dev.26f91db, a different build from the newest release here (v0.2.1); which of them is newer is not known."},
+		{"v0.2.1-dev.abc1234", "v0.2.0", "newest_release", "different", "keepgoing v0.2.1-dev.abc1234, a different build from the newest release here (v0.2.0); which of them is newer is not known."},
+		{"dev", "v0.2.1", "newest_release", "unknown", "A keepgoing build with no version recorded (dev), so whether it is the newest release here (v0.2.1) is unknown."},
 		{"26f91db-dirty", "26f91db-dirty", "this_panel", "unknown", "keepgoing 26f91db-dirty, built with uncommitted changes, so whether it is the same build as this panel's build (26f91db-dirty) is unknown."},
 		{"v0.2.1-dev.ab565b1", "v0.2.1-dev.ab565b1", "this_panel", "current", "keepgoing v0.2.1-dev.ab565b1, the same build as this panel."},
 		{"v0.2.1", "dev", "this_panel", "unknown", "keepgoing v0.2.1; this panel has no version recorded (dev), so there is nothing to compare it with."},
-		{"v0.2.1\nInjected", "v0.2.1", "newest_release", "different", "keepgoing unreadable, a different build from the newest build here (v0.2.1); which of them is newer is not known."},
+		{"v0.2.1\nInjected", "v0.2.1", "newest_release", "different", "keepgoing unreadable, a different build from the newest release here (v0.2.1); which of them is newer is not known."},
 	} {
 		a, text := dockVersionAgainst(c.label, c.ref, c.kind)
 		if a != c.want || text != c.text {
@@ -114,12 +114,10 @@ func TestClientReportsAreBoundedAndPrivate(t *testing.T) {
 		}
 	}
 	// The same report within the hour writes nothing; after it, the file is rewritten.
-	before, _ := os.Stat(filepath.Join(dir, clientsName))
 	recordClient(dir, "macos-menu", "0.1.0", now.Add(30*time.Minute))
 	if again, _ := loadClients(dir); !again.Clients[1].SeenAt.Equal(now.Add(time.Minute)) {
 		t.Errorf("an unchanged report was rewritten within the hour: %+v", again)
 	}
-	_ = before
 	recordClient(dir, "macos-menu", "0.1.0", now.Add(2*time.Hour))
 	if again, _ := loadClients(dir); again.Clients[0].Name != "macos-menu" || !again.Clients[0].SeenAt.Equal(now.Add(2*time.Hour)) {
 		t.Errorf("an hour-old report was not refreshed: %+v", again)
@@ -185,7 +183,7 @@ func TestVersionsViewAgainstTheNewestBuild(t *testing.T) {
 			t.Errorf("%s: update %t", k, update[k])
 		}
 	}
-	if len(v.Rows) != len(want) || v.Behind != 7 || v.Summary != "7 places differ from v0.2.2" {
+	if len(v.Rows) != len(want) || v.Behind != 7 || v.Summary != "7 places need a look, against v0.2.2" {
 		t.Errorf("%d rows, behind %d, %q", len(v.Rows), v.Behind, v.Summary)
 	}
 	// A loop with nothing recorded is named once, not given a row.
@@ -193,10 +191,11 @@ func TestVersionsViewAgainstTheNewestBuild(t *testing.T) {
 	if len(v.Unrecorded) != 1 || v.Unrecorded[0].Name != "example-quiet" {
 		t.Errorf("%+v", v.Unrecorded)
 	}
-	// With this panel the newest, a service on another file is told to take this panel's build.
+	// With this panel the newest release, a service on another file is told
+	// to restart, or to take this panel's build only if its file is older.
 	v = dockVersionsOf(loops, nil, nil, now)
 	for _, r := range v.Rows {
-		if r.Title == "example-api: service" && !strings.Contains(r.Update, "this panel's build") {
+		if r.Title == "example-api: service" && r.Update != "Restart the service, or install it again from this panel's build if its file is older." {
 			t.Errorf("%+v", r)
 		}
 	}
@@ -233,7 +232,7 @@ func TestVersionsWithDevBuildsAndOldReports(t *testing.T) {
 				t.Errorf("%+v", r)
 			}
 		case "BB plugin":
-			if r.Availability != "stale" || r.Text != "BB plugin 0.3.0, not seen since 2 Jan 2030." {
+			if r.Availability != "stale" || r.Text != "BB plugin 0.3.0, not seen in the last seven days." || r.SeenAt == nil || !r.SeenAt.Equal(now.Add(-8*24*time.Hour)) {
 				t.Errorf("%+v", r)
 			}
 		case "macOS menu":
@@ -242,23 +241,52 @@ func TestVersionsWithDevBuildsAndOldReports(t *testing.T) {
 			}
 		}
 	}
-	// Only the service on another file differs; the stale report and the newer menu count for nothing.
-	if v.Behind != 1 || v.Summary != "1 place differs from "+version {
+	// Only the service on another file counts; the stale report and the
+	// newer menu count for nothing, and with no newer build known the service
+	// gets no advice.
+	if v.Behind != 1 || v.Summary != "1 place needs a look, against "+version {
 		t.Errorf("%d %q", v.Behind, v.Summary)
 	}
 	// A fresh report from a plain release, with dev builds here: a different
 	// build each way, order unknown, and still no advice.
 	fresh := &clientsFile{Version: 1, Clients: []clientReport{{Name: "bb-plugin", ClientVersion: bundledPluginVersion, CLIVersion: "v0.2.0", SeenAt: now.Add(-time.Hour)}}}
-	v = dockVersionsOf(loops, fresh, nil, now)
-	if v.Newest != "v0.2.0" {
+	// Every place seen now on one dev build, and the only release a
+	// client's report: rows say which is newer is not known, the picker does
+	// not count them, and the release is "the newest release here".
+	same := []dockLoop{{Key: "l1", Name: "example-docs", Build: dockBuildOf(version, version), Versions: dockLoopVersions{Daemon: version}}}
+	v = dockVersionsOf(same, fresh, nil, now)
+	if v.Newest != "v0.2.0" || v.Behind != 0 || v.Summary != "Nothing known to be older" {
 		t.Fatalf("%+v", v)
 	}
+	for _, r := range v.Rows {
+		if r.Title == "example-docs: last check" && r.Text != "keepgoing "+version+", a different build from the newest release here (v0.2.0); which of them is newer is not known." {
+			t.Errorf("%q", r.Text)
+		}
+	}
+	v = dockVersionsOf(loops, fresh, nil, now)
 	for _, r := range v.Rows {
 		if r.Update != "" {
 			t.Errorf("advice toward an older or unordered build: %+v", r)
 		}
 		if r.Title == "example-docs: last check" && (r.Availability != "different" || !strings.Contains(r.Text, "which of them is newer is not known")) {
 			t.Errorf("%+v", r)
+		}
+	}
+}
+
+// The panel's own row is always this panel, even for a dirty or dev build.
+func TestVersionsPanelRowIsThisPanel(t *testing.T) {
+	previous := version
+	t.Cleanup(func() { version = previous })
+	now := time.Date(2030, 1, 1, 12, 0, 0, 0, time.UTC)
+	for label, want := range map[string]string{
+		"26f91db-dirty":      "keepgoing 26f91db-dirty, this panel's own build.",
+		"v0.2.1-dev.abc1234": "keepgoing v0.2.1-dev.abc1234, this panel's own build.",
+		"dev":                "A keepgoing build with no version recorded (dev).",
+	} {
+		version = label
+		if r := dockVersionsOf(nil, nil, nil, now).Rows[0]; r.Kind != "panel" || r.Text != want {
+			t.Errorf("%s: %q", label, r.Text)
 		}
 	}
 }

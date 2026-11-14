@@ -83,7 +83,8 @@ func recordClient(panelDir, name, ver string, now time.Time) {
 	if dir == "" {
 		return
 	}
-	if info, err := os.Lstat(dir); err != nil || !info.IsDir() || registry.CheckDirectory(dir) != nil {
+	before, err := os.Lstat(dir)
+	if err != nil || !before.IsDir() || registry.CheckDirectory(dir) != nil {
 		return
 	}
 	l, err := lock.AcquireNamed(dir, clientsLock)
@@ -91,6 +92,14 @@ func recordClient(panelDir, name, ver string, now time.Time) {
 		return
 	}
 	defer l.Release()
+	// Taking the lock creates a missing directory. One removed since the
+	// check above was recreated by it: undo that and record nothing.
+	if after, err := os.Lstat(dir); err != nil || !os.SameFile(before, after) {
+		l.Release()
+		_ = os.Remove(filepath.Join(dir, clientsLock+".lock"))
+		_ = os.Remove(dir)
+		return
+	}
 	f, err := loadClients(dir)
 	if err != nil || f == nil {
 		// An unreadable record is replaced, not repaired: it holds nothing a

@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { readFile, writeFile, mkdtemp, rm } from "node:fs/promises";
+import { readFile, writeFile, mkdtemp, rm, symlink, unlink, realpath } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { PLUGIN_VERSION, clientArgs, withClientFlag, forgetRefusals, cliIdentity, type CallOutcome } from "./client-flag.ts";
@@ -53,7 +53,7 @@ test("a CLI upgraded in place is given the flag again", async () => {
   const dir = await mkdtemp(join(tmpdir(), "kgp-"));
   try {
     const bin = join(dir, "keepgoing");
-    await writeFile(bin, "old");
+    await writeFile(bin, "old", { mode: 0o700 });
     const before = await cliIdentity(bin);
     const seen: string[][] = [];
     const older = async (extra: string[]) => { seen.push(extra); return extra.length ? refusal : ok; };
@@ -62,6 +62,24 @@ test("a CLI upgraded in place is given the flag again", async () => {
     assert.notEqual(await cliIdentity(bin), before);
     await withClientFlag(bin, async (extra) => { seen.push(extra); return ok; }, outcome);
     assert.deepEqual(seen, [clientArgs(), [], clientArgs()]);
+  } finally { await rm(dir, { recursive: true, force: true }); }
+});
+
+test("a bare command name and a symlink are known by the file they run", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "kgp-"));
+  try {
+    const first = join(dir, "keepgoing-0.2.0"), second = join(dir, "keepgoing-0.2.1"), link = join(dir, "keepgoing");
+    await writeFile(first, "old", { mode: 0o700 });
+    await writeFile(second, "a newer, longer build", { mode: 0o700 });
+    await symlink(first, link);
+    const byName = await cliIdentity("keepgoing", dir);
+    assert.ok(byName.startsWith(await realpath(first)), byName);
+    assert.equal(await cliIdentity(link), byName);
+    // The link moved to a new file: a new identity.
+    await unlink(link);
+    await symlink(second, link);
+    assert.notEqual(await cliIdentity("keepgoing", dir), byName);
+    assert.notEqual(await cliIdentity(link), byName);
   } finally { await rm(dir, { recursive: true, force: true }); }
 });
 

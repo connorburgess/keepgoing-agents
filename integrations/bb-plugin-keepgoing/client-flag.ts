@@ -8,7 +8,9 @@
 // its path, size and modification time, so one upgraded in place is given the
 // flag again. The name carries no product name, so the rename does not
 // change it.
-import { stat } from "node:fs/promises";
+import { access, realpath, stat } from "node:fs/promises";
+import { constants } from "node:fs";
+import { delimiter, isAbsolute, join } from "node:path";
 
 // The plugin's version. A test keeps it equal to package.json's.
 export const PLUGIN_VERSION = "0.3.1";
@@ -23,12 +25,28 @@ export const refusesFlag = (o: CallOutcome) => !o.timedOut && o.code === 2 && o.
 
 const refused = new Set<string>();
 
-/** The CLI's identity: its path, size and modification time when it can be
- *  read, else its name as given. */
-export async function cliIdentity(bin: string): Promise<string> {
+/** The file a command name runs: a bare name is looked up on PATH as the
+ *  child process will, and symlinks are resolved, so an upgrade that moves a
+ *  symlink to a new file is noticed. */
+async function resolveCli(bin: string, path = process.env.PATH ?? ""): Promise<string | null> {
+  const candidates = bin.includes("/") ? [bin] : path.split(delimiter).filter((d) => isAbsolute(d)).map((d) => join(d, bin));
+  for (const c of candidates) {
+    try {
+      await access(c, constants.X_OK);
+      return await realpath(c);
+    } catch { /* next */ }
+  }
+  return null;
+}
+
+/** The CLI's identity: the resolved file's path, size and modification time
+ *  when it can be read, else its name as given. */
+export async function cliIdentity(bin: string, path?: string): Promise<string> {
   try {
-    const s = await stat(bin);
-    return `${bin}|${s.size}|${s.mtimeMs}`;
+    const file = await resolveCli(bin, path);
+    if (file === null) return bin;
+    const s = await stat(file);
+    return `${file}|${s.size}|${s.mtimeMs}`;
   } catch {
     return bin;
   }

@@ -106,6 +106,10 @@ final class ClientTests: XCTestCase {
         try ("#!/bin/sh\nexit 0\n# a longer replacement\n").write(to: binary, atomically: true, encoding: .utf8)
         XCTAssertNotNil(first)
         XCTAssertNotEqual(first, LocalClient.executableIdentity(binary))
+        // A symlink is known by the file it points to.
+        let link = binary.deletingLastPathComponent().appendingPathComponent("keepgoing-link")
+        try FileManager.default.createSymbolicLink(at: link, withDestinationURL: binary)
+        XCTAssertEqual(LocalClient.executableIdentity(link), LocalClient.executableIdentity(binary))
     }
     func testOnlyAPlainVersionIsReported() {
         for good in ["0.1.0", "1.2.3-beta.1", "2026.11+local"] { XCTAssertTrue(LocalClient.validVersion(good), good) }

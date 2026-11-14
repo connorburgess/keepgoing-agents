@@ -36,8 +36,9 @@ type dockVersions struct {
 	// a plain release. Reference says which.
 	Newest    string `json:"newest"`
 	Reference string `json:"reference"` // newest_release, this_panel
-	// Summary is the picker's line; Behind counts the rows that differ from
-	// Newest: older, a different build, or a service on a different file.
+	// Summary is the picker's line; Behind counts the rows known to need
+	// something: older than Newest, or a service on a different file. A
+	// build whose order against Newest is not known is shown, not counted.
 	Summary string           `json:"summary"`
 	Behind  int              `json:"behind"`
 	Lede    string           `json:"lede"`
@@ -48,6 +49,8 @@ type dockVersions struct {
 	Unrecorded []dockVersionLoop `json:"unrecorded"`
 	// Clients says whether the plugin's and menu's reports could be read.
 	Clients string `json:"clients"` // available, none, unavailable
+
+	unordered bool // a row whose order against Newest is not known
 }
 
 // dockVersionRow is one place a build runs. It carries no path.
@@ -68,8 +71,10 @@ type dockVersionRow struct {
 	// row, and for a service on a different file when this panel is the
 	// newest build: never advice to move to an older or unordered build.
 	Update string `json:"update,omitempty"`
-	// Seen is when a client last reported, in words.
-	Seen string `json:"seen,omitempty"`
+	// Seen is when a client last reported, in words; SeenAt is that time,
+	// for a report too old to count, which the page shows in its own time zone.
+	Seen   string     `json:"seen,omitempty"`
+	SeenAt *time.Time `json:"seenAt,omitempty"`
 }
 
 // dockVersionLoop names a loop in the Versions view.
@@ -93,7 +98,7 @@ type dockLoopVersions struct {
 // dockVersionAgainst words a label against the reference build.
 func dockVersionAgainst(label, ref, refKind string) (string, string) {
 	label = dockBuildLabel(label)
-	refWords := "the newest build here (" + ref + ")"
+	refWords := "the newest release here (" + ref + ")"
 	if refKind == "this_panel" {
 		refWords = "this panel's build (" + ref + ")"
 	}
@@ -110,7 +115,7 @@ func dockVersionAgainst(label, ref, refKind string) (string, string) {
 		if refKind == "this_panel" {
 			return "current", productName + " " + label + ", the same build as this panel."
 		}
-		return "current", productName + " " + label + ", the newest build here."
+		return "current", productName + " " + label + ", the newest release here."
 	}
 	if order, ok := dockReleaseOrder(label, ref); ok && order < 0 {
 		return "older", productName + " " + label + ", older than " + refWords + "."
@@ -177,16 +182,27 @@ func dockVersionsOf(loops []dockLoop, clients *clientsFile, clientsErr error, no
 	v := dockVersions{Newest: ref, Reference: refKind, Rows: []dockVersionRow{}, Unrecorded: []dockVersionLoop{}, Clients: "none"}
 	add := func(r dockVersionRow) {
 		switch r.Availability {
-		case "older", "different", "different_file":
+		case "older", "different_file":
 			v.Behind++
 		}
 		if r.Availability != "older" && r.Availability != "different_file" {
 			r.Update = ""
 		}
+		if r.Availability == "different" || r.Availability == "unknown" {
+			v.unordered = true
+		}
 		v.Rows = append(v.Rows, r)
 	}
 	a, t := dockVersionAgainst(version, ref, refKind)
-	panelCurrent := a == "current"
+	if refKind == "this_panel" {
+		// The panel's own row is always this panel, whatever its label says.
+		if dockBuildKnown(dockBuildLabel(version)) {
+			a, t = "current", productName+" "+dockBuildLabel(version)+", this panel's own build."
+		} else {
+			a, t = "unknown", "A "+productName+" build with no version recorded (dev)."
+		}
+	}
+	panelCurrent := a == "current" && refKind == "newest_release"
 	add(dockVersionRow{Kind: "panel", Title: "This panel", Label: dockBuildLabel(version), Availability: a, Text: t,
 		Update: "Start the panel again from the newest build: " + productName + " panel stop, then " + productName + " panel, with that binary."})
 	for _, l := range loops {
@@ -209,8 +225,8 @@ func dockVersionsOf(loops []dockLoop, clients *clientsFile, clientsErr error, no
 				r.Text = "Its service runs the same file as this panel."
 			case "different_file":
 				r.Text = "Its service runs a different file from this panel. Which build that is is not known: " + productName + " does not run it to ask."
-				if panelCurrent && refKind == "newest_release" {
-					r.Update = "Replace the file its service runs with this panel's build, the newest here, then restart the service."
+				if panelCurrent {
+					r.Update = "Restart the service, or install it again from this panel's build if its file is older."
 				}
 			default:
 				r.Text = "Whether its service runs the same file as this panel is unknown: the recorded file could not be read."
@@ -233,8 +249,9 @@ func dockVersionsOf(loops []dockLoop, clients *clientsFile, clientsErr error, no
 			}
 			if !fresh(c) {
 				// Not seen for a week: shown, counted for nothing.
+				at := c.SeenAt
 				add(dockVersionRow{Kind: "client", Title: name, Label: c.ClientVersion, Availability: "stale",
-					Text: name + " " + c.ClientVersion + ", not seen since " + c.SeenAt.Format("2 Jan 2006") + "."})
+					Text: name + " " + c.ClientVersion + ", not seen in the last seven days.", SeenAt: &at})
 				continue
 			}
 			seen := "Last reported " + dockAgo(now, c.SeenAt) + "."
@@ -245,16 +262,16 @@ func dockVersionsOf(loops []dockLoop, clients *clientsFile, clientsErr error, no
 		}
 	}
 	switch {
-	case v.Behind == 0 && refKind == "newest_release":
+	case v.Behind == 0 && refKind == "newest_release" && !v.unordered:
 		v.Summary = "All on " + ref
 	case v.Behind == 0:
-		v.Summary = "Nothing different found"
+		v.Summary = "Nothing known to be older"
 	default:
-		v.Summary = dockPlural(v.Behind, "place differs", "places differ") + " from " + ref
+		v.Summary = dockPlural(v.Behind, "place needs", "places need") + " a look, against " + ref
 	}
 	v.Lede = "Where each " + productName + " build on this computer runs, as its records say, against " + map[string]string{"newest_release": "the newest release seen here, " + ref, "this_panel": "this panel's own build, " + ref}[refKind] + ". Nothing is run to ask a version, and nothing is fetched from the network."
 	if v.Clients == "none" {
-		v.Lede += " The BB plugin and the macOS menu are listed once they report, with a build that knows --client."
+		v.Lede += " The BB plugin and the macOS menu are listed once " + productName + " panel has run once on this computer and they have reported, with a build that knows --client."
 	}
 	return v
 }

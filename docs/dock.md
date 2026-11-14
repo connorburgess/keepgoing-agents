@@ -172,9 +172,11 @@ How the rows are compared:
 
 - **The reference** is the newest plain release among the places seen now (this panel, each loop's last check and daemon) and the client reports of the last seven days. When none is a plain release, the reference is this panel's own build.
 - **Labels** follow the rules above: whole labels; `dev` and a shared `-dirty` label are unknown; "older" is said only between two plain releases. A dev or dirty build against a release is "a different build", and which of them is newer is not known.
-- **Advice** is given only to a place that is older than the reference, and to a service on a different file when this panel is the newest release here. It is never given to move to an older build, or to a build whose order is not known.
+- **Advice** is given only to a place that is older than the reference, and to a service on a different file when this panel runs the newest release here. Because that file's build is not known, the service's advice is "restart the service, or install it again from this panel's build if its file is older". Advice is never given to move to an older build, or to a build whose order is not known.
+- **The picker's count** is of the places known to need something: older than the reference, or a service on a different file. A build whose order is not known is shown but not counted. When every place seen now runs one dev build and the only release is a client's report, the count is zero.
+- **This panel's own row** always reads as this panel's own build, whatever its label.
 - **The plugin and the menu** are compared with the versions this build expects, never with keepgoing's own numbers. One newer than that reads "newer than this build expects", with no advice.
-- **Reports over seven days old** are shown as "not seen since <date>", and count for nothing.
+- **Reports over seven days old** read "not seen in the last seven days", with the date of the last report in the page's time zone. They count for nothing.
 - **No paths.** The view shows no path, of a service's file or of any executable.
 - **Loops with nothing recorded** about their builds are named in one line after the list.
 
@@ -196,7 +198,7 @@ It records one report per client name, the newest, and no path. The rules:
 - The file is `0600` and decoded strictly; a damaged file is replaced.
 - A CLI from before this flag refuses it with a usage error. The plugin and the menu then ask again without it, and remember that CLI only if that second call succeeds.
 
-**Known limits.** Reports are recorded in the default panel directory. A panel started with `--panel-directory X` reads `X/clients.json`, so it does not see them. The plugin and the menu report only on the calls named above.
+**Known limits.** Reports are recorded in the default panel directory. A panel started with `--panel-directory X` reads `X/clients.json`, so it does not see them. The plugin and the menu report only on the calls named above, and appear only once `keepgoing panel` has run once on this computer, since a report is never what creates the panel's directory.
 
 The next check is shown only when the loop's own keepgoing scheduler answers. Otherwise it is unknown and says why: no keepgoing scheduler is on record for the loop (and one outside keepgoing is not visible), a recorded one did not answer, or it was not asked. It is never inferred from the cadence of past checks.
 

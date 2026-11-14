@@ -228,7 +228,7 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 		return exitUsage
 	}
 	if *f.client != "" && cmd != "status" {
-		e.errf("--client is only supported by status and client status")
+		e.errf("--client is only supported by status, client status and panel list")
 		return exitUsage
 	}
 	if *f.keepStop && cmd != "resume" {

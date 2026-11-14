@@ -57,6 +57,8 @@ public struct LocalClient {
     private static let noClientFlag = NSLock()
     private static var refusedClientFlag = Set<String>()
     static func executableIdentity(_ url: URL) -> String? {
+        // The file a symlink points to, so an upgrade that moves the link is noticed.
+        let url = url.resolvingSymlinksInPath()
         guard let a = try? FileManager.default.attributesOfItem(atPath: url.path),
               let size = a[.size] as? NSNumber, let modified = a[.modificationDate] as? Date else { return nil }
         return "\(url.path)|\(size)|\(modified.timeIntervalSince1970)"
