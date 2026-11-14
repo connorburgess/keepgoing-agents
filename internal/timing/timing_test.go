@@ -79,7 +79,7 @@ func TestDecideTable(t *testing.T) {
 		{"held", with(func(in *Input) { nearWeek(in); in.Held = true }), Stay, "", RuleGate, Held},
 		{"in error", with(func(in *Input) { nearWeek(in); in.InError = true }), Stay, "", RuleGate, InError},
 		{"another move this check", with(func(in *Input) { nearWeek(in); in.OtherMove = true }), Stay, "", RuleGate, OtherMove},
-		{"unknown state", with(func(in *Input) { nearWeek(in); in.Unknown = true }), Stay, "", RuleGate, UnknownState},
+		{"unknown state", with(func(in *Input) { nearWeek(in); in.RefusalOrUnknown = true }), Stay, "", RuleGate, RefusalOrUnknown},
 		{"turn running", with(func(in *Input) { nearWeek(in); in.TurnEnded = false }), Stay, "", RuleGate, TurnNotEnded},
 		{"on a fallback the failover rules chose", with(func(in *Input) { nearWeek(in); in.Current, in.MovedByFailover = "codex-main", true }), Stay, "", RuleGate, OnFallbackByFailover},
 		{"failover onto a listed step, reset passed", with(func(in *Input) {

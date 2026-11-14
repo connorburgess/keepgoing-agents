@@ -34,13 +34,15 @@ const usage = `keepgoing keeps a coding-agent loop going.
 Usage:
   keepgoing <command> [flags]
 
-Supervision (read -c keepgoing.yaml, default ./keepgoing.yaml):
+Supervision (read -c FILE; default ./looptender.yaml, or ./keepgoing.yaml when only that is there):
   tick                     Run one pass and exit (cron, launchd, CI, BB automations)
   start                    Validate, enable, and run (--foreground or --background)
   service install|remove|status  Manage a macOS/Linux user service
   daemon                   Run passes on an interval; control changes act within seconds
   status                   Show control, active target, window, and fallback health
-  validate                 Check keepgoing.yaml and its fallbacks file
+                           Opt-in timing preview only, not acted on; multi-step previews need
+                           the loop's own fallbacks file (standard routes exclude its allowance)
+  validate                 Check the configuration file and its fallbacks file
   doctor                   Diagnose setup and recent checks without model calls
   runs                     Show recorded runs, sends and chat/session references offline; follow one with --id (text or --json)
   timeline                 Explain retained incident history offline; filter with --kind, --target, --since, --until (text or --json)
@@ -55,6 +57,8 @@ Local client discovery:
   client prepare-resume    Prepare a short-lived snapshot/ticket for review
   client resume            Clear holds using an unchanged prepared ticket
   registry add|list|remove  Register private loop references; never start supervision
+  migrate                  Say what moving the per-user directories from keepgoing/ to looptender/ would do;
+                           --apply moves them and leaves a link, --undo --apply moves them back
   dock                     Serve the read-only keepgoing panel for every registered loop on 127.0.0.1
   panel                    Open the keepgoing panel in your browser, starting it when needed; also status, stop, list
 
@@ -79,6 +83,13 @@ Fallbacks:
   fallbacks move ID --to N Change a fallback's place in the handoff order
   fallbacks check          Probe candidates now (--dry-run previews; --id ID, --exact)
   fallbacks list           Show recorded health and the redundancy picture
+  routes list              Show the standard route list and each registered loop's routes
+  routes add|move|remove|off|on
+                           Change the standard route list (a person only), or with
+                           --loop NAME a loop's own list; preview, then confirm
+  routes check             Validate the standard list; --loop NAME [ID] probes that loop's routes
+  routes follow-standard | own
+                           Make a loop follow the standard list, or keep a copy of it as its own
 
 Reporting:
   report test              Send a test webhook (--dry-run prints it instead)
@@ -134,6 +145,10 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 		return clientCommand(e, rest)
 	case "registry":
 		return registryCommand(e, rest)
+	case "migrate":
+		return migrateCommand(e, rest)
+	case "routes":
+		return routesCommand(e, rest)
 	case "transfer":
 		return transferCommand(e, rest, doctorExec)
 	case "goal":
@@ -186,7 +201,7 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 	fs := flag.NewFlagSet(cmd, flag.ContinueOnError)
 	fs.SetOutput(stderr)
 	f := cliFlags{
-		cfgPath:     fs.String("c", "keepgoing.yaml", "path to the config file"),
+		cfgPath:     fs.String("c", "", configFlagHelp("path to the config file")),
 		asJSON:      fs.Bool("json", false, "print machine-readable JSON"),
 		dryRun:      fs.Bool("dry-run", false, "tick/daemon: record decisions only; fallbacks check/report test: preview only"),
 		now:         fs.String("now", "", "RFC 3339 time to use instead of the clock"),
@@ -198,6 +213,7 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 		keepStop:    fs.Bool("keep-stop", false, "resume: clear the other holds and settle a brief hold, but keep a requested stop"),
 		routine:     fs.String("routine", "", "enable/resume/tick: scheduler identity to record with the run, as source/routine[/invocation]"),
 		staleAfter:  fs.Duration("stale-after", defaultStaleAfter, "status: age at which recorded history is stale"),
+		client:      fs.String("client", "", "status: the calling program's NAME@VERSION (bb-plugin, macos-menu), recorded for the panel's Versions view"),
 		allowShare:  fs.Bool("allow-second-loop", false, "enable: turn this loop on even though another enabled loop supervises the same session"),
 		lanes:       fs.Bool("lanes", false, "stop: also stop the lanes, the conversations the supervised one started and theirs"),
 		immediately: fs.Bool("immediately", false, "stop: carry the stop out in this command instead of leaving it to the next check"),
@@ -217,6 +233,10 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 	}
 	if *f.dropQueued && !*f.lanes {
 		e.errf("--drop-queued is only supported with --lanes")
+		return exitUsage
+	}
+	if *f.client != "" && cmd != "status" {
+		e.errf("--client is only supported by status, client status and panel list")
 		return exitUsage
 	}
 	if *f.keepStop && cmd != "resume" {
@@ -256,6 +276,9 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 			return exitUsage
 		}
 	}
+	if !configDefault(e, "config", fs, f.cfgPath) {
+		return exitUsage
+	}
 	cfg, err := config.Load(*f.cfgPath)
 	if err != nil {
 		e.errf("config: %v", err)
@@ -280,7 +303,9 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 			e.errf("status: stale-after must be positive")
 			return exitUsage
 		}
-		return status(e, cfg, now, *f.asJSON, *f.staleAfter)
+		code := status(e, cfg, now, *f.asJSON, *f.staleAfter)
+		noteClient(*f.client, "")
+		return code
 	case "enable":
 		// A second loop on a session another enabled loop supervises would
 		// prompt it too: refused unless asked for.
@@ -298,7 +323,7 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 		return controlCmd(e, cfg, cmd, *f.note, *f.takeOver, *f.keepStop)
 	case "retarget":
 		if len(positional) != 1 {
-			e.errf("usage: keepgoing retarget <candidate-id|primary> [--discard-pending-thread] [-c keepgoing.yaml]")
+			e.errf("usage: keepgoing retarget <candidate-id|primary> [--discard-pending-thread] [-c looptender.yaml]")
 			return exitUsage
 		}
 		return retarget(e, cfg, positional[0], *f.note, *f.discard)
@@ -320,6 +345,7 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 type cliFlags struct {
 	staleAfter                      *time.Duration
 	cfgPath, now, note, id, routine *string
+	client                          *string
 	asJSON, dryRun, exact, takeOver *bool
 	discard, allowShare, keepStop   *bool
 	lanes, immediately, dropQueued  *bool

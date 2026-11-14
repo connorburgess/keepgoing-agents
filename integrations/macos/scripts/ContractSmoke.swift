@@ -64,5 +64,14 @@ import Foundation
         guard again.outcome == "review_again" else { fatalError("second apply: \(again)") }
         guard try client.panelList().loops[0].can?.contains("resume") == true else { fatalError("no resume after a stop") }
         print("Native client stopped the fixture loop through a reviewed apply, and the stale review was refused")
+        // Pause all, as the menu does: one review, one confirmed apply.
+        let canAll = try client.panelList().canAll
+        guard canAll == ["pause"], case .review(let all) = try client.reviewAll(.pause),
+              all.lines.first?.hasPrefix("example-menu-loop (") == true, all.lines.first?.hasSuffix(") will be paused.") == true,
+              all.targets.count == 1 else { fatalError("pause-all review: \(String(describing: canAll)) \(String(describing: try? client.reviewAll(.pause)))") }
+        let paused = client.applyAll(ConfirmationBuilder.build(all).buttons[1].command!, review: all)
+        guard paused.outcome == "done", paused.text == "Paused 1 loop.", paused.lines == ["example-menu-loop: paused."] else { fatalError("pause all: \(paused)") }
+        guard try client.panelList().canAll == [] else { fatalError("canAll after pausing every loop") }
+        print("Native client paused every loop through one reviewed apply")
     }
 }

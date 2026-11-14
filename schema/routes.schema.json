@@ -1,0 +1,145 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/connorburgess/keepgoing-agents/schema/routes.schema.json",
+  "title": "looptender standard route list",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "version",
+    "routes"
+  ],
+  "properties": {
+    "version": {
+      "const": 1
+    },
+    "redundancy": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "min_healthy": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "span": {
+          "enum": [
+            "provider",
+            "group",
+            "none"
+          ]
+        }
+      }
+    },
+    "probe": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "every": {
+          "$ref": "#/$defs/duration"
+        },
+        "ttl": {
+          "$ref": "#/$defs/duration"
+        },
+        "daily_cap": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "timeout": {
+          "$ref": "#/$defs/duration"
+        },
+        "scheduled_disabled": {
+          "type": "boolean"
+        }
+      }
+    },
+    "routes": {
+      "type": "array",
+      "maxItems": 64,
+      "items": {
+        "$ref": "#/$defs/route"
+      }
+    }
+  },
+  "$defs": {
+    "duration": {
+      "type": "string",
+      "pattern": "^([0-9]+(\\.[0-9]+)?(ns|us|\u00b5s|ms|s|m|h))+$",
+      "description": "Go duration such as 30s, 10m, 4h"
+    },
+    "route": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "provider",
+        "model",
+        "group",
+        "enter"
+      ],
+      "properties": {
+        "id": {
+          "type": "string",
+          "pattern": "^[a-z0-9][a-z0-9-]{0,63}$"
+        },
+        "provider": {
+          "enum": [
+            "claude-code",
+            "codex"
+          ]
+        },
+        "model": {
+          "type": "string",
+          "maxLength": 128,
+          "description": "the model this route runs on"
+        },
+        "effort": {
+          "type": "string",
+          "maxLength": 128,
+          "description": "effort or reasoning level; optional"
+        },
+        "group": {
+          "type": "string",
+          "maxLength": 128,
+          "description": "the usage limit this route draws on"
+        },
+        "enter": {
+          "enum": [
+            "same_conversation",
+            "new_conversation",
+            "headless"
+          ],
+          "description": "how a loop enters the route: its own conversation on another model, a conversation started at the handoff, or a headless agent in the loop's working directory"
+        },
+        "permission_mode": {
+          "enum": [
+            "accept-edits",
+            "auto",
+            "full"
+          ],
+          "description": "for a new_conversation route"
+        },
+        "account_dir": {
+          "type": "string",
+          "description": "absolute path of an existing account directory, for a headless route"
+        },
+        "probe": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "model": {
+              "type": "string",
+              "maxLength": 128,
+              "description": "cheaper model for scheduled checks"
+            },
+            "account_dir": {
+              "type": "string",
+              "description": "absolute path of an existing login used for the check"
+            }
+          }
+        },
+        "disabled": {
+          "type": "boolean"
+        }
+      }
+    }
+  }
+}

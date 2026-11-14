@@ -49,7 +49,7 @@ const (
 	InError              = "in_error"
 	OtherMove            = "other_move"
 	TurnNotEnded         = "turn_not_ended"
-	UnknownState         = "unknown_state"
+	RefusalOrUnknown     = "refusal_or_unknown"
 	OnFallbackByFailover = "on_fallback_by_failover"
 	Retargeted           = "retargeted"
 	NotOnStep            = "not_on_step"
@@ -122,8 +122,8 @@ type Input struct {
 	InError   bool
 	OtherMove bool
 	TurnEnded bool
-	// Unknown: the session's last observed state is unknown.
-	Unknown bool
+	// RefusalOrUnknown: the session's last observed state is unknown.
+	RefusalOrUnknown bool
 }
 
 // Decision is what timing would do, and why.
@@ -159,8 +159,8 @@ func Decide(in Input) Decision {
 		return gate(InError)
 	case in.OtherMove:
 		return gate(OtherMove)
-	case in.Unknown:
-		return gate(UnknownState)
+	case in.RefusalOrUnknown:
+		return gate(RefusalOrUnknown)
 	case !in.TurnEnded:
 		return gate(TurnNotEnded)
 	case in.MovedByFailover:
@@ -385,7 +385,7 @@ func (d Decision) Text(duration func(time.Duration) string) string {
 		return "stay: the session is in error; the error rules decide"
 	case OtherMove:
 		return "stay: another move was decided in this check"
-	case UnknownState:
+	case RefusalOrUnknown:
 		return "stay: the session's last observed state is unknown"
 	case TurnNotEnded:
 		return "stay: a turn is running; timing acts only at a turn boundary"

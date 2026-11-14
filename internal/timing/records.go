@@ -31,6 +31,9 @@ func FromRecords(cfg *config.Config, st state.File, reg *health.Registry, now ti
 			// State written before the record existed: a handoff on record
 			// is taken as the cause, so timing never moves the loop off it.
 			in.MovedByFailover = !st.LastHandoffAt.IsZero()
+			if !in.MovedByFailover {
+				in.Retarget = &Retarget{At: now}
+			}
 		}
 	}
 	move := func(m *state.TimingMove) *Move {

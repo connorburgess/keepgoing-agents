@@ -32,9 +32,16 @@ type ErrorClass string
 
 // Error classes.
 const (
-	ErrNone       ErrorClass = "none"
-	ErrRateLimit  ErrorClass = "rate_limit"
-	ErrAuth       ErrorClass = "auth"
+	ErrNone      ErrorClass = "none"
+	ErrRateLimit ErrorClass = "rate_limit"
+	ErrAuth      ErrorClass = "auth"
+	// ErrRestricted is a provider denying permission for the request or the
+	// account: forbidden, permission denied, an organisation not allowed.
+	// ErrRefused is the model or the provider declining the turn itself: a
+	// refusal, a policy block. Neither is a limit. Both hold for a person
+	// and can never cause a move to another route.
+	ErrRestricted ErrorClass = "restricted"
+	ErrRefused    ErrorClass = "refused"
 	ErrOverloaded ErrorClass = "overloaded"
 	ErrNetwork    ErrorClass = "network"
 	ErrUnknown    ErrorClass = "unknown"
@@ -43,12 +50,27 @@ const (
 // Observation is what an adapter saw.
 type Observation struct {
 	// Evidence is diagnostic metadata and never changes Decide policy.
-	Evidence   evidence.Detail
+	Evidence evidence.Detail
+	// ModelFallback is the position, in the session's own log, of the latest
+	// record that the provider fell back to another model after a refusal; 0
+	// when there is none. It is diagnostic: the supervisor notes a new one in
+	// the timeline, and it never changes Decide policy.
+	ModelFallback int64
+	// ErrorTurn names the turn an error ended, when the adapter can tell; a
+	// new turn has a new name. It counts a refused turn once however many
+	// checks see it, and never changes any other rule.
+	ErrorTurn  string
 	State      State
 	ErrorClass ErrorClass
-	Queued     int  // messages already waiting for the session
-	Background int  // background workers still running
-	Gone       bool // target deleted or archived
+	// Turn is what the adapter knows of the running turn, from structured
+	// events. Nil means nothing is known. TurnUnknown: the session is
+	// active but its turn could not be read this time (the log read
+	// failed), as opposed to having no turn the adapter can see.
+	Turn        *TurnActivity
+	TurnUnknown bool
+	Queued      int  // messages already waiting for the session
+	Background  int  // background workers still running
+	Gone        bool // target deleted or archived
 	// Retrying means the provider itself has scheduled a retry of the
 	// failed turn, so the supervisor should leave it alone.
 	Retrying bool
@@ -95,6 +117,9 @@ type Observation struct {
 	// ActiveChildIDs names the children counted in ActiveChildren, for the
 	// run graph only. It is diagnostic and never changes Decide policy.
 	ActiveChildIDs []string
+	// ChildTitles are the titles BB reported for verified direct children, by
+	// ID. They are for display only: no decision reads them.
+	ChildTitles map[string]string
 	// HealthyChildren contains verified direct child IDs with a known status
 	// other than error. Decide never reads it; the owner report uses it to
 	// tell a child that recovered from one an incomplete listing did not show.
@@ -135,6 +160,19 @@ type Input struct {
 	// the primary's limit has had time to reset. The tick still confirms the
 	// primary with an exact probe before moving.
 	SwitchBackReady bool
+	// DeclineAcknowledged: the loop was held because this session's turn was
+	// restricted, and a person has since resumed it.
+	DeclineAcknowledged bool
+	// RefusalStreak counts consecutive refused turns of this session,
+	// including the current one; above 0, a refusal on this route is
+	// unrecovered and nothing moves the work. SinceRefusal is the time since
+	// the current refusal was first seen or a continue for it was last
+	// attempted, whichever is later.
+	RefusalStreak int
+	SinceRefusal  time.Duration
+	// RefusalAskAfter is the streak at which a person is asked instead; 0
+	// never asks.
+	RefusalAskAfter int
 
 	// UnannouncedErroredChildren counts errored children the session has not
 	// been told about. Children it was told about that are still in error do
@@ -145,8 +183,11 @@ type Input struct {
 	ChildErrorNoticeAttempts int
 	MaxChildErrorNotices     int
 
-	Nudges    int // nudges since progress or the most recent turn end
-	MaxNudges int
+	Nudges int // nudges since progress or the most recent turn end
+	// HeldNudges is how many of Nudges were held back, not sent, because
+	// the turn looked hung. It changes only how the hold is worded.
+	HeldNudges int
+	MaxNudges  int
 
 	Reprompts         int // re-prompts sent since the session last ran cleanly
 	MaxReprompts      int
@@ -158,6 +199,12 @@ type Input struct {
 	// wake, nudge or switch-back, and an errored session is not held for a
 	// person because of it. The session is looked at again on the next check.
 	NetworkDown bool
+	// HungTurn: an active session's turn meets every sign of having hung
+	// through an outage or the computer sleeping (see the supervisor's hung
+	// turn watch). The stall rule decides as always; a nudge it would send is
+	// held back: counted and recorded as sent, but not sent. Its own hold
+	// after its nudges follows at the same check.
+	HungTurn bool
 
 	// HandoffDeferred: a handoff is due and a fallback is listed healthy, but
 	// this check ran out of time to confirm one. Nothing is spent on that.
@@ -202,7 +249,21 @@ const (
 	WaitResetSoon        LimitWait = "limit_wait"              // the reset is within wait_if_reset_within
 	WaitNoFallback       LimitWait = "limit_no_fallback"       // failover is eligible but no fallback is confirmed
 	WaitFailoverDisabled LimitWait = "limit_failover_disabled" // the error class is not configured to fail over
+	// WaitRefusalUnrecovered: a refusal on this route has not been followed
+	// by a turn that ended without one, so nothing may move the work.
+	WaitRefusalUnrecovered LimitWait = "limit_refusal_unrecovered"
 )
+
+// TurnActivity is what an adapter knows of an active session's current
+// turn. ID names the turn; it changes when a new turn starts. LastActivityAt
+// is the newest event the turn logged that is not requested input.
+// ToolsRunning: the turn has a tool item open, or its item bookkeeping is
+// uncertain, so it may be waiting on a tool rather than on the model.
+type TurnActivity struct {
+	ID             string
+	LastActivityAt time.Time
+	ToolsRunning   bool
+}
 
 // Decision is an action and the rule that produced it. LimitWait is set only
 // when the action is None because a provider limit has a known reset.
@@ -222,6 +283,12 @@ type Decision struct {
 	// patience for a silent provider retry. An explicit resume of such a hold,
 	// and of no other, starts a new episode.
 	EpisodeSpent bool
+	// StallHold is set only on the stall rule's hold after its nudges.
+	StallHold bool
+	// HeldNudge: the stall rule would nudge, and the nudge is held back
+	// because the turn may be hung (Input.HungTurn). It is recorded exactly
+	// as a nudge is, and not sent.
+	HeldNudge bool
 }
 
 // DeferredInteractionReason is fixed text; it carries no provider content.
@@ -232,6 +299,18 @@ func limitWait(kind LimitWait, reason string) Decision {
 }
 
 func none(reason string) Decision { return Decision{Action: None, Reason: reason} }
+
+// HungTurnReason is recorded while a turn that may have hung through an
+// outage is waited on, HungTurnNudgeReason when a nudge is held back, and
+// HungTurnHoldReason is added to the stall rule's hold.
+const (
+	HungTurnReason      = "turn silent since before an outage or the computer sleeping; it may be hung; keepgoing has not stopped it"
+	HungTurnNudgeReason = "nudge held back, not sent: the turn has been silent since before an outage or the computer sleeping and may be hung"
+	HungTurnHoldReason  = "the turn has been silent since before an outage or the computer sleeping; it may be hung; keepgoing has not stopped it. Run `keepgoing stop`, then `keepgoing resume`, or retry the turn in BB"
+	// HeldNudgesClause follows the count of held-back nudges in the stall
+	// rule's hold: "no progress after 3 nudges (3 held back, ...)".
+	HeldNudgesClause = " held back, not sent, because the turn looked hung"
+)
 
 // NetworkDownReason is recorded when recovery waits for connectivity.
 const NetworkDownReason = "network down; waiting for connectivity"
@@ -333,29 +412,62 @@ func Decide(in Input) Decision {
 		}
 		return Decision{Action: Wake, Reason: "idle"}
 	case Active:
-		// Without Git tracking there is no stall evidence and no nudge would
-		// help. A session whose retry notice expired and which has stayed
-		// silent for the patience a tracked loop would have shown (one stall
-		// interval, then every nudge interval) needs a person.
-		if o.RetryExpired && !in.ProgressTracked && in.RetrySilentFor >= SilentRetryPatience(in.StallAfter, in.MinWakeInterval, in.MaxNudges) {
-			if in.NetworkDown {
-				return none(NetworkDownReason)
-			}
-			return Decision{Action: AwaitUser, EpisodeSpent: true, Reason: "provider retry went silent on an active session for " + in.RetrySilentFor.Truncate(time.Minute).String() + "; no Git progress tracking to nudge by"}
+		// A turn that went silent before a network outage and stayed silent
+		// after it may be hung. Nothing is sent into it: a nudge would only
+		// queue behind it and arrive later. It is waited on, and a person is
+		// asked after the time the nudges would have taken.
+		if in.HungTurn {
+			return heldBack(decideActive(in))
 		}
-		if in.UnchangedFor >= in.StallAfter && in.SinceWake >= in.MinWakeInterval {
-			if in.NetworkDown {
-				// Neither a nudge nor the hold that follows the last one.
-				return none(NetworkDownReason)
-			}
-			if in.MaxNudges > 0 && in.Nudges >= in.MaxNudges {
-				return Decision{Action: AwaitUser, EpisodeSpent: true, Reason: "no progress after " + itoa(in.Nudges) + " nudges"}
-			}
-			return Decision{Action: Nudge, Reason: "no progress for " + in.UnchangedFor.Truncate(time.Minute).String()}
-		}
-		return none("active")
+		return decideActive(in)
 	}
 	return none("unrecognised state")
+}
+
+// heldBack is the stall rule's decision for a turn that may be hung: a nudge
+// is held back, the hold after the nudges says why they were, and the rest
+// is the stall rule's own.
+func heldBack(d Decision) Decision {
+	switch {
+	case d.Action == Nudge:
+		return Decision{Action: None, Reason: HungTurnNudgeReason, HeldNudge: true}
+	case d.StallHold:
+		d.Reason += "; " + HungTurnHoldReason
+		return d
+	case d.Action == None && d.Reason == "active":
+		return none(HungTurnReason)
+	}
+	return d
+}
+
+// decideActive is the stall rule for an active session.
+func decideActive(in Input) Decision {
+	o := in.Obs
+	// Without Git tracking there is no stall evidence and no nudge would
+	// help. A session whose retry notice expired and which has stayed
+	// silent for the patience a tracked loop would have shown (one stall
+	// interval, then every nudge interval) needs a person.
+	if o.RetryExpired && !in.ProgressTracked && in.RetrySilentFor >= SilentRetryPatience(in.StallAfter, in.MinWakeInterval, in.MaxNudges) {
+		if in.NetworkDown {
+			return none(NetworkDownReason)
+		}
+		return Decision{Action: AwaitUser, EpisodeSpent: true, Reason: "provider retry went silent on an active session for " + in.RetrySilentFor.Truncate(time.Minute).String() + "; no Git progress tracking to nudge by"}
+	}
+	if in.UnchangedFor >= in.StallAfter && in.SinceWake >= in.MinWakeInterval {
+		if in.NetworkDown {
+			// Neither a nudge nor the hold that follows the last one.
+			return none(NetworkDownReason)
+		}
+		if in.MaxNudges > 0 && in.Nudges >= in.MaxNudges {
+			reason := "no progress after " + itoa(in.Nudges) + " nudges"
+			if in.HeldNudges > 0 {
+				reason += " (" + itoa(min(in.HeldNudges, in.Nudges)) + HeldNudgesClause + ")"
+			}
+			return Decision{Action: AwaitUser, EpisodeSpent: true, StallHold: true, Reason: reason}
+		}
+		return Decision{Action: Nudge, Reason: "no progress for " + in.UnchangedFor.Truncate(time.Minute).String()}
+	}
+	return none("active")
 }
 
 // limitOutranksRetry reports whether a retry notice must yield to the limit
@@ -374,7 +486,93 @@ func limitOutranksRetry(in Input) bool {
 // SilentRetryPatience is how long an untracked active session may stay silent
 // after its retry notice expired before a person is asked.
 func SilentRetryPatience(stallAfter, minWakeInterval time.Duration, maxNudges int) time.Duration {
-	return stallAfter + time.Duration(max(maxNudges, 1))*minWakeInterval
+	return addSat(stallAfter, mulSat(minWakeInterval, max(maxNudges, 1)))
+}
+
+// StallHoldAt is when the stall rule would hold this active session after
+// its nudges, if nothing changes and every check comes on time: each nudge
+// it has left at the first moment it may send one, then the hold. Zero when
+// it never holds (max_nudges 0) or not within a year.
+func StallHoldAt(in Input, now time.Time) time.Time {
+	if in.MaxNudges <= 0 || in.MaxNudges-in.Nudges > 10000 || in.MinWakeInterval > 365*24*time.Hour || in.StallAfter > 365*24*time.Hour {
+		return time.Time{}
+	}
+	at := now
+	if reach := now.Add(in.StallAfter - min(in.UnchangedFor, in.StallAfter)); reach.After(at) {
+		at = reach
+	}
+	if in.SinceWake < in.MinWakeInterval {
+		at = maxTime(at, now.Add(in.MinWakeInterval-in.SinceWake))
+	}
+	for n := in.Nudges; n < in.MaxNudges; n++ {
+		at = at.Add(in.MinWakeInterval) // the nudge at `at`, then the wait for the next
+	}
+	if at.After(now.AddDate(1, 0, 0)) {
+		return time.Time{}
+	}
+	return at
+}
+
+func maxTime(a, b time.Time) time.Time {
+	if a.After(b) {
+		return a
+	}
+	return b
+}
+
+const maxDuration = time.Duration(1<<63 - 1)
+
+// mulSat and addSat saturate instead of wrapping, so a very long interval
+// means never rather than a negative time.
+func mulSat(d time.Duration, n int) time.Duration {
+	if d <= 0 || n <= 0 {
+		return 0
+	}
+	if d > maxDuration/time.Duration(n) {
+		return maxDuration
+	}
+	return d * time.Duration(n)
+}
+
+func addSat(a, b time.Duration) time.Duration {
+	if a > maxDuration-b {
+		return maxDuration
+	}
+	return a + b
+}
+
+// Declined reports whether an error class is a provider's or a model's
+// decision about the request, as opposed to a limit or a fault.
+func Declined(c ErrorClass) bool { return c == ErrRestricted || c == ErrRefused }
+
+// The fixed reasons for a session whose error is such a decision. They never
+// carry provider text.
+const (
+	RestrictedReason = "provider denied permission for this request or account; not a limit, so no handoff"
+	// RefusedContinueReason is the plain continue sent to a refused turn.
+	RefusedContinueReason = "the model or provider declined this turn; continuing in the same session"
+	// RefusalWaitReason is a check that waits before that continue.
+	RefusalWaitReason = "the model or provider declined this turn; waiting before continuing"
+	// RefusalAskReason is the hold a long streak of refusals raises.
+	RefusalAskReason = "refusal streak: how should this loop proceed?"
+	// DeclineAcknowledgedReason is the one re-prompt a person asks for by
+	// resuming a loop held for either reason.
+	DeclineAcknowledgedReason = "resumed by a person after a restriction; one re-prompt"
+)
+
+// RefusalSpacing is how long a refused turn waits before its continue: 1m
+// for the first refusal of a streak, 2m for the second, 5m for the third,
+// then 10m. There is no cap on the number of continues.
+func RefusalSpacing(streak int) time.Duration {
+	switch {
+	case streak <= 1:
+		return time.Minute
+	case streak == 2:
+		return 2 * time.Minute
+	case streak == 3:
+		return 5 * time.Minute
+	}
+	return 10 * time.Minute
 }
 
 // decideError bounds recovery from an errored session. A handoff happens
@@ -390,6 +588,44 @@ func decideError(in Input) Decision {
 	// and a hold raised because of it would outlast the outage.
 	if in.NetworkDown {
 		return none(NetworkDownReason)
+	}
+	// Ahead of the handoff rule. A refusal is often a false flag that a plain
+	// continue in the same session clears (the owner's decision), so it is
+	// answered with one, spaced by the streak and with no per-episode cap.
+	// It never moves: no handoff, no other model, no other route. Loop-wide
+	// limits and every control still come first.
+	if o.ErrorClass == ErrRefused {
+		// After AskAfter refusals in a row with none recovered, a person
+		// decides how the loop goes on; until then it holds.
+		if in.RefusalAskAfter > 0 && in.RefusalStreak >= in.RefusalAskAfter {
+			return Decision{Action: AwaitUser, Reason: RefusalAskReason}
+		}
+		if wait := RefusalSpacing(in.RefusalStreak); in.SinceRefusal < wait {
+			return none(RefusalWaitReason)
+		}
+		return Decision{Action: Reprompt, Reason: RefusedContinueReason}
+	}
+	// A restriction is the provider denying permission for the request or
+	// the account: prompting again cannot change that, and moving would be a
+	// way around it. It holds for a person, whose resume asks for exactly
+	// one more try, outside the re-prompt cap and its backoff.
+	if o.ErrorClass == ErrRestricted {
+		if in.DeclineAcknowledged {
+			return Decision{Action: Reprompt, Reason: DeclineAcknowledgedReason}
+		}
+		return Decision{Action: AwaitUser, Reason: RestrictedReason}
+	}
+	// While a refusal on this route is unrecovered (the owner's decision),
+	// nothing moves the work for any reason: a later limit or other error
+	// would otherwise hand the declined work to another account. A limit
+	// with a reported reset is waited out; anything else gets the ordinary
+	// in-place rules. Once a turn on this route ends without a refusal, the
+	// streak ends and the normal rules return.
+	if in.RefusalStreak > 0 {
+		if f.ResetIn > 0 && o.ErrorClass != ErrUnknown && o.ErrorClass != ErrNone && o.ErrorClass != "" {
+			return limitWait(WaitRefusalUnrecovered, "limit resets in "+f.ResetIn.Round(time.Minute).String()+"; no handoff while a refusal on this route is unrecovered")
+		}
+		f.Eligible = false
 	}
 	if f.Eligible && o.ErrorClass != ErrUnknown && o.ErrorClass != ErrNone && o.ErrorClass != "" {
 		if f.ResetIn > 0 && f.ResetIn <= f.WaitIfResetWithin {
@@ -473,8 +709,8 @@ const (
 // RecoverBy chooses the method for a re-prompt decision. A turn retry is used
 // only for a session in error whose class a retry can plausibly fix: network,
 // overloaded or unknown. A rate limit is not cured by running the same turn
-// again and an auth error needs a person, so those keep the existing prompt
-// path (auth is held before it gets here). Anything that is not a re-prompt
+// again and an auth error or a restriction needs a person, so those keep the
+// existing prompt path (both are held before they get here). Anything that is not a re-prompt
 // of an errored session on a provider that can retry is a prompt.
 func RecoverBy(d Decision, obs Observation, canRetryTurn bool) Recovery {
 	if d.Action != Reprompt || !canRetryTurn || obs.State != Error {

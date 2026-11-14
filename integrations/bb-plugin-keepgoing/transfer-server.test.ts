@@ -5,8 +5,8 @@ import plugin from "./server.ts";
 import { hostContract } from "./host-contract.ts";
 import { transferResult } from "./transfer-contract.ts";
 
-async function fixture() {
-  const record = { id: "record-example", threadId: "thr_source", projectId: "proj_example", environmentId: "env_example", hostId: "host_example", project: "/projects/example", provider: "codex", loop: "example-loop", configPath: "/private/example/keepgoing.yaml" };
+async function fixture(extra: Record<string, unknown> = {}) {
+  const record = { id: "record-example", threadId: "thr_source", projectId: "proj_example", environmentId: "env_example", hostId: "host_example", project: "/projects/example", provider: "codex", loop: "example-loop", configPath: "/private/example/keepgoing.yaml" , ...extra };
   let target = record.threadId, bound = false, lost = false;
   let waitApply: (() => Promise<void>) | undefined;
   const controls = { enabled: true, paused: true, stop: true, completed: true, awaitingUser: false };
@@ -100,5 +100,14 @@ test("concurrent setup/apply cannot duplicate a destination; restrictive stop do
     assert.equal(transferResult.parse(await duplicate).ok, false);
     assert.equal((await creating as { ok: boolean }).ok, false);
     assert.equal(f.operations.filter(o => o === "apply").length, 1);
+  } finally { await f.harness.lifecycle.dispose(); }
+});
+
+test("a setup that follows the standard route list is moved by asking the CLI, not refused by the plugin", async () => {
+  const f = await fixture({ followsStandard: true });
+  try {
+    const p = transferResult.parse(await f.harness.behavior.callRpc("transfer", { ...f.input, action: "preview" }));
+    assert.ok(f.operations.includes("preview"), `the CLI was not asked: ${p.message}`);
+    assert.doesNotMatch(p.message, /Thread, provider or environment changed/);
   } finally { await f.harness.lifecycle.dispose(); }
 });

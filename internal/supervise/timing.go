@@ -41,7 +41,7 @@ const LeftConfiguration = "left_configuration"
 func (t *tick) reapplyRoute(target string, obs decide.Observation) {
 	tr := t.st.Timing
 	pending := tr != nil && tr.Pending != nil
-	if (!pending && !t.st.ReapplyRoute) || t.opts.DryRun {
+	if (!pending && !t.st.ReapplyRoute) || t.opts.DryRun || t.cfg.RouteList.Unreadable || t.cfg.TimingStepsUnavailable != "" {
 		return
 	}
 	// Between turns only: not while a turn runs or anything waits for the
@@ -57,6 +57,9 @@ func (t *tick) reapplyRoute(target string, obs decide.Observation) {
 	a, err := t.newAdapter(agent, t.loop.StateDir, target)
 	if err == nil {
 		if act, ok := a.(adapter.Activator); ok {
+			if !t.routeChangeAllowed() {
+				return
+			}
 			err = act.Activate(t.ctx)
 		}
 	}
@@ -116,6 +119,9 @@ func atTurnBoundary(d decide.Decision, obs decide.Observation) bool {
 // new route's when the step was applied.
 func (t *tick) timingStep(a adapter.Adapter, d decide.Decision, obs decide.Observation, gate decide.Control) adapter.Adapter {
 	l := t.loop
+	if t.cfg.RouteList.Unreadable || t.cfg.TimingStepsUnavailable != "" {
+		return a
+	}
 	boundary := atTurnBoundary(d, obs)
 	if timing.LeftConfiguration(l, t.st) {
 		return t.returnFromLeftStep(a, boundary)
@@ -124,9 +130,9 @@ func (t *tick) timingStep(a adapter.Adapter, d decide.Decision, obs decide.Obser
 		return a
 	}
 	in := timing.FromRecords(t.cfg, t.st, t.reg, t.now)
-	in.Held = gate.Paused || gate.Stop || gate.AwaitingUser || gate.Completed || d.Action == decide.AwaitUser || d.Action == decide.Stop
+	in.Held = !gate.Enabled || gate.Paused || gate.Stop || gate.AwaitingUser || gate.Completed || d.Action == decide.AwaitUser || d.Action == decide.Stop
 	in.InError = obs.State == decide.Error
-	in.Unknown = obs.State == decide.Unknown
+	in.RefusalOrUnknown = obs.State == decide.Unknown
 	in.TurnEnded = boundary
 	in.OtherMove = t.resolvedMove
 	if !t.opts.DryRun && in.Retarget != nil && (t.st.Timing == nil || t.st.Timing.Retarget == nil) {
@@ -191,6 +197,10 @@ func (t *tick) applyStep(a adapter.Adapter, move state.TimingMove, note *TimingN
 	na, err := t.newAdapter(t.stepAgent(move.To), l.StateDir, move.To)
 	if err == nil {
 		if act, ok := na.(adapter.Activator); ok {
+			if !t.routeChangeAllowed() {
+				note.Outcome = "held"
+				return a
+			}
 			err = act.Activate(t.ctx)
 		}
 	}
@@ -328,4 +338,10 @@ func timingPast(text string) string {
 		}
 	}
 	return text
+}
+
+// routeChangeAllowed rechecks the holds immediately before a thread update.
+func (t *tick) routeChangeAllowed() bool {
+	c, err := control.Load(t.loop.StateDir)
+	return err == nil && c.Enabled && !c.Paused && !c.Stop && !c.AwaitingUser && !c.Completed
 }

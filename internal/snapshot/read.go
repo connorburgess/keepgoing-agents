@@ -11,3 +11,13 @@ func ReadFile(path string) ([]byte, error) {
 	defer f.Close()
 	return io.ReadAll(f)
 }
+
+// ReadRecord reads the whole of path through OpenRecord.
+func ReadRecord(path string) ([]byte, error) {
+	f, err := OpenRecord(path)
+	if err != nil {
+		return nil, err
+	}
+	defer f.Close()
+	return io.ReadAll(f)
+}

@@ -288,6 +288,9 @@ final class MenuApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
         case .review(let action, let key):
             review(action, key: key)
             return
+        case .reviewAll(let action):
+            reviewAll(action)
+            return
         case .openPanelWithChanges:
             openWithControls()
             return
@@ -362,6 +365,37 @@ final class MenuApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
                             } else {
                                 tell(result.outcome == "uncertain" ? "keepgoing could not confirm the change" : "Nothing was changed", Contract.text(result.text))
                             }
+                            refresh()
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    /// Reads the review of a change to every loop, shows it, and applies it
+    /// only if confirmed while the review is current. The result always
+    /// names each loop's outcome, so a partial result is never taken for
+    /// success; nothing is retried by itself.
+    func reviewAll(_ action: LoopAction) {
+        DispatchQueue.global(qos: .userInitiated).async { [self] in
+            let reading = try? client.reviewAll(action)
+            DispatchQueue.main.async { [self] in
+                switch reading {
+                case .none:
+                    tell("keepgoing could not prepare this review", "Nothing was changed. Run keepgoing client review \(action.rawValue) --all in a terminal to see why.")
+                case .refused(let result):
+                    tell("Nothing was changed", Contract.text(result.text))
+                case .review(let review):
+                    guard let command = ask(ConfirmationBuilder.build(review)) else { return }
+                    guard ConfirmationBuilder.current(review, now: Date()) else {
+                        tell("Nothing was changed", Contract.text(review.expired))
+                        return
+                    }
+                    DispatchQueue.global(qos: .userInitiated).async { [self] in
+                        let result = client.applyAll(command, review: review)
+                        DispatchQueue.main.async { [self] in
+                            tell(Contract.text(result.text), (result.lines ?? []).map(Contract.text).joined(separator: "\n"))
                             refresh()
                         }
                     }

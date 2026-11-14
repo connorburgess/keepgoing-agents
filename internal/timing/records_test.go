@@ -26,7 +26,7 @@ func TestFromRecordsFailoverAndRetarget(t *testing.T) {
 		{"timing chose it", state.File{ActiveTarget: "example-large", TargetSetBy: state.SetByTiming, LastHandoffAt: now.Add(-time.Hour)}, false, false},
 		{"a person chose it while timing was off", state.File{ActiveTarget: "example-large", TargetSetBy: state.SetByRetarget}, false, true},
 		{"state before the record, a handoff on record", state.File{ActiveTarget: "claude-other", LastHandoffAt: now.Add(-time.Hour)}, true, false},
-		{"state before the record, no handoff", state.File{ActiveTarget: "example-large"}, false, false},
+		{"state before the record, no handoff", state.File{ActiveTarget: "example-large"}, false, true},
 	} {
 		in := FromRecords(conf, c.st, nil, now)
 		if in.MovedByFailover != c.failover || (in.Retarget != nil) != c.retargets {

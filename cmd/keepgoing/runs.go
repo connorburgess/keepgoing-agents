@@ -20,6 +20,7 @@ import (
 	"github.com/connorburgess/keepgoing-agents/internal/registry"
 	rd "github.com/connorburgess/keepgoing-agents/internal/rundiscovery"
 	"github.com/connorburgess/keepgoing-agents/internal/rungraph"
+	"github.com/connorburgess/keepgoing-agents/internal/snapshot"
 	"github.com/connorburgess/keepgoing-agents/internal/state"
 )
 
@@ -234,7 +235,7 @@ var runsLimitations = []string{
 func runsCommand(e env, args []string) int {
 	fs := flag.NewFlagSet("runs", flag.ContinueOnError)
 	fs.SetOutput(io.Discard) // Never echo parser or config values.
-	path := fs.String("c", "keepgoing.yaml", "configuration used only to locate state_dir")
+	path := fs.String("c", "", configFlagHelp("configuration used only to locate state_dir"))
 	dir := fs.String("state-dir", "", "read this directory without loading configuration")
 	registration := fs.String("registry-id", "", "select a registered loop by its loop_ reference")
 	all := fs.Bool("all", false, "list every registered loop with its current run")
@@ -324,6 +325,9 @@ func runsCommand(e env, args []string) int {
 		}
 		name := ""
 		if *dir == "" {
+			if !configDefault(e, "runs", fs, path) {
+				return exitUsage
+			}
 			cfg, err := config.Load(*path)
 			if err != nil {
 				e.errf("runs: configuration unavailable; repair it or select --state-dir to read private records directly")
@@ -432,7 +436,7 @@ type runsContext struct {
 // absent reports whether a record file does not exist, without creating or
 // following anything.
 func absent(dir, name string) bool {
-	_, err := os.Lstat(filepath.Join(dir, name))
+	_, err := snapshot.Lstat(filepath.Join(dir, name))
 	return errors.Is(err, os.ErrNotExist)
 }
 
@@ -513,7 +517,7 @@ func (c *runsContext) current(run rungraph.Node, e rungraph.Edge) bool {
 	if c.cfg != nil {
 		agent := c.cfg.Loop.Agent
 		if e.Target != state.Primary {
-			candidate, ok := c.cfg.FallbackSet.Find(e.Target)
+			candidate, ok := currentRoutes(c.cfg).Find(e.Target)
 			if !ok {
 				return false
 			}

@@ -18,4 +18,4 @@ func WritePrivateFile(path string, data []byte) error {
 
 // OpenPrivateSnapshot opens a record written by WritePrivateFile without
 // blocking a later replacement. The caller closes it.
-func OpenPrivateSnapshot(path string) (*os.File, error) { return snapshot.Open(path) }
+func OpenPrivateSnapshot(path string) (*os.File, error) { return snapshot.OpenRecord(path) }

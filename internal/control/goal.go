@@ -117,7 +117,7 @@ func validGoalSpec(s GoalSpec) bool {
 // LoadGoal is bounded and read-only. Missing metadata is compatible with old loops.
 func LoadGoal(dir string) (*Goal, error) {
 	path := filepath.Join(dir, GoalName)
-	info, err := os.Lstat(path)
+	info, err := snapshot.Lstat(path)
 	if errors.Is(err, os.ErrNotExist) {
 		return nil, nil
 	}

@@ -7,6 +7,9 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"time"
+
+	snapfile "github.com/connorburgess/keepgoing-agents/internal/snapshot"
 )
 
 // Snapshots bind exactly the bytes parsed by Load, not a later read. They are
@@ -15,6 +18,22 @@ type sourceSnapshot struct {
 	path string
 	size int64
 	sum  [sha256.Size]byte
+	// absent records that the file could not be read when it was looked at.
+	// Such a snapshot matches for as long as that stays true.
+	absent bool
+}
+
+// snapshotFile captures a file that may be missing or unreadable.
+func snapshotFile(path string) sourceSnapshot {
+	info, err := os.Lstat(path)
+	if err != nil || !info.Mode().IsRegular() || info.Size() > 1<<20 {
+		return sourceSnapshot{path: path, absent: true}
+	}
+	raw, err := snapfile.ReadFile(path)
+	if err != nil {
+		return sourceSnapshot{path: path, absent: true}
+	}
+	return snapshot(path, raw)
 }
 
 func snapshot(path string, raw []byte) sourceSnapshot {
@@ -25,11 +44,14 @@ func (s sourceSnapshot) matches() bool {
 	if s.path == "" {
 		return true // Parse/in-memory configurations have no filesystem source.
 	}
+	if s.absent {
+		return snapshotFile(s.path).absent
+	}
 	info, err := os.Stat(s.path)
 	if err != nil || !info.Mode().IsRegular() || info.Size() != s.size {
 		return false
 	}
-	f, err := os.Open(s.path)
+	f, err := snapfile.Open(s.path)
 	if err != nil {
 		return false
 	}
@@ -58,7 +80,40 @@ func (c *Config) CheckSources() error {
 	if c.FallbackSet != nil && !c.FallbackSet.source.matches() {
 		return errors.New("fallback configuration changed or is unreadable")
 	}
+	if !c.routesSource.matches() {
+		return errors.New("standard route list changed")
+	}
 	return nil
+}
+
+// ReadAt is when Load read this configuration's file; zero for one parsed
+// from memory.
+func (c *Config) ReadAt() time.Time { return c.readAt }
+
+// SourcesUnavailable reports that a file this configuration was read from can
+// no longer be read at all: removed, renamed, no longer a regular file, or
+// not readable. A file that can be read but has changed is not unavailable:
+// it says what the loop should do now. A source that was absent when the
+// configuration was read, and a configuration parsed from memory, are never
+// unavailable. All readable sources must still match their saved snapshots;
+// a mixed missing/changed configuration never qualifies.
+func (c *Config) SourcesUnavailable() bool {
+	unavailable := false
+	for _, s := range []sourceSnapshot{c.source, fallbackSource(c), c.routesSource} {
+		if s.path == "" {
+			continue
+		}
+		if sourceUnreadable(s.path) {
+			unavailable = unavailable || !s.absent
+			continue
+		}
+		// A readable source must still be the one we loaded. In particular,
+		// another missing source cannot authorize a changed target or invalid edit.
+		if s.absent || !s.matches() {
+			return false
+		}
+	}
+	return unavailable
 }
 
 // Path is the absolute path Load read this configuration from; empty for a
@@ -73,8 +128,8 @@ func (c *Config) SourcesDigest() string {
 		return ""
 	}
 	h := sha256.New()
-	for _, s := range []sourceSnapshot{c.source, fallbackSource(c)} {
-		fmt.Fprintf(h, "%q:%d:%x;", s.path, s.size, s.sum)
+	for _, s := range []sourceSnapshot{c.source, fallbackSource(c), c.routesSource} {
+		fmt.Fprintf(h, "%q:%d:%x:%t;", s.path, s.size, s.sum, s.absent)
 	}
 	return fmt.Sprintf("%x", h.Sum(nil))
 }
@@ -84,4 +139,36 @@ func fallbackSource(c *Config) sourceSnapshot {
 		return sourceSnapshot{}
 	}
 	return c.FallbackSet.source
+}
+
+// Unlike a snapshot, this check does not treat a readable file over the size
+// limit as unavailable: it may be an invalid edit, not a missing source.
+func sourceUnreadable(path string) bool {
+	info, err := os.Stat(path)
+	if err != nil || !info.Mode().IsRegular() {
+		return true
+	}
+	f, err := snapfile.Open(path)
+	if err != nil {
+		return true
+	}
+	defer f.Close()
+	info, err = f.Stat()
+	if err != nil || !info.Mode().IsRegular() {
+		return true
+	}
+	_, err = io.Copy(io.Discard, io.LimitReader(f, (1<<20)+1))
+	return err != nil
+}
+
+// UnreadableSources reports any previously present source that cannot now be
+// read. Unlike SourcesUnavailable it does not authorize a stop: readable
+// changed sources still prevent use of the retained configuration.
+func (c *Config) UnreadableSources() bool {
+	for _, s := range []sourceSnapshot{c.source, fallbackSource(c), c.routesSource} {
+		if s.path != "" && !s.absent && sourceUnreadable(s.path) {
+			return true
+		}
+	}
+	return false
 }

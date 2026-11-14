@@ -1,18 +1,18 @@
 # Cursor CLI supervision
 
-The Cursor adapter is **unreleased source**, with offline fixture coverage. Published v0.1.5 does not contain it. Guided `init` selection and capability-aware `doctor` checks are implemented in source. One CLI version has been inspected on one platform; live provider acceptance, fallback probes, automatic limit/reset recovery and existing Cursor IDE chat attachment remain unfinished. One authorized [live walkthrough](#live-walkthrough-c4) covered first turn, exact resume and stop on that version; permission rejection was not observable.
+The Cursor adapter is **v0.2.0**, with offline fixture coverage. Published v0.1.5 does not contain it. Guided `init` selection and capability-aware `doctor` checks are in v0.2.0 too. One CLI version has been inspected on one platform; live provider acceptance, fallback probes, automatic limit/reset recovery and existing Cursor IDE chat attachment remain unfinished. One authorized [live walkthrough](#live-walkthrough-c4) covered first turn, exact resume and stop on that version; permission rejection was not observable.
 
 This adapter starts a separate Cursor CLI conversation in a chosen project and resumes that exact conversation on later turns. Open the project in any editor; this does not attach to an existing editor chat. keepgoing supplies the repeated task and common controls; no separate loop skill is required.
 
 ## Configure a primary loop
 
-With a build containing this adapter, use [guided setup](setup.md#cursor-setup-unreleased-source) with `init --agent cursor`, or place the configuration and runtime directory outside the checkout:
+With a build containing this adapter, use [guided setup](setup.md#cursor-setup) with `init --agent cursor`, or place the configuration and runtime directory outside the checkout:
 
 ```yaml
 version: 1
 loop:
   name: cursor-example
-  state_dir: ~/.local/state/keepgoing/cursor-example
+  state_dir: ~/.local/state/agent-loops/cursor-example
   adapter: cursor
   cursor:
     cli: agent
@@ -63,6 +63,7 @@ Read-only inspection of Cursor CLI `2026.09.18-9a7762b` on macOS 26.4 (arm64): i
 | Why did a turn fail? | Nothing structured. The source prints the error text to stderr and exits 1 (130 when interrupted). No error record, code or class. Observed live for an untrusted directory and for a usage limit. | Every failure is `unknown`. Stderr is never read. |
 | Rate limit, quota, reset time? | Nothing structured, in the stream or in any command. A live usage-limit failure was one stderr line after `init` and `user` records. | Unavailable. Never inferred. |
 | Connection trouble inside a turn? | Unpublished `connection` records (`reconnecting` with an attempt number, `reconnected`) and `retry` records (`starting`, `resuming`) in `stream-json` output. | Diagnostic only; see [connection loss](#connection-loss-during-a-turn). |
+| A turn whose wrapper never started | keepgoing's own record: the turn is marked abandoned under the turn lock, so no process ran it. | The next send starts normally, as after a turn that was never started. |
 | Workspace trust, permissions? | Nothing structured. An untrusted directory prints a notice to stderr and exits 1 with empty stdout (observed live). | Unavailable. Exit 1 with empty output on a verified version allows a later fresh start. |
 
 ## Why Cursor is not a fallback candidate

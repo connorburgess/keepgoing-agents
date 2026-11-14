@@ -75,6 +75,11 @@ func (c *Config) TimingSummary() *TimingSummary {
 	if fb := c.FallbackSet; fb != nil && fb.Probe.Disabled {
 		s.Warnings = append(s.Warnings, "timing: scheduled probes are off in the fallbacks file (probe.scheduled_disabled), so no timing probe runs")
 	}
+	if c.RouteList.Unreadable {
+		s.Warnings = append(s.Warnings, "timing preview unavailable: the standard route list could not be read")
+	} else if c.TimingStepsUnavailable != "" {
+		s.Warnings = append(s.Warnings, "timing preview unavailable: "+c.TimingStepsUnavailable)
+	}
 	return s
 }
 

@@ -64,6 +64,10 @@ type Adapter struct {
 	// TurnRetrier says the adapter can ask its provider to re-run a failed
 	// turn by reference (adapter.TurnRetrier).
 	TurnRetrier bool
+	// LaneRecoverer says the adapter can inspect a lane (a direct child
+	// conversation) and ask its provider to retry that lane's failed turn by
+	// reference (adapter.LaneRecoverer).
+	LaneRecoverer bool
 	// LaneStopper says the adapter can find and stop the conversation's
 	// lanes for keepgoing stop --lanes (adapter.LaneStopper).
 	LaneStopper bool
@@ -81,10 +85,10 @@ type Behaviour struct {
 
 // Adapters in column order.
 var Adapters = []Adapter{
-	{ID: "bb", Title: "BB thread", Registered: true, Activator: true, WakePoller: true, TurnRetrier: true, LaneStopper: true, SessionEvidence: true,
-		Files: []string{"internal/adapter/bb/bb.go", "internal/adapter/bb/children.go", "internal/adapter/bb/cursor.go", "internal/adapter/bb/wake.go"},
-		Inputs: []string{"ActiveChildIDs", "ActiveChildren", "AwaitingChildren", "AwaitingInput", "Background", "ChildrenUnverified", "ErrorClass", "ErroredChildren", "Evidence",
-			"Gone", "HealthyChildren", "Queued", "ResetsAt", "RetryDeclined", "RetryExpired", "RetryKnown", "RetryUnverified", "Retrying", "State"}},
+	{ID: "bb", Title: "BB thread", Registered: true, Activator: true, WakePoller: true, TurnRetrier: true, LaneRecoverer: true, LaneStopper: true, SessionEvidence: true,
+		Files: []string{"internal/adapter/bb/bb.go", "internal/adapter/bb/children.go", "internal/adapter/bb/cursor.go", "internal/adapter/bb/lanes.go", "internal/adapter/bb/wake.go"},
+		Inputs: []string{"ActiveChildIDs", "ActiveChildren", "AwaitingChildren", "AwaitingInput", "Background", "ChildTitles", "ChildrenUnverified", "ErrorClass", "ErroredChildren", "Evidence",
+			"ErrorTurn", "Gone", "HealthyChildren", "ModelFallback", "Queued", "ResetsAt", "RetryDeclined", "RetryExpired", "RetryKnown", "RetryUnverified", "Retrying", "State", "Turn", "TurnUnknown"}},
 	{ID: "claude", Title: "Claude Code headless", Registered: true, SessionEvidence: true,
 		Files:  []string{"internal/adapter/runner/claude.go", "internal/adapter/runner/spec.go"},
 		Inputs: []string{"ErrorClass", "Evidence", "State"}},
@@ -109,8 +113,8 @@ var Adapters = []Adapter{
 
 // ObservationFields is every field of decide.Observation. A new field must be
 // added here, and to the Inputs of each adapter that sets it.
-var ObservationFields = []string{"ActiveChildIDs", "ActiveChildren", "AwaitingChildren", "AwaitingInput", "Background", "ChildrenUnverified", "DeferredInteraction", "ErrorClass",
-	"ErroredChildren", "Evidence", "Gone", "HealthyChildren", "Queued", "ResetsAt", "RetryDeclined", "RetryExpired", "RetryKnown", "RetryUnverified", "Retrying", "State"}
+var ObservationFields = []string{"ActiveChildIDs", "ActiveChildren", "AwaitingChildren", "AwaitingInput", "Background", "ChildTitles", "ChildrenUnverified", "DeferredInteraction", "ErrorClass",
+	"ErrorTurn", "ErroredChildren", "Evidence", "Gone", "HealthyChildren", "ModelFallback", "Queued", "ResetsAt", "RetryDeclined", "RetryExpired", "RetryKnown", "RetryUnverified", "Retrying", "State", "Turn", "TurnUnknown"}
 
 func t(path, test string) Ref { return Ref{Path: path, Test: test} }
 func d(path string) Ref       { return Ref{Path: path} }
@@ -167,13 +171,21 @@ var Matrix = []Behaviour{
 			"cursor":  {Yes, Live, "The turn's process state, exit code and bounded event stream. Live once, on one CLI version on macOS.", []Ref{d("docs/cursor.md"), t(cursorTest, "TestCursorLifecycleOnThisPlatform")}},
 			"process": {Yes, Fixture, "The JSON the status command prints.", []Ref{t(processTest, "TestObserveJSON")}},
 		})},
-	{ID: "error_classes", Title: "Structured error classes", What: "Classify a failure as rate_limit, auth, overloaded or network from structured fields. Anything else is unknown, and unknown never fails over.",
+	{ID: "error_classes", Title: "Structured error classes", What: "Classify a failure as rate_limit, auth, restricted, refused, overloaded or network from structured fields. Anything else is unknown, and unknown never fails over.",
 		Cells: merge(map[string]Cell{
 			"bb":      {Yes, Live, "From real provider error and rate-limit events.", []Ref{d(providers), t(bbTest, "TestObserveStructuredRateLimit")}},
 			"claude":  {Yes, Fixture, "From api_error_status, terminal_reason and subtype. A real usage-limit result has not been captured.", []Ref{t(runnerTest, "TestClaudeErrorClassification")}},
 			"codex":   {Yes, Live, "Live for a usage limit, read from the app-server's structured snapshot because the event stream carries it only as prose. Other classes are fixture-only.", []Ref{d(providers), t(runnerTest, "TestCodexTurnLimitClassifiedFromAppServerNotProse")}},
 			"cursor":  {Missing, Live, "Every failure is unknown: the CLI has no structured error contract. A live usage limit and an untrusted directory were both an exit code and stderr text. Connection records add a diagnostic category only.", []Ref{d("docs/cursor.md"), t(cursorTest, "TestCursorFailuresRemainUnknown"), t(cursorTest, "TestCursorConnectionRecordsAreDiagnosticOnly")}},
 			"process": {Yes, Fixture, "From errorClass in the status JSON or the exit_codes map.", []Ref{t(processTest, "TestObserveExitCodeMap")}},
+		})},
+	{ID: "restricted", Title: "Refusals continue, restrictions hold", What: "Recognise, from a structured field, a provider denying permission (restricted) or a model or provider declining the turn (refused). A restriction holds for a person at once and a person's resume asks for exactly one more try. A refusal is continued in the same session with spacing that grows to 10 minutes, and after refusal.ask_after refusals in a row asks a person; until a turn finishes without a refusal, no error on that route moves the work. A restriction outranks a refusal. Neither ever causes a handoff. A refusal no structured field reports stays unknown or looks like a finished turn.",
+		Cells: merge(map[string]Cell{
+			"bb":      {Partial, Fixture, "Restricted: a provider error with HTTP 403, a permission code or oauth_org_not_allowed, in any field, including BB's category \"unauthorized\" with status 403. Refused: BB's category \"policy\". Shapes read from BB 0.48.1's bundled providers, not captured live. A model refusal that ends a turn normally is not reported by BB in a structured form and looks idle. When the provider answers with another model after a refusal (provider/modelFallback with reason refusal), that is a timeline note only: no hold and no continue. An errored turn is named by its thread and the log position of its start, so a refused turn is counted once.", []Ref{t("internal/adapter/bb/bb_test.go", "TestObserveForbiddenIsRestricted"), t("internal/adapter/bb/bb_test.go", "TestObserveNamesTheErroredTurn"), t("internal/adapter/bb/bb_test.go", "TestObserveModelFallbackAfterARefusal"), t("internal/adapter/bb/bb_test.go", "TestObservePolicyBlockIsRefused"), t("internal/decide/restricted_test.go", "TestRestrictedHoldsAndNeverMoves"), t("internal/decide/restricted_test.go", "TestRefusedContinuesWithSpacingAndNeverMoves")}},
+			"claude":  {Yes, Fixture, "Restricted: HTTP 403 in api_error_status, or a permission code in any result field. Refused: stop_reason \"refusal\", which Claude Code documents for a declined turn, whether or not the result is marked as an error. Neither has been captured from the real CLI.", []Ref{t(runnerTest, "TestClaudeErrorClassification"), t("internal/decide/restricted_test.go", "TestRestrictedHoldsAndNeverMoves"), t("internal/decide/restricted_test.go", "TestRefusedContinuesWithSpacingAndNeverMoves")}},
+			"codex":   {Partial, Fixture, "Restricted: an event carrying HTTP 403 or a permission code. Refused: the codes cyberPolicy and misalignmentPolicyViolation, or the type policy. Whether codex exec prints those codes was not captured; a failure carried only as a message is unknown or looks like a finished turn.", []Ref{t(runnerTest, "TestParseCodexEventsRestricted"), t("internal/decide/restricted_test.go", "TestRestrictedHoldsAndNeverMoves"), t("internal/decide/restricted_test.go", "TestRefusedContinuesWithSpacingAndNeverMoves")}},
+			"cursor":  {Missing, None, "Every failure is unknown.", nil},
+			"process": {Yes, Fixture, "When the status command reports errorClass restricted or refused, or an exit code is mapped to either.", []Ref{t(processTest, "TestObserveRestricted"), t("internal/decide/restricted_test.go", "TestRestrictedHoldsAndNeverMoves"), t("internal/decide/restricted_test.go", "TestRefusedContinuesWithSpacingAndNeverMoves")}},
 		})},
 	{ID: "retry_expiry", Title: "Stale retry-notice expiry", What: "Stop honouring a provider's \"retrying\" notice when nothing fresh stands behind it.",
 		Cells: merge(map[string]Cell{
@@ -204,7 +216,7 @@ var Matrix = []Behaviour{
 			same(Cell{Missing, None, "The contract has a resume command only.", nil}, "process"))},
 	{ID: "network", Title: "Connection loss and the network check", What: "Tell an outage from a provider failure, wait it out without spending re-prompts or probes, and act on the first check after it returns.",
 		Cells: merge(map[string]Cell{
-			"bb":      {Yes, Fixture, "The supervisor checks connectivity before a re-prompt, handoff, hold for an errored thread or probe, and waits while it fails. Run for outages of 20 minutes to 3 weeks with a stand-in bb.", []Ref{t(offlineBBTest, "TestOfflineForAnyLengthThenRecoversOnce"), d(networkDoc)}},
+			"bb":      {Yes, Fixture, "The supervisor checks connectivity before a re-prompt, handoff, hold for an errored thread or probe, and waits while it fails. Run for outages of 20 minutes to 3 weeks with a stand-in bb. A turn whose log (Turn) shows it silent since before an outage or a sleep has the nudges due to it held back, not sent; a log that cannot be read (TurnUnknown) changes nothing.", []Ref{t(offlineBBTest, "TestOfflineForAnyLengthThenRecoversOnce"), t("internal/supervise/hungturn_vs_main_test.go", "TestHungTurnActsAsTheStallRuleExceptForTheNudges"), d(networkDoc), d("docs/operations.md#a-turn-that-hung-through-an-outage")}},
 			"claude":  {Yes, Fixture, "As for BB. The wake that ran into the outage is spent; nothing else is, and no hold is raised. Run end to end with a stand-in CLI.", []Ref{t(offlineTest, "TestScenarioHeadlessOutage"), d(networkDoc)}},
 			"codex":   {Yes, Fixture, "As for Claude Code.", []Ref{t(offlineTest, "TestScenarioHeadlessOutage"), d(networkDoc)}},
 			"cursor":  {Yes, Fixture, fakeDecision, []Ref{t(networkTest, "TestOutageDoesNotSpendRepromptsOrProbes"), d(networkDoc)}},
@@ -219,6 +231,11 @@ var Matrix = []Behaviour{
 		Cells: merge(map[string]Cell{
 			"bb": {Yes, Fixture, "Running on one live loop; a notice has not been captured there.", []Ref{t("internal/adapter/bb/children_test.go", "TestChildWorkListsErroredChildren"), d("docs/operations.md")}},
 		}, same(Cell{NA, None, "No child conversations.", nil}, headless...), same(Cell{NA, None, "No child identities are reported.", nil}, "process"))},
+	{ID: "child_recovery", Title: "Lane recovery: retry a failed child's turn", What: "Ask the provider to retry the failed turn of a lane (a direct child conversation) that was seen working and then failed with a connection, overload or unknown error.",
+		Cells: merge(map[string]Cell{
+			"bb": {Yes, Fixture, "Opt-in with `bb.children.retry_errored`, off by default. Runs `bb thread retry` on the lane, by reference and with no message, at most 5 lanes a check, 3 attempts a lane 10 minutes apart and 20 retries a failure (all configurable). To tell what failed, the typed fields of the lane's event log are read (event type, error category and codes, will-retry flag); message text is never decoded or stored. Lane recovery never messages, stops, creates or moves a lane (only an explicit `stop --lanes` stops one), leaves another loop's lane alone, and one waiting on a person, rate limited or needing a login is left alone. No live lane has been retried by keepgoing.",
+				[]Ref{t("internal/adapter/bb/lanes_test.go", "TestInspectLaneEstablishesEachFact"), t("internal/adapter/bb/lanes_test.go", "TestLaneMessageTextIsNeverDecodedOrStored"), t("internal/supervise/lanes_test.go", "TestLaneRetriesAreBoundedPerCheckPerLaneAndReportedOnce"), t("internal/supervise/lanes_test.go", "TestLanesWaitOutAnOutageOfAnyLength"), t("cmd/keepgoing/lane_recovery_test.go", "TestEndToEndFailedLaneIsRetriedByReferenceWhenOptedIn"), t("internal/scenario/outage_test.go", "TestScenarioOutage"), d("docs/operations.md#lane-recovery")}},
+		}, same(Cell{Missing, None, "No child conversations to recover.", nil}, headless...), same(Cell{Missing, None, "No child identities are reported.", nil}, "process"))},
 	{ID: "handoff_source", Title: "Handoff away from it", What: "When it is the active target and hits a configured error class, move the loop to a confirmed fallback.",
 		Cells: merge(map[string]Cell{
 			"bb":      {Yes, Live, "A rate-limited primary handed off on a live loop.", []Ref{d(runsLive), t(superTest, "TestHandoffToFirstCandidatePassingExactProbe")}},
@@ -255,7 +272,7 @@ var Matrix = []Behaviour{
 		Cells: merge(map[string]Cell{
 			"bb":      {Partial, Live, "Readings come from the candidate's provider probe. BB's own rate-limit events supply reset times only.", []Ref{d("docs/fallbacks.md"), d(providers)}},
 			"claude":  {Yes, Live, "One real manual probe recorded a reading.", []Ref{d(providers), t("internal/probe/probe_test.go", "TestClaudeProbeJudgesStreamAndPlainOutputAlike")}},
-			"codex":   {Partial, Live, "A reading only when the existing limit read runs; none on a healthy probe.", []Ref{t("internal/probe/probe_test.go", "TestCodexProbeRecordsUsageOnlyFromTheExistingLimitRead")}},
+			"codex":   {Partial, Live, "Structured usage is collected after successful probes and unknown failures, without another model call. Successful-probe collection is unreleased and fixture-tested; the failed-probe limit lookup has live evidence.", []Ref{t("internal/probe/probe_test.go", "TestCodexProbeRecordsUsageFromSuccessfulAndUnknownProbes")}},
 			"cursor":  {Missing, None, "No probe contract.", nil},
 			"process": {Missing, None, "A command probe reports health only.", nil},
 		})},
@@ -325,6 +342,8 @@ var customCells = map[string]Cell{
 	"new_conversation": {Yes, Fixture, "A candidate has no saved session, so the handoff brief starts one.", []Ref{t(definedTest, "TestDefinedAgentTurnLifecycle")}},
 	"run_graph":        {Partial, Fixture, "Runs and sends are recorded. The session identifier is the agent's own shape and is not shown.", []Ref{t(definedReadTest, "TestDefinitionBecomesASpecification")}},
 	"stop":             {Partial, Fixture, "With can_be_stopped: the same wrapper as the built-in headless agents. Without it a stop is refused and nothing is signalled.", []Ref{t(definedTest, "TestDefinedAgentStop")}},
+	"restricted":       {Partial, Fixture, "A definition may map its agent's own codes or exit codes to restricted or refused, and HTTP 403 in http_status_field is restricted; either in any field wins over a limit and over a matching finished rule, and restricted wins over refused. Validation refuses a definition that maps a code keepgoing itself reads as a refusal or restriction to a class a loop may fail over on. What the agent does not report in a declared field stays unknown or looks like a finished turn.", []Ref{t(definedReadTest, "TestDefinitionDeclaredRefusalsAndRestrictions"), t(definedReadTest, "TestDeclinedTurnIsNotFinished"), t("internal/config/custom_test.go", "TestCustomDefinitionCannotRelabelARefusalAsALimit")}},
+	"child_recovery":   {Missing, None, "A defined agent reports no child conversations to recover.", nil},
 	"stop_lanes":       {NA, None, "Not applicable: a defined agent reports no child conversations. The stop goes ahead and its report says lanes do not apply.", nil},
 	"permissions":      {Partial, Fixture, "With structured_waiting: a turn that ends on the declared waiting rule raises one awaiting-user hold. Nothing is approved or answered.", []Ref{t(definedTest, "TestDefinedAgentWaitingRaisesOneHold")}},
 }

@@ -117,8 +117,11 @@ func (t *tick) reportLongLimitWait(target string, obs decide.Observation) {
 	t.st.LimitWaitReport = rec
 	reason := "no confirmed fallback"
 	cause := decide.WaitNoFallback
-	if kind == decide.WaitFailoverDisabled {
+	switch kind {
+	case decide.WaitFailoverDisabled:
 		reason, cause = "failover disabled", kind
+	case decide.WaitRefusalUnrecovered:
+		reason, cause = "a refusal on this route is unrecovered, so the work is not moved", kind
 	}
 	text := fmt.Sprintf("%s: %s is waiting on a provider limit that resets in about %s, and no handoff is possible (%s). keepgoing keeps checking and continues when the limit lifts; a person may want to retarget or review failover.",
 		t.loop.Name, target, resetIn.Round(time.Minute), reason)

@@ -32,19 +32,33 @@ type timingWould struct {
 // error or unknown last observation, a route the failover rules or a person
 // chose) apply as they would then.
 func timingWouldOf(cfg *config.Config, st state.File, ctl control.File, reg *health.Registry, now time.Time) *timingWould {
-	if timing.LeftConfiguration(cfg.Loop, st) {
-		return &timingWould{Action: timing.Back, To: timing.First, Rule: timing.RuleGate, Reason: "left_configuration",
-			Text: fmt.Sprintf("timing at the next turn boundary: return to %s: %s is no longer a timing step", timing.First, st.Target())}
-	}
-	if !cfg.Loop.TimingOn() {
+	left := timing.LeftConfiguration(cfg.Loop, st)
+	if (!cfg.Loop.TimingOn() && !left) || cfg.RouteList.Unreadable || cfg.TimingStepsUnavailable != "" {
 		return nil
 	}
 	in := timing.FromRecords(cfg, st, reg, now)
+	if left {
+		in.Timing.Steps = []string{timing.First}
+	}
 	in.TurnEnded = true
-	in.Held = ctl.Paused || ctl.Stop || ctl.AwaitingUser || ctl.Completed
+	in.Held = !ctl.Enabled || ctl.Paused || ctl.Stop || ctl.AwaitingUser || ctl.Completed
+	in.RefusalOrUnknown = true
+	// The next-boundary assumption does not supply missing observation
+	// evidence. Only known idle/active observations can reach a move rule.
 	if c := st.LastCheck; c != nil {
-		in.InError = c.ObservedState == string(decide.Error)
-		in.Unknown = c.ObservedState == string(decide.Unknown)
+		in.Held = in.Held || c.AwaitingInput
+		switch decide.State(c.ObservedState) {
+		case decide.Idle, decide.Active:
+			in.RefusalOrUnknown = false
+		case decide.Error:
+			in.InError = true
+		case decide.Pending, decide.Stopping:
+			in.RefusalOrUnknown, in.TurnEnded = false, false
+		}
+	}
+	if left && !in.Held && !in.RefusalOrUnknown && !in.InError && in.TurnEnded {
+		return &timingWould{Action: timing.Back, To: timing.First, Rule: timing.RuleGate, Reason: "left_configuration",
+			Text: fmt.Sprintf("timing at the next turn boundary: return to %s: %s is no longer a timing step", timing.First, st.Target())}
 	}
 	if at := timing.RetargetReset(in); at != nil {
 		in.Retarget.ResetsAt = at

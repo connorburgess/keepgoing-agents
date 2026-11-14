@@ -90,6 +90,24 @@ func (g *Graph) Begin(a Attempt) error {
 	return nil
 }
 
+// Discard removes a send intent whose adapter call returned positive evidence
+// that the provider did nothing: no failed turn to retry, or a retry already
+// queued. It applies only to a child_retry intent that has no outcome yet;
+// any other attempt, and one with an outcome, is kept.
+func (g *Graph) Discard(id string) (bool, error) {
+	for i := range g.Attempts {
+		if g.Attempts[i].ID != id {
+			continue
+		}
+		if g.Attempts[i].Action != "child_retry" || g.Attempts[i].Outcome != rd.Intent {
+			return false, rd.ErrInvalid
+		}
+		g.Attempts = append(g.Attempts[:i], g.Attempts[i+1:]...)
+		return true, nil
+	}
+	return false, rd.ErrInvalid
+}
+
 // Finish records the adapter's return for a retained attempt.
 func (g *Graph) Finish(id string, outcome rd.Outcome, at time.Time) (bool, error) {
 	for i := range g.Attempts {

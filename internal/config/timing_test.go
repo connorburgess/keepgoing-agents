@@ -204,3 +204,116 @@ func TestTimingStepsNeedTheLoopsOwnBBThread(t *testing.T) {
 		}
 	}
 }
+
+// A standard list is external data. Losing a referenced route must not make
+// the loop's own controls unloadable, while malformed timing stays invalid.
+func TestTimingStepsWithChangingStandardRoutes(t *testing.T) {
+	list := standardList
+	path := writeRoutes(t, list)
+	body := bbLoop + "  timing:\n    enabled: true\n    windows: [seven_day]\n    steps: [primary]\n"
+	p := loopFile(t, body)
+	for _, tc := range []struct {
+		name, list string
+		absent     bool
+	}{
+		{"valid", list, false},
+		{"missing", "", true},
+
+		{"restored", list, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if tc.list == "" {
+				if err := os.Remove(path); err != nil {
+					t.Fatal(err)
+				}
+			} else if err := os.WriteFile(path, []byte(tc.list), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			cfg, err := Load(p)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if (cfg.RouteList.Unreadable || cfg.TimingStepsUnavailable != "") != tc.absent {
+				t.Fatalf("unavailable: %q", cfg.TimingStepsUnavailable)
+			}
+			if tc.absent && len(cfg.TimingSummary().Warnings) < 2 {
+				t.Fatal("missing preview warning")
+			}
+		})
+	}
+	// Standard routes intentionally exclude the primary's quota group, so a
+	// non-primary timing step cannot resolve there. Removing that reference
+	// is a change in external route data, not an unloadable loop.
+	for _, routes := range []string{list, "version: 1\nroutes: []\n"} {
+		if err := os.WriteFile(path, []byte(routes), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		steps := strings.Replace(strings.Replace(body, "  bb: {thread: thr_example123}", "  bb: {thread: thr_example123, model: example-medium}", 1), "steps: [primary]", "steps: [primary, large-same]", 1)
+		cfg, err := Load(loopFile(t, steps))
+		if err != nil || cfg.TimingStepsUnavailable == "" || len(cfg.RouteList.Warnings) == 0 {
+			t.Fatalf("changed steps: %+v %v", cfg, err)
+		}
+	}
+	if _, err := Load(loopFile(t, strings.Replace(body, ", model: example-medium", "", 1))); err != nil {
+		t.Fatalf("primary-only configuration needs no model change: %v", err)
+	}
+	// Explicit inability to restore a multi-step loop remains invalid even
+	// when the external list cannot resolve the reference.
+	multi := strings.Replace(strings.Replace(body, ", model: example-medium", "", 1), "steps: [primary]", "steps: [primary, large-same]", 1)
+	if _, err := Load(loopFile(t, multi)); err == nil || !strings.Contains(err.Error(), "loop.bb.model") {
+		t.Fatalf("missing primary model accepted: %v", err)
+	}
+	// Invalid explicit configuration still fails before resolving any list.
+	for _, extra := range []string{"    steps: [primary, primary]\n", "    down_at: 2\n", "    ceiling: missing\n", "    min_on_step: -1h\n"} {
+		bad := strings.Replace(body, "    steps: [primary]\n", extra, 1)
+		if _, err := Load(loopFile(t, bad)); err == nil {
+			t.Fatalf("invalid timing accepted: %s", extra)
+		}
+	}
+}
+
+func TestTimingThresholdsAreFinite(t *testing.T) {
+	for _, field := range []string{"unused_at_least", "down_at"} {
+		for _, value := range []string{".nan", ".inf", "-.inf"} {
+			t.Run(field+"/"+value, func(t *testing.T) {
+				_, err := Parse([]byte(timingValid + "    " + field + ": " + value + "\n"))
+				if err == nil || !strings.Contains(err.Error(), "loop.timing."+field) {
+					t.Fatalf("nonfinite threshold accepted or unnamed: %v", err)
+				}
+			})
+		}
+	}
+	for _, tc := range []struct {
+		field, value string
+		want         float64
+		valid        bool
+	}{
+		{"unused_at_least", "0", DefaultTimingUnused, true},
+		{"unused_at_least", "0.000001", 0.000001, true},
+		{"unused_at_least", "0.999999", 0.999999, true},
+		{"unused_at_least", "1", 0, false},
+		{"unused_at_least", "-0.01", 0, false},
+		{"down_at", "0", DefaultTimingDownAt, true},
+		{"down_at", "0.000001", 0.000001, true},
+		{"down_at", "1", 1, true},
+		{"down_at", "1.000001", 0, false},
+		{"down_at", "-0.01", 0, false},
+	} {
+		t.Run(tc.field+"/"+tc.value, func(t *testing.T) {
+			cfg, err := Parse([]byte(timingValid + "    " + tc.field + ": " + tc.value + "\n"))
+			if (err == nil) != tc.valid {
+				t.Fatalf("valid=%v: %v", tc.valid, err)
+			}
+			if err != nil {
+				return
+			}
+			got := cfg.Loop.Timing.UnusedAtLeast
+			if tc.field == "down_at" {
+				got = cfg.Loop.Timing.DownAt
+			}
+			if got != tc.want {
+				t.Fatalf("got %v want %v", got, tc.want)
+			}
+		})
+	}
+}

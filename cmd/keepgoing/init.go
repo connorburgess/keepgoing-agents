@@ -18,7 +18,9 @@ import (
 	"github.com/connorburgess/keepgoing-agents/internal/config"
 	"github.com/connorburgess/keepgoing-agents/internal/control"
 	"github.com/connorburgess/keepgoing-agents/internal/lock"
+	"github.com/connorburgess/keepgoing-agents/internal/snapshot"
 	"github.com/connorburgess/keepgoing-agents/internal/state"
+	"github.com/connorburgess/keepgoing-agents/internal/userdir"
 	"gopkg.in/yaml.v3"
 )
 
@@ -28,6 +30,7 @@ type initOptions struct {
 	name, project, directory, task, taskFile       string
 	deadline                                       string
 	agent, thread, provider, account, group, model string
+	routes                                         string // standard or own; "" is own
 	fallbacks                                      []initFallback
 	stall, wake, backoff, interval                 time.Duration
 	nudges, reprompts, probeCap                    int
@@ -63,6 +66,7 @@ func setupLoop(e env, args []string, input io.Reader, lookPath func(string) (str
 	fs.StringVar(&o.account, "account-dir", "", "existing Claude Code or Codex account configuration directory")
 	fs.StringVar(&o.group, "group", "", "primary quota pool label (default: provider)")
 	fs.StringVar(&o.model, "model", "", "headless model (default: CLI configuration)")
+	fs.StringVar(&o.routes, "routes", "", "standard: follow your standard route list for handoffs; own (the default without asking): only --fallback")
 	fs.Func("fallback", "ordered headless fallback: ADAPTER[:GROUP][=ACCOUNT_DIR]; repeatable", func(s string) error {
 		kindGroup, account, _ := strings.Cut(s, "=")
 		kind, group, _ := strings.Cut(kindGroup, ":")
@@ -140,7 +144,7 @@ func setupLoop(e env, args []string, input io.Reader, lookPath func(string) (str
 		}
 		return printInitJSON(e, o, cfg, goal)
 	}
-	fmt.Fprintf(e.stdout, "Loop: %s\nTarget: %s\nProvider: %s; quota group: %s\nProject: %s\nConfiguration: %s\nState: %s\n", o.name, cfg.Loop.Agent.Describe(), cfg.Loop.Provider, cfg.Loop.Group, o.project, filepath.Join(o.directory, "keepgoing.yaml"), cfg.Loop.StateDir)
+	fmt.Fprintf(e.stdout, "Loop: %s\nTarget: %s\nProvider: %s; quota group: %s\nProject: %s\nConfiguration: %s\nState: %s\n", o.name, cfg.Loop.Agent.Describe(), cfg.Loop.Provider, cfg.Loop.Group, o.project, filepath.Join(o.directory, config.FileName), cfg.Loop.StateDir)
 	fmt.Fprintln(e.stdout, initBindingNotice(o))
 	if o.agent == "cursor" {
 		fmt.Fprintln(e.stdout, initCursorNotice)
@@ -156,7 +160,14 @@ func setupLoop(e env, args []string, input io.Reader, lookPath func(string) (str
 	if o.deadline != "" {
 		fmt.Fprintf(e.stdout, "Deadline: %s (next check holds supervision; running turns are not cancelled)\n", o.deadline)
 	}
-	if cfg.FallbackSet == nil {
+	if cfg.Loop.FollowsStandard() {
+		applies := candidateIDs(cfg.FallbackSet)
+		fmt.Fprintf(e.stdout, "Routes: follows your standard route list; %d apply to this loop: %s. Changes to the list reach the loop at its next check.\n", len(applies), idList(applies))
+		for _, s := range cfg.RouteList.Skipped {
+			fmt.Fprintf(e.stdout, "  not used here: %s (%s)\n", s.ID, s.Reason)
+		}
+		fmt.Fprintln(e.stdout, "After enable: rate-limit handoffs only, exact probe required; probes follow the standard list's policy. Switch-back is off.")
+	} else if cfg.FallbackSet == nil {
 		fmt.Fprintln(e.stdout, "Fallbacks: none; automatic handoffs disabled.")
 	} else {
 		for i, c := range cfg.FallbackSet.Candidates {
@@ -178,7 +189,7 @@ func setupLoop(e env, args []string, input io.Reader, lookPath func(string) (str
 		e.errf("init: %v", err)
 		return exitFailed
 	}
-	cfgPath := filepath.Join(o.directory, "keepgoing.yaml")
+	cfgPath := filepath.Join(o.directory, config.FileName)
 	if goal != nil {
 		printGoal(e, goal.Summary(), false)
 	}
@@ -304,7 +315,29 @@ func collectInit(e env, o *initOptions, input io.Reader, lookPath func(string) (
 	if err := str("group", "Primary quota pool label", &o.group, provider); err != nil {
 		return err
 	}
-	if !visited["fallback"] && o.agent != "cursor" {
+	// The offer to follow the standard list: yes unless declined, and only
+	// when asked. A script follows it only with --routes standard.
+	if !visited["routes"] && !visited["fallback"] && initCanFollow(o.agent) {
+		if applies, total := initStandardOffer(o, lookPath); applies > 0 {
+			verb := "apply"
+			if applies == 1 {
+				verb = "applies"
+			}
+			choice, err := ask(fmt.Sprintf("Follow your standard route list for handoffs? %d of its %d switched-on routes %s to this loop. (yes/no)", applies, total, verb), "yes")
+			if err != nil {
+				return err
+			}
+			switch strings.ToLower(choice) {
+			case "yes", "y":
+				o.routes = config.RoutesStandard
+			case "no", "n":
+				o.routes = "own"
+			default:
+				return errors.New("route list choice must be yes or no")
+			}
+		}
+	}
+	if !visited["fallback"] && o.agent != "cursor" && o.routes != config.RoutesStandard {
 		fmt.Fprintln(e.stdout, "Optional fallbacks use existing logins. Use the same quota label for accounts sharing limits. Blank keeps a single agent.")
 		for {
 			a, err := ask("Next fallback agent (claude/codex, blank to finish)", "")
@@ -411,11 +444,10 @@ func planInit(o *initOptions, lookPath func(string) (string, error)) (map[string
 		return fail(errors.New("name must be 1-64 lowercase letters, digits, or hyphens, starting with a letter or digit"))
 	}
 	if o.directory == "" {
-		base, err := os.UserConfigDir()
+		o.directory, err = userdir.Config("loops", o.name)
 		if err != nil {
 			return fail(err)
 		}
-		o.directory = filepath.Join(base, "keepgoing", "loops", o.name)
 	}
 	o.directory, err = canonicalFuturePath(o.directory)
 	if err != nil {
@@ -461,6 +493,33 @@ func planInit(o *initOptions, lookPath func(string) (string, error)) (map[string
 		}
 	} else if o.thread != "" || o.provider != "" {
 		return fail(errors.New("--thread and --provider are only used with bb"))
+	}
+	var standard *config.Routes
+	switch o.routes {
+	case "", "own":
+	case config.RoutesStandard:
+		if len(o.fallbacks) > 0 {
+			return fail(errors.New("--routes standard and --fallback exclude each other: a loop follows the standard list or has its own"))
+		}
+		if !initCanFollow(o.agent) {
+			return fail(errors.New("--routes standard covers bb, claude and codex loops"))
+		}
+		path, err := config.StandardRoutesPath()
+		if err == nil {
+			standard, err = config.LoadRoutes(path)
+		}
+		if err != nil {
+			code := config.RoutesProblem(err)
+			if code == "" {
+				return fail(errors.New("--routes standard: no standard route list has been written yet; add a route first with keepgoing routes add"))
+			}
+			return fail(fmt.Errorf("--routes standard: the standard route list cannot be used (%s): %s", code, routesProblemText(code)))
+		}
+		if len(standard.Routes) == 0 {
+			return fail(errors.New("--routes standard: the standard route list has no routes yet; add one first with keepgoing routes add"))
+		}
+	default:
+		return fail(errors.New("--routes is standard or own"))
 	}
 	fallbacks := config.Fallbacks{Version: 1, Redundancy: config.Redundancy{MinHealthy: 1, Span: "group"}, Probe: config.ProbePolicy{Every: config.Duration{Duration: 12 * time.Hour}, TTL: config.Duration{Duration: 24 * time.Hour}, DailyCap: o.probeCap}}
 	groups := map[string]bool{primary.Group: true}
@@ -509,6 +568,10 @@ func planInit(o *initOptions, lookPath func(string) (string, error)) (map[string
 		}
 		files["fallbacks.yaml"] = b
 	}
+	if standard != nil {
+		loop["routes"] = config.RoutesStandard
+		loop["errors"].(map[string]any)["failover_on"] = []string{"rate_limit"}
+	}
 	if o.withGoal {
 		if err := validateSetupGoal(*o); err != nil {
 			return fail(err)
@@ -526,11 +589,15 @@ func planInit(o *initOptions, lookPath func(string) (string, error)) (map[string
 	if len(fallbacks.Candidates) > 0 {
 		cfg.FallbackSet, _ = config.ParseFallbacks(files["fallbacks.yaml"])
 	}
-	files["keepgoing.yaml"] = b
-	files["prompt.md"] = []byte(initPrompt(o.task, filepath.Join(o.directory, "keepgoing.yaml")))
+	if standard != nil {
+		cfg.FallbackSet, cfg.RouteList.Skipped = standard.Resolve(cfg.Loop)
+		cfg.RouteList.Source = config.RoutesStandard
+	}
+	files[config.FileName] = b
+	files["prompt.md"] = []byte(initPrompt(o.task, filepath.Join(o.directory, config.FileName)))
 	if o.withGoal {
 		files["task.md"] = []byte(o.task + "\n")
-		files["prompt.md"] = []byte(initGoalPrompt(filepath.Join(o.directory, "keepgoing.yaml")))
+		files["prompt.md"] = []byte(initGoalPrompt(filepath.Join(o.directory, config.FileName)))
 	}
 	return files, cfg, nil
 }
@@ -592,6 +659,50 @@ func initAgent(kind, account, group, model, project string, lookPath func(string
 }
 
 // Cursor's desktop launcher is named cursor; its headless CLI is agent.
+// initCanFollow reports whether a loop of this agent can follow the
+// standard route list.
+func initCanFollow(agent string) bool { return agent == "bb" || agent == "claude" || agent == "codex" }
+
+// initStandardOffer is how many of the standard list's routes would apply
+// to the loop being set up, and how many of its routes are switched on. Nothing is offered when
+// none would apply, or when the loop cannot be described yet.
+func initStandardOffer(o *initOptions, lookPath func(string) (string, error)) (int, int) {
+	path, err := config.StandardRoutesPath()
+	if err != nil {
+		return 0, 0
+	}
+	r, err := config.LoadRoutes(path)
+	if err != nil || switchedOn(r) == 0 {
+		return 0, 0
+	}
+	a, err := initAgent(o.agent, o.account, o.group, o.model, o.project, lookPath)
+	if err != nil {
+		return 0, switchedOn(r)
+	}
+	if a.BB != nil {
+		a.BB.Thread, a.Provider = strings.TrimSpace(o.thread), strings.TrimSpace(o.provider)
+		if a.Group == "" {
+			a.Group = a.Provider
+		}
+	}
+	fb, _ := r.Resolve(config.Loop{Name: o.name, Agent: a})
+	return len(candidateIDs(fb)), switchedOn(r)
+}
+
+// standardRoutesWritten is the number of routes in the standard list, when
+// one is written and can be used.
+func standardRoutesWritten() (int, bool) {
+	path, err := config.StandardRoutesPath()
+	if err != nil {
+		return 0, false
+	}
+	r, err := config.LoadRoutes(path)
+	if err != nil || len(r.Routes) == 0 {
+		return 0, false
+	}
+	return len(r.Routes), true
+}
+
 func initCLIName(kind string) string {
 	if kind == "cursor" {
 		return "agent"
@@ -655,7 +766,11 @@ func writeInit(dir string, files map[string][]byte, spec *control.GoalSpec) (*co
 	defer func() {
 		if !ok {
 			for i := len(created) - 1; i >= 0; i-- {
-				_ = os.Remove(created[i])
+				if filepath.Base(created[i]) == control.GoalName {
+					_ = snapshot.Remove(created[i])
+				} else {
+					_ = os.Remove(created[i])
+				}
 			}
 			_ = os.Remove(dir)
 		}
@@ -690,7 +805,7 @@ func writeInit(dir string, files map[string][]byte, spec *control.GoalSpec) (*co
 			return nil, err
 		}
 		defer l.Release()
-		cfg, err := config.Load(filepath.Join(dir, "keepgoing.yaml"))
+		cfg, err := config.Load(filepath.Join(dir, config.FileName))
 		if err != nil || cfg.Loop.StateDir != stateDir || !cfg.Loop.PromptGoal {
 			return nil, errors.New("goal setup configuration changed or unavailable")
 		}

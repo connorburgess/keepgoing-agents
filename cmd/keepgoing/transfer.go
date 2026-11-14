@@ -65,7 +65,7 @@ func transferCommand(e env, args []string, run doctorRun) int {
 	}
 	fs := flag.NewFlagSet("transfer preview", flag.ContinueOnError)
 	fs.SetOutput(io.Discard)
-	path := fs.String("c", "keepgoing.yaml", "configuration path")
+	path := fs.String("c", "", configFlagHelp("configuration path"))
 	thread := fs.String("thread", "", "existing destination BB thread ID")
 	asJSON := fs.Bool("json", false, "versioned advisory preview")
 	offline := fs.Bool("offline", false, "skip BB identity queries")
@@ -81,6 +81,9 @@ func transferCommand(e env, args []string, run doctorRun) int {
 	}
 	if fs.NArg() != 0 || !transferThreadID.MatchString(*thread) || *timeout <= 0 || *timeout > 30*time.Second {
 		e.errf("transfer: provide a valid --thread and a timeout greater than zero and at most 30s; no positional arguments")
+		return exitUsage
+	}
+	if !configDefault(e, "transfer", fs, path) {
 		return exitUsage
 	}
 	cfg, err := config.Load(*path)
@@ -112,7 +115,7 @@ func transferCommand(e env, args []string, run doctorRun) int {
 		r.ConfiguredProvider, r.ConfiguredQuotaGroup, r.ConfiguredModel, r.ConfiguredReasoning = a.Provider, a.Group, a.BB.Model, a.BB.Reasoning
 		add("labels", "ok", "Configured labels have a supported shape; this does not verify accounts or model access.")
 	}
-	if cfg.FallbackSet != nil {
+	if cfg.Loop.HasRouteList() {
 		add("fallbacks", "error", "Fallback configurations require a broader transfer plan; this preview only assesses a single BB primary.")
 	}
 	var ctl control.File
@@ -213,7 +216,7 @@ func transferCommand(e env, args []string, run doctorRun) int {
 
 func readTransferRecord(dir, name string, dst any) error {
 	p := filepath.Join(dir, name)
-	info, err := os.Lstat(p)
+	info, err := snapshot.LstatRecord(p)
 	if errors.Is(err, os.ErrNotExist) {
 		return nil
 	}
@@ -221,7 +224,7 @@ func readTransferRecord(dir, name string, dst any) error {
 		return errors.New("record unavailable")
 	}
 	// Never block a concurrent control or state save (Windows).
-	f, err := snapshot.Open(p)
+	f, err := snapshot.OpenRecord(p)
 	if err != nil {
 		return errors.New("record unavailable")
 	}

@@ -103,7 +103,7 @@ func TestEndToEndErroredChildrenAreAnnouncedOnceAndNeverTouched(t *testing.T) {
 	}
 
 	code, out, errs := f.run("status")
-	if code != exitOK || !strings.Contains(out, "children:  3 direct child thread(s) in error at that check (historical); keepgoing does not retry, message or stop them\n") || strings.Contains(out, "thr_child") {
+	if code != exitOK || !strings.Contains(out, "children:  3 direct child thread(s) in error at that check (historical); keepgoing does not retry or message them, and stops them only for stop --lanes\n") || strings.Contains(out, "thr_child") {
 		t.Fatalf("%d %s %s", code, out, errs)
 	}
 	var status statusOut

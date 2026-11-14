@@ -15,6 +15,7 @@ import (
 	"net"
 	"net/http"
 	"os"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -24,6 +25,7 @@ import (
 	"github.com/connorburgess/keepgoing-agents/internal/health"
 	"github.com/connorburgess/keepgoing-agents/internal/incident"
 	"github.com/connorburgess/keepgoing-agents/internal/registry"
+	"github.com/connorburgess/keepgoing-agents/internal/state"
 )
 
 // keepgoing dock serves one read-only page about every registered loop on the
@@ -99,7 +101,7 @@ func dockCommand(e env, args []string) int {
 		e.errf("dock: no random source for the access token")
 		return exitFailed
 	}
-	reader := &dockReader{ctx: e.ctx, directory: *directory, refresh: *refresh, staleAfter: *staleAfter, query: inspectDaemon}
+	reader := &dockReader{ctx: e.ctx, directory: *directory, refresh: *refresh, staleAfter: *staleAfter, query: inspectDaemon, versions: true}
 	if *offline {
 		reader.query = func(ctx context.Context, dir, current string, _ bool) daemonStatus {
 			return inspectDaemon(ctx, dir, current, true)
@@ -304,6 +306,7 @@ func (s *dockServer) asset(w http.ResponseWriter, name, contentType string) {
 // read runs on the reader's own context, never a request's: a page that
 // reloads mid-read must not cut the read short for everyone else.
 type dockReader struct {
+	builds     *buildSession
 	ctx        context.Context // the command's lifetime; nil means background
 	directory  string
 	refresh    time.Duration
@@ -317,6 +320,15 @@ type dockReader struct {
 
 	mu    sync.Mutex
 	cache map[bool]dockCached
+
+	// versions asks for the Versions view: the page's endpoint does, while
+	// panel list and client review/apply, which never show it, do not, so
+	// they hash no service file and read no client report. panelDir is
+	// where the clients' reports are read from; empty means the default
+	// panel directory. services caches service file digests.
+	versions bool
+	panelDir string
+	services dockServiceFiles
 }
 
 type dockCached struct {
@@ -427,7 +439,17 @@ func (d *dockReader) read(ctx context.Context, identifiers bool) dockReport {
 			inputs[i] = d.readLoop(ctx, dir, entries[i], f.Entries, validated, now)
 		}
 	})
-	return buildDockReport(inputs, now, d.refresh, d.staleAfter, identifiers, true, omitted, ctx.Err() == nil)
+	r := buildDockReport(inputs, now, d.refresh, d.staleAfter, identifiers, true, omitted, ctx.Err() == nil)
+	if d.versions {
+		var clients *clientsFile
+		var clientsErr error
+		if dir := panelClientsDir(d.panelDir); dir != "" {
+			clients, clientsErr = loadClients(dir)
+		}
+		v := dockVersionsOf(r.Loops, clients, clientsErr, now)
+		r.Versions = &v
+	}
+	return r
 }
 
 func (d *dockReader) readLoop(ctx context.Context, dir string, entry registry.Entry, all []registry.Entry, validated map[string]*config.Config, now time.Time) dockInput {
@@ -443,6 +465,17 @@ func (d *dockReader) readLoop(ctx context.Context, dir string, entry registry.En
 		return daemon
 	}
 	in.Client = readClientStatus(ctx, dir, entry.ID, false, false, d.staleAfter, now, query)
+	in.Daemon = daemon
+	// A missing configuration binding cannot authorize controls or expose a
+	// target, but its registered state directory can answer a live diagnostic.
+	if in.Client.Snapshot == nil && d.query != nil && ctx.Err() == nil && slices.Contains(in.Client.Issues, "binding_unavailable") {
+		in.Daemon = d.query(ctx, entry.StateDir, version, false)
+	}
+	if d.versions {
+		in.ServiceFile = d.services.compare(ctx, entry.StateDir)
+		bc, _ := d.builds.assess(entry, daemon, now)
+		in.BuildChange = &bc
+	}
 	if in.Client.Snapshot == nil {
 		return in
 	}
@@ -451,7 +484,7 @@ func (d *dockReader) readLoop(ctx context.Context, dir string, entry registry.En
 		if cfg.Loop.Timing != nil {
 			in.Chain.TimingSteps = cfg.Loop.Timing.Steps
 		}
-		if fb := cfg.FallbackSet; fb != nil {
+		if fb := currentRoutes(cfg); fb != nil {
 			in.Chain.Candidates = fb.Candidates
 			if !fb.Probe.Disabled {
 				in.Chain.ProbeEvery = fb.Probe.Every.Duration
@@ -479,6 +512,9 @@ func (d *dockReader) readLoop(ctx context.Context, dir string, entry registry.En
 	in.Timeline = &tl
 	if c := in.Client.Snapshot.Controls; c != nil && c.AwaitingUser {
 		in.Hold = dockHoldFromTimeline(in.Timeline)
+	}
+	if titles, err := state.LoadLaneTitles(entry.StateDir); err == nil {
+		in.LaneTitles = titles
 	}
 	loop, _, _ := readRegisteredRunsWith(entry, all, true, runsMaxLimit, 0, d.staleAfter, validated)
 	in.Runs, in.RunsKnown = loop, loop.Binding == recordAvailable

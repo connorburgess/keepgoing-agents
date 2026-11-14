@@ -7,7 +7,7 @@ import (
 )
 
 func TestExamplesValidate(t *testing.T) {
-	files, _ := filepath.Glob("../../examples/keepgoing.*.yaml")
+	files, _ := filepath.Glob("../../examples/looptender.*.yaml")
 	if len(files) < 3 {
 		t.Fatalf("expected example configs, found %v", files)
 	}

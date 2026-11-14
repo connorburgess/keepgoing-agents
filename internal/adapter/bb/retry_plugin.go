@@ -43,7 +43,7 @@ const maxRetryPluginOutput = 256 << 10
 // answer or an unrecognised shape leaves the facts false, which keeps the
 // notice until it ages out. The status call is made only when the decision
 // alone would drop the notice.
-func (a *Adapter) retryService(ctx context.Context, turnStartedMs int64) decide.RetryService {
+func (a *Adapter) retryService(ctx context.Context, thread string, turnStartedMs int64) decide.RetryService {
 	var s decide.RetryService
 	var explain struct {
 		Thread     string `json:"threadId"`
@@ -54,8 +54,8 @@ func (a *Adapter) retryService(ctx context.Context, turnStartedMs int64) decide.
 			} `json:"decision"`
 		} `json:"diagnostic"`
 	}
-	out, err := a.runBounded(ctx, "provider-retry", "explain", a.cfg.Thread, "--json")
-	if err != nil || len(out) > maxRetryPluginOutput || json.Unmarshal(out, &explain) != nil || explain.Thread != a.cfg.Thread {
+	out, err := a.runBounded(ctx, "provider-retry", "explain", thread, "--json")
+	if err != nil || len(out) > maxRetryPluginOutput || json.Unmarshal(out, &explain) != nil || explain.Thread != thread {
 		return s
 	}
 	d := explain.Diagnostic
@@ -72,7 +72,7 @@ func (a *Adapter) retryService(ctx context.Context, turnStartedMs int64) decide.
 	var status struct {
 		Retries *[]json.RawMessage `json:"retries"`
 	}
-	out, err = a.runBounded(ctx, "provider-retry", "status", a.cfg.Thread, "--json")
+	out, err = a.runBounded(ctx, "provider-retry", "status", thread, "--json")
 	if err != nil || len(out) > maxRetryPluginOutput || json.Unmarshal(out, &status) != nil || status.Retries == nil {
 		return s
 	}
