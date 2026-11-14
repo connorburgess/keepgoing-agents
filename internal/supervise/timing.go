@@ -46,7 +46,7 @@ func (t *tick) reapplyRoute(target string, obs decide.Observation) {
 	}
 	// Between turns only: not while a turn runs or anything waits for the
 	// session (an interaction, queued messages, lanes, background jobs).
-	if obs.State != decide.Idle || obs.AwaitingInput || obs.DeferredInteraction || obs.Queued > 0 || obs.ActiveChildren > 0 || obs.Background > 0 {
+	if !timingIdleKnown(obs) {
 		return
 	}
 	if t.left() < repairRouteTime {
@@ -108,7 +108,7 @@ func (t *tick) stepAgent(id string) config.Agent {
 // messages pending, background jobs, outside the window, the network down),
 // and timing does not act on it either.
 func atTurnBoundary(d decide.Decision, obs decide.Observation) bool {
-	return obs.State == decide.Idle && d.Action == decide.Wake && !d.ChildErrorWake
+	return timingIdleKnown(obs) && d.Action == decide.Wake && !d.ChildErrorWake
 }
 
 // timingStep decides with usage-aware timing at a turn boundary and, when it
@@ -119,7 +119,7 @@ func atTurnBoundary(d decide.Decision, obs decide.Observation) bool {
 // new route's when the step was applied.
 func (t *tick) timingStep(a adapter.Adapter, d decide.Decision, obs decide.Observation, gate decide.Control) adapter.Adapter {
 	l := t.loop
-	if t.cfg.RouteList.Unreadable || t.cfg.TimingStepsUnavailable != "" {
+	if t.routeNeedsRepair() || t.cfg.RouteList.Unreadable || t.cfg.TimingStepsUnavailable != "" {
 		return a
 	}
 	boundary := atTurnBoundary(d, obs)
@@ -256,7 +256,7 @@ func (t *tick) timingFailed(move state.TimingMove, note *TimingNote, err error) 
 	}
 	tr.Failures++
 	note.Outcome, note.Error = "failed", err.Error()
-	t.warn("timing: could not move to %s (%v); staying on %s", move.To, err, move.From)
+	t.warn("timing: update to %s failed (%v); %s remains the route on record, but the thread route is unverified; wake waits for repair", move.To, err, move.From)
 	data := map[string]any{"from": move.From, "to": move.To, "rule": move.Rule, "reason": move.Reason, "failures": tr.Failures}
 	switch {
 	case move.Action == timing.Up && tr.Failures >= l.Errors.MaxReprompts:
@@ -265,14 +265,14 @@ func (t *tick) timingFailed(move state.TimingMove, note *TimingNote, err error) 
 		tr.GaveUp = &gave
 		note.Outcome = "capped"
 		data["outcome"] = "capped"
-		t.report("timing", fmt.Sprintf("%s: timing could not step up to %s %d times for this %s window and stops trying until it resets; staying on %s", l.Name, move.To, tr.Failures, move.Window, move.From), data)
+		t.report("timing", fmt.Sprintf("%s: timing could not step up to %s %d times for this %s window and stops trying until it resets; %s remains the route on record, and wake waits for repair", l.Name, move.To, tr.Failures, move.Window, move.From), data)
 	case move.Action != timing.Up && !tr.FailReported:
 		tr.FailReported = true
 		data["outcome"] = "failed"
 		t.report("timing", fmt.Sprintf("%s: timing could not move from %s to %s (%v); it tries again at each turn boundary", l.Name, move.From, move.To, err), data)
 	case move.Action != timing.Up && tr.Failures == l.Errors.MaxReprompts:
 		data["outcome"] = "still_failing"
-		t.report("timing", fmt.Sprintf("%s: still on %s after %d failed moves to %s; timing keeps trying at each turn boundary", l.Name, move.From, tr.Failures, move.To), data)
+		t.report("timing", fmt.Sprintf("%s: route on record is %s after %d failed moves to %s; wake waits for repair, and timing keeps trying at each turn boundary", l.Name, move.From, tr.Failures, move.To), data)
 	}
 }
 
@@ -344,4 +344,16 @@ func timingPast(text string) string {
 func (t *tick) routeChangeAllowed() bool {
 	c, err := control.Load(t.loop.StateDir)
 	return err == nil && c.Enabled && !c.Paused && !c.Stop && !c.AwaitingUser && !c.Completed
+}
+
+// timingIdleKnown requires a verified boundary with no pending interaction,
+// child input/work, provider retry, or unreadable retry/child/turn evidence.
+func timingIdleKnown(obs decide.Observation) bool {
+	return obs.State == decide.Idle && !obs.Gone && !obs.AwaitingInput && !obs.DeferredInteraction &&
+		len(obs.AwaitingChildren) == 0 && !obs.ChildrenUnverified && !obs.RetryUnverified && !obs.Retrying && !obs.TurnUnknown &&
+		obs.Queued == 0 && obs.ActiveChildren == 0 && obs.Background == 0
+}
+
+func (t *tick) routeNeedsRepair() bool {
+	return t.st.ReapplyRoute || t.st.Timing != nil && t.st.Timing.Pending != nil
 }

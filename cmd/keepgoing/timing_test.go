@@ -228,7 +228,7 @@ func TestTimingRecordLines(t *testing.T) {
 		{state.File{ActiveTarget: "example-large", Timing: &state.TimingRecord{Failures: 3, FailedTo: "primary", FailedAction: "back"}},
 			[]string{"timing: could not move to primary 3 times; it tries again at each turn boundary"}},
 		{state.File{Timing: &state.TimingRecord{Pending: &state.TimingMove{From: "primary", To: "example-large"}}},
-			[]string{"timing: a step from primary to example-large was recorded and not settled; the next check that acts sets the thread to primary, the route on record"}},
+			[]string{"timing: a step from primary to example-large was recorded and not settled; the next eligible check sets the thread to primary, the route on record; wake waits for successful repair"}},
 		{state.File{ReapplyRoute: true},
 			[]string{"route: the loop is on primary because its route left the configuration; the next check that acts sets the thread's model and effort to primary's"}},
 	} {

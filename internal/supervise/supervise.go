@@ -1207,7 +1207,11 @@ func (t *tick) run() error {
 		// check, and before a wake, so the next turn runs on its route. On a
 		// dry run it only says what it would do.
 		a = t.timingStep(a, d, obs, gate)
-		if !t.opts.DryRun {
+		if d.Action == decide.Wake && t.routeNeedsRepair() {
+			// BB tell supplies no model/effort. A failed update may have
+			// changed the thread, so the old adapter cannot establish its route.
+			res.Action, res.Reason = string(decide.None), "timing route not established; waiting for repair before wake"
+		} else if !t.opts.DryRun {
 			actErr = t.act(a, d)
 		}
 	}

@@ -32,6 +32,11 @@ type timingWould struct {
 // error or unknown last observation, a route the failover rules or a person
 // chose) apply as they would then.
 func timingWouldOf(cfg *config.Config, st state.File, ctl control.File, reg *health.Registry, now time.Time) *timingWould {
+	// The observed lifecycle state cannot establish which model a failed
+	// update left on the thread. The pending-record line supplies that evidence.
+	if st.ReapplyRoute || st.Timing != nil && st.Timing.Pending != nil {
+		return nil
+	}
 	left := timing.LeftConfiguration(cfg.Loop, st)
 	if (!cfg.Loop.TimingOn() && !left) || cfg.RouteList.Unreadable || cfg.TimingStepsUnavailable != "" {
 		return nil
@@ -130,7 +135,7 @@ func timingRecordLines(st state.File, now time.Time) []string {
 		out = append(out, fmt.Sprintf("timing: could not move to %s %d times; it tries again at each turn boundary", tr.FailedTo, tr.Failures))
 	}
 	if p := tr.Pending; p != nil {
-		out = append(out, fmt.Sprintf("timing: a step from %s to %s was recorded and not settled; the next check that acts sets the thread to %s, the route on record", p.From, p.To, st.Target()))
+		out = append(out, fmt.Sprintf("timing: a step from %s to %s was recorded and not settled; the next eligible check sets the thread to %s, the route on record; wake waits for successful repair", p.From, p.To, st.Target()))
 	}
 	return out
 }

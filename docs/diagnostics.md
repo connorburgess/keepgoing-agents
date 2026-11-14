@@ -375,7 +375,7 @@ Released in v0.2.0; **offline fixtures only**. Every event carries one or more k
 | `collapsed` | A check that also summarizes identical earlier checks. |
 | `notification` | A delivery record. |
 
-- `--kind` takes a comma-separated list; an event matches when it has any listed kind. `moves` is shorthand for `handoff,switch_back,return,retarget,ownership`: every recorded change of who has the loop.
+- `--kind` takes a comma-separated list; an event matches when it has any listed kind. `moves` is shorthand for `handoff,switch_back,return,timing_move,retarget,ownership`: every recorded change of who has the loop.
 - `--target` takes `primary`, a fallback id, or a 64-character target key copied from JSON. An alias is hashed locally and never echoed; the report shows only the key. It matches a record's target before or after the check, the fallback a check returned from, any candidate it probed, and any candidate whose probes were folded into its summary. Control saves and deliveries record no target, so a target filter hides them, including `hold`, `control` and `ownership` events that came from a control command; combine `--target` with check-based kinds. Text rows name `primary` and shorten any other key to `fallback <first 8 characters>`; a hash cannot be turned back into a fallback id.
 - `--since` and `--until` take an RFC 3339 time or a positive duration meaning that long before the read time (`--since 72h`). Bounds are inclusive and compare the local timestamps used for ordering. A record that summarizes collapsed checks matches when any part of its span falls in the range: from the earliest of its folded checks and its own time to the latest of them.
 

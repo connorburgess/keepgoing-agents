@@ -212,7 +212,7 @@ func TestTimingStopDuringTheCheckWins(t *testing.T) {
 }
 
 // A failed step up keeps the loop where it is and keeps the record of the
-// step for the next check to repair; the wake still goes out there. After
+// step for the next check to repair; the wake is withheld until repair succeeds. After
 // max_reprompts failures for the window instance timing stops trying that
 // step up and reports once, and status and the check agree it gave up.
 func TestTimingStepUpFailureAndCap(t *testing.T) {
@@ -222,7 +222,7 @@ func TestTimingStepUpFailureAndCap(t *testing.T) {
 	w.adapters["example-large"] = &fakeAdapter{name: "example-large", activateErr: errors.New("fictional bb failure")}
 	res := runTick(t, w, t0)
 	st := loadState(t, w)
-	if res.Timing.Outcome != "failed" || len(p.sent) != 1 || res.Target != state.Primary || st.Timing.Pending == nil {
+	if res.Timing.Outcome != "failed" || len(p.sent) != 0 || res.Target != state.Primary || st.Timing.Pending == nil {
 		t.Fatalf("first failure: %+v, sent %v, pending %+v", res.Timing, p.sent, st.Timing.Pending)
 	}
 	res = runTick(t, w, t0.Add(10*time.Minute))
@@ -260,7 +260,7 @@ func TestTimingReturnIsRetriedNotCapped(t *testing.T) {
 			t.Fatalf("check %d: %+v", i, res.Timing)
 		}
 	}
-	if n := countReports(w, "timing"); n != 2 || !strings.Contains(w.reports[2].Text, "still on example-large after 2 failed moves to primary; timing keeps trying at each turn boundary") {
+	if n := countReports(w, "timing"); n != 2 || !strings.Contains(w.reports[1].Text, "route on record is example-large after 2 failed moves to primary; wake waits for repair, and timing keeps trying at each turn boundary") {
 		t.Fatalf("%d timing reports for the failures: %s %+v", n, w.reportTypes(), w.reports)
 	}
 	if st := loadState(t, w); st.Timing.Capped || st.Timing.Failures != 4 || st.Target() != "example-large" {

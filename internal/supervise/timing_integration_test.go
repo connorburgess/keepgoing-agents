@@ -1,6 +1,7 @@
 package supervise
 
 import (
+	"errors"
 	"os"
 	"path/filepath"
 	"testing"
@@ -129,5 +130,76 @@ func TestTimingStepRechecksControlsAfterIntent(t *testing.T) {
 	st := loadState(t, w)
 	if res.Timing == nil || res.Timing.Outcome != "held" || st.Timing == nil || st.Timing.Pending == nil || st.Target() != state.Primary || w.adapters["example-large"].activated != 0 {
 		t.Fatalf("hold after intent ignored: %+v %+v", res.Timing, st.Timing)
+	}
+}
+
+func TestTimingRepairRespectsIdleUncertainty(t *testing.T) {
+	for name, edit := range map[string]func(*decide.Observation){
+		"child input":         func(o *decide.Observation) { o.AwaitingChildren = []string{"thr_example_child"} },
+		"children unverified": func(o *decide.Observation) { o.ChildrenUnverified = true },
+		"retry unverified":    func(o *decide.Observation) { o.RetryUnverified = true },
+		"provider retrying":   func(o *decide.Observation) { o.Retrying = true },
+		"turn unverified":     func(o *decide.Observation) { o.TurnUnknown = true },
+		"target gone":         func(o *decide.Observation) { o.Gone = true },
+	} {
+		t.Run(name, func(t *testing.T) {
+			w := stepsWorld(t)
+			obs := decide.Observation{State: decide.Idle}
+			edit(&obs)
+			p := w.primary(obs)
+			editState(t, w, func(s *state.File) {
+				s.Timing = &state.TimingRecord{Pending: &state.TimingMove{From: "primary", To: "example-large"}}
+			})
+			res := runTick(t, w, t0)
+			st := loadState(t, w)
+			if p.activated != 0 || len(p.sent) != 0 || st.Timing.Pending == nil {
+				t.Fatalf("uncertainty activated or sent: %+v activations=%d", res, p.activated)
+			}
+			if name == "child input" {
+				c, _ := control.Load(w.dir)
+				if res.Action != "await_user" || !c.AwaitingUser {
+					t.Fatal("child input lost precedence")
+				}
+			}
+		})
+	}
+}
+
+func TestTimingPendingRepairWithholdsWake(t *testing.T) {
+	for _, why := range []string{"failed", "unavailable", "unreadable", "budget"} {
+		t.Run(why, func(t *testing.T) {
+			w := stepsWorld(t)
+			p := w.primary(decide.Observation{State: decide.Idle})
+			w.cfg.Loop.Timing.Enabled = false
+			w.cfg.FallbackSet = nil
+			editState(t, w, func(s *state.File) {
+				s.ReapplyRoute = true
+				s.Timing = &state.TimingRecord{Pending: &state.TimingMove{From: "primary", To: "example-large"}}
+			})
+			switch why {
+			case "failed":
+				p.activateErr = errors.New("fictional lost repair response")
+			case "unavailable":
+				w.cfg.TimingStepsUnavailable = "referenced step unavailable"
+			case "unreadable":
+				w.cfg.RouteList.Unreadable = true
+			case "budget":
+				w.cfg.Loop.TickTimeout = config.Duration{Duration: time.Second}
+			}
+			res := runTick(t, w, t0)
+			st := loadState(t, w)
+			if res.Action != "none" || len(p.sent) != 0 || st.Timing.Pending == nil || !st.ReapplyRoute || st.SendsRecorded != 0 {
+				t.Fatalf("unestablished route released wake: %+v state=%+v reapply=%v sends=%d sent=%v", res, st.Timing, st.ReapplyRoute, st.SendsRecorded, p.sent)
+			}
+			p.activateErr = nil
+			w.cfg.TimingStepsUnavailable = ""
+			w.cfg.RouteList.Unreadable = false
+			w.cfg.Loop.TickTimeout = config.Duration{Duration: config.DefaultTickTimeout}
+			res = runTick(t, w, t0.Add(10*time.Minute))
+			st = loadState(t, w)
+			if res.Action != "wake" || len(p.sent) != 1 || st.Timing.Pending != nil || st.ReapplyRoute || st.SendsRecorded != 1 {
+				t.Fatalf("successful repair did not release one wake: %+v state=%+v", res, st.Timing)
+			}
+		})
 	}
 }
