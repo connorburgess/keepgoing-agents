@@ -466,3 +466,87 @@ func TestWindowsStaleRemovalPreservesANewerPublication(t *testing.T) {
 		})
 	}
 }
+
+func TestWindowsLegacyOrAbsentRemovalRefusesFirstPublication(t *testing.T) {
+	for _, legacy := range []bool{false, true} {
+		t.Run(fmt.Sprint("legacy=", legacy), func(t *testing.T) {
+			dir := t.TempDir()
+			path := filepath.Join(dir, "state.json")
+			staged := filepath.Join(dir, "staged")
+			if legacy {
+				if err := os.WriteFile(path, []byte("legacy"), 0600); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if _, err := os.Lstat(markerFor(path)); !errors.Is(err, os.ErrNotExist) {
+				t.Fatalf("marker unexpectedly existed: %v", err)
+			}
+			observed, resume, done := make(chan struct{}), make(chan struct{}), make(chan error, 1)
+			go func() { done <- removeRecordObserved(path, os.Remove, func() { close(observed); <-resume }) }()
+			<-observed
+			if err := os.WriteFile(staged, []byte("first-published"), 0600); err != nil {
+				t.Fatal(err)
+			}
+			if err := ReplaceStrict(staged, path); err != nil {
+				t.Fatal(err)
+			}
+			close(resume)
+			if err := <-done; err == nil {
+				t.Fatal("removed first publication made after initial observation")
+			}
+			if b, err := ReadRecord(path); err != nil || string(b) != "first-published" {
+				t.Fatalf("first publication lost: %s %v", b, err)
+			}
+			if _, err := os.Stat(markerFor(path)); err != nil {
+				t.Fatalf("first marker lost: %v", err)
+			}
+		})
+	}
+}
+
+func TestWindowsMarkerDispositionFailureLeavesUnavailableRecord(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "state.json")
+	staged := filepath.Join(dir, "staged")
+	marker := markerFor(path)
+	if err := os.WriteFile(staged, []byte("old"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err := ReplaceStrict(staged, path); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(marker, 0600) })
+	err := removeRecordWith(path, func(p string) error {
+		if err := os.Remove(p); err != nil {
+			return err
+		}
+		// SetFileAttributes works on this owned file while its guard remains held.
+		// Read-only prevents FileDispositionInfo from deleting it after the record.
+		return os.Chmod(marker, 0400)
+	})
+	var pathErr *os.PathError
+	if !errors.As(err, &pathErr) || pathErr.Op != "remove record marker" {
+		t.Fatalf("wrong failure stage: %v", err)
+	}
+	if _, err := os.Stat(path); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("record was not deleted: %v", err)
+	}
+	if _, err := os.Stat(marker); err != nil {
+		t.Fatalf("marker lost: %v", err)
+	}
+	if _, err := ReadRecord(path); err == nil || errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("partial deletion became empty new state: %v", err)
+	}
+	if err := os.Chmod(marker, 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(staged, []byte("recovered"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err := ReplaceStrict(staged, path); err != nil {
+		t.Fatal(err)
+	}
+	if b, err := ReadRecord(path); err != nil || string(b) != "recovered" {
+		t.Fatalf("recovery: %s %v", b, err)
+	}
+}
