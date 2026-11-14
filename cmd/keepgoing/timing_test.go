@@ -100,6 +100,9 @@ func TestStatusSaysWhatTimingWouldDo(t *testing.T) {
 	if err := os.MkdirAll(filepath.Join(f.dir, "state"), 0o700); err != nil {
 		t.Fatal(err)
 	}
+	// A preview needs enabled supervision and a legitimate recorded observation.
+	write(t, filepath.Join(f.dir, "state", "control.json"), `{"enabled":true}`, 0o600)
+	write(t, filepath.Join(f.dir, "state", "state.json"), `{"lastCheck":{"observedState":"idle"}}`, 0o600)
 	// Read 20 minutes before 12:00 at 60%, resetting at 14:00: 40% unused.
 	write(t, filepath.Join(f.dir, "state", "health.json"), `{"candidates":{"primary":{"usage":{"at":"2026-11-09T11:40:00Z","source":"claude_rate_limit_event","identity":"`+id+`","windows":[
    {"key":"seven_day","used":0.6,"resetsAt":"2026-11-09T14:00:00Z"}]}}}}`, 0o600)
@@ -116,6 +119,53 @@ func TestStatusSaysWhatTimingWouldDo(t *testing.T) {
 	if w := st.TimingWould; w.Action != "up" || w.To != "example-large" || w.Rule != "step_up" || w.Reason != "near_reset_unused" || w.Window != "seven_day" || w.ActedOn {
 		t.Fatalf("%+v", w)
 	}
+	for _, tc := range []struct{ name, controls, observation, reason string }{
+		{"disabled", `{}`, `{"lastCheck":{"observedState":"idle"}}`, "held"},
+		{"missing controls", "", `{"lastCheck":{"observedState":"idle"}}`, "held"},
+		{"missing state", `{"enabled":true}`, "", "refusal_or_unknown"},
+		{"nil last check", `{"enabled":true}`, `{}`, "refusal_or_unknown"},
+		{"empty observed state", `{"enabled":true}`, `{"lastCheck":{}}`, "refusal_or_unknown"},
+		{"unrecognized observed state", `{"enabled":true}`, `{"lastCheck":{"observedState":"example-new-state"}}`, "refusal_or_unknown"},
+		{"known error", `{"enabled":true}`, `{"lastCheck":{"observedState":"error"}}`, "in_error"},
+		{"known pending", `{"enabled":true}`, `{"lastCheck":{"observedState":"pending"}}`, "turn_not_ended"},
+		{"known stopping", `{"enabled":true}`, `{"lastCheck":{"observedState":"stopping"}}`, "turn_not_ended"},
+		{"waiting on input", `{"enabled":true}`, `{"lastCheck":{"observedState":"active","awaitingInput":true}}`, "held"},
+		{"known unknown", `{"enabled":true}`, `{"lastCheck":{"observedState":"unknown"}}`, "refusal_or_unknown"},
+		{"known idle", `{"enabled":true}`, `{"lastCheck":{"observedState":"idle"}}`, "near_reset_unused"},
+		{"known active at next boundary", `{"enabled":true}`, `{"lastCheck":{"observedState":"active"}}`, "near_reset_unused"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			for name, body := range map[string]string{"control.json": tc.controls, "state.json": tc.observation} {
+				path := filepath.Join(f.dir, "state", name)
+				if body == "" {
+					if err := os.Remove(path); err != nil && !os.IsNotExist(err) {
+						t.Fatal(err)
+					}
+				} else {
+					write(t, path, body, 0o600)
+				}
+			}
+			before := snapshotRuntime(t, f.dir)
+			_, out, errs := f.run("status", "--json", "-now", "2026-11-09T12:00:00Z")
+			var result statusOut
+			if err := json.Unmarshal([]byte(out), &result); err != nil {
+				t.Fatal(err, errs)
+			}
+			w := result.TimingWould
+			if w == nil || w.Reason != tc.reason || (w.Action == "up") != (tc.reason == "near_reset_unused") {
+				t.Errorf("preview: %+v, want %s", w, tc.reason)
+			}
+			_, text, _ := f.run("status", "-now", "2026-11-09T12:00:00Z")
+			if w != nil && !strings.Contains(text, w.Text+"\n") {
+				t.Errorf("text and JSON preview differ: %s", text)
+			}
+			if after := snapshotRuntime(t, f.dir); !reflect.DeepEqual(before, after) || f.read("calls") != "" || f.read("probes") != "" {
+				t.Fatal("preview changed records or called provider")
+			}
+		})
+	}
+	write(t, filepath.Join(f.dir, "state", "control.json"), `{"enabled":true}`, 0o600)
+	write(t, filepath.Join(f.dir, "state", "state.json"), `{"lastCheck":{"observedState":"idle"}}`, 0o600)
 	// A held loop: the gate decides, before any reading.
 	if code, _, errs := f.run("pause"); code != exitOK {
 		t.Fatalf("pause: %d %s", code, errs)
@@ -126,6 +176,8 @@ func TestStatusSaysWhatTimingWouldDo(t *testing.T) {
 		t.Fatalf("held: %v %+v", err, st.TimingWould)
 	}
 	// Without steps it only collects readings, and says so.
+	write(t, filepath.Join(f.dir, "state", "control.json"), `{}`, 0o600)
+	write(t, filepath.Join(f.dir, "state", "state.json"), `{}`, 0o600)
 	write(t, f.cfg, string(cfgText)+timingYAML, 0o600)
 	if _, out, _ := f.run("status", "-now", "2026-11-09T12:00:00Z"); !strings.Contains(out, "timing would, at the next turn boundary: stay: no steps are configured, so timing only collects readings (not acted on yet)\n") {
 		t.Fatalf("no steps: %s", out)
@@ -157,6 +209,8 @@ func TestTimingPreviewWithUnavailableInputs(t *testing.T) {
 		t.Fatal(err)
 	}
 	write(t, filepath.Join(dir, "health.json"), `{"candidates":{"primary":{"usage":{"at":"2026-11-09T11:40:00Z","source":"claude_rate_limit_event","identity":"`+id+`","windows":[{"key":"seven_day","used":0.6,"resetsAt":"2026-11-09T14:00:00Z"}]}}}}`, 0o600)
+	write(t, filepath.Join(dir, "control.json"), `{"enabled":true}`, 0o600)
+	write(t, filepath.Join(dir, "state.json"), `{"lastCheck":{"observedState":"idle"}}`, 0o600)
 	standardPath := filepath.Join(t.TempDir(), "routes.yaml")
 	check := func(wantPreview bool, warning string, wantCode int) {
 		t.Helper()
@@ -195,7 +249,11 @@ func TestTimingPreviewWithUnavailableInputs(t *testing.T) {
 		path := filepath.Join(dir, name)
 		write(t, path, "broken", 0o600)
 		check(false, name+" could not be read", exitFailed)
-		write(t, path, "{}", 0o600)
+		restored := `{"enabled":true}`
+		if name == "state.json" {
+			restored = `{"lastCheck":{"observedState":"idle"}}`
+		}
+		write(t, path, restored, 0o600)
 		check(true, "", exitOK)
 	}
 	t.Setenv(config.RoutesFileEnv, standardPath)

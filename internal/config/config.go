@@ -7,6 +7,7 @@ import (
 	"bytes"
 	"errors"
 	"fmt"
+	"math"
 	"net/url"
 	"os"
 	"path/filepath"
@@ -853,10 +854,10 @@ func (c *Config) Validate() error {
 		if d := tm.ProbeEvery.Duration; d < time.Hour {
 			add("loop.timing.probe_every must be at least 1h")
 		}
-		if v := tm.UnusedAtLeast; v <= 0 || v >= 1 {
+		if v := tm.UnusedAtLeast; math.IsNaN(v) || math.IsInf(v, 0) || v <= 0 || v >= 1 {
 			add("loop.timing.unused_at_least must be above 0 and below 1")
 		}
-		if v := tm.DownAt; v <= 0 || v > 1 {
+		if v := tm.DownAt; math.IsNaN(v) || math.IsInf(v, 0) || v <= 0 || v > 1 {
 			add("loop.timing.down_at must be above 0 and at most 1")
 		}
 		if d := tm.MinOnStep.Duration; d < time.Minute || d > 7*24*time.Hour {

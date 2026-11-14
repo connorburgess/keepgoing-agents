@@ -36,7 +36,8 @@ func timingWouldOf(cfg *config.Config, st state.File, ctl control.File, reg *hea
 		return nil
 	}
 	in := timing.Input{Now: now, Timing: *l.Timing, Current: st.Target(), TurnEnded: true,
-		Held: ctl.Paused || ctl.Stop || ctl.AwaitingUser || ctl.Completed}
+		Held:             !ctl.Enabled || ctl.Paused || ctl.Stop || ctl.AwaitingUser || ctl.Completed,
+		RefusalOrUnknown: true}
 	if fb := cfg.FallbackSet; fb != nil {
 		in.ProbeTTL = fb.Probe.TTL.Duration
 	}
@@ -49,9 +50,18 @@ func timingWouldOf(cfg *config.Config, st state.File, ctl control.File, reg *hea
 			in.Retarget = &timing.Retarget{}
 		}
 	}
+	// The next-boundary assumption does not supply missing observation
+	// evidence. Only known idle/active observations can reach a move rule.
 	if c := st.LastCheck; c != nil {
-		in.InError = c.ObservedState == string(decide.Error)
-		in.RefusalOrUnknown = c.ObservedState == string(decide.Unknown)
+		in.Held = in.Held || c.AwaitingInput
+		switch decide.State(c.ObservedState) {
+		case decide.Idle, decide.Active:
+			in.RefusalOrUnknown = false
+		case decide.Error:
+			in.InError = true
+		case decide.Pending, decide.Stopping:
+			in.RefusalOrUnknown, in.TurnEnded = false, false
+		}
 	}
 	if reg != nil {
 		first := l.PrimaryCandidate()

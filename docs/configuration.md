@@ -303,8 +303,8 @@ loop:
 | `probe_every` | `12h` | The interval between timing probes of the first route; at least 1h. |
 | `steps` | none | The routes timing may move between, cheapest to strongest, by ID: `primary` and fallbacks in the first route's group, switched on. The order is yours; keepgoing never ranks models or effort levels. Without steps timing only collects readings. |
 | `ceiling` | the last step | The strongest step timing may use, at or above `primary`. |
-| `unused_at_least` | `0.25` | The unused share near a reset that makes timing step up, above 0 and below 1. |
-| `down_at` | `0.95` | The projected use at reset that makes timing step down, above 0 and at most 1. |
+| `unused_at_least` | `0.25` | The unused share near a reset that makes timing step up, finite, above 0 and below 1. |
+| `down_at` | `0.95` | The projected use at reset that makes timing step down, finite, above 0 and at most 1. |
 | `min_on_step` | `2h` | The least time between timing moves, except the return at a reset; between 1m and 168h. |
 
 Timing needs `loop.fallbacks` or `loop.routes: standard` (the resolved list's `probe.daily_cap` and `probe.timeout` apply) and a way to probe the first route (`loop.provider` of `claude-code` or `codex`, or `loop.probe`); `validate` refuses it otherwise and names what is missing. It is not available for Cursor loops.
@@ -332,7 +332,7 @@ When timing probes run:
 5. `step_up`: when a named window resets within `near_reset`, a reading no older than 1h shows at least `unused_at_least` unused and no other named window is at or projected at `down_at`, straight to the ceiling (`near_reset_unused`); once per window instance (`already_stepped_up`), not above the ceiling (`at_ceiling`), and not while another named window is high (`other_window_high`).
 6. `nothing_due`: no reading (`no_reading`), none of the named windows reported (`no_named_window`), a reading too old to step up on (`reading_too_old`), projected under `down_at` (`projected_under_down_at`), or not projectable (`cannot_project`).
 
-Rules 3 to 5 wait `min_on_step` after the last timing move (`too_soon`). A missing, stale or malformed reading never leads to a move. `status` cannot see a turn end, so it decides as if the next check found one; the gates it can read from records still apply.
+Rules 3 to 5 wait `min_on_step` after the last timing move (`too_soon`). A missing, stale or malformed reading never leads to a move. `status` cannot see a turn end, so it decides as if the next check found one; the gates it can read from records still apply. Disabled supervision gives a held gate; missing, empty, unknown or unrecognized observation evidence gives the conservative `refusal_or_unknown` gate. Only known idle/active observations allow the next-boundary move preview; error, pending, stopping and awaiting-input observations remain gated. Without steps, the collection-only message still applies.
 
 ## errors
 

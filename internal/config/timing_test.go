@@ -209,3 +209,49 @@ func TestTimingStepsWithChangingStandardRoutes(t *testing.T) {
 		}
 	}
 }
+
+func TestTimingThresholdsAreFinite(t *testing.T) {
+	for _, field := range []string{"unused_at_least", "down_at"} {
+		for _, value := range []string{".nan", ".inf", "-.inf"} {
+			t.Run(field+"/"+value, func(t *testing.T) {
+				_, err := Parse([]byte(timingValid + "    " + field + ": " + value + "\n"))
+				if err == nil || !strings.Contains(err.Error(), "loop.timing."+field) {
+					t.Fatalf("nonfinite threshold accepted or unnamed: %v", err)
+				}
+			})
+		}
+	}
+	for _, tc := range []struct {
+		field, value string
+		want         float64
+		valid        bool
+	}{
+		{"unused_at_least", "0", DefaultTimingUnused, true},
+		{"unused_at_least", "0.000001", 0.000001, true},
+		{"unused_at_least", "0.999999", 0.999999, true},
+		{"unused_at_least", "1", 0, false},
+		{"unused_at_least", "-0.01", 0, false},
+		{"down_at", "0", DefaultTimingDownAt, true},
+		{"down_at", "0.000001", 0.000001, true},
+		{"down_at", "1", 1, true},
+		{"down_at", "1.000001", 0, false},
+		{"down_at", "-0.01", 0, false},
+	} {
+		t.Run(tc.field+"/"+tc.value, func(t *testing.T) {
+			cfg, err := Parse([]byte(timingValid + "    " + tc.field + ": " + tc.value + "\n"))
+			if (err == nil) != tc.valid {
+				t.Fatalf("valid=%v: %v", tc.valid, err)
+			}
+			if err != nil {
+				return
+			}
+			got := cfg.Loop.Timing.UnusedAtLeast
+			if tc.field == "down_at" {
+				got = cfg.Loop.Timing.DownAt
+			}
+			if got != tc.want {
+				t.Fatalf("got %v want %v", got, tc.want)
+			}
+		})
+	}
+}
