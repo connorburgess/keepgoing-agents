@@ -1,0 +1,55 @@
+/* The question card: the one component every surface draws the same way.
+   Added to dock.css when built; the mocks load it after the real dock.css. */
+.q { display: grid; gap: 0.7rem; }
+.q [hidden] { display: none; }
+.q-head { display: flex; flex-wrap: wrap; align-items: baseline; gap: 0.25rem 0.75rem; min-width: 0; }
+/* How long it has been held: a plain fact, not a reproach. */
+.q-held { color: var(--ink-2); font-size: 0.875rem; font-weight: 550; }
+.q-open { margin-left: auto; font-size: 0.875rem; }
+.q-flag { display: inline-flex; align-items: center; gap: 0.35rem; font-size: 0.8125rem; font-weight: 600; color: var(--attn); }
+.q-flag .dot { align-self: center; }
+.q-ask { margin: 0; font-size: 1.0625rem; line-height: 1.35; font-weight: 650; letter-spacing: -0.008em; max-width: 60ch; text-wrap: balance; }
+/* What is known: at most four short facts, then one sentence on what is not
+   affected or not tried. */
+.q-known { margin: 0; display: flex; flex-wrap: wrap; gap: 0.15rem 1.25rem; font-size: 0.8125rem; color: var(--ink-2); }
+.q-known div { display: flex; gap: 0.35rem; min-width: 0; }
+.q-known dt { margin: 0; }
+.q-known dd { margin: 0; color: var(--ink); font-weight: 550; overflow-wrap: anywhere; }
+.q-why { margin: -0.3rem 0 0; font-size: 0.8125rem; color: var(--ink-2); max-width: 70ch; }
+/* Options: the action, then what it does in one line, then what follows
+   (neutral) or a real risk (marked). */
+.q-options { list-style: none; margin: 0; padding: 0; display: grid; border-top: 1px solid var(--line); }
+.q-opt { display: grid; grid-template-columns: 12.5rem minmax(0, 1fr); gap: 0.15rem 1rem; align-items: center; padding: 0.6rem 0; border-bottom: 1px solid var(--line); }
+.q-opt .btn { width: 100%; justify-content: center; text-align: center; }
+.q-does { margin: 0; font-size: 0.875rem; color: var(--ink); max-width: 62ch; text-wrap: pretty; }
+.q-then, .q-risk { grid-column: 2; margin: 0; font-size: 0.8125rem; color: var(--ink-2); max-width: 62ch; text-wrap: pretty; }
+.q-risk::before { content: "Risk: "; font-weight: 600; color: var(--warn); }
+/* Other options: open beside the primary on a wide page, one tap away on a phone. */
+.q-more > summary { list-style: none; cursor: pointer; padding: 0.55rem 0; font-size: 0.875rem; font-weight: 550; color: var(--limit); border-bottom: 1px solid var(--line); }
+.q-more > summary::-webkit-details-marker { display: none; }
+@media (min-width: 40.01rem) { .q-more > summary { display: none; } }
+.q-foot { margin: 0; font-size: 0.8125rem; color: var(--ink-2); }
+.q-foot code, .lede code { color: var(--ink); white-space: nowrap; }
+/* Read-only panel: the same options, as words, with the command. */
+.q-label { font-weight: 620; font-size: 0.9rem; }
+.q-sugg { display: inline-block; margin-left: 0.35rem; padding: 0 0.4rem; border-radius: 5px; font-size: 0.72rem; font-weight: 650; color: var(--ink-2); box-shadow: inset 0 0 0 1px var(--line-2); vertical-align: 0.08em; }
+/* The review, in place of the options. */
+.q-review { display: grid; gap: 0.5rem; padding: 0.85rem 1rem; border-radius: 10px; background: var(--sunk); border: 1px solid var(--line-2); }
+.q-review h3 { margin: 0; font-size: 0.95rem; font-weight: 650; }
+.q-review h3:focus { outline: none; }
+.q-review ul { margin: 0; padding-left: 1.1rem; display: grid; gap: 0.2rem; font-size: 0.875rem; max-width: 66ch; }
+.q-review .expires { margin: 0; font-size: 0.8125rem; color: var(--ink-2); }
+.q-answered { margin: 0; padding: 0.6rem 0.8rem; border-radius: 8px; background: var(--good-soft); font-size: 0.9rem; }
+.q-answered strong { font-weight: 650; }
+.q-moved { margin: 0; padding: 0.6rem 0.8rem; border-radius: 8px; background: var(--sunk); font-size: 0.9rem; }
+@media (max-width: 40rem) {
+  .q-opt { grid-template-columns: minmax(0, 1fr); gap: 0.35rem; }
+  .q-then, .q-risk { grid-column: 1; }
+  .q-open { margin-left: 0; }
+}
+@media (forced-colors: active) {
+  .q-review, .q-answered, .q-moved { border: 1px solid CanvasText; }
+  .q-risk::before { color: CanvasText; }
+}
+.q-more .q-options { border-top: 0; }
+.q-opt a.btn { text-decoration: none; }

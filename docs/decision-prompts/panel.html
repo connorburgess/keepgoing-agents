@@ -1,0 +1,241 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="color-scheme" content="light dark">
+<title>Mock: Decision needed, in the looptender panel</title>
+<link rel="stylesheet" href="../../cmd/keepgoing/dockui/dock.css">
+<link rel="stylesheet" href="question.css">
+<style>
+  /* Mock-only: the strip that labels each state below the page. */
+  .mock-note { max-width: 76rem; margin: 0 auto; padding: 0 1.5rem; color: var(--ink-2); font-size: 0.8125rem; }
+  .mock-states { max-width: 76rem; margin: 2rem auto 0; padding: 0 1.5rem; display: grid; gap: 1.25rem; }
+  .mock-states h2 { font-size: 0.95rem; }
+  .mock-states > section { display: grid; gap: 0.5rem; }
+</style>
+</head>
+<body>
+<header class="bar">
+  <div class="bar-in">
+    <a class="brand" href="#/"><svg viewBox="0 0 20 20" aria-hidden="true" class="mark"><path d="M15.5 6.2A6.5 6.5 0 1 0 16.5 10"/><path d="M16.8 3.4v3.4h-3.4"/></svg><span>looptender</span></a>
+    <p class="readline">Read 12 seconds ago</p>
+    <div class="tools">
+      <button type="button" class="btn" title="Read now"><svg viewBox="0 0 20 20" aria-hidden="true"><path d="M15.5 6.2A6.5 6.5 0 1 0 16.5 10"/><path d="M16.8 3.4v3.4h-3.4"/></svg><span>Read now</span></button>
+    </div>
+  </div>
+</header>
+<p class="mock-note">Mock with fictional loops. The panel is started with <code>--allow-changes</code>; the read-only form is under "Other states".</p>
+<p class="sr-only" id="live" role="status" aria-live="polite"></p>
+<div class="layout" data-view="needs">
+  <nav class="picker" aria-label="Loops and views">
+    <div class="pick-fixed">
+      <a class="pick pick-needs" href="#needs" aria-current="page"><span class="count">3</span><span class="pick-name">Needs you</span><svg class="go" viewBox="0 0 20 20" aria-hidden="true"><path d="M8 5l5 5-5 5"/></svg></a>
+    </div>
+    <p class="pick-label">Loops</p>
+    <div class="pick-scroll">
+      <ul class="pick-list">
+        <li><a class="pick" href="#"><span class="dot dot-attn"></span><span class="pick-name">example-search</span><span class="pick-state">Decision needed</span><svg class="go" viewBox="0 0 20 20" aria-hidden="true"><path d="M8 5l5 5-5 5"/></svg></a></li>
+        <li><a class="pick" href="#"><span class="dot dot-attn"></span><span class="pick-name">example-docs</span><span class="pick-state">Decision needed</span><svg class="go" viewBox="0 0 20 20" aria-hidden="true"><path d="M8 5l5 5-5 5"/></svg></a></li>
+        <li><a class="pick" href="#"><span class="dot dot-attn"></span><span class="pick-name">example-billing</span><span class="pick-state">Decision needed</span><svg class="go" viewBox="0 0 20 20" aria-hidden="true"><path d="M8 5l5 5-5 5"/></svg></a></li>
+        <li><a class="pick" href="#"><span class="dot dot-good"></span><span class="pick-name">example-api</span><span class="pick-state">Working</span><svg class="go" viewBox="0 0 20 20" aria-hidden="true"><path d="M8 5l5 5-5 5"/></svg></a></li>
+        <li><a class="pick" href="#"><span class="dot dot-limit"></span><span class="pick-name">example-mobile</span><span class="pick-state">Waiting for a limit, until 14:00</span><svg class="go" viewBox="0 0 20 20" aria-hidden="true"><path d="M8 5l5 5-5 5"/></svg></a></li>
+      </ul>
+    </div>
+  </nav>
+  <main class="pane" id="pane">
+    <div class="pane-head"><h1>Needs you</h1></div>
+    <p class="lede">Three loops are held for your answer, longest first. Only these loops are held; the others keep running. You can also answer in a terminal with <code>looptender answer</code>.</p>
+    <div class="panel is-need">
+      <ol class="need-list">
+
+        <!-- A lane waiting on input: the answer is given in the lane, not here. -->
+        <li class="need q" role="group" aria-labelledby="s-name s-ask">
+          <div class="q-head">
+            <span class="need-name" id="s-name"><a href="#">example-search</a></span>
+            <span class="q-held">Held 3 h 5 min</span>
+          </div>
+          <h2 class="q-ask" id="s-ask">A lane is waiting for an answer only a person can give.</h2>
+          <dl class="q-known">
+            <div><dt>Lane</dt><dd>2 of 4</dd></div>
+            <div><dt>Asked</dt><dd>02:51</dd></div>
+          </dl>
+          <p class="q-why">The other lanes keep working. looptender does not read the lane's question and does not answer it.</p>
+          <ul class="q-options">
+            <li class="q-opt">
+              <a class="btn is-primary" href="#" aria-describedby="s1">Open the lane in BB<span class="sr-only">, suggested</span></a>
+              <p class="q-does" id="s1">Opens the waiting conversation. Answer there; looptender sees it at the next check.</p>
+            </li>
+          </ul>
+          <details class="q-more">
+            <summary>Other options (2)</summary>
+            <ul class="q-options">
+              <li class="q-opt">
+                <button type="button" class="btn" aria-describedby="s2 s2t">I've answered it</button>
+                <p class="q-does" id="s2">Closes this question and wakes the loop at the next check.</p>
+                <p class="q-then" id="s2t">If the lane is still waiting then, you are asked again.</p>
+              </li>
+              <li class="q-opt">
+                <button type="button" class="btn" aria-describedby="s3">Pause</button>
+                <p class="q-does" id="s3">Sends nothing until you resume this loop.</p>
+              </li>
+            </ul>
+          </details>
+        </li>
+
+        <!-- refused: the default card. -->
+        <li class="need q" role="group" aria-labelledby="d-name d-ask">
+          <div class="q-head">
+            <span class="need-name" id="d-name"><a href="#">example-docs</a></span>
+            <span class="q-held">Held 50 min</span>
+            <a class="q-open linkish" href="#">Open the conversation</a>
+          </div>
+          <h2 class="q-ask" id="d-ask">The model declined 3 turns in a row. How should this loop go on?</h2>
+          <dl class="q-known">
+            <div><dt>Route</dt><dd>primary</dd></div>
+            <div><dt>Declined</dt><dd>04:10 to 05:00</dd></div>
+            <div><dt>Last 24 h</dt><dd>Continue cleared 2 earlier streaks</dd></div>
+          </dl>
+          <p class="q-why">This is not a usage limit, so looptender does not move the loop to another route or account.</p>
+          <ul class="q-options" id="d-options">
+            <li class="q-opt">
+              <button type="button" class="btn is-primary" data-answer="Continue" aria-describedby="d1 d1t">Continue<span class="sr-only">, suggested</span></button>
+              <p class="q-does" id="d1">Goes back to the normal pace: the session is woken again, with spacing between tries.</p>
+              <p class="q-then" id="d1t">If the model keeps declining, you are asked again.</p>
+            </li>
+          </ul>
+          <details class="q-more" id="d-more">
+            <summary>Other options (2)</summary>
+            <ul class="q-options">
+              <li class="q-opt">
+                <button type="button" class="btn" data-review="d-review" aria-describedby="d2 d2r">Start a fresh session</button>
+                <p class="q-does" id="d2">Opens a new session on primary with the task brief. This session is left as it is.</p>
+                <p class="q-risk" id="d2r">The new session reads the brief, not this conversation.</p>
+              </li>
+              <li class="q-opt">
+                <button type="button" class="btn" data-answer="Pause" aria-describedby="d3">Pause</button>
+                <p class="q-does" id="d3">Sends nothing until you resume this loop.</p>
+              </li>
+            </ul>
+          </details>
+          <div class="q-review" id="d-review" hidden>
+            <h3 tabindex="-1">Start a fresh session for example-docs?</h3>
+            <ul>
+              <li>A new session starts on primary, from the brief saved at 04:02.</li>
+              <li>The current session gets nothing more from looptender. It is not closed.</li>
+              <li>The decline streak is cleared. This loop's limits still apply: 41 of its 60 sends are left.</li>
+            </ul>
+            <p class="expires">Expires in 10 min, at 05:57, or sooner if the loop changes.</p>
+            <div class="change-buttons">
+              <button type="button" class="btn is-primary" data-answer="Start a fresh session">Start the fresh session</button>
+              <button type="button" class="btn" data-back>Back</button>
+            </div>
+          </div>
+          <p class="q-answered" role="status" hidden></p>
+        </li>
+
+        <!-- restricted: shown in its review step. -->
+        <li class="need q" role="group" aria-labelledby="b-name b-ask">
+          <div class="q-head">
+            <span class="need-name" id="b-name"><a href="#">example-billing</a></span>
+            <span class="q-held">Held 12 min</span>
+            <a class="q-open linkish" href="#">Open the conversation</a>
+          </div>
+          <h2 class="q-ask" id="b-ask">The provider denied access for this account. Has the access been fixed?</h2>
+          <dl class="q-known">
+            <div><dt>Route</dt><dd>primary</dd></div>
+            <div><dt>Denied</dt><dd>05:38</dd></div>
+          </dl>
+          <p class="q-why">This is not a usage limit, so looptender does not try another account.</p>
+          <div class="q-review">
+            <h3 tabindex="-1">Send one try to example-billing?</h3>
+            <ul>
+              <li>One try is sent to the same session on primary.</li>
+              <li>Nothing is sent to any other account.</li>
+              <li>If access is still denied, the loop holds and asks again.</li>
+            </ul>
+            <p class="expires">Expires in 10 min, at 05:57, or sooner if the loop changes.</p>
+            <div class="change-buttons">
+              <button type="button" class="btn is-primary">Send one try</button>
+              <button type="button" class="btn">Back</button>
+            </div>
+          </div>
+        </li>
+      </ol>
+    </div>
+  </main>
+</div>
+
+<div class="mock-states">
+  <h2>Other states</h2>
+  <section>
+    <p class="sub">The restricted card before its review: "I've fixed the access" is the primary; Stop says exactly what it does.</p>
+    <div class="need q">
+      <h2 class="q-ask">The provider denied access for this account. Has the access been fixed?</h2>
+      <ul class="q-options">
+        <li class="q-opt"><button type="button" class="btn is-primary">I've fixed the access</button><p class="q-does">Sends one try to the same session.</p><p class="q-then">If access is still denied, the loop holds and asks again.</p></li>
+        <li class="q-opt"><button type="button" class="btn">Pause</button><p class="q-does">Sends nothing until you resume this loop.</p></li>
+        <li class="q-opt"><button type="button" class="btn">Stop</button><p class="q-does">Stops the session at the next check. Its lanes keep running.</p><p class="q-then">Nothing is sent until you resume this loop.</p></li>
+      </ul>
+    </div>
+  </section>
+  <section>
+    <p class="sub">Read-only panel (started without <code>--allow-changes</code>): the same words, with the command.</p>
+    <div class="need q">
+      <div class="q-head"><span class="need-name"><a href="#">example-docs</a></span><span class="q-held">Held 50 min</span></div>
+      <h2 class="q-ask">The model declined 3 turns in a row. How should this loop go on?</h2>
+      <ul class="q-options">
+        <li class="q-opt"><span class="q-label">Continue<span class="q-sugg">Suggested</span></span><p class="q-does">Goes back to the normal pace: the session is woken again, with spacing between tries.</p></li>
+        <li class="q-opt"><span class="q-label">Start a fresh session</span><p class="q-does">Opens a new session on primary with the task brief. This session is left as it is.</p></li>
+        <li class="q-opt"><span class="q-label">Pause</span><p class="q-does">Sends nothing until you resume this loop.</p></li>
+      </ul>
+      <p class="q-foot">This page is read-only. Answer in a terminal: <code>looptender answer example-docs</code></p>
+    </div>
+  </section>
+  <section>
+    <p class="sub">Answered: shown until the next read, on every surface.</p>
+    <div class="need q">
+      <div class="q-head"><span class="need-name"><a href="#">example-docs</a></span></div>
+      <p class="q-answered" role="status"><strong>Answered: Continue</strong>, at 05:52 from the panel. The loop is running again.</p>
+    </div>
+  </section>
+  <section>
+    <p class="sub">The loop moved on after the question was shown (another answer, a pause, a new route): the stale answer does nothing, and the card says where the loop is now.</p>
+    <div class="need q">
+      <div class="q-head"><span class="need-name"><a href="#">example-docs</a></span></div>
+      <p class="q-moved" role="status">Nothing was changed. This loop was paused from the menu at 05:51, which closed this question. It is paused now; resume it from its page when you are ready.</p>
+    </div>
+  </section>
+</div>
+<script>
+  // Mock only. Other options are open on a wide page and one tap away on a phone.
+  var wide = window.matchMedia("(min-width: 40.01rem)");
+  function setMore() { document.querySelectorAll(".q-more").forEach(function (d) { d.open = wide.matches; }); }
+  setMore(); wide.addEventListener("change", setMore);
+  // The review opens in place of the options; Back returns focus.
+  document.querySelectorAll("[data-review]").forEach(function (b) {
+    b.addEventListener("click", function () {
+      var card = b.closest(".q");
+      card.querySelectorAll(".q-options, .q-more").forEach(function (x) { x.hidden = true; });
+      var r = document.getElementById(b.dataset.review);
+      r.hidden = false; r.querySelector("h3").focus();
+      r.querySelector("[data-back]").onclick = function () {
+        r.hidden = true;
+        card.querySelectorAll(".q-options, .q-more").forEach(function (x) { x.hidden = false; });
+        b.focus();
+      };
+    });
+  });
+  document.querySelectorAll("[data-answer]").forEach(function (b) {
+    b.addEventListener("click", function () {
+      var card = b.closest(".q");
+      card.querySelectorAll(".q-options, .q-more, .q-review, .q-known, .q-why").forEach(function (x) { x.hidden = true; });
+      var done = card.querySelector(".q-answered");
+      done.hidden = false;
+      done.innerHTML = "<strong>Answered: " + b.dataset.answer + "</strong>, just now from the panel. " + (b.dataset.answer === "Pause" ? "The loop is paused." : "The loop is running again.");
+      document.getElementById("live").textContent = done.textContent;
+    });
+  });
+</script>
+</body>
+</html>

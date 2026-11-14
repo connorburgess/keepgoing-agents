@@ -1,0 +1,82 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="color-scheme" content="light dark">
+<title>Mock: Decision needed, on the supervised BB thread</title>
+<link rel="stylesheet" href="../../cmd/keepgoing/dockui/dock.css">
+<link rel="stylesheet" href="question.css">
+<style>
+  /* Mock-only stand-in for BB's thread view. The plugin renders the card
+     with BB's own components; only the card's content and order are the
+     design here. */
+  body { background: var(--sunk); }
+  .bb { max-width: 46rem; margin: 0 auto; min-height: 100vh; display: grid; grid-template-rows: auto 1fr auto; background: var(--bg); border-inline: 1px solid var(--line); }
+  .bb-top { display: flex; align-items: center; gap: 0.6rem; padding: 0.75rem 1.1rem; border-bottom: 1px solid var(--line); font-size: 0.875rem; }
+  .bb-top strong { font-weight: 650; }
+  .bb-msgs { padding: 1.25rem 1.1rem; display: grid; gap: 0.9rem; align-content: start; font-size: 0.9rem; }
+  .bb-msg { max-width: 34rem; padding: 0.6rem 0.8rem; border-radius: 10px; background: var(--surface); border: 1px solid var(--line); }
+  .bb-msg.is-agent { color: var(--ink-2); }
+  .bb-bottom { padding: 0 0.75rem 0.75rem; display: grid; gap: 0.5rem; }
+  /* BB's context banner above the composer: a summary line that expands. */
+  .bb-banner { border: 1px solid var(--attn-line); background: var(--surface); border-radius: 12px; box-shadow: var(--shadow); overflow: hidden; }
+  .bb-sum { width: 100%; display: flex; align-items: center; gap: 0.55rem; padding: 0.55rem 0.8rem; font: inherit; font-size: 0.875rem; color: var(--ink); background: var(--attn-soft); border: 0; cursor: pointer; text-align: left; }
+  .bb-sum .who { font-weight: 650; }
+  .bb-sum .what { color: var(--ink); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; flex: 1; }
+  .bb-sum svg { color: var(--ink-2); transition: transform 160ms ease-out; }
+  .bb-sum[aria-expanded="true"] svg { transform: rotate(180deg); }
+  .bb-body { padding: 0.85rem 0.9rem 0.9rem; }
+  .bb-body .q-opt { grid-template-columns: 11rem minmax(0, 1fr); }
+  .bb-composer { padding: 0.75rem 0.9rem; border-radius: 12px; border: 1px solid var(--line-2); background: var(--surface); color: var(--ink-3); font-size: 0.9rem; }
+  .mock-note { max-width: 46rem; margin: 0 auto; padding: 0.6rem 1.1rem; color: var(--ink-2); font-size: 0.8125rem; }
+  @media (max-width: 40rem) { .bb-body .q-opt { grid-template-columns: minmax(0, 1fr); } }
+</style>
+</head>
+<body>
+<p class="mock-note">Mock with a fictional thread. The card is the plugin's context banner above the composer; collapsed, it is the one summary line. On a phone the other options fold behind "Other options", as in the panel.</p>
+<div class="bb">
+  <div class="bb-top"><strong>Write the setup guide</strong><span class="sub">· example-docs</span></div>
+  <div class="bb-msgs">
+    <div class="bb-msg">Rewrite the setup guide so a new contributor can run the tests in ten minutes.</div>
+    <div class="bb-msg is-agent">I can't help with that request.</div>
+  </div>
+  <div class="bb-bottom">
+    <section class="bb-banner" aria-label="looptender">
+      <button type="button" class="bb-sum" aria-expanded="true" aria-controls="bb-q">
+        <span class="dot dot-attn"></span>
+        <span class="who">looptender</span>
+        <span class="what">Decision needed: the model declined 3 turns in a row</span>
+        <svg viewBox="0 0 20 20" aria-hidden="true"><path d="M5 8l5 5 5-5"/></svg>
+      </button>
+      <div class="bb-body q" id="bb-q" role="group" aria-labelledby="bb-ask">
+        <h2 class="q-ask" id="bb-ask">The model declined 3 turns in a row. How should this loop go on?</h2>
+        <dl class="q-known">
+          <div><dt>Route</dt><dd>primary</dd></div>
+          <div><dt>Declined</dt><dd>04:10 to 05:00</dd></div>
+          <div><dt>Last 24 h</dt><dd>Continue cleared 2 earlier streaks</dd></div>
+        </dl>
+        <p class="q-why">Held 50 min; only this loop is held. This is not a usage limit, so looptender does not move the loop to another route or account.</p>
+        <ul class="q-options">
+          <li class="q-opt">
+            <button type="button" class="btn is-primary" aria-describedby="b1 b1t">Continue<span class="sr-only">, suggested</span></button>
+            <p class="q-does" id="b1">Goes back to the normal pace: the session is woken again, with spacing between tries.</p>
+            <p class="q-then" id="b1t">If the model keeps declining, you are asked again.</p>
+          </li>
+          <li class="q-opt">
+            <button type="button" class="btn" aria-describedby="b2 b2r">Start a fresh session</button>
+            <p class="q-does" id="b2">Opens a new session on primary with the task brief. This session is left as it is.</p>
+            <p class="q-risk" id="b2r">The new session reads the brief, not this conversation.</p>
+          </li>
+          <li class="q-opt">
+            <button type="button" class="btn" aria-describedby="b3">Pause</button>
+            <p class="q-does" id="b3">Sends nothing until you resume this loop.</p>
+          </li>
+        </ul>
+      </div>
+    </section>
+    <div class="bb-composer">Message the agent…</div>
+  </div>
+</div>
+</body>
+</html>

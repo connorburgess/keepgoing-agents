@@ -1,0 +1,101 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="color-scheme" content="light dark">
+<title>Mock: Decision needed, in the macOS menu</title>
+<style>
+  /* An approximation of AppKit's own controls: the real sheet is an NSAlert
+     with an accessory view (NSStackView of radio buttons and secondary
+     labels), so it takes the system's look, Dark Mode and text size. */
+  :root { color-scheme: light dark; --win: #ececec; --text: #1d1d1f; --text-2: #55555a; --line: #d2d2d7; --accent: #0a64d8; --accent-ink: #fff; --desk: #c9ccd3; --note: rgba(246,246,246,0.92); --warn: #a1470d; }
+  @media (prefers-color-scheme: dark) { :root { --win: #2b2b2d; --text: #f5f5f7; --text-2: #a1a1a6; --line: #48484a; --accent: #2563eb; --desk: #1b1c1f; --note: rgba(44,44,46,0.94); --warn: #f0a46b; } }
+  * { box-sizing: border-box; }
+  body { margin: 0; min-height: 100vh; background: var(--desk); color: var(--text); font: 13px/1.4 -apple-system, BlinkMacSystemFont, "Helvetica Neue", sans-serif; -webkit-font-smoothing: antialiased; }
+  .menubar { height: 26px; display: flex; justify-content: flex-end; align-items: center; gap: 14px; padding: 0 14px; background: color-mix(in srgb, var(--win) 80%, transparent); font-size: 13px; }
+  .menubar svg { width: 15px; height: 15px; fill: none; stroke: currentColor; stroke-width: 1.8; stroke-linecap: round; }
+  .menubar .badge { position: relative; }
+  .menubar .badge::after { content: ""; position: absolute; right: -2px; top: -1px; width: 6px; height: 6px; border-radius: 50%; background: #e0a100; }
+  .stage { display: grid; grid-template-columns: repeat(auto-fit, minmax(22rem, 1fr)); gap: 2rem; padding: 2rem; align-items: start; max-width: 64rem; margin: 0 auto; }
+  .cap { margin: 0 0 0.6rem; color: var(--text); font-size: 12px; }
+  .notif { display: grid; grid-template-columns: 38px minmax(0, 1fr); gap: 10px; padding: 12px; border-radius: 16px; background: var(--note); box-shadow: 0 8px 30px rgba(0,0,0,0.18); max-width: 22rem; }
+  .notif strong { display: block; font-weight: 600; }
+  .notif p { margin: 1px 0 0; }
+  .notif .acts { grid-column: 2; display: flex; gap: 8px; margin-top: 6px; }
+  .notif .acts span { padding: 3px 10px; border-radius: 6px; background: color-mix(in srgb, var(--text) 9%, transparent); font-weight: 500; }
+  .icon { width: 38px; height: 38px; border-radius: 9px; background: linear-gradient(160deg, #3c9a6b, #23704b); display: grid; place-items: center; color: #fff; }
+  .icon svg { width: 22px; height: 22px; fill: none; stroke: currentColor; stroke-width: 2; stroke-linecap: round; }
+  .alert { width: 26rem; max-width: 100%; padding: 20px 20px 16px; border-radius: 12px; background: var(--win); box-shadow: 0 0 0 0.5px rgba(0,0,0,0.25), 0 18px 50px rgba(0,0,0,0.3); }
+  .alert .icon { width: 52px; height: 52px; border-radius: 12px; margin-bottom: 10px; }
+  .alert .icon svg { width: 30px; height: 30px; }
+  .alert h1 { margin: 0 0 6px; font-size: 13px; font-weight: 700; text-wrap: balance; }
+  .alert .loop { margin: 0 0 2px; color: var(--text-2); font-weight: 600; }
+  .alert .info { margin: 0 0 12px; color: var(--text); }
+  .radios { display: grid; gap: 8px; margin: 0 0 14px; padding: 10px 12px; border-radius: 8px; border: 0.5px solid var(--line); background: color-mix(in srgb, var(--win) 60%, var(--text) 3%); }
+  .radio { display: grid; grid-template-columns: 16px minmax(0, 1fr); gap: 2px 8px; align-items: start; cursor: default; }
+  .radio input { margin: 2px 0 0; accent-color: var(--accent); }
+  .radio b { font-weight: 600; }
+  .radio small { grid-column: 2; color: var(--text-2); font-size: 11.5px; }
+  .radio small.risk b { color: var(--warn); font-weight: 600; }
+  .buttons { display: flex; justify-content: flex-end; gap: 8px; }
+  .buttons button { font: inherit; min-width: 76px; padding: 4px 12px; border-radius: 6px; border: 0.5px solid var(--line); background: color-mix(in srgb, var(--win) 40%, #fff 30%); color: var(--text); }
+  .buttons button.default { background: var(--accent); color: var(--accent-ink); border-color: transparent; }
+  .alert ul { margin: 0 0 12px; padding-left: 18px; display: grid; gap: 3px; }
+  .alert .small { color: var(--text-2); font-size: 11.5px; margin: 0 0 14px; }
+</style>
+</head>
+<body>
+<div class="menubar"><span class="badge"><svg viewBox="0 0 20 20" aria-label="looptender, 1 decision needed"><path d="M15.5 6.2A6.5 6.5 0 1 0 16.5 10"/><path d="M16.8 3.4v3.4h-3.4"/></svg></span><span>Sat 05:47</span></div>
+<div class="stage">
+  <div>
+    <p class="cap">1. The notification. Clicking it opens the sheet. Its action is the suggested option when that needs no review step; an option with a review step is never applied from a notification. "Choose…" opens the sheet.</p>
+    <div class="notif" role="img" aria-label="Notification mock">
+      <div class="icon"><svg viewBox="0 0 20 20"><path d="M15.5 6.2A6.5 6.5 0 1 0 16.5 10"/><path d="M16.8 3.4v3.4h-3.4"/></svg></div>
+      <div>
+        <strong>example-docs: decision needed</strong>
+        <p>The model declined 3 turns in a row. How should this loop go on?</p>
+      </div>
+      <div class="acts"><span>Continue</span><span>Choose…</span></div>
+    </div>
+  </div>
+
+  <div>
+    <p class="cap">2. The sheet. The suggested option is selected; the default button names it and follows the selection ("Review…" for an option with a review step). "Not now" closes the sheet; the loop stays held.</p>
+    <div class="alert" id="sheet" role="dialog" aria-labelledby="sheet-q">
+      <div class="icon"><svg viewBox="0 0 20 20"><path d="M15.5 6.2A6.5 6.5 0 1 0 16.5 10"/><path d="M16.8 3.4v3.4h-3.4"/></svg></div>
+      <p class="loop">example-docs · held 50 min</p>
+      <h1 id="sheet-q">The model declined 3 turns in a row. How should this loop go on?</h1>
+      <p class="info">Route: primary · Declined: 04:10 to 05:00 · Last 24 h: Continue cleared 2 earlier streaks.<br>This is not a usage limit, so looptender does not move the loop to another route or account. Only this loop is held.</p>
+      <div class="radios" role="radiogroup" aria-label="Options">
+        <label class="radio"><input type="radio" name="o" value="Continue" checked><b>Continue</b><small>Goes back to the normal pace: the session is woken again, with spacing between tries.</small><small>If the model keeps declining, you are asked again.</small></label>
+        <label class="radio"><input type="radio" name="o" value="Review…"><b>Start a fresh session</b><small>Opens a new session on primary with the task brief. This session is left as it is.</small><small class="risk"><b>Risk:</b> The new session reads the brief, not this conversation.</small></label>
+        <label class="radio"><input type="radio" name="o" value="Pause"><b>Pause</b><small>Sends nothing until you resume this loop.</small></label>
+      </div>
+      <div class="buttons"><button type="button">Not now</button><button type="button" class="default" id="go">Continue</button></div>
+    </div>
+  </div>
+
+  <div>
+    <p class="cap">3. The review, for an option that has one: the panel's review lines, word for word, and a button that says what it does.</p>
+    <div class="alert" role="dialog" aria-labelledby="rev-q">
+      <div class="icon"><svg viewBox="0 0 20 20"><path d="M15.5 6.2A6.5 6.5 0 1 0 16.5 10"/><path d="M16.8 3.4v3.4h-3.4"/></svg></div>
+      <h1 id="rev-q">Start a fresh session for example-docs?</h1>
+      <ul>
+        <li>A new session starts on primary, from the brief saved at 04:02.</li>
+        <li>The current session gets nothing more from looptender. It is not closed.</li>
+        <li>The decline streak is cleared. This loop's limits still apply: 41 of its 60 sends are left.</li>
+      </ul>
+      <p class="small">Expires in 10 min, at 05:57, or sooner if the loop changes.</p>
+      <div class="buttons"><button type="button">Back</button><button type="button" class="default">Start the fresh session</button></div>
+    </div>
+  </div>
+</div>
+<script>
+  // Mock only: the default button follows the selected option.
+  document.querySelectorAll("input[name=o]").forEach(function (r) {
+    r.addEventListener("change", function () { document.getElementById("go").textContent = r.value; });
+  });
+</script>
+</body>
+</html>
