@@ -1,7 +1,7 @@
 <picture>
   <source media="(prefers-color-scheme: dark)" srcset="docs/assets/looptender-banner-hub-dark.svg">
   <source media="(prefers-color-scheme: light)" srcset="docs/assets/looptender-banner-hub-light.svg">
-  <img alt="looptender — a small tender looking after a fleet of larger ships" src="docs/assets/looptender-banner-hub-light.svg" width="1600" height="800">
+  <img alt="looptender — a small tender looking after a fleet of larger ships" src="docs/assets/looptender-banner-hub-light.svg" width="1600">
 </picture>
 
 # looptender
