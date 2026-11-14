@@ -1,7 +1,7 @@
 version: 1
 loop:
   name: example-accounts
-  state_dir: /fictional/state/keepgoing/example-accounts
+  state_dir: /fictional/state/agent-loops/example-accounts
   adapter: claude
   group: claude-account-a
   claude:

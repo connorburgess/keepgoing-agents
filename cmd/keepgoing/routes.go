@@ -141,7 +141,7 @@ func routesCommand(e env, args []string) int {
 	asJSON := fs.Bool("json", false, "print the versioned route lists object")
 	cfgPath := fs.String("c", "", "show one loop by its config file instead of every registered loop")
 	loopName := fs.String("loop", "", "show one registered loop by name")
-	directory := fs.String("directory", "", "private registry directory (default: user config/keepgoing/registry)")
+	directory := fs.String("directory", "", "private registry directory (default: the registry in the user configuration directory)")
 	if err := fs.Parse(args[1:]); err != nil || fs.NArg() != 0 || (*cfgPath != "" && *loopName != "") {
 		if err == nil {
 			e.errf("routes list takes --json and one of -c or --loop")
