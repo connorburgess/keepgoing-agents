@@ -164,7 +164,7 @@ func TestEndToEndFailedLaneIsRetriedByReferenceWhenOptedIn(t *testing.T) {
 		t.Fatalf("timeline %d %s\n%s", code, errs, out)
 	}
 	code, out, errs = f.run("timeline", "--kind", "child_retry", "--json")
-	if code != exitOK || errs != "" || !strings.Contains(out, `"schemaVersion": 7`) || !strings.Contains(out, `"lastChildRetry"`) {
+	if code != exitOK || errs != "" || !strings.Contains(out, `"schemaVersion": 9`) || !strings.Contains(out, `"lastChildRetry"`) {
 		t.Fatalf("timeline json %d %s\n%s", code, errs, out)
 	}
 

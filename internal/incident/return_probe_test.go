@@ -2,6 +2,7 @@ package incident
 
 import (
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -146,18 +147,19 @@ func TestManualProbeRecordsAreCapped(t *testing.T) {
 	}
 }
 
-// Schema 11 adds the two; a schema 10 journal has neither, and one that
-// claims either is not trusted for the new one.
-func TestSchemaElevenAddsReturnsAndManualProbes(t *testing.T) {
+// Schema 13 (returns and manual probes) added the two; a schema 12 journal
+// has neither, and one that claims either is not trusted for the new one.
+func TestSchemaThirteenAddsReturnsAndManualProbes(t *testing.T) {
+	current := fmt.Sprintf(`"schemaVersion":%d`, SchemaVersion)
 	dir := t.TempDir()
 	mustAppend(t, dir, returnTick(0, "succeeded"))
 	b, err := os.ReadFile(filepath.Join(dir, FileName))
-	if err != nil || !strings.Contains(string(b), `"schemaVersion":11`) {
+	if err != nil || !strings.Contains(string(b), current) {
 		t.Fatalf("%s %v", b, err)
 	}
-	// Written as schema 10, a return is dropped on load, as the older writer
+	// Written as schema 12, a return is dropped on load, as the older writer
 	// never recorded one.
-	old := strings.Replace(string(b), `"schemaVersion":11`, `"schemaVersion":10`, 1)
+	old := strings.Replace(string(b), current, `"schemaVersion":12`, 1)
 	if err := os.WriteFile(filepath.Join(dir, FileName), []byte(old), 0o600); err != nil {
 		t.Fatal(err)
 	}
@@ -165,15 +167,15 @@ func TestSchemaElevenAddsReturnsAndManualProbes(t *testing.T) {
 	if len(j.Records) != 1 || j.Records[0].Returned != nil {
 		t.Fatalf("%+v", j.Records)
 	}
-	// A schema 10 journal holding a manual probe record is unavailable.
+	// A schema 12 journal holding a manual probe record is unavailable.
 	dir = t.TempDir()
 	mustAppend(t, dir, manualProbe(ProbeResult{TargetKey: TargetKey("fictional-a"), Tier: "manual", OK: true}))
 	b, _ = os.ReadFile(filepath.Join(dir, FileName))
-	old = strings.Replace(string(b), `"schemaVersion":11`, `"schemaVersion":10`, 1)
+	old = strings.Replace(string(b), current, `"schemaVersion":12`, 1)
 	if err := os.WriteFile(filepath.Join(dir, FileName), []byte(old), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := Load(dir); !errors.Is(err, ErrUnavailable) {
-		t.Fatalf("schema 10 probe record loaded: %v", err)
+		t.Fatalf("schema 12 probe record loaded: %v", err)
 	}
 }
