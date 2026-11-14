@@ -93,9 +93,14 @@ func TestCodexProbeLimitFromAppServer(t *testing.T) {
 
 func TestCommandProbe(t *testing.T) {
 	c := cand("command", "")
-	c.Probe.Command = []string{fake(t, `test "$KEEPGOING_PROBE_TIER" = exact && test "$KEEPGOING_PROBE_MODEL" = target-model`)}
+	c.Probe.Command = []string{fake(t, `test "$LOOPTENDER_PROBE_TIER" = exact && test "$LOOPTENDER_PROBE_MODEL" = target-model && test "$LOOPTENDER_CANDIDATE" = example`)}
 	if r := Run(context.Background(), c, Exact, 10*time.Second); !r.OK {
 		t.Errorf("env not passed: %+v", r)
+	}
+	// A probe command written before the rename reads the earlier names.
+	c.Probe.Command = []string{fake(t, `test "$KEEPGOING_PROBE_TIER" = exact && test "$KEEPGOING_PROBE_MODEL" = target-model && test "$KEEPGOING_CANDIDATE" = example`)}
+	if r := Run(context.Background(), c, Exact, 10*time.Second); !r.OK {
+		t.Errorf("env not passed under the earlier names: %+v", r)
 	}
 	c.Probe.Env = map[string]string{"CLAUDE_CONFIG_DIR": "/fictional/second-account"}
 	c.Probe.Command = []string{fake(t, `test "$CLAUDE_CONFIG_DIR" = /fictional/second-account`)}

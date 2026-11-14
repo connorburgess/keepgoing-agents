@@ -18,6 +18,7 @@ import (
 
 	"github.com/connorburgess/keepgoing-agents/internal/config"
 	"github.com/connorburgess/keepgoing-agents/internal/health"
+	"github.com/connorburgess/keepgoing-agents/internal/incident"
 	"github.com/connorburgess/keepgoing-agents/internal/lock"
 	"github.com/connorburgess/keepgoing-agents/internal/state"
 	"gopkg.in/yaml.v3"
@@ -45,10 +46,13 @@ type fallbackEdit struct {
 	subject        string // candidate id for remove and move
 	// recheck runs under the tick lock before anything is written; an error
 	// refuses the write.
-	recheck  func() error
-	from, to int    // 1-based positions; to is 0 for remove
-	confirm  string // the yes/no question
-	done     string // printed after a successful write
+	recheck func() error
+	// historyFailed: a list change was saved but not recorded in the loop's
+	// incident history.
+	historyFailed bool
+	from, to      int    // 1-based positions; to is 0 for remove
+	confirm       string // the yes/no question
+	done          string // printed after a successful write
 }
 
 // Success-only integration contract shared by the three commands.
@@ -149,6 +153,11 @@ func fallbacksManage(e env, sub string, args []string, input io.Reader) int {
 		return refuse(exitUsage, errors.New("The loop's fallbacks file is a symbolic link or not a regular file.\n  Point loop.fallbacks at the real file instead."))
 	}
 	// Advisory: the same checks run again under the tick lock before writing.
+	if sub != "handoff" {
+		if ref := ownListAuthority(cfg.Loop.StateDir, os.Getenv("BB_THREAD_ID")); ref != nil {
+			return refuse(exitUsage, errors.New(ref.Text))
+		}
+	}
 	if code, err := fallbackAddAllowed(cfg); err != nil {
 		return refuse(code, err)
 	}
@@ -215,6 +224,9 @@ func fallbacksManage(e env, sub string, args []string, input io.Reader) int {
 		return code
 	}
 	fmt.Fprintf(e.stdout, "\n%s\nA running daemon uses the change after its next configuration reload.\n", edit.done)
+	if edit.historyFailed {
+		fmt.Fprintln(e.stdout, "Note: the change was saved, but could not be recorded in the loop's history (keepgoing timeline).")
+	}
 	return exitOK
 }
 
@@ -507,6 +519,13 @@ func writeFallbackEdit(p *fallbackEdit) (int, error) {
 	if code, err := fallbackAddAllowed(p.cfg); err != nil {
 		return code, fmt.Errorf("%w; nothing written", err)
 	}
+	listChange := p.kind == "fallback_move" || p.kind == "fallback_remove" || p.kind == "fallback_toggle"
+	caller := os.Getenv("BB_THREAD_ID")
+	if listChange {
+		if ref := ownListAuthority(p.cfg.Loop.StateDir, caller); ref != nil {
+			return exitUsage, fmt.Errorf("%s Nothing written", ref.Text)
+		}
+	}
 	if p.recheck != nil {
 		if err := p.recheck(); err != nil {
 			return exitSkipped, err
@@ -538,6 +557,18 @@ func writeFallbackEdit(p *fallbackEdit) (int, error) {
 			}
 			return exitFailed, fmt.Errorf("the fallback was removed, but %w. Run the same command again to finish; do not reuse the id %s until it succeeds", err, p.subject)
 		}
+	}
+	if listChange && !p.cleanupOnly {
+		op := strings.TrimPrefix(p.kind, "fallback_")
+		if op == "toggle" {
+			op = "on"
+			if p.order[p.from-1].Disabled {
+				op = "off"
+			}
+		}
+		rec := incident.Record{Kind: "route_change", CheckStartedAt: time.Now().UTC(), Build: version,
+			RouteChange: &incident.RouteChange{Operation: op, TargetKey: incident.TargetKey(p.subject), Caller: ownListCaller(caller)}}
+		p.historyFailed = incident.Append(p.cfg.Loop.StateDir, rec) != nil
 	}
 	return exitOK, nil
 }

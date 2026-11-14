@@ -12,6 +12,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"regexp"
 	"slices"
 	"strings"
 	"time"
@@ -19,11 +20,13 @@ import (
 	"gopkg.in/yaml.v3"
 
 	"github.com/connorburgess/keepgoing-agents/internal/config"
+	"github.com/connorburgess/keepgoing-agents/internal/control"
 	"github.com/connorburgess/keepgoing-agents/internal/health"
 	"github.com/connorburgess/keepgoing-agents/internal/lock"
 	"github.com/connorburgess/keepgoing-agents/internal/registry"
 	"github.com/connorburgess/keepgoing-agents/internal/snapshot"
 	"github.com/connorburgess/keepgoing-agents/internal/state"
+	"github.com/connorburgess/keepgoing-agents/internal/supervise"
 )
 
 // routeChangeOut is the versioned result of one change to a route list, for
@@ -95,6 +98,7 @@ type routeChangeRequest struct {
 	to       int          // move: the new 1-based place
 	at       int          // add: the 1-based place, 0 for last
 	route    config.Route // add
+	like     string       // add: the LOOP:ID the route was copied from
 	loop     string       // a registered loop's own list; "" for the standard list
 	expect   string
 	caller   string // BB_THREAD_ID; "" for a person
@@ -120,7 +124,8 @@ can make (not a BB thread). With --loop it is to that loop's own list, which
 its owner or a person can make. Each change previews its effect on every
 loop it applies to and writes only after you answer yes, or with --yes.
 --dry-run previews only. --expect binds --yes to a preview's expect value.
-Nothing is run: no agent, model or check.
+These commands run nothing (no agent, model or check), except routes check
+--loop, which probes that loop's routes as keepgoing fallbacks check does.
 
 Flags:
 `
@@ -215,8 +220,13 @@ func routesEdit(e env, op string, args []string, input io.Reader) int {
 		printRouteChange(e, o)
 		return code
 	}
+	// Who may make the change is settled before anything is looked up.
+	if req.loop == "" && req.caller != "" {
+		return out(routeChangeRefused(req, agentIdentityRefusal()), exitUsage)
+	}
 	if op == "add" {
 		if *like != "" {
+			req.like = *like
 			base, ref := routeLike(*like, req.registry)
 			if ref != nil {
 				return out(routeChangeRefused(req, ref), exitUsage)
@@ -230,29 +240,23 @@ func routesEdit(e env, op string, args []string, input io.Reader) int {
 			return exitUsage
 		}
 	}
-	preview, code := routeChange(req, false)
-	if preview.Outcome != "preview" || *dryRun {
-		if *dryRun && preview.Outcome == "preview" && !*asJSON {
-			printRouteChange(e, preview)
-			fmt.Fprintln(e.stdout, "\nDry run: nothing written.")
-			return exitOK
+	// A reviewed apply goes straight to the lock, where the plan is made
+	// again and compared: a no-op or a refusal there is review_again too.
+	if req.expect == "" {
+		preview, code := routeChange(req, false)
+		if preview.Outcome != "preview" || *dryRun {
+			if *dryRun && preview.Outcome == "preview" && !*asJSON {
+				printRouteChange(e, preview)
+				fmt.Fprintln(e.stdout, "\nDry run: nothing written.")
+				return exitOK
+			}
+			return out(preview, code)
 		}
-		return out(preview, code)
-	}
-	if !*yes {
-		printRouteChange(e, preview)
-		fmt.Fprintln(e.stdout)
-		w := &fallbackAddWizard{e: e, r: bufio.NewReader(input)}
-		ok, err := w.askYesNo("Write this change? (yes/no)", "no")
-		if err != nil {
-			e.errf("routes %s: %v; nothing written", op, err)
-			return exitUsage
+		if !*yes {
+			if code, ok := confirmRouteChange(e, preview, input, &req); !ok {
+				return code
+			}
 		}
-		if !ok {
-			fmt.Fprintln(e.stdout, "\nCancelled: nothing written.")
-			return exitOK
-		}
-		req.expect = preview.Expect
 	}
 	if err := e.ctx.Err(); err != nil {
 		e.errf("routes %s: %v", op, err)
@@ -271,6 +275,37 @@ func routesEdit(e env, op string, args []string, input io.Reader) int {
 	return out(done, code)
 }
 
+// confirmRouteChange shows the preview and asks; a yes binds the apply to it.
+func confirmRouteChange(e env, preview routeChangeOut, input io.Reader, req *routeChangeRequest) (int, bool) {
+	printRouteChange(e, preview)
+	fmt.Fprintln(e.stdout)
+	w := &fallbackAddWizard{e: e, r: bufio.NewReader(input)}
+	ok, err := w.askYesNo("Write this change? (yes/no)", "no")
+	if err != nil {
+		e.errf("routes %s: %v; nothing written", req.op, err)
+		return exitUsage, false
+	}
+	if !ok {
+		fmt.Fprintln(e.stdout, "\nCancelled: nothing written.")
+		return exitOK, false
+	}
+	req.expect = preview.Expect
+	return exitOK, true
+}
+
+// allowedRefusal words a refusal from the ownership and source checks with
+// fixed text: never the owner's thread ID or a raw error.
+func allowedRefusal(err error) *routeRefusal {
+	if strings.HasPrefix(err.Error(), "Ownership:") {
+		return refuseRoute("not_owner", "This loop is owned by another BB thread, or its ownership cannot be confirmed; only the owning thread or a person can change its list.")
+	}
+	return refuseRoute("sources_changed", "The loop's configuration changed since it was loaded; run the command again.")
+}
+
+func agentIdentityRefusal() *routeRefusal {
+	return refuseRoute("agent_identity", "Only a person can change the standard route list: every loop that follows it uses the change. Run this outside a BB thread.")
+}
+
 // routeChange previews a change, or with apply makes it. An apply plans the
 // change again under the lock and writes only if the plan is the one the
 // caller reviewed, when an expect value is given.
@@ -279,7 +314,7 @@ func routeChange(req routeChangeRequest, apply bool) (routeChangeOut, int) {
 		return ownRouteChange(req, apply)
 	}
 	if req.caller != "" {
-		return routeChangeRefused(req, refuseRoute("agent_identity", "Only a person can change the standard route list: every loop that follows it uses the change. Run this outside a BB thread.")), exitUsage
+		return routeChangeRefused(req, agentIdentityRefusal()), exitUsage
 	}
 	path, err := config.StandardRoutesPath()
 	if err != nil {
@@ -293,6 +328,11 @@ func routeChange(req routeChangeRequest, apply bool) (routeChangeOut, int) {
 		}
 		return p.out, exitOK
 	}
+	// Before the lock, which is a file beside the list: nothing is created
+	// where the list may not be written.
+	if ref := routesWriteLocation(path); ref != nil {
+		return routeChangeRefused(req, ref), exitUsage
+	}
 	l, err := lock.AcquireNamed(filepath.Dir(path), "routes")
 	if errors.Is(err, lock.ErrHeld) {
 		return routeChangeRefused(req, refuseRoute("busy", "Another change to the standard route list is being written; try again in a moment.")), exitSkipped
@@ -303,6 +343,9 @@ func routeChange(req routeChangeRequest, apply bool) (routeChangeOut, int) {
 	defer l.Release()
 	p, ref := planStandardChange(req, path)
 	if ref != nil {
+		if req.expect != "" {
+			return routeReviewAgain(newRouteChangeOut(req)), exitSkipped
+		}
 		return routeChangeRefused(req, ref), exitUsage
 	}
 	if req.expect != "" && req.expect != p.out.Expect {
@@ -311,13 +354,21 @@ func routeChange(req routeChangeRequest, apply bool) (routeChangeOut, int) {
 	if p.out.Outcome == "unchanged" {
 		return p.out, exitOK
 	}
-	// The history is written first: a record whose change then fails to be
-	// written still keeps its id from being used again, the safe direction.
-	if err := appendRouteHistory(filepath.Dir(path), routeHistoryRecord{At: req.now, Op: req.op, Route: req.id, To: p.out.To, Before: p.out.Before, After: p.out.After, By: "person", Source: req.source}); err != nil {
-		return routeChangeRefused(req, refuseRoute("history_failed", "The change could not be recorded in %s, so nothing was written: %v.", routesHistoryName, err)), exitFailed
+	// The new list is written and flushed beside the old one first, then the
+	// change is recorded, then the new list is put in place. A failure before
+	// the record leaves nothing behind; only a failed rename after it leaves
+	// a record of a change that was not made, which keeps its id from being
+	// used again, the safe direction.
+	staged, err := stageRoutesFile(path, p.next)
+	if err != nil {
+		return routeChangeRefused(req, refuseRoute("write_failed", "The standard route list could not be written; it is unchanged: %v.", err)), exitFailed
 	}
-	if err := writeRoutesFile(path, p.next); err != nil {
-		return routeChangeRefused(req, refuseRoute("write_failed", "The standard route list could not be written; it is unchanged. %v", err)), exitFailed
+	defer staged.discard()
+	if err := appendRouteHistory(filepath.Dir(path), routeHistoryRecord{At: req.now, Op: req.op, Route: req.id, To: p.out.To, Before: p.out.Before, After: p.out.After, By: "person", Source: req.source}); err != nil {
+		return routeChangeRefused(req, refuseRoute("history_failed", "The change could not be recorded in %s, so nothing was written.", routesHistoryName)), exitFailed
+	}
+	if err := staged.commit(); err != nil {
+		return routeChangeRefused(req, refuseRoute("write_failed", "The standard route list could not be put in place; it is unchanged, and %s records a change that was not made: %v.", routesHistoryName, err)), exitFailed
 	}
 	p.out.Outcome = "changed"
 	return p.out, exitOK
@@ -357,6 +408,9 @@ func planStandardChange(req routeChangeRequest, path string) (*standardPlan, *ro
 	if err != nil && !absent {
 		code := config.RoutesProblem(err)
 		return nil, refuseRoute(code, "The standard route list cannot be used: %s.", routesProblemText(code))
+	}
+	if ref := routesWriteLocation(path); ref != nil {
+		return nil, ref
 	}
 	cur := &config.Routes{Version: 1}
 	if !absent {
@@ -400,12 +454,21 @@ func planStandardChange(req routeChangeRequest, path string) (*standardPlan, *ro
 		if at >= 0 {
 			return nil, refuseRoute("id_taken", "The standard list already has a route with the id %q. Ids are never reused or renamed; pick another.", bbLabel(req.id, 40))
 		}
-		used, err := routeHistoryIDs(filepath.Dir(path))
+		used, warning, err := routeHistoryIDs(filepath.Dir(path))
 		if err != nil {
 			return nil, refuseRoute("history_unreadable", "%s cannot be read, so it is unknown whether the id %q was used before: %v.", routesHistoryName, bbLabel(req.id, 40), err)
 		}
+		if warning != "" {
+			o.Warnings = append(o.Warnings, warning)
+		}
 		if used[req.id] {
 			return nil, refuseRoute("id_used_before", "The id %q was used by an earlier route. An id is never reused, so check results kept for the old route cannot count for a new one; pick another id.", bbLabel(req.id, 40))
+		}
+		if ref := idInLoopRecords(req, o); ref != nil {
+			return nil, ref
+		}
+		if req.like != "" {
+			o.Warnings = append(o.Warnings, "--like copied the route's fields only: its environment other than the account variable, its executable and its working directory were not copied; a following loop uses its own")
 		}
 		if req.at < 0 || req.at > len(cur.Routes)+1 {
 			return nil, refuseRoute("bad_position", "--at must be a place between 1 and %d.", len(cur.Routes)+1)
@@ -495,6 +558,117 @@ func planStandardChange(req routeChangeRequest, path string) (*standardPlan, *ro
 	h.Write([]byte(material))
 	o.Expect = fmt.Sprintf("%x", h.Sum(nil))
 	return p, nil
+}
+
+// routesWriteLocation refuses to write the list, its history or its lock
+// where they would end up inside a Git checkout, the list naming private
+// account directories: through a link at routes.yaml, or a link at any
+// directory above it, as GNU Stow makes when it folds a directory. A link
+// at routes.yaml must also name a file that exists. Reading the list there
+// is still allowed.
+func routesWriteLocation(path string) *routeRefusal {
+	if info, err := os.Lstat(path); err == nil && info.Mode()&os.ModeSymlink != 0 {
+		target, err := filepath.EvalSymlinks(path)
+		if err != nil {
+			return refuseRoute("dangling_link", "routes.yaml is a symbolic link to a file that does not exist; point it at an existing file or remove the link.")
+		}
+		if config.InsideCheckout(target) {
+			return checkoutRefusal()
+		}
+	}
+	// The directory as it really is: the nearest directory above the list
+	// that exists, with every link in it followed.
+	dir, rest := filepath.Dir(path), filepath.Base(path)
+	for {
+		if real, err := filepath.EvalSymlinks(dir); err == nil {
+			if config.InsideCheckout(filepath.Join(real, rest)) {
+				return checkoutRefusal()
+			}
+			return nil
+		}
+		parent := filepath.Dir(dir)
+		if parent == dir {
+			return refuseRoute("unreadable", "The standard route list's directory cannot be resolved.")
+		}
+		rest = filepath.Join(filepath.Base(dir), rest)
+		dir = parent
+	}
+}
+
+func checkoutRefusal() *routeRefusal {
+	return refuseRoute(config.RoutesInsideCheckout, "routes.yaml, or a directory above it, is a symbolic link into a Git checkout. The list is read there, but never written there, because it names private account directories; edit it by hand or move it out of the checkout.")
+}
+
+// idInLoopRecords refuses an id that a registered loop following the list
+// is on (its saved target, or its record of the route it is on) or still has
+// check results, a rejected-handoff count or a session recorded under: a
+// route added with that id would take their place. This covers ids removed
+// by hand, which the history does not name. A loop with its own list keeps
+// records for its own ids; following the list clears them. A loop whose
+// configuration cannot be loaded is checked through the state directory
+// the registry records for it, and refuses the id if that cannot be read.
+func idInLoopRecords(req routeChangeRequest, o *routeChangeOut) *routeRefusal {
+	dir, err := registryDirectory(req.registry)
+	var reg registry.File
+	if err == nil {
+		reg, err = registry.Load(dir)
+	}
+	if err != nil {
+		return refuseRoute("registry_unavailable", "The loop registry cannot be read, so it is unknown whether a loop has records under the id %q.", bbLabel(req.id, 40))
+	}
+	for _, entry := range reg.Entries {
+		stateDir, name := entry.StateDir, entry.Loop
+		if cfg, err := config.Load(entry.ConfigPath); err == nil {
+			if !cfg.Loop.FollowsStandard() {
+				continue
+			}
+			stateDir, name = cfg.Loop.StateDir, cfg.Loop.Name
+		}
+		found, err := loopRecordsUnder(stateDir, req.id)
+		if err != nil {
+			return refuseRoute("loop_records_unreadable", "Loop %s's records cannot be read, so it is unknown whether it has any under the id %q.", name, bbLabel(req.id, 40))
+		}
+		if len(found) > 0 {
+			return refuseRoute("id_in_loop_records", "Loop %s still has %s under the id %q, which a new route with that id would take the place of; pick another id.", name, strings.Join(found, ", "), bbLabel(req.id, 40))
+		}
+	}
+	return nil
+}
+
+// loopRecordsUnder lists what a loop's state directory holds under id: the
+// target it is on, the record of the route it is on, check results, a
+// rejected-handoff count and a session.
+func loopRecordsUnder(stateDir, id string) ([]string, error) {
+	if stateDir == "" || !filepath.IsAbs(stateDir) {
+		return nil, errors.New("no state directory")
+	}
+	var found []string
+	st, err := state.Load(stateDir)
+	if err != nil {
+		return nil, err
+	}
+	if st.Target() == id {
+		found = append(found, "its current route")
+	}
+	if rt, ok := supervise.LoadCurrentRoute(stateDir); ok && rt.ID == id {
+		found = append(found, "the record of the route it is on")
+	}
+	reg, err := health.Load(stateDir)
+	if err != nil {
+		return nil, err
+	}
+	if _, ok := reg.Candidates[id]; ok {
+		found = append(found, "check results")
+	}
+	if _, ok := st.HandoffBriefs[id]; ok {
+		found = append(found, "a rejected-handoff count")
+	}
+	if _, err := os.Lstat(filepath.Join(stateDir, "targets", id)); err == nil {
+		found = append(found, "a session")
+	} else if !errors.Is(err, os.ErrNotExist) {
+		return nil, err
+	}
+	return found, nil
 }
 
 func sameRoutes(got, want []config.Route) bool {
@@ -664,13 +838,16 @@ func overrideRoute(base *config.Route, flags config.Route, set map[string]bool) 
 
 func registeredLoop(name, dir string) (*config.Config, *routeRefusal) {
 	d, err := registryDirectory(dir)
-	if err != nil {
-		return nil, refuseRoute("registry_unavailable", "%v", err)
+	if err == nil {
+		var f registry.File
+		if f, err = registry.Load(d); err == nil {
+			return findRegisteredLoop(f, name)
+		}
 	}
-	f, err := registry.Load(d)
-	if err != nil {
-		return nil, refuseRoute("registry_unavailable", "%v", err)
-	}
+	return nil, refuseRoute("registry_unavailable", "The loop registry cannot be read.")
+}
+
+func findRegisteredLoop(f registry.File, name string) (*config.Config, *routeRefusal) {
 	for _, entry := range f.Entries {
 		if entry.Loop == name {
 			cfg, err := config.Load(entry.ConfigPath)
@@ -683,26 +860,30 @@ func registeredLoop(name, dir string) (*config.Config, *routeRefusal) {
 	return nil, refuseRoute("unknown_loop", "No registered loop is named %q.", bbLabel(name, 40))
 }
 
-// writeRoutesFile replaces the standard list with raw, readable only by this
-// user. When the path is a symbolic link, the file it names is replaced and
-// the link is kept, as a dotfile manager expects.
-func writeRoutesFile(path string, raw []byte) error {
+// stagedRoutes is a new list written and flushed beside the file it will
+// replace, not yet in place.
+type stagedRoutes struct{ tmp, target string }
+
+// stageRoutesFile writes raw, readable only by this user, beside the list it
+// will replace. When the path is a symbolic link, that is the file it names,
+// so the link is kept, as a dotfile manager expects. The plan has already
+// refused a dangling link and one into a Git checkout.
+func stageRoutesFile(path string, raw []byte) (*stagedRoutes, error) {
 	target := path
 	if info, err := os.Lstat(path); err == nil && info.Mode()&os.ModeSymlink != 0 {
 		if target, err = filepath.EvalSymlinks(path); err != nil {
-			return errors.New("the symbolic link to it cannot be followed")
+			return nil, errors.New("the symbolic link to it cannot be followed")
 		}
 	} else if errors.Is(err, os.ErrNotExist) {
 		if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
-			return errors.New("its directory cannot be created")
+			return nil, errors.New("its directory cannot be created")
 		}
 	}
 	tmp, err := os.CreateTemp(filepath.Dir(target), ".routes-*")
 	if err != nil {
-		return errors.New("a temporary file cannot be created beside it")
+		return nil, errors.New("a temporary file cannot be created beside it")
 	}
 	name := tmp.Name()
-	defer os.Remove(name)
 	if err = tmp.Chmod(0o600); err == nil {
 		if _, err = tmp.Write(raw); err == nil {
 			err = tmp.Sync()
@@ -712,16 +893,30 @@ func writeRoutesFile(path string, raw []byte) error {
 		err = closeErr
 	}
 	if err != nil {
-		return errors.New("the new contents cannot be written")
+		os.Remove(name)
+		return nil, errors.New("the new contents cannot be written")
 	}
-	if err := snapshot.Replace(name, target); err != nil {
+	return &stagedRoutes{tmp: name, target: target}, nil
+}
+
+// commit puts the staged list in place.
+func (s *stagedRoutes) commit() error {
+	if err := snapshot.Replace(s.tmp, s.target); err != nil {
 		return errors.New("the new contents cannot be put in place")
 	}
-	if d, err := os.Open(filepath.Dir(target)); err == nil {
+	s.tmp = ""
+	if d, err := os.Open(filepath.Dir(s.target)); err == nil {
 		_ = d.Sync()
 		d.Close()
 	}
 	return nil
+}
+
+// discard removes a staged list that was not put in place.
+func (s *stagedRoutes) discard() {
+	if s.tmp != "" {
+		os.Remove(s.tmp)
+	}
 }
 
 // routesHistoryName is the record of every change made with these commands,
@@ -744,50 +939,95 @@ type routeHistoryRecord struct {
 func openRouteHistory(dir string) (*os.File, error) {
 	path := filepath.Join(dir, routesHistoryName)
 	info, err := os.Lstat(path)
-	if err != nil {
+	if errors.Is(err, os.ErrNotExist) {
 		return nil, err
+	}
+	if err != nil {
+		return nil, errors.New("it cannot be inspected")
 	}
 	if !config.PrivateFile(info) {
 		return nil, errors.New("it must be a regular file owned by this user and readable by no one else (chmod 600)")
 	}
-	return os.OpenFile(path, os.O_RDWR|os.O_APPEND, 0)
+	f, err := os.OpenFile(path, os.O_RDWR|os.O_APPEND, 0)
+	if err != nil {
+		return nil, errors.New("it cannot be opened")
+	}
+	return f, nil
 }
 
-// routeHistoryIDs is every id the history names. A history that cannot be
-// read fails the check: an id is never assumed to be new.
-func routeHistoryIDs(dir string) (map[string]bool, error) {
+// The ids a record cut short still names: its route, and its before and
+// after lists as far as they got.
+var (
+	historyRoutePattern = regexp.MustCompile(`"route"\s*:\s*"([a-z0-9][a-z0-9-]*)"`)
+	historyListPattern  = regexp.MustCompile(`"(?:before|after)"\s*:\s*\[([^\]]*)`)
+	historyQuoted       = regexp.MustCompile(`"([a-z0-9][a-z0-9-]*)"`)
+)
+
+// historyRecovery is what to do about a history that cannot be used.
+const historyRecovery = "move routes-history.jsonl aside; add then refuses only ids still in the list or in a loop's records"
+
+// routeHistoryIDs is every id the history names, and a warning when a
+// record in it was cut short (a write that did not finish), which is skipped.
+// Any other history that cannot be read fails the check: an id is never
+// assumed to be new.
+func routeHistoryIDs(dir string) (map[string]bool, string, error) {
 	ids := map[string]bool{}
 	f, err := openRouteHistory(dir)
 	if errors.Is(err, os.ErrNotExist) {
-		return ids, nil
+		return ids, "", nil
 	}
 	if err != nil {
-		return nil, err
+		return nil, "", err
 	}
 	defer f.Close()
 	raw, err := io.ReadAll(io.LimitReader(f, routesHistoryLimit+1))
 	if err != nil {
-		return nil, errors.New("it could not be read")
+		return nil, "", errors.New("it could not be read")
 	}
 	if len(raw) > routesHistoryLimit {
-		return nil, errors.New("it is larger than 16 MiB")
+		return nil, "", errors.New("it is larger than 16 MiB; " + historyRecovery)
 	}
-	for i, line := range bytes.Split(raw, []byte("\n")) {
+	warning := ""
+	lines := bytes.Split(raw, []byte("\n"))
+	for i, line := range lines {
 		if len(bytes.TrimSpace(line)) == 0 {
 			continue
 		}
 		var rec routeHistoryRecord
-		if json.Unmarshal(line, &rec) != nil {
-			return nil, fmt.Errorf("line %d is not a history record", i+1)
+		dec := json.NewDecoder(bytes.NewReader(line))
+		err := dec.Decode(&rec)
+		if err == nil && len(bytes.TrimSpace(line[dec.InputOffset():])) != 0 {
+			// A record followed by anything else on its line is damaged.
+			return nil, "", fmt.Errorf("line %d is not a history record; %s", i+1, historyRecovery)
+		}
+		if err != nil {
+			// A record cut short by a write that did not finish (the next
+			// append starts a new line after it) is skipped; any id it got
+			// as far as naming still counts. Anything else is refused.
+			if bytes.HasPrefix(bytes.TrimSpace(line), []byte("{")) && errors.Is(err, io.ErrUnexpectedEOF) {
+				for _, m := range historyRoutePattern.FindAllSubmatch(line, -1) {
+					ids[string(m[1])] = true
+				}
+				for _, list := range historyListPattern.FindAllSubmatch(line, -1) {
+					for _, m := range historyQuoted.FindAllSubmatch(list[1], -1) {
+						ids[string(m[1])] = true
+					}
+				}
+				warning = routesHistoryName + " holds a record cut short by a write that did not finish; it was skipped"
+				continue
+			}
+			return nil, "", fmt.Errorf("line %d is not a history record; %s", i+1, historyRecovery)
 		}
 		ids[rec.Route] = true
 		for _, id := range append(rec.Before, rec.After...) {
 			ids[id] = true
 		}
 	}
-	return ids, nil
+	return ids, warning, nil
 }
 
+// appendRouteHistory adds one record on a line of its own, starting a new
+// line first if the last write did not finish one.
 func appendRouteHistory(dir string, rec routeHistoryRecord) error {
 	line, err := json.Marshal(rec)
 	if err != nil {
@@ -798,9 +1038,18 @@ func appendRouteHistory(dir string, rec routeHistoryRecord) error {
 		f, err = os.OpenFile(filepath.Join(dir, routesHistoryName), os.O_RDWR|os.O_APPEND|os.O_CREATE|os.O_EXCL, 0o600)
 	}
 	if err != nil {
-		return err
+		return errors.New("it cannot be opened")
 	}
 	defer f.Close()
+	if info, err := f.Stat(); err == nil && info.Size() > 0 {
+		last := make([]byte, 1)
+		if _, err := f.ReadAt(last, info.Size()-1); err != nil {
+			return errors.New("it could not be read")
+		}
+		if last[0] != '\n' {
+			line = append([]byte("\n"), line...)
+		}
+	}
 	if _, err := f.Write(append(line, '\n')); err != nil {
 		return errors.New("it could not be written")
 	}
@@ -826,16 +1075,21 @@ func ownRouteChange(req routeChangeRequest, apply bool) (routeChangeOut, int) {
 	if info, err := os.Lstat(cfg.Loop.Fallbacks); err != nil || !info.Mode().IsRegular() {
 		return routeChangeRefused(req, refuseRoute("edit_by_hand", "Loop %s's fallbacks file is a symbolic link or not a regular file.", req.loop)), exitUsage
 	}
+	if ref := ownListAuthority(cfg.Loop.StateDir, req.caller); ref != nil {
+		return routeChangeRefused(req, ref), exitUsage
+	}
 	if code, err := fallbackAddAllowed(cfg); err != nil {
-		reason := "sources_changed"
-		if strings.HasPrefix(err.Error(), "Ownership:") {
-			reason = "not_owner"
-		}
-		return routeChangeRefused(req, refuseRoute(reason, "%v", err)), code
+		return routeChangeRefused(req, allowedRefusal(err)), code
 	}
 	p, out, ref := planOwnChange(req, cfg)
 	if ref != nil {
+		if apply && req.expect != "" {
+			return routeReviewAgain(newRouteChangeOut(req)), exitSkipped
+		}
 		return routeChangeRefused(req, ref), exitUsage
+	}
+	if apply && req.expect != "" && req.expect != out.Expect {
+		return routeReviewAgain(out), exitSkipped
 	}
 	if !apply || out.Outcome == "unchanged" {
 		return out, exitOK
@@ -867,8 +1121,34 @@ func ownRouteChange(req routeChangeRequest, apply bool) (routeChangeOut, int) {
 		}
 		return routeChangeRefused(req, refuseRoute("write_failed", "%v", err)), code
 	}
+	if p.historyFailed {
+		out.Warnings = append(out.Warnings, "the change was saved, but could not be recorded in the loop's history (keepgoing timeline)")
+	}
 	out.Outcome = "changed"
 	return out, exitOK
+}
+
+// ownListAuthority is who may change a loop's own list: a person, or the BB
+// thread that owns the loop. An agent may not change the list of a loop
+// with no recorded owner, as it may not change the standard list.
+func ownListAuthority(stateDir, caller string) *routeRefusal {
+	if caller == "" {
+		return nil
+	}
+	// Another thread's loop, and ownership that cannot be read, are refused
+	// by the ownership check every change makes (fallbackAddAllowed).
+	if f, err := control.Load(stateDir); err == nil && f.Ownership == nil {
+		return refuseRoute("agent_identity", "This loop has no recorded owner, so only a person can change its list. Run this outside a BB thread, or from the thread that owns the loop.")
+	}
+	return nil
+}
+
+// ownListCaller is who made a change to a loop's own list, as a role.
+func ownListCaller(caller string) string {
+	if caller == "" {
+		return "terminal"
+	}
+	return "owner_thread"
 }
 
 func planOwnChange(req routeChangeRequest, cfg *config.Config) (*fallbackEdit, routeChangeOut, *routeRefusal) {

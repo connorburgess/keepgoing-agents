@@ -13,6 +13,7 @@ import (
 
 	"github.com/connorburgess/keepgoing-agents/internal/config"
 	"github.com/connorburgess/keepgoing-agents/internal/control"
+	"github.com/connorburgess/keepgoing-agents/internal/envvar"
 	"github.com/connorburgess/keepgoing-agents/internal/health"
 	"github.com/connorburgess/keepgoing-agents/internal/registry"
 	"github.com/connorburgess/keepgoing-agents/internal/state"
@@ -33,7 +34,7 @@ type standardListView struct {
 	// State is ok, missing (no list has been written) or unreadable.
 	State string `json:"state"`
 	// Problem is the fixed reason an unreadable list was refused: not_private,
-	// not_owned, not_regular, too_large, inside_checkout, unreadable or
+	// not_owned, not_regular, too_large, inside_checkout, named_twice, unreadable or
 	// invalid. It names no path.
 	Problem    string             `json:"problem,omitempty"`
 	Redundancy *redundancyView    `json:"redundancy,omitempty"`
@@ -143,7 +144,7 @@ func routesCommand(e env, args []string) int {
 	asJSON := fs.Bool("json", false, "print the versioned route lists object")
 	cfgPath := fs.String("c", "", "show one loop by its config file instead of every registered loop")
 	loopName := fs.String("loop", "", "show one registered loop by name")
-	directory := fs.String("directory", "", "private registry directory (default: user config/keepgoing/registry)")
+	directory := fs.String("directory", "", "private registry directory (default: the registry in the user configuration directory)")
 	if err := fs.Parse(args[1:]); err != nil || fs.NArg() != 0 || (*cfgPath != "" && *loopName != "") {
 		if err == nil {
 			e.errf("routes list takes --json and one of -c or --loop")
@@ -212,16 +213,28 @@ func routeLists(configPaths []routeLoopRef, now time.Time) routeListsOut {
 
 func standardList() (view standardListView) {
 	view = standardListView{State: "unreadable", Routes: []standardRouteRow{}, Followers: []string{}, Can: []string{}}
+	var path string
+	// Can offers only what would work now: nothing for an agent or an
+	// unreadable list, only add for an empty or missing list, and no add
+	// while the history cannot be read.
 	defer func() {
 		switch {
 		case os.Getenv("BB_THREAD_ID") != "":
 			view.CanReason = "agent_identity"
-		case view.State == "ok":
+			return
+		case view.State == "ok" && len(view.Routes) > 0:
 			view.Can = []string{"add", "move", "remove", "off", "on"}
-		case view.State == "missing":
+		case view.State == "ok", view.State == "missing":
 			view.Can = []string{"add"}
 		default:
 			view.CanReason = "list_unreadable"
+			return
+		}
+		if _, _, err := routeHistoryIDs(filepath.Dir(path)); err != nil {
+			view.Can = view.Can[1:]
+			if len(view.Can) == 0 {
+				view.CanReason = "history_unreadable"
+			}
 		}
 	}()
 	path, err := config.StandardRoutesPath()
@@ -452,14 +465,19 @@ func followsStandardRefusal(sub string) string {
 
 // ownListCan is what this caller may change in a loop's own list: all of it
 // for the loop's owner, or a person outside BB, and nothing for another
-// thread; loopRoutes narrows it by what the loop has. It only reads; the
-// write checks again under the lock.
+// thread, or for any thread when the loop has no recorded owner;
+// loopRoutes narrows it by what the loop has. It only reads; the write
+// checks again under the lock.
 func ownListCan(stateDir string) ([]string, string) {
 	f, err := control.Load(stateDir)
 	if err != nil {
 		return []string{}, "ownership_unknown"
 	}
-	if control.CheckOwner(f, os.Getenv("BB_THREAD_ID"), false) != nil {
+	caller := os.Getenv("BB_THREAD_ID")
+	if caller != "" && f.Ownership == nil {
+		return []string{}, "agent_identity"
+	}
+	if control.CheckOwner(f, caller, false) != nil {
 		return []string{}, "not_owner"
 	}
 	return []string{"move", "remove", "off", "on"}, ""
@@ -477,7 +495,9 @@ func routesProblemText(code string) string {
 	case config.RoutesTooLarge:
 		return "it is larger than 1 MiB"
 	case config.RoutesInsideCheckout:
-		return "KEEPGOING_ROUTES_FILE points inside a Git checkout"
+		return config.RoutesFileEnv + " points inside a Git checkout"
+	case config.RoutesNamedTwice:
+		return envvar.RoutesFile.Name() + " and " + envvar.RoutesFile.Legacy() + " name different files; unset one of them"
 	case "missing":
 		return "no list has been written"
 	case config.RoutesInvalid:

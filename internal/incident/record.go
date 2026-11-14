@@ -22,8 +22,13 @@ type Record struct {
 	LimitWaitReport string `json:"limitWaitReport"`
 	// NewThread says this check recorded a BB thread keepgoing created for a
 	// handoff. The thread ID is in the run graph, not here.
-	NewThread bool   `json:"newThread,omitempty"`
-	TurnRetry string `json:"turnRetry"`
+	NewThread bool `json:"newThread,omitempty"`
+	// RouteListChanged says the loop follows the standard route list and this
+	// check read it changed since the loop's previous check.
+	RouteListChanged bool `json:"routeListChanged,omitempty"`
+	// RouteChange is a saved change to the loop's own route list.
+	RouteChange *RouteChange `json:"routeChange,omitempty"`
+	TurnRetry   string       `json:"turnRetry"`
 	// Lanes counts the lane work of a check that recovers lanes. Counts only.
 	Lanes                LaneWork       `json:"lanes"`
 	Tier                 string         `json:"tier"`
@@ -67,6 +72,18 @@ type ControlChange struct {
 	// spent per-episode allowance, and so started a new error episode: the
 	// re-prompt and nudge counts started over.
 	NewEpisode bool `json:"newEpisode"`
+}
+
+// RouteChange describes a saved change to a loop's own route list. The route
+// is named by its hashed key, as targets are; who made it is a role, never
+// an identity.
+type RouteChange struct {
+	// Operation is move, remove, off or on.
+	Operation string `json:"operation"`
+	TargetKey string `json:"targetKey"`
+	// Caller is owner_thread (the BB thread that owns the loop) or terminal
+	// (no BB thread identity).
+	Caller string `json:"caller"`
 }
 
 // Retention tiers. Each has reserved room that the others cannot take, so
@@ -169,7 +186,7 @@ func repeatable(r Record) bool {
 	if dry {
 		return true // A dry run executes nothing, whatever it proposed.
 	}
-	return r.Action == "none" && !attempted(r) && r.LimitWaitReport == "none" && r.Lanes == (LaneWork{}) && !r.NewThread
+	return r.Action == "none" && !attempted(r) && r.LimitWaitReport == "none" && r.Lanes == (LaneWork{}) && !r.NewThread && !r.RouteListChanged
 }
 
 func limitWaitCause(cause string) bool {
@@ -189,7 +206,7 @@ func failedProbes(r Record) int {
 // tierOf classifies a cleaned record for retention.
 func tierOf(r Record) string {
 	switch r.Kind {
-	case "retarget":
+	case "retarget", "route_change":
 		return TierKey
 	case "control":
 		c := r.ControlChange
@@ -444,7 +461,20 @@ func oneOf(value, fallback string, allowed ...string) string {
 // clean is the storage boundary: no arbitrary strings or provider-supplied maps
 // cross it. Unknown fields are unavailable rather than truncated raw text.
 func clean(r Record) Record {
-	r.Kind = oneOf(r.Kind, "unavailable", "tick", "control", "retarget")
+	r.Kind = oneOf(r.Kind, "unavailable", "tick", "control", "retarget", "route_change")
+	if r.Kind == "route_change" && r.RouteChange != nil {
+		// A route-list change runs no check: only what was changed and by whom.
+		c := *r.RouteChange
+		c.Operation = oneOf(c.Operation, "unavailable", "move", "remove", "off", "on")
+		c.Caller = oneOf(c.Caller, "unavailable", "owner_thread", "terminal")
+		if !keyPattern.MatchString(c.TargetKey) {
+			c.TargetKey = "unavailable"
+		}
+		r = Record{Kind: r.Kind, Sequence: r.Sequence, CheckStartedAt: r.CheckStartedAt, Build: r.Build, RouteChange: &c,
+			Action: "none", Cause: "other", Outcome: "list_saved"}
+	} else {
+		r.RouteChange = nil
+	}
 	if r.Kind == "retarget" {
 		// A retarget saves the active target without observing, deciding, probing
 		// or sending. Its note and the configured aliases never enter the journal.
@@ -484,14 +514,14 @@ func clean(r Record) Record {
 	r.Cause = cleanCause(r.Cause)
 	r.Action = cleanAction(r.Action)
 	r.Decisions = cleanDecisions(r.Decisions)
-	r.Outcome = oneOf(r.Outcome, "unavailable", "succeeded", "failed", "dry_run", "control_saved", "target_saved")
+	r.Outcome = oneOf(r.Outcome, "unavailable", "succeeded", "failed", "dry_run", "control_saved", "target_saved", "list_saved")
 	// Whether this check detected a long limit wait and what it did about the one report.
 	r.LimitWaitReport = oneOf(r.LimitWaitReport, "none", "requested", "delivery_failed", "not_subscribed")
 	// What a re-prompt that retried the failed turn by reference was told.
 	r.TurnRetry = oneOf(r.TurnRetry, "none", "retried", "queued", "nothing_to_retry", "not_in_error", "already_queued", "queue_unconfirmed", "refused", "unsupported")
 	r.Lanes = LaneWork{Retried: max(0, r.Lanes.Retried), GivenUp: max(0, r.Lanes.GivenUp), Deferred: max(0, r.Lanes.Deferred)}
 	if r.Kind != "tick" {
-		r.LimitWaitReport, r.TurnRetry, r.Lanes = "none", "none", LaneWork{}
+		r.LimitWaitReport, r.TurnRetry, r.Lanes, r.RouteListChanged = "none", "none", LaneWork{}, false
 	}
 	o := &r.Observation
 	o.Availability = oneOf(o.Availability, "not_observed", "observed", "unavailable", "not_observed")

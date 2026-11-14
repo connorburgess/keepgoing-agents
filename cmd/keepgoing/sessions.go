@@ -9,6 +9,7 @@ import (
 
 	"github.com/connorburgess/keepgoing-agents/internal/config"
 	"github.com/connorburgess/keepgoing-agents/internal/control"
+	"github.com/connorburgess/keepgoing-agents/internal/envvar"
 	"github.com/connorburgess/keepgoing-agents/internal/registry"
 	"github.com/connorburgess/keepgoing-agents/internal/session"
 	"github.com/connorburgess/keepgoing-agents/internal/state"
@@ -95,7 +96,10 @@ func findOtherLoops(cfg *config.Config) []otherLoop {
 		seen[key] = true
 		candidates = append(candidates, found{loop, configPath, key})
 	}
-	if dir, err := registryDirectory(""); err == nil {
+	// The registry in use and, when the default one has a counterpart under
+	// the tool's other directory name, that one too: a loop registered
+	// before the name in use changed is still another loop.
+	for _, dir := range registriesUnderBothNames() {
 		if f, err := registry.Load(dir); err == nil {
 			for _, e := range f.Entries {
 				add(e.Loop, e.ConfigPath, e.StateDir)
@@ -286,11 +290,12 @@ func sessionDirectoryCheck() (status, message, fix string) {
 	case errors.As(err, &unsafe):
 		return "error", "Session claims cannot be kept safely: " + unsafe.Error() + ". Checks act on nothing until this is fixed; a requested stop still goes ahead.", "To fix it, " + unsafe.Fix() + "."
 	case err != nil:
-		return "error", "Session claims cannot be kept: " + err.Error() + ".", "Set KEEPGOING_SESSION_DIR to a private directory of your own."
+		return "error", "Session claims cannot be kept: " + err.Error() + ".", "Set " + session.DirEnv + " to a private directory of your own."
 	case !session.Private(dir):
 		return "warning", "The session claim directory " + dir + " is not private (mode 0700).", "The next check makes it private, or run chmod 700 on it."
-	case os.Getenv(session.DirEnv) != "":
-		return "ok", "KEEPGOING_SESSION_DIR is set: session claims are kept in " + dir + ". Loops given other directories do not see each other's claims.", "Unset it so every loop uses the default directory."
+	}
+	if _, name := envvar.SessionDir.Lookup(); name != "" {
+		return "ok", name + " is set: session claims are kept in " + dir + ". Loops given other directories do not see each other's claims.", "Unset it so every loop uses the default directory."
 	}
 	return "", "", ""
 }

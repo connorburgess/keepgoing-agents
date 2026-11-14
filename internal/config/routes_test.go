@@ -523,3 +523,73 @@ func TestTransferRefusesAFollowingLoopWhateverTheListsState(t *testing.T) {
 		}
 	}
 }
+
+// The list's location is still read under the variable's earlier name. The
+// two names set to different files are refused with their own reason, which
+// names both variables and neither file; the loop keeps its own target and
+// has no other routes, as for any unusable list.
+func TestStandardRoutesPathReadsTheEarlierName(t *testing.T) {
+	const earlier = "KEEPGOING_ROUTES_FILE"
+	old, current := filepath.Join(t.TempDir(), "user", RoutesFileName), filepath.Join(t.TempDir(), "user", RoutesFileName)
+	t.Setenv(RoutesFileEnv, "")
+	t.Setenv(earlier, old)
+	if p, err := StandardRoutesPath(); err != nil || p != old {
+		t.Fatalf("the earlier name alone: %q %v", p, err)
+	}
+	t.Setenv(earlier, "routes.yaml")
+	if _, err := StandardRoutesPath(); err == nil || !strings.Contains(err.Error(), earlier) {
+		t.Fatalf("a relative path under the earlier name must be refused by that name: %v", err)
+	}
+	t.Setenv(RoutesFileEnv, current)
+	t.Setenv(earlier, current)
+	if p, err := StandardRoutesPath(); err != nil || p != current {
+		t.Fatalf("both names, one file: %q %v", p, err)
+	}
+	t.Setenv(earlier, old)
+	_, err := StandardRoutesPath()
+	if RoutesProblem(err) != RoutesNamedTwice || !strings.Contains(err.Error(), RoutesFileEnv) || !strings.Contains(err.Error(), earlier) || strings.Contains(err.Error(), old) {
+		t.Fatalf("both names, different files: %v (%s)", err, RoutesProblem(err))
+	}
+	cfg, err := Load(loopFile(t, bbLoop))
+	if err != nil || !cfg.RouteList.Unreadable || cfg.RouteList.Problem != RoutesNamedTwice || cfg.FallbackSet != nil {
+		t.Fatalf("%v %+v", err, cfg.RouteList)
+	}
+}
+
+// The list's default place: routes.yaml in looptender/ under the user
+// configuration directory on a computer with no earlier files, and in
+// keepgoing/ once that directory exists.
+func TestStandardRoutesPathDefault(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv(RoutesFileEnv, "")
+	t.Setenv("KEEPGOING_ROUTES_FILE", "")
+	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home)
+	t.Setenv("XDG_CONFIG_HOME", filepath.Join(home, ".config"))
+	t.Setenv("XDG_STATE_HOME", filepath.Join(home, ".local", "state"))
+	t.Setenv("AppData", filepath.Join(home, "AppData", "Roaming"))
+	t.Setenv("LOCALAPPDATA", filepath.Join(home, "AppData", "Local"))
+	base, err := os.UserConfigDir()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if p, err := StandardRoutesPath(); err != nil || p != filepath.Join(base, "looptender", RoutesFileName) {
+		t.Fatalf("a new install: %q %v", p, err)
+	}
+	// A loop's own files in a directory of the earlier name decide nothing.
+	if err := os.MkdirAll(filepath.Join(base, "keepgoing", "example-loop"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if p, err := StandardRoutesPath(); err != nil || p != filepath.Join(base, "looptender", RoutesFileName) {
+		t.Fatalf("a loop's files under the earlier name: %q %v", p, err)
+	}
+	if err := os.MkdirAll(filepath.Join(base, "keepgoing", "registry"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if p, err := StandardRoutesPath(); err != nil || p != filepath.Join(base, "keepgoing", RoutesFileName) {
+		t.Fatalf("an earlier directory: %q %v", p, err)
+	}
+	if _, err := os.Lstat(filepath.Join(base, "looptender")); err == nil {
+		t.Fatal("resolving the path created a directory")
+	}
+}

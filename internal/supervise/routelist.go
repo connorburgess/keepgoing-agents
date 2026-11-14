@@ -180,11 +180,13 @@ func (t *tick) noteRouteList() {
 		t.warn("%s", w)
 	}
 	// A change to a readable list is noted once, against the list this loop
-	// last read; the first read, and an unreadable list, note nothing.
-	changed := list.Digest != "" && t.st.RoutesDigest != "" && list.Digest != t.st.RoutesDigest
+	// last read; the first read, an unreadable list and a dry run note
+	// nothing, and a dry run leaves the note to the next real check.
+	changed := !t.opts.DryRun && list.Digest != "" && t.st.RoutesDigest != "" && list.Digest != t.st.RoutesDigest
 	if list.Digest != "" && !t.opts.DryRun {
 		t.st.RoutesDigest = list.Digest
 	}
+	t.incidentRouteListChanged = changed
 	if list.Unreadable || t.routeOutsideList || changed {
 		t.res.Routes = &RouteNote{Source: list.Source, Unreadable: list.Unreadable, CurrentNotInList: t.routeOutsideList, ListChanged: changed}
 	}

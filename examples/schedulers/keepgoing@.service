@@ -6,7 +6,7 @@
 Description=keepgoing daemon for %i
 
 [Service]
-ExecStart=/usr/local/bin/keepgoing daemon -c %h/.config/keepgoing/%i/keepgoing.yaml
+ExecStart=/usr/local/bin/keepgoing daemon -c %h/.config/agent-loops/%i/keepgoing.yaml
 Restart=on-failure
 RestartSec=30
 

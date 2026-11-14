@@ -10,6 +10,9 @@ import (
 	"strings"
 
 	"gopkg.in/yaml.v3"
+
+	"github.com/connorburgess/keepgoing-agents/internal/envvar"
+	"github.com/connorburgess/keepgoing-agents/internal/userdir"
 )
 
 // RoutesStandard is the only value of loop.routes: the loop follows the
@@ -20,9 +23,10 @@ const RoutesStandard = "standard"
 // loop's directory.
 const RoutesFileName = "routes.yaml"
 
-// RoutesFileEnv names an absolute path that replaces the default location. It
+// RoutesFileEnv names an absolute path that replaces the default location.
+// The variable's earlier name, KEEPGOING_ROUTES_FILE, is still read. It
 // exists for tests and for people who keep configuration elsewhere.
-const RoutesFileEnv = "KEEPGOING_ROUTES_FILE"
+const RoutesFileEnv = envvar.Prefix + string(envvar.RoutesFile)
 
 // maxRoutePath bounds a path in a route, so the saved record of the route a
 // loop is on always fits its limit.
@@ -119,25 +123,37 @@ func (l Loop) HasRouteList() bool { return l.Fallbacks != "" || l.FollowsStandar
 func (l Loop) AllowsNewConversation() bool { return contains(l.RoutesAllow, EnterNewConversation) }
 
 // StandardRoutesPath is where the standard list lives: the path in
-// KEEPGOING_ROUTES_FILE when set, otherwise keepgoing/routes.yaml in the user
-// configuration directory.
+// LOOPTENDER_ROUTES_FILE (or its earlier name, KEEPGOING_ROUTES_FILE) when
+// set, otherwise routes.yaml in the tool's directory under the user
+// configuration directory (looptender/, or keepgoing/ on a computer that
+// already has one; see userdir).
+// The two names set to different files are refused: loops that each honoured
+// one would follow different lists.
 func StandardRoutesPath() (string, error) {
-	if p := os.Getenv(RoutesFileEnv); p != "" {
+	p, name, err := envvar.RoutesFile.Path()
+	if err != nil {
+		return "", routesRefusal(RoutesNamedTwice, err.Error())
+	}
+	if p != "" {
 		if !filepath.IsAbs(p) {
-			return "", errors.New(RoutesFileEnv + " must be an absolute path")
+			return "", errors.New(name + " must be an absolute path")
 		}
 		p = filepath.Clean(p)
 		if insideCheckout(p) {
-			return "", routesRefusal(RoutesInsideCheckout, RoutesFileEnv+" must not be inside a Git checkout: the list names private account directories")
+			return "", routesRefusal(RoutesInsideCheckout, name+" must not be inside a Git checkout: the list names private account directories")
 		}
 		return p, nil
 	}
-	base, err := os.UserConfigDir()
-	if err != nil || !filepath.IsAbs(base) {
+	p, err = userdir.Config(RoutesFileName)
+	if err != nil {
 		return "", errors.New("user configuration directory is unavailable")
 	}
-	return filepath.Join(base, "keepgoing", RoutesFileName), nil
+	return p, nil
 }
+
+// InsideCheckout reports whether path is inside a Git checkout, by the rule
+// KEEPGOING_ROUTES_FILE is held to.
+func InsideCheckout(path string) bool { return insideCheckout(path) }
 
 // insideCheckout reports whether path or one of its parents holds a .git
 // entry. A parent that cannot be inspected counts as a checkout.
@@ -173,6 +189,7 @@ const (
 	RoutesNotOwned       = "not_owned"
 	RoutesNotPrivate     = "not_private"
 	RoutesInsideCheckout = "inside_checkout"
+	RoutesNamedTwice     = "named_twice" // the variable's two names disagree
 	RoutesUnreadableFile = "unreadable"
 	RoutesInvalid        = "invalid"
 )
@@ -222,7 +239,7 @@ func readPrivateFile(path string) ([]byte, error) {
 	if err := checkRoutesFile(target); err != nil {
 		return nil, err
 	}
-	f, err := os.OpenFile(path, os.O_RDONLY|openNonblock, 0)
+	f, err := openRoutesFile(path)
 	if err != nil {
 		return nil, routesRefusal(RoutesUnreadableFile, "standard route list could not be opened")
 	}

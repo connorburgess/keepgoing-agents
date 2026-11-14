@@ -8,7 +8,7 @@ Use [`keepgoing init`](setup.md) to generate a disabled configuration outside th
 version: 1
 loop:
   name: example-loop
-  state_dir: ~/.local/state/keepgoing/example-loop
+  state_dir: ~/.local/state/agent-loops/example-loop
   adapter: bb                     # bb | process | claude | codex | cursor, custom (v0.2.0)
   provider: claude-code           # optional for the primary; used in reports
   group: claude-example-account   # quota pool; same-group fallbacks are skipped on a limit
@@ -19,7 +19,7 @@ loop:
   window: {tz: UTC, days: {Mon: ["08:00", "23:00"]}}
   errors: {max_reprompts: 3, backoff: 10m, failover_on: [rate_limit], wait_if_reset_within: 30m, report_wait_after: 6h}
   fallbacks: fallbacks.yaml
-  report: {secret_file: ~/.config/keepgoing/example.env}
+  report: {secret_file: ~/.config/agent-loops/example.env}
   yield: {busy_command: ["./busy-check.sh"]}
   daemon: {interval: 5m, control_poll: 2s}
 ```
@@ -61,7 +61,7 @@ loop:
 | Field | Default | Meaning |
 | --- | --- | --- |
 | `status_command` | required | argv. Prints a JSON status object on stdout. |
-| `resume_command` | required | argv. Receives the prompt on stdin and the mode, `auto` or `queue`, in `KEEPGOING_MODE`. |
+| `resume_command` | required | argv. Receives the prompt on stdin and the mode, `auto` or `queue`, in `LOOPTENDER_MODE` (and in `KEEPGOING_MODE`, its [earlier name](#environment-variables)). |
 | `stop_command` | none | argv. Without it, a stop request means nothing more is sent. |
 | `exit_codes` | none | Map from a status-command exit code to an error class, for example `{75: rate_limit}`. Any other non-zero exit is an error of class `unknown`. |
 | `env` | none | Extra environment variables for all three commands. |
@@ -323,7 +323,7 @@ The connectivity check made before an error re-prompt, a handoff, a stall nudge 
 | Field | Default | Meaning |
 | --- | --- | --- |
 | `check` | `on` | `off` disables the check; nothing is gated. Quote the value, since YAML reads bare `on` and `off` as booleans. |
-| `url` | none | An `http` or `https` URL with a host that answers a GET itself when the network is up. Any status counts except a redirect or `511`; redirects are not followed. With neither `url` nor `command`, the `KEEPGOING_NET_PROBE` (a shell command line) and `KEEPGOING_NET_PROBE_URL` variables apply, then `https://api.github.com/zen`. |
+| `url` | none | An `http` or `https` URL with a host that answers a GET itself when the network is up. Any status counts except a redirect or `511`; redirects are not followed. With neither `url` nor `command`, the `LOOPTENDER_NET_PROBE` (a shell command line) and `LOOPTENDER_NET_PROBE_URL` [variables](#environment-variables) apply, then `https://api.github.com/zen`. |
 | `command` | none | An argv whose exit 0 means online. Set this or `url`, not both. |
 | `timeout` | `8s` | Between `1s` and `30s`. It applies to every kind of check. |
 | `verify_after` | `1h` | Once the check has failed this long, ask the provider directly with one probe and attempt a `network_wait` report; then again after twice as long each time, up to a week. If the probe passes or is refused with `rate_limit` or `overloaded`, the check is set aside for that outage. At least `1m`. |
@@ -334,7 +334,7 @@ See [operations.md](operations.md).
 
 | Field | Default |
 | --- | --- |
-| `report.url_env`, `report.secret_env` | `KEEPGOING_WEBHOOK_URL`, `KEEPGOING_WEBHOOK_SECRET` |
+| `report.url_env`, `report.secret_env` | `LOOPTENDER_WEBHOOK_URL`, `LOOPTENDER_WEBHOOK_SECRET`; each is also read under its [earlier name](#environment-variables) |
 | `report.secret_file` | none |
 | `report.source` | the loop name |
 | `report.scheme` | `standard-webhooks` (or `bearer`) |
@@ -344,6 +344,93 @@ See [operations.md](operations.md).
 | `yield.busy_command`, `yield.timeout` | required, `10s` |
 | `daemon.interval`, `daemon.control_poll` | `5m`, `2s` |
 | `tick_timeout` | `3m`, or `probe.timeout` plus `90s` when that is longer. A check ends within this plus 90 seconds. Minimum `2m40s`; the connectivity check needs `network.timeout` more than that to have its full time; with fallbacks an explicit value must be at least `probe.timeout` plus `90s`. See [check time budget](operations.md#check-time-budget) |
+
+## Environment variables
+
+Every variable has two names: `LOOPTENDER_X`, and `KEEPGOING_X`, its name before the tool was renamed. The earlier names keep working; nothing needs to change in an existing setup. Releases up to v0.2.0 read only the `KEEPGOING_` names.
+
+Variables you set:
+
+| Variable | Earlier name | What it does |
+|---|---|---|
+| `LOOPTENDER_SESSION_DIR` | `KEEPGOING_SESSION_DIR` | The directory for [session claims](operations.md#one-loop-per-session), in place of the default. |
+| `LOOPTENDER_REGISTRY_DIR` | `KEEPGOING_REGISTRY_DIR` | The [loop registry](local-clients.md) to use when no `--directory` is given. |
+| `LOOPTENDER_ROUTES_FILE` | `KEEPGOING_ROUTES_FILE` | The [standard route list](routes.md), in place of the default. |
+| `LOOPTENDER_PANEL_OPENER` | `KEEPGOING_PANEL_OPENER` | A program that opens the [panel](dock.md)'s page, in place of the default browser. |
+| `LOOPTENDER_NET_PROBE` | `KEEPGOING_NET_PROBE` | A shell command line whose exit 0 means [online](operations.md#network-outages). |
+| `LOOPTENDER_NET_PROBE_URL` | `KEEPGOING_NET_PROBE_URL` | An address that must answer for the network to count as up. |
+| `LOOPTENDER_WEBHOOK_URL` | `KEEPGOING_WEBHOOK_URL` | Where reports are sent, when `report.url_env` is not set. |
+| `LOOPTENDER_WEBHOOK_SECRET` | `KEEPGOING_WEBHOOK_SECRET` | The reports' secret, when `report.secret_env` is not set. |
+
+When only one name is set, it is read. When both are set:
+
+- **The three that name a place** (`SESSION_DIR`, `REGISTRY_DIR`, `ROUTES_FILE`) must agree. Set to different places, they are refused, and the message names both variables: a command that honoured one and a command that honoured the other would work in different places without saying so. Until one is unset, a check acts on nothing (a requested stop still goes ahead), registry commands refuse, and the standard route list reads as unusable (`named_twice`). Two spellings of the same path are the same place.
+- **The others**: the `LOOPTENDER_` name is used, and `doctor` warns that the two differ.
+
+`doctor` also lists the earlier names in use (`environment.earlier_names`). It never prints a variable's value.
+
+The webhook pair is read from the environment first and then from `report.secret_file`, as before; in each, the `LOOPTENDER_` name comes first. This applies only to the default names: a name you give in `report.url_env` or `report.secret_env` is read exactly as written, including a `KEEPGOING_` one.
+
+Variables set for the commands you configure, each under both names with the same value, so a script written for either keeps working:
+
+| Variable | Earlier name | Set for | Value |
+|---|---|---|---|
+| `LOOPTENDER_MODE` | `KEEPGOING_MODE` | `process.resume_command` | `auto` or `queue` |
+| `LOOPTENDER_PROBE_TIER` | `KEEPGOING_PROBE_TIER` | a probe command | `scheduled`, `exact` or `manual` |
+| `LOOPTENDER_PROBE_MODEL` | `KEEPGOING_PROBE_MODEL` | a probe command | the model to check |
+| `LOOPTENDER_CANDIDATE` | `KEEPGOING_CANDIDATE` | a probe command | the fallback's `id` |
+
+**Going back to v0.2.0 or earlier:** those releases read only the `KEEPGOING_` names. Before going back, set any variable you gave only its `LOOPTENDER_` name under its `KEEPGOING_` name as well, and have your resume and probe commands read the `KEEPGOING_` names.
+
+## Per-user directories
+
+Some files belong to you and to no single loop. They are kept in one directory under the user configuration directory and one under the user state directory:
+
+| | Configuration directory | State directory |
+|---|---|---|
+| Linux | `$XDG_CONFIG_HOME` or `~/.config` | `$XDG_STATE_HOME` or `~/.local/state` |
+| macOS | `~/Library/Application Support` | the same |
+| Windows | `%AppData%` | `%LOCALAPPDATA%` |
+| Holds | `registry/` (the [loop registry](local-clients.md)), `routes.yaml` (the [standard route list](routes.md)), `loops/<name>` (where [`init`](setup.md) puts a new loop) | `sessions/` ([session claims](operations.md#one-loop-per-session)), `panel/` (the [panel](dock.md)'s runtime files) |
+
+**What the directory is called.** On a computer that has never run the tool it is `looptender`: `~/.config/looptender` and `~/.local/state/looptender` on Linux. On a computer where the tool already keeps files of this kind in a directory named `keepgoing`, its earlier name, the name `keepgoing` is kept for both places, and nothing is moved or copied. An existing setup keeps every file where it is, and a release from before the rename still finds them.
+
+**What decides the name, and what does not.**
+
+- *Decides:* one of the tool's own entries in a directory named `keepgoing` under the configuration directory or the state directory: `registry/`, `routes.yaml`, `loops/`, `sessions/` or `panel/`. One is enough, in either place: session claims in `~/.local/state/keepgoing/sessions` keep the registry in `~/.config/keepgoing/registry`. A place that cannot be inspected counts as having one.
+- *Does not decide:* anything else in a directory named `keepgoing`. A loop's `state_dir`, its configuration file, a secrets file or a log that you keep in `~/.local/state/keepgoing/…` or `~/.config/keepgoing/…` changes nothing, whether it was there before or appears later. Nor does a directory named `looptender`.
+- Otherwise both are named `looptender`.
+
+When the tool's own entries exist under both names, the `keepgoing` ones are used. A registry or a route list under `looptender` is then not read: a loop registered only there is not listed, and a route list there is not followed. `doctor` warns (`user.directory`) and names them. Nothing is removed for you, and either directory may also hold a loop's own files, so do not delete one to tidy up.
+
+Where one name is a link to the other, in either direction, the two are one directory with one set of files and claims, and everything works as with a single name. `doctor` says so.
+
+**When two commands can disagree, and what still holds.** Every command decides afresh from what is on disk and remembers nothing. Usually they all decide the same. They can differ in two cases:
+
+- around the moment an entry of the earlier name first appears on a computer that was using `looptender`, which happens when a release from before the rename is run there (its `panel status`, which the menu calls, is enough);
+- on Linux, when two commands are given different places: the decision reads both the configuration directory and the state directory, so a service started without the `XDG_CONFIG_HOME` its user's shell has can decide differently until an entry under the state directory settles it.
+
+What holds through both: **a session is never acted on at once by two loops run by this release or later.** Before a check acts on a session it takes that session's claim under the name it decided on, and then looks for a live claim on the same session under the other name. If there is one, the check gives way and sends nothing, exactly as when the claim is under the same name. The records of which loops supervise a session are read under both names too, so `enable` and `start` still refuse a second loop on a session, and `status` still names the holder.
+
+What does not hold:
+
+- A loop run by a release from before the rename takes its claim under `keepgoing` and looks nowhere else. On a computer that uses `looptender`, such a loop and a loop run by this release can act on one session at once. Do not run both kinds on one session there; going back, below, puts every claim in one place.
+- The registry and the standard route list are read under the name in use only, as above.
+- A panel server keeps the directory it was started in. `keepgoing panel` opens a panel that is already running under the other name and does not start a second one, and `keepgoing panel stop` stops the panel under each name.
+
+`doctor` says which name is in use and why (`user.directory`), with or without a readable configuration.
+
+The rule covers only these default places. A loop's own files are wherever its configuration puts them (`state_dir`, the path given to `-c`), services and registry entries record full paths, and `--directory`, `--panel-directory` and the [environment variables](#environment-variables) name a place outright. None of those is affected by the name, and none of them is moved.
+
+**Going back to v0.2.0 or earlier.** Those releases know only `keepgoing`.
+
+- On a computer where the `keepgoing` directories are in use, there is nothing to do.
+- On a computer that uses `looptender`, an earlier release does not find the registry, the standard route list or the session claims, and it creates `keepgoing` ones as soon as it runs (its panel, which the menu polls, and `init` do so even if you only meant to look). Loops still run, because their configuration and state paths are explicit. Before running an earlier release, stop the daemons and the panel, wait for any check to end, and do one of these in the configuration directory and in the state directory:
+  - **Link.** Where no `keepgoing` directory exists, make `keepgoing` a link to `looptender` (`ln -s looptender keepgoing`, run in that directory). Nothing moves, every recorded path stays valid, and both releases reach the same files.
+  - **Move the tool's entries.** Otherwise, move only `registry/`, `routes.yaml`, `sessions/` and `panel/` from `looptender` into `keepgoing` (create it if it is not there). Leave `looptender/loops/` where it is: the loops `init` created there are named by full path in their own configuration (`state_dir`), in the registry and in any installed service, and moving them would break all three.
+
+  Either way this release then uses `keepgoing` too, so both find the same files.
+- Setting `KEEPGOING_SESSION_DIR`, `KEEPGOING_REGISTRY_DIR` and `KEEPGOING_ROUTES_FILE` is not a way back: they do not cover the panel's directory or `init`, and services and the menu do not inherit variables from your shell.
 
 ## Tick output
 
