@@ -1332,7 +1332,7 @@ func activeBB(cfg *config.Config, target string) *config.BB {
 	if target == state.Primary {
 		return cfg.Loop.Agent.BB
 	}
-	if c, ok := cfg.FallbackSet.Find(target); ok {
+	if c, ok := currentRoutes(cfg).Find(target); ok {
 		return c.Agent.BB
 	}
 	return nil
