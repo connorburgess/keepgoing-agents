@@ -28,6 +28,7 @@ import (
 
 	"github.com/looptender/looptender/internal/adapter"
 	"github.com/looptender/looptender/internal/lock"
+	"github.com/looptender/looptender/internal/snapshot"
 )
 
 // Phase is what the runner knows about the latest turn.
@@ -102,7 +103,7 @@ func (d Dir) wrapperLive(rec Record) (bool, error) {
 		}
 		return true, nil
 	}
-	held, err := lock.AcquireNamed(string(d), turnLock)
+	held, err := lock.AcquireNamedShared(string(d), turnLock)
 	if err == nil {
 		return false, held.Release()
 	}
@@ -128,7 +129,7 @@ func acquireTurnLock(dir string) (*lock.Lock, error) {
 
 // startedName is the file a wrapper writes, holding its turn key, once it
 // holds the turn lock. finishingName is the file it writes just before it
-// lets go of the lock to publish its exit code.
+// publishes its exit code and cleans up before releasing the lock.
 const (
 	startedName   = "turn.started"
 	finishingName = "turn.finishing"
@@ -147,7 +148,7 @@ var errNoWrapper = errors.New("runner: the turn wrapper did not start")
 // record reads run.json.
 func (d Dir) record() (Record, error) {
 	var rec Record
-	b, err := os.ReadFile(d.path("run.json"))
+	b, err := snapshot.ReadRecord(d.path("run.json"))
 	if err != nil {
 		return rec, err
 	}
@@ -155,7 +156,9 @@ func (d Dir) record() (Record, error) {
 }
 
 // saveRecord replaces run.json whole, so a reader never sees part of one and
-// a failed write leaves the previous record.
+// a failed write leaves the previous record. On Windows its narrow record
+// marker keeps a transient replacement miss unavailable rather than NeverRun;
+// delete-sharing readers and snapshot replacement can overlap.
 func (d Dir) saveRecord(rec Record) error {
 	b, _ := json.Marshal(rec)
 	tmp := d.path("run.json.tmp")
@@ -163,7 +166,7 @@ func (d Dir) saveRecord(rec Record) error {
 		os.Remove(tmp)
 		return err
 	}
-	if err := os.Rename(tmp, d.path("run.json")); err != nil {
+	if err := snapshot.Replace(tmp, d.path("run.json")); err != nil {
 		os.Remove(tmp)
 		return err
 	}
@@ -253,11 +256,14 @@ func (d Dir) path(name string) string { return filepath.Join(string(d), name) }
 // Status inspects the latest turn.
 func (d Dir) Status() (Status, error) { return d.statusWithOutputLimit(0) }
 
+// Only deterministic lifecycle tests set these status sampling hooks.
+var afterStatusRecordRead, beforeStatusFinished func()
+
 // statusWithOutputLimit bounds stdout loading for adapters with a finite stream
 // contract. Zero preserves the legacy adapters' output behavior.
 func (d Dir) statusWithOutputLimit(limit int64) (Status, error) {
 	var st Status
-	b, err := os.ReadFile(d.path("run.json"))
+	b, err := snapshot.ReadRecord(d.path("run.json"))
 	if errors.Is(err, os.ErrNotExist) {
 		st.Phase = NeverRun
 		return st, nil
@@ -268,6 +274,33 @@ func (d Dir) statusWithOutputLimit(limit int64) (Status, error) {
 	if err := json.Unmarshal(b, &st.Record); err != nil {
 		return st, err
 	}
+	if afterStatusRecordRead != nil {
+		afterStatusRecordRead()
+	}
+	// Take the existing turn lock before relying on a completed record. A
+	// publisher or setup holding it is conservatively running. Once acquired,
+	// reread run.json: setup may have replaced the generation since our first
+	// sample, including a first start replacing a legacy record. Hold it through
+	// exit/output sampling to prevent mixed generations,
+	// and release before returning Finished to the caller.
+	completedGuard, err := lock.AcquireNamedShared(string(d), turnLock)
+	if errors.Is(err, lock.ErrHeld) {
+		st.Phase = Running
+		return st, nil
+	}
+	if err != nil {
+		return st, errors.New("runner: the turn lock could not be checked" + errnoText(err))
+	}
+	defer completedGuard.Release()
+	b, err = snapshot.ReadRecord(d.path("run.json"))
+	if err != nil {
+		return Status{}, err
+	}
+	st = Status{}
+	if err := json.Unmarshal(b, &st.Record); err != nil {
+		return st, err
+	}
+
 	finished := func() (bool, error) {
 		code, err := os.ReadFile(d.path("exit"))
 		if errors.Is(err, os.ErrNotExist) {
@@ -277,6 +310,9 @@ func (d Dir) statusWithOutputLimit(limit int64) (Status, error) {
 			// Something is there that is not a readable exit code. Say so
 			// rather than guess between finished and crashed.
 			return false, errors.New("runner: the turn's exit status could not be read" + errnoText(err))
+		}
+		if beforeStatusFinished != nil {
+			beforeStatusFinished()
 		}
 		st.Phase = Finished
 		var parseErr error
@@ -300,16 +336,20 @@ func (d Dir) statusWithOutputLimit(limit int64) (Status, error) {
 	if st.Record.Abandoned {
 		return crashed()
 	}
-	live, err := d.wrapperLive(st.Record)
-	if err != nil {
-		return st, err
+	live := false
+	if st.Record.Liveness != livenessLock {
+		var err error
+		live, err = d.wrapperLive(st.Record)
+		if err != nil {
+			return st, err
+		}
 	}
 	if live {
 		st.Phase = Running
 		return st, nil
 	}
-	// The wrapper lets go of the lock just before it publishes its exit code.
-	// If it was doing that, wait for the code instead of reading a crash. The
+	// A crashed publisher or an older wrapper can leave a finishing marker.
+	// Keep the bounded wait for a late exit instead of reading a false crash. The
 	// wait ends finishingWait after the marker was written, so a marker left
 	// by a wrapper that died there costs a later read nothing.
 	until := time.Now()
@@ -450,18 +490,18 @@ func (d Dir) discardAside() {
 // turnProtocol is what a binary answers when asked which turn wrapper it
 // is. It names the contract between Start and the wrapper: what the wrapper
 // locks, checks and writes. It changes only when that contract changes, not
-// with every release, so two builds with the same label can be mixed. A
+// with every release, so two builds with the same protocol can interoperate. A
 // binary that answers anything else, or nothing, would not keep the contract:
 // started as a wrapper it could run the agent without the turn lock.
 const (
-	turnProtocol = "keepgoing-turn-wrapper 2"
+	turnProtocol = "keepgoing-turn-wrapper 3"
 	envTurnProbe = "KEEPGOING_RUN_TURN_PROBE"
 )
 
 // The two reasons a start is refused over the binary on disk. They are fixed
 // texts: the check reports them and status and doctor repeat them.
 const (
-	ReasonWrapperDiffers = "the keepgoing binary on disk does not speak the turn-wrapper protocol of the running process (it is another build): stop the daemon, then start it again"
+	ReasonWrapperDiffers = "the keepgoing binary on disk does not speak the turn-wrapper protocol of the running process: stop the daemon, then start it again"
 	ReasonWrapperSilent  = "the keepgoing binary on disk could not be asked which turn wrapper it is (it did not run, or did not answer in time): check that it is in place and executable, then restart the daemon"
 )
 

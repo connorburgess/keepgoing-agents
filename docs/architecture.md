@@ -16,7 +16,7 @@ looptender is a supervisor, not an agent. It sits beside a running agent session
 ## Packages
 
 ```
-cmd/looptender               CLI: start, service, tick, daemon, status, timeline, goal, registry, client status/pause/stop/prepare-resume/resume/review/apply, dock, panel, transfer, control, fallbacks, report, ci-wait, net-retry
+cmd/looptender               CLI: start, service, tick, daemon, status, timeline, goal, registry, client status/pause/stop/prepare-resume/resume/review/apply, dock, panel, transfer, control, fallbacks, report, adapter check, ci-wait, net-retry
 internal/config             a loop's configuration file (looptender.yaml, or keepgoing.yaml) and fallbacks.yaml: loading, defaults, validation
 internal/envvar             the environment variables' two names: LOOPTENDER_X, and the earlier KEEPGOING_X
 internal/userdir            the per-user directories and their name: looptender, or keepgoing where one already exists; the explicit move between them
@@ -28,6 +28,7 @@ internal/adapter/bb         BB threads over the bb CLI's JSON
 internal/adapter/process    any session described by three commands
 internal/adapter/runner     headless turns, run detached; one Spec per agent (Claude Code, Codex)
 internal/adapter/factory    builds the adapter for an agent definition
+internal/adapter/conformance  the adapter contract as cases that run against any adapter; used by the test suite and by `adapter check`, which runs only the case that reads; see adapters.md
 internal/probe              one tiny real request to confirm a candidate works
 internal/health             probe evidence and the redundancy rule
 internal/allowance          usage reading history per window instance and the projection at reset; pure
@@ -80,7 +81,7 @@ v0.2.0 (roadmap K1). A command-line agent that runs one turn per process is desc
 
 **Common to every runner** (`runner.Dir` and `runner.Headless`; nothing here names an agent):
 
-- The detached turn: a copy of the looptender binary runs the agent, so a check never waits for a turn. It records `run.json`, `stdout`, `stderr` and the exit code in `targets/<id>/`.
+- The detached turn: a copy of the looptender binary runs the agent, so a check never waits for a turn. It records `run.json`, `stdout`, `stderr` and the exit code in `targets/<id>/`. Unreleased completion drains the wrapper-owned stop watcher and closes prompt/output handles before exit publication and finishing cleanup, all under the existing exclusive turn lock. Completed Status sampling uses shared mode on that same lock, rereads the generation and samples its exit/output while setup is excluded; a held exclusive lock remains running even with exit present. After releasing its lock the completing wrapper performs no more shared turn-file IO. Legacy PID interpretation and bounded crashed-finisher recovery remain. This changed wrapper contract requires handshake protocol 3 (previously 2), without a record-schema change. The probe fences new launches only; already-running protocol-2 publishers can still write after unlocking and require coordinated completion before upgrade.
 - The prompt, written to a private file and given to the agent on standard input. It is never in argv.
 - Session storage: one saved identifier per target, read before a turn and saved after one.
 - The phases `never_run`, `running`, `finished` and `crashed`, and what each means: never run is idle, running is active, crashed is an unknown error.

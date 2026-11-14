@@ -25,6 +25,7 @@ func spawn(argv []string, workdir, dir string, env []string, acp string) (int, e
 		return 0, err
 	}
 	pid := cmd.Process.Pid
+	observeSpawnForTest(cmd.Process, workdir)
 	go cmd.Wait()
 	return pid, nil
 }

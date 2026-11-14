@@ -160,6 +160,9 @@ jobs:
         # here, and a test that a name filter misses would never run.
         if: steps.scope.outputs.scope != 'docs'
         run: go test -race -v ./internal/snapshot -count=1
+      - name: Verify the adapter contract cases on Windows
+        if: steps.scope.outputs.scope != 'docs'
+        run: go test -race -v ./internal/adapter/conformance -count=1
       - name: Verify the run reference graph store and replacement on Windows
         if: steps.scope.outputs.scope != 'docs'
         run: go test -race -v ./internal/rungraph -count=1
