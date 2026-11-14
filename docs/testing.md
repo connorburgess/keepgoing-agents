@@ -151,13 +151,13 @@ Before (v0.2.0) the turn retry and the report were repeated, because a check sav
 
 | Record | The check | `status` | `pause` |
 | --- | --- | --- | --- |
-| `control.json` | exits 1, sends nothing, names the file | exits 1 with only the parse error (known failure) | exits 1: nothing keepgoing offers can hold the loop (known failure) |
-| `state.json` | exits 1, sends nothing, names the file | exits 1 with only the parse error (known failure) | works |
+| `control.json` | exits 1, sends nothing, names the file | exits 1, names the file and what to do, and prints what it can | exits 1: nothing keepgoing offers can hold the loop (known failure) |
+| `state.json` | exits 1, sends nothing, names the file | exits 1, names the file and what to do, and prints what it can | works |
 | `sends.json`, `progress.json`, `health.json` | exits 0 with outcome `failed`, sends nothing, names the file | works | works |
 | `incidents.json` | does its work, then exits 1: `incident history unavailable` (documented in [diagnostics](diagnostics.md)) | works | saves the change, warns, exits 1 |
 | `deliveries.json`, `graph.json` | does its work, exits 0 | works | works |
 
-`status` stopping at an unreadable record is marked `status names an unreadable record, test-suites lane`: it should name the file, say what to do and print what it can. A loop whose `control.json` is damaged cannot be paused or stopped through keepgoing; its checks send nothing, so it is held in effect, but a daemon or scheduler keeps running. That is marked `stop with a damaged control.json, unassigned`.
+A loop whose `control.json` is damaged cannot be paused or stopped through keepgoing; its checks send nothing, so it is held in effect, but a daemon or scheduler keeps running. That is marked `stop with a damaged control.json, unassigned`.
 
 Mutations that fail these: a hold saved after its report instead of before, a damaged `state.json` read as a new loop, and a damaged `health.json` read as empty.
 
