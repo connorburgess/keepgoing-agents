@@ -49,8 +49,10 @@ import (
 // already makes, and stopping the server never affects supervision.
 
 const (
-	panelRecordName  = "panel.json"
-	panelSocketName  = "panel.sock"
+	panelRecordName = "panel.json"
+	panelSocketName = "panel.sock"
+	// Both are listed in migrateLockNames (migrate.go); so must any new
+	// lock file in the panel directory.
 	panelOpenLock    = "panel-open"
 	panelServerLock  = "panel-server"
 	panelDefaultIdle = 30 * time.Minute

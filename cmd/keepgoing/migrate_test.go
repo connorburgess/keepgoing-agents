@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -649,13 +650,18 @@ func TestMigrateTakesOnlyTheToolsOwnLockFiles(t *testing.T) {
 	if err := os.WriteFile(planted, nil, 0o600); err != nil {
 		t.Fatal(err)
 	}
-	// Held by another holder: if it were taken for a lock, the move would
-	// be refused as in use.
+	// Held by another holder: if it were taken for a lock, the preview
+	// would refuse it as in use. (It is let go before the move itself: on
+	// Windows an open file keeps its directory from being renamed.)
 	other, err := lock.HoldFile(planted)
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer other.Release()
+	if code, out, _ := migrateRun(t); code != exitOK || out.Outcome != "ready" {
+		other.Release()
+		t.Fatalf("preview: %d %+v", code, out)
+	}
+	other.Release()
 	if code, out, _ := migrateRun(t, "--apply"); code != exitOK || out.Outcome != "done" {
 		t.Fatalf("%d %+v", code, out)
 	}
@@ -710,5 +716,35 @@ func TestMigrateRefusesALockThatCannotBeTriedInTime(t *testing.T) {
 	}
 	if after := h.tree(t); !same(before, after) {
 		t.Fatal("something changed")
+	}
+	// Every lock stalls: the first refuses the move, and no others are
+	// tried, so the run takes the bound once, not once per lock.
+	for _, l := range []string{filepath.Join(h.inside.StateDir, lock.Daemon+".lock"), filepath.Join(h.inside.StateDir, lock.Control+".lock"), filepath.Join(h.outsideState, lock.Tick+".lock")} {
+		if err := os.WriteFile(l, nil, 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	tried := 0
+	var mu sync.Mutex
+	stall := func(string) {
+		mu.Lock()
+		tried++
+		mu.Unlock()
+		<-stuck
+	}
+	migrateHoldFile = func(path string) (*lock.Lock, error) { stall(path); return nil, nil }
+	migrateHeldFile = func(path string) (bool, error) { stall(path); return false, nil }
+	start := time.Now()
+	code, out, _ := migrateRun(t, "--apply")
+	if took := time.Since(start); took > 2*time.Second {
+		t.Fatalf("took %v for two runs", took)
+	}
+	if code != exitFailed || out.Outcome != "refused" || len(out.Refusals) != 1 || out.Refusals[0].Code != "lock_not_tried" {
+		t.Fatalf("%d %+v", code, out)
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	if tried != 2 { // one lock in each of the two runs migrateRun makes
+		t.Fatalf("%d locks tried", tried)
 	}
 }

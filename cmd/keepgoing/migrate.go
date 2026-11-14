@@ -77,6 +77,9 @@ var migrateLockWait = 3 * time.Second
 
 // migrateLockNames are the tool's own lock files, by exact name. Session
 // claims and their records are named by a hash and matched by pattern.
+// Every lock file the tool keeps under the per-user directories or in a
+// loop's state directory must be listed here: one that is not is neither
+// looked at nor held while those directories move.
 var migrateLockNames = func() map[string]bool {
 	names := map[string]bool{}
 	for _, n := range []string{lock.Tick, lock.Daemon, lock.Control, lock.Service, "turn", panelOpenLock, panelServerLock, "routes", registry.LockName, "incident", "delivery", "graph"} {
@@ -292,6 +295,7 @@ func migrateMovedText(moved []userdir.Place) string {
 type migrateHeld struct {
 	hold  bool
 	locks []*lock.Lock
+	slow  bool // a lock could not be tried in time: look no further
 }
 
 func (h *migrateHeld) release() {
@@ -301,8 +305,12 @@ func (h *migrateHeld) release() {
 	h.locks = nil
 }
 
-// errLockSlow means a lock file could not be opened and tried in time.
-var errLockSlow = errors.New("it could not be tried in time")
+// errLockSlow means a lock file could not be opened and tried in time, and
+// errStopWalk ends a walk once the move is refused for it.
+var (
+	errLockSlow = errors.New("it could not be tried in time")
+	errStopWalk = errors.New("stopped")
+)
 
 // probe looks at one lock file: busy when another holds it. When holding,
 // a free lock is taken and kept. Nothing here can wait longer than
@@ -365,6 +373,9 @@ func (h *migrateHeld) probe(path string) (busy bool, err error) {
 // files by their full path. It reads directory entries and probes lock
 // files, holding the free ones when h holds; it creates nothing.
 func (h *migrateHeld) inUse(root string) []migrateRefusal {
+	if h.slow {
+		return nil
+	}
 	var out []migrateRefusal
 	busyCount, services, seen := 0, 0, 0
 	err := filepath.WalkDir(root, func(path string, d fs.DirEntry, err error) error {
@@ -382,8 +393,12 @@ func (h *migrateHeld) inUse(root string) []migrateRefusal {
 		case migrateIsLock(name):
 			busy, err := h.probe(path)
 			if errors.Is(err, errLockSlow) {
+				// The move is refused now whatever else is found; on a
+				// volume where every open stalls, trying the rest would only
+				// cost the bound again for each.
 				out = append(out, migrateRefusal{Code: "lock_not_tried", Path: path, Message: "this lock could not be tried in " + migrateLockWait.String() + " (the file system may not support locks well), so it is taken to be in use"})
-				return nil
+				h.slow = true
+				return errStopWalk
 			}
 			if err != nil {
 				return err
@@ -400,7 +415,7 @@ func (h *migrateHeld) inUse(root string) []migrateRefusal {
 		}
 		return nil
 	})
-	if err != nil {
+	if err != nil && !errors.Is(err, errStopWalk) {
 		out = append(out, migrateRefusal{Code: "not_inspected", Path: root, Message: "it could not be looked through for files in use, so it is not moved"})
 	}
 	if extra := busyCount + services - len(out); extra > 0 && err == nil {
@@ -468,6 +483,9 @@ func (h *migrateHeld) loopsInUse(places []userdir.Place, walked []string) []migr
 	}
 	sort.Slice(loops, func(i, j int) bool { return loops[i].name < loops[j].name })
 	var out []migrateRefusal
+	if h.slow {
+		return out
+	}
 	for _, l := range loops {
 		for _, probe := range []struct{ name, message string }{
 			{lock.Daemon, "its daemon is running; stop it or remove its service first"},
@@ -476,7 +494,8 @@ func (h *migrateHeld) loopsInUse(places []userdir.Place, walked []string) []migr
 			busy, err := h.probe(filepath.Join(l.stateDir, probe.name+".lock"))
 			if errors.Is(err, errLockSlow) {
 				out = append(out, migrateRefusal{Code: "lock_not_tried", Loop: l.name, Message: "its " + probe.name + " lock could not be tried in " + migrateLockWait.String() + ", so it is taken to be running"})
-				break
+				h.slow = true
+				return out
 			}
 			if err != nil {
 				out = append(out, migrateRefusal{Code: "not_inspected", Loop: l.name, Message: "whether it is running could not be told"})

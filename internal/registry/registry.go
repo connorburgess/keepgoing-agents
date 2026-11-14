@@ -20,6 +20,9 @@ import (
 )
 
 const FileName = "registry.json"
+
+// LockName is the registry's lock. It is listed in migrateLockNames
+// (cmd/keepgoing/migrate.go); so must any new lock file here.
 const LockName = "registry"
 const MaxEntries = 128
 const maxBytes = 1 << 20
