@@ -87,10 +87,10 @@ type timelineTier struct {
 
 // Event kinds are a fixed vocabulary derived from typed records. An event can
 // carry several: a handoff check is also a check and usually a probe.
-var timelineKindNames = []string{"check", "dry_run", "wake", "nudge", "reprompt", "handoff", "switch_back", "retarget", "ownership", "probe", "hold", "stop", "limit_wait", "limit_wait_report", "turn_retry", "child_retry", "route_list", "route_change", "refusal", "collapsed", "control", "notification"}
+var timelineKindNames = []string{"check", "dry_run", "wake", "nudge", "reprompt", "handoff", "switch_back", "return", "retarget", "ownership", "probe", "hold", "stop", "limit_wait", "limit_wait_report", "turn_retry", "child_retry", "route_list", "route_change", "refusal", "collapsed", "control", "notification"}
 
 // moves selects every recorded change of who has the loop.
-var timelineMoveKinds = []string{"handoff", "switch_back", "retarget", "ownership"}
+var timelineMoveKinds = []string{"handoff", "switch_back", "return", "retarget", "ownership"}
 
 type timelineSource struct {
 	Source        string `json:"source"`
@@ -310,6 +310,9 @@ func (f timelineFilter) matches(e timelineEntry) bool {
 	if e.Incident.TargetKey == f.TargetKey || e.Incident.TargetKeyAfter == f.TargetKey {
 		return true
 	}
+	if ret := e.Incident.Returned; ret != nil && ret.FromKey == f.TargetKey {
+		return true
+	}
 	for _, p := range e.Incident.Probes.Results {
 		if p.TargetKey == f.TargetKey {
 			return true
@@ -321,12 +324,27 @@ func (f timelineFilter) matches(e timelineEntry) bool {
 	return false
 }
 
+// timelineReturned reports a check that returned the loop to the primary. A
+// return is recorded only once it is saved, so the check's outcome does not
+// matter, and a dry run, which saves its state, counts too.
+func timelineReturned(r incident.Record) bool {
+	return r.Kind == "tick" && r.Returned != nil
+}
+
+// timelineReturnReasons words why a check returned the loop to the primary.
+var timelineReturnReasons = map[string]string{
+	incident.ReturnRemoved:         "is no longer configured",
+	incident.ReturnDisabled:        "is disabled",
+	incident.ReturnNoCreatedThread: "has no created thread on record",
+}
+
 func timelineLimitWait(cause string) bool {
 	return cause == "limit_wait" || cause == "limit_no_fallback" || cause == "limit_failover_disabled" || cause == "limit_refusal_unrecovered"
 }
 
 // timelineKinds labels a record from its typed fields. A dry run decided an
-// action without executing it, so it is never labelled as a send or a move.
+// action without executing it, so it is never labelled as a send, and as a
+// move only for the return to the primary it saves.
 func timelineKinds(r incident.Record) []string {
 	var kinds []string
 	entered := !r.DryRun && r.Outcome != "dry_run" && enteredTimelineHold(r.ControlBefore, r.ControlAfter)
@@ -334,6 +352,10 @@ func timelineKinds(r incident.Record) []string {
 	case "tick":
 		kinds = append(kinds, "check")
 		if r.DryRun || r.Outcome == "dry_run" {
+			// The one move a dry run makes: it saves a return to the primary.
+			if timelineReturned(r) {
+				kinds = append(kinds, "return")
+			}
 			return append(kinds, "dry_run")
 		}
 		switch r.Action {
@@ -349,6 +371,9 @@ func timelineKinds(r incident.Record) []string {
 			if moved {
 				kinds = append(kinds, r.Action)
 			}
+		}
+		if timelineReturned(r) {
+			kinds = append(kinds, "return")
 		}
 		// A summary stands for the probes folded into it as well as its own.
 		if len(r.Probes.Results) > 0 || (r.Collapsed != nil && r.Collapsed.PassedProbes+r.Collapsed.FailedProbes > 0) {
@@ -379,6 +404,8 @@ func timelineKinds(r incident.Record) []string {
 		}
 	case "retarget":
 		kinds = append(kinds, "retarget")
+	case "probe":
+		kinds = append(kinds, "probe")
 	case "route_change":
 		kinds = append(kinds, "route_change")
 	}
@@ -408,7 +435,7 @@ func timelineTarget(key string) string {
 }
 
 func readTimeline(dir string, now time.Time, stale time.Duration, limit int, filter timelineFilter) timelineReport {
-	r := timelineReport{SchemaVersion: 8, ReadAt: now, Filter: filter, StaleAfter: stale.String(), Control: readTimelineControl(dir), Sources: []timelineSource{}, Events: []timelineEntry{}, NextSteps: []string{}}
+	r := timelineReport{SchemaVersion: 9, ReadAt: now, Filter: filter, StaleAfter: stale.String(), Control: readTimelineControl(dir), Sources: []timelineSource{}, Events: []timelineEntry{}, NextSteps: []string{}}
 	j, jerr := incident.Load(dir)
 	deliveries, derr := report.LoadDeliveries(dir)
 	r.Sources = append(r.Sources, timelineSource{Source: incident.FileName, Availability: historyAvailability(jerr, len(j.Records)), SchemaVersion: j.SchemaVersion, Retained: len(j.Records), Dropped: j.Dropped}, timelineSource{Source: report.DeliveryFile, Availability: historyAvailability(derr, len(deliveries.Records)), SchemaVersion: deliveries.SchemaVersion, Retained: len(deliveries.Records), Dropped: deliveries.Dropped})
@@ -433,7 +460,7 @@ func readTimeline(dir string, now time.Time, stale time.Duration, limit int, fil
 		}
 		for _, k := range entry.Kinds {
 			switch k {
-			case "handoff", "switch_back", "retarget":
+			case "handoff", "switch_back", "return", "retarget":
 				r.Summary.LastTargetMove = timelineReference(entry)
 			case "limit_wait_report":
 				r.Summary.LastLimitWaitReport = timelineReference(entry)
@@ -521,7 +548,7 @@ func readTimeline(dir string, now time.Time, stale time.Duration, limit int, fil
 		{"supervisor_checks", historyAvailability(jerr, r.Summary.RetainedChecks), "Retained checks show past supervisor execution, including held checks; they do not prove present liveness or continuous scheduling."},
 		{"agent_connectivity", historyAvailability(jerr, observations), "Use each observed adapter/source/category/code and retry field. Active can include provider retries; stream errors do not establish an internet root cause."},
 		{"notifications", historyAvailability(derr, len(deliveries.Records)), "Attempts and HTTP responses are recorded separately. Application/human receipt is unverified; later acceptance does not erase earlier retained failures."},
-		{"target_moves", historyAvailability(jerr, targetRecords), "Handoffs, switch-backs and manual retargets are recorded with hashed target aliases from history schema 5. Older records, a return to the primary after a fallback is removed or disabled, and work moved to another conversation outside keepgoing are not recorded; run and chat identity is planned separately as run discovery."},
+		{"target_moves", historyAvailability(jerr, targetRecords), "Handoffs, switch-backs and manual retargets are recorded with hashed target aliases from history schema 5, and a return to the primary after a fallback is removed or disabled, or has no created thread on record, from schema 13. Older records and work moved to another conversation outside keepgoing are not recorded; run and chat identity is planned separately as run discovery."},
 		{"scheduler", "unavailable", "No scheduler queried; registration, last scheduler result and next run are unavailable in this offline view."},
 		{"supervisor_liveness", "unavailable", "No daemon endpoint or process queried; recent records are not a live heartbeat."},
 		{"ci_waits", "unavailable", "No CI query or persisted CI-wait evidence read; provider errors and held checks are not evidence of a CI wait."},
@@ -535,7 +562,7 @@ func readTimeline(dir string, now time.Time, stale time.Duration, limit int, fil
 		"Latest summary references use retained source sequence order and can refer to events hidden by --limit. Dry-run checks are labelled and excluded from active/send/hold summaries.",
 		"Provider event time, network root cause, installed/running binary identity and delivery receipt remain unavailable. Build labels describe recorded commands only.",
 		"Target keys correlate configured aliases only; they identify no run, chat or provider session. Config changes and reused directories can mix sessions under one key. Delivery records deliberately contain no endpoint or target identity.",
-		"Filters select displayed events only; summaries, sources and layers describe all retained evidence. Control saves and deliveries record no target, so --target hides them. Probe rows cover probes run by a check, not manual fallback checks.",
+		"Filters select displayed events only; summaries, sources and layers describe all retained evidence. Control saves and deliveries record no target, so --target hides them. Probe rows cover probes run by a check and, from history schema 13, manual fallback checks.",
 	}
 	if r.Control.State != "enabled" && r.Control.State != "unavailable" {
 		r.NextSteps = append(r.NextSteps, "Review current control flags and historical hold evidence. Resolve the cause before explicitly enabling/resuming; this view never clears a hold.")
@@ -627,7 +654,7 @@ func timelineGate(c *incident.Controls) string {
 func readTimelineControl(dir string) timelineControl {
 	unavailable := timelineControl{Availability: "unavailable", State: "unavailable"}
 	p := filepath.Join(dir, control.FileName)
-	info, err := os.Lstat(p)
+	info, err := snapshot.Lstat(p)
 	if errors.Is(err, os.ErrNotExist) {
 		return timelineControl{Availability: "not_recorded", State: "disabled", Flags: &incident.Controls{}}
 	}
@@ -685,6 +712,9 @@ func describeIncident(r incident.Record) string {
 		}
 		return fmt.Sprintf("route list change saved: %s route %s in the loop's own list, by %s; recorded build %s; the loop uses it after its next configuration reload", c.Operation, timelineTarget(c.TargetKey), by, r.Build)
 	}
+	if r.Kind == "probe" {
+		return "manual fallbacks check (recorded build " + r.Build + ")" + describeProbes(r.Probes) + "; health saved; no session was observed and nothing was sent"
+	}
 	if r.Kind != "tick" {
 		return "incident kind unavailable; no check or control save inferred"
 	}
@@ -717,21 +747,17 @@ func describeIncident(r incident.Record) string {
 			text += " -> " + timelineTarget(r.TargetKeyAfter)
 		}
 	}
-	for i, p := range r.Probes.Results {
-		if i == 0 {
-			text += "; probes:"
-		} else {
-			text += ","
+	if ret := r.Returned; ret != nil {
+		why := timelineReturnReasons[ret.Reason]
+		if why == "" {
+			why = "could not be used (reason unavailable)"
 		}
-		result := "passed"
-		if !p.OK {
-			result = "failed (" + p.ErrorClass + ")"
-		}
-		text += fmt.Sprintf(" %s %s %s", timelineTarget(p.TargetKey), p.Tier, result)
+		text += fmt.Sprintf("; RETURNED TO THE PRIMARY: the loop was on %s, which %s, so this check ran on the primary", timelineTarget(ret.FromKey), why)
 	}
 	if r.RouteListChanged {
 		text += "; ROUTE LIST: the standard route list changed since this loop's previous check, and this check used the new list (keepgoing routes list shows it)"
 	}
+	text += describeProbes(r.Probes)
 	if r.NewThread {
 		text += "; NEW THREAD: keepgoing created a BB thread for this handoff and left the earlier conversation as it was (`keepgoing runs` shows both references)"
 	}
@@ -798,6 +824,26 @@ func describeIncident(r incident.Record) string {
 	}
 	return text
 }
+func describeProbes(p incident.Probes) string {
+	text := ""
+	for i, p := range p.Results {
+		if i == 0 {
+			text += "; probes:"
+		} else {
+			text += ","
+		}
+		result := "passed"
+		if !p.OK {
+			result = "failed (" + p.ErrorClass + ")"
+		}
+		text += fmt.Sprintf(" %s %s %s", timelineTarget(p.TargetKey), p.Tier, result)
+	}
+	if p.Dropped > 0 {
+		text += fmt.Sprintf("; %d earlier probe result(s) not kept", p.Dropped)
+	}
+	return text
+}
+
 func describeDelivery(d report.Delivery) string {
 	s := fmt.Sprintf("notification %s: %s; %d request attempts begun", d.Event, d.Outcome, len(d.Attempts))
 	if len(d.Attempts) > 0 && d.Attempts[len(d.Attempts)-1].HTTPStatus != 0 {
@@ -822,7 +868,7 @@ func printTimeline(w io.Writer, r timelineReport) {
 	for _, item := range []struct {
 		name string
 		ref  *timelineRef
-	}{{"latest recorded check", r.Summary.LatestCheck}, {"last recorded active observation", r.Summary.LastObservedActive}, {"last recorded send action (not proof of a sent message or task success)", r.Summary.LastSendAction}, {"last recorded hold entry (not attributed to current flags)", r.Summary.LastHoldEntry}, {"last recorded target move (handoff, switch-back or retarget)", r.Summary.LastTargetMove}, {"last recorded limit wait", r.Summary.LastLimitWait}, {"last recorded long limit-wait report (one per wait; not proof of receipt)", r.Summary.LastLimitWaitReport}, {"last recorded turn retry (a failed turn re-run by reference; not proof it succeeded)", r.Summary.LastTurnRetry}, {"last recorded lane work (failed child turns re-run by reference; not proof they succeeded)", r.Summary.LastChildRetry}} {
+	}{{"latest recorded check", r.Summary.LatestCheck}, {"last recorded active observation", r.Summary.LastObservedActive}, {"last recorded send action (not proof of a sent message or task success)", r.Summary.LastSendAction}, {"last recorded hold entry (not attributed to current flags)", r.Summary.LastHoldEntry}, {"last recorded target move (handoff, switch-back, return to the primary or retarget)", r.Summary.LastTargetMove}, {"last recorded limit wait", r.Summary.LastLimitWait}, {"last recorded long limit-wait report (one per wait; not proof of receipt)", r.Summary.LastLimitWaitReport}, {"last recorded turn retry (a failed turn re-run by reference; not proof it succeeded)", r.Summary.LastTurnRetry}, {"last recorded lane work (failed child turns re-run by reference; not proof they succeeded)", r.Summary.LastChildRetry}} {
 		if item.ref == nil {
 			fmt.Fprintf(w, "%s: unavailable\n", item.name)
 			continue
