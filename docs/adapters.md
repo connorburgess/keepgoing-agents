@@ -254,7 +254,7 @@ Record how much of a usage window is used, from structured fields a probe alread
 
 - **BB thread:** partial, evidence live. Readings come from the candidate's provider probe. BB's own rate-limit events supply reset times only. [fallbacks.md](fallbacks.md) [integrations.md#agent-providers](integrations.md#agent-providers)
 - **Claude Code headless:** yes, evidence live. One real manual probe recorded a reading. [integrations.md#agent-providers](integrations.md#agent-providers) [`TestClaudeProbeJudgesStreamAndPlainOutputAlike`](../internal/probe/probe_test.go)
-- **Codex headless:** partial, evidence live. A reading only when the existing limit read runs; none on a healthy probe. [`TestCodexProbeRecordsUsageOnlyFromTheExistingLimitRead`](../internal/probe/probe_test.go)
+- **Codex headless:** partial, evidence live. Structured usage is collected after successful probes and unknown failures, without another model call. Successful-probe collection is unreleased and fixture-tested; the failed-probe limit lookup has live evidence. [`TestCodexProbeRecordsUsageFromSuccessfulAndUnknownProbes`](../internal/probe/probe_test.go)
 - **Cursor headless:** missing, evidence none. No probe contract.
 - **Antigravity:** missing, evidence none. No adapter is registered, so a loop cannot use it. [antigravity.md](antigravity.md)
 - **Generic process:** missing, evidence none. A command probe reports health only.

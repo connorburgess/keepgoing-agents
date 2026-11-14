@@ -264,9 +264,9 @@ func TestClaudeProbeJudgesStreamAndPlainOutputAlike(t *testing.T) {
 	}
 }
 
-// A Codex reading comes only from the app-server read the probe already makes
-// after an unclassified failure. A healthy probe makes no such call.
-func TestCodexProbeRecordsUsageOnlyFromTheExistingLimitRead(t *testing.T) {
+// Both successful and unknown failed probes collect structured usage; only
+// the unknown failure can have its classification changed by the snapshot.
+func TestCodexProbeRecordsUsageFromSuccessfulAndUnknownProbes(t *testing.T) {
 	calls := 0
 	defer func(orig func(context.Context, string, []string) (runner.CodexLimits, error)) {
 		runner.ReadCodexLimits = orig
@@ -277,22 +277,73 @@ func TestCodexProbeRecordsUsageOnlyFromTheExistingLimitRead(t *testing.T) {
 		return limits, nil
 	}
 	healthy := fake(t, `printf '%s\n' '{"type":"thread.started","thread_id":"t"}' '{"type":"turn.completed","usage":{}}'`)
-	if r := Run(context.Background(), cand("codex", healthy), Scheduled, 10*time.Second); !r.OK || r.Usage != nil || calls != 0 {
+	if r := Run(context.Background(), cand("codex", healthy), Scheduled, 10*time.Second); !r.OK || !r.Usage.Available() || calls != 1 {
 		t.Fatalf("healthy probe: %+v calls=%d", r, calls)
 	}
 	failed := fake(t, `echo '{"type":"thread.started","thread_id":"t"}'; exit 1`)
 	r := Run(context.Background(), cand("codex", failed), Scheduled, 10*time.Second)
-	if r.OK || r.ErrorClass != "unknown" || calls != 1 || !r.Usage.Available() || r.Usage.Source != UsageSourceCodex || r.Usage.Windows[1].Used != 0.81 {
+	if r.OK || r.ErrorClass != "unknown" || calls != 2 || !r.Usage.Available() || r.Usage.Source != UsageSourceCodex || r.Usage.Windows[1].Used != 0.81 {
 		t.Fatalf("not blocked: %+v usage=%+v calls=%d", r, r.Usage, calls)
 	}
 	limits.Blocked, limits.ReachedType = true, "rate_limit_reached"
+	// Usage is display-only: even a contradictory blocked snapshot must not
+	// replace the successful turn's verdict or supply a health reset.
+	if r := Run(context.Background(), cand("codex", healthy), Exact, 10*time.Second); !r.OK || r.ErrorClass != "" || r.ResetsAt != nil || !r.Usage.Available() {
+		t.Fatalf("successful verdict changed: %+v", r)
+	}
 	if r := Run(context.Background(), cand("codex", failed), Scheduled, 10*time.Second); r.ErrorClass != "rate_limit" || !r.Usage.Available() {
 		t.Fatalf("blocked: %+v", r)
 	}
 	runner.ReadCodexLimits = func(context.Context, string, []string) (runner.CodexLimits, error) {
 		return runner.CodexLimits{}, errors.New("unavailable")
 	}
+	if r := Run(context.Background(), cand("codex", healthy), Manual, 10*time.Second); !r.OK || r.ErrorClass != "" || r.TimedOut || r.Usage != nil {
+		t.Fatalf("successful probe with unavailable usage: %+v", r)
+	}
 	if r := Run(context.Background(), cand("codex", failed), Scheduled, 10*time.Second); r.ErrorClass != "unknown" || r.Usage != nil {
 		t.Fatalf("read failed: %+v", r)
+	}
+}
+
+func TestCodexSuccessfulProbeUsageLookupSharesDeadline(t *testing.T) {
+	orig := runner.ReadCodexLimits
+	t.Cleanup(func() { runner.ReadCodexLimits = orig })
+	called := false
+	runner.ReadCodexLimits = func(ctx context.Context, _ string, _ []string) (runner.CodexLimits, error) {
+		called = true
+		deadline, ok := ctx.Deadline()
+		if !ok || time.Until(deadline) > time.Second {
+			t.Fatal("usage lookup escaped probe deadline")
+		}
+		<-ctx.Done()
+		return runner.CodexLimits{}, ctx.Err()
+	}
+	healthy := fake(t, `echo '{"type":"turn.completed","usage":{}}'`)
+	start := time.Now()
+	r := Run(context.Background(), cand("codex", healthy), Scheduled, 300*time.Millisecond)
+	if !called || !r.OK || r.ErrorClass != "" || r.TimedOut || r.Usage != nil || time.Since(start) > 2*time.Second {
+		t.Fatalf("usage timeout changed health or escaped deadline: %+v called=%v", r, called)
+	}
+}
+
+func TestCodexClassifiedProbeDoesNotConsultUsage(t *testing.T) {
+	orig := runner.ReadCodexLimits
+	t.Cleanup(func() { runner.ReadCodexLimits = orig })
+	runner.ReadCodexLimits = func(context.Context, string, []string) (runner.CodexLimits, error) {
+		t.Fatal("classified failure must not consult usage")
+		return runner.CodexLimits{}, nil
+	}
+	for _, tc := range []struct{ code, class string }{
+		{"usage_limit_reached", "rate_limit"},
+		{"permission_denied", "restricted"},
+		{"cyberPolicy", "refused"},
+	} {
+		t.Run(tc.class, func(t *testing.T) {
+			cli := fake(t, `echo '{"type":"turn.failed","error":{"code":"`+tc.code+`"}}'; exit 1`)
+			r := Run(context.Background(), cand("codex", cli), Scheduled, time.Second)
+			if r.OK || r.ErrorClass != tc.class || r.Usage != nil {
+				t.Fatalf("classification changed: %+v", r)
+			}
+		})
 	}
 }

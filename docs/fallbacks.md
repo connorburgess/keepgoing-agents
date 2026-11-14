@@ -210,10 +210,10 @@ v0.2.0 records how much of an account's quota a provider says is used, when a pr
 | Probe kind | Source | When a reading is recorded |
 | --- | --- | --- |
 | `claude` | `rate_limit_event` messages in the probe's own `stream-json` output | Whenever the probe's output contains the event with usable windows |
-| `codex` | The app-server's `account/rateLimits/read` reply | Only when that read already happens: after a probe fails without a recognized code. A healthy Codex probe carries no reading. |
+| `codex` | The app-server's `account/rateLimits/read` reply | After a successful probe, and after a probe fails without a recognized code. Successful-probe collection is unreleased. The read makes no model call. |
 | `command`, and every other provider including Cursor | none | Never; shown as unavailable |
 
-No provider call is added for this. keepgoing does not read stored credentials or call a provider usage endpoint. To get the event, the Claude probe now asks for `--output-format stream-json --verbose` instead of `json`; it is still one request, judged from the same final result object. That equivalence is checked with fixtures and one live probe on one CLI version (see the end of this section); a CLI that rejects those flags would fail its probe.
+No extra model call is added for usage collection. Codex adds a structured status read through its app-server after a successful probe; that read may communicate with the provider. keepgoing does not directly read stored credentials or directly call a provider usage endpoint: the Codex CLI handles its own authentication and status request. Claude takes usage from the existing probe output, with no extra status read. To get the event, the Claude probe now asks for `--output-format stream-json --verbose` instead of `json`; it is still one request, judged from the same final result object. That equivalence is checked with fixtures and one live probe on one CLI version (see the end of this section); a CLI that rejects those flags would fail its probe.
 
 The Claude event is not a documented contract. Its shape was observed by the project coordinator on Claude Code 2.1.318 with live one-turn probes on two models, where each window under `rate_limit_info.unifiedWindows` carried a `utilization` between 0 and 1, a `resetsAt` time and a `status`. Parsing is deliberately narrow:
 
@@ -222,6 +222,8 @@ The Claude event is not a documented contract. Its shape was observed by the pro
 - Window names are opaque keys. keepgoing does not assume which windows exist or what they mean.
 - When a probe emits several events, later ones override earlier ones per window.
 - Names and status values must be short identifiers (letters, digits, `_`, `-`, `.`, at most 64 characters); anything else is dropped. At most eight windows are kept.
+
+The Codex lookup shares the probe timeout and is capped at 20 seconds. A failed or timed-out usage lookup does not change a successful probe's health or error classification. It records no new reading: usage stays unavailable if none was recorded, or keeps the earlier reading and its original age and reset-based stale state. A blocked snapshot after a successful probe is display-only; only an unknown failed probe can be classified from it.
 
 The latest reading per candidate is stored in `health.json` under `usage`, and earlier ones in its [history](#reading-history-and-projection): the observation time, the source, an account identity, and for each window its key, used fraction, optional reset time and optional status. No raw output is stored there. A later probe without a reading leaves the earlier one in place, so a reading can be older than the last probe; its own time is always shown. Health files written before this field existed, and stored values that are not a valid reading, load as unavailable.
 
