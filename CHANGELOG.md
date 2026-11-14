@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- `keepgoing panel` keeps its runtime files (record, locks, socket and launch pages) under the user state directory, beside the session claims, instead of the configuration directory; on Linux that moves them from `~/.config/keepgoing/panel` to `~/.local/state/keepgoing/panel`. After upgrading, `keepgoing panel` or `keepgoing panel stop` stops a panel server the earlier build started there and removes the old directory, which is then never read again; `panel status` and `panel list` only report such a server (`earlierBuildPanel` in JSON) and never stop it. On macOS both are the same place and nothing changes. See [the panel](docs/dock.md#opening-it-with-one-command-keepgoing-panel).
+
 - `enable --take-over` now waits up to 5 seconds for the loop's check lock instead of exiting 75 at once. A takeover that landed while the old owner's supervisor was in a check or control poll used to change nothing and leave the person to guess that running it again would work. If the lock is held for the whole wait, it still exits 75 and now says the old owner's supervisor is busy and to run it again. See [one owner per loop](docs/operations.md#one-owner-per-loop).
 
 - The keepgoing panel says which build serves it, in its footer and as `version` in `api/v1/server`. Each loop's page says which build ran its last check, from that check's own record. A loop whose last check ran a different build is listed under "Worth knowing" (never as a need). Labels are compared whole, so two dev builds of one release are different builds. A `dev` label without a version makes it "unknown". Older or newer is said only between two plain releases. Fixtures only. See [the panel](docs/dock.md).
