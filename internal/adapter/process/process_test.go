@@ -69,13 +69,14 @@ func TestObserveBadJSONIsUnknown(t *testing.T) {
 
 func TestSendPassesPromptAndMode(t *testing.T) {
 	out := filepath.Join(t.TempDir(), "got.txt")
-	a := New(config.Process{ResumeCommand: []string{script(t, `cat > "$OUT"; echo "$KEEPGOING_MODE" >> "$OUT"`, "findstr \"^\" > \"%OUT%\"\r\necho %KEEPGOING_MODE%>> \"%OUT%\"")}, Env: map[string]string{"OUT": out}})
+	a := New(config.Process{ResumeCommand: []string{script(t, `cat > "$OUT"; echo "$LOOPTENDER_MODE" >> "$OUT"; echo "$KEEPGOING_MODE" >> "$OUT"`, "findstr \"^\" > \"%OUT%\"\r\necho %LOOPTENDER_MODE%>> \"%OUT%\"\r\necho %KEEPGOING_MODE%>> \"%OUT%\"")}, Env: map[string]string{"OUT": out}})
 	if err := a.Send(context.Background(), "keep going", adapter.ModeQueue); err != nil {
 		t.Fatal(err)
 	}
 	b, _ := os.ReadFile(out)
 	got := strings.ReplaceAll(strings.ReplaceAll(string(b), "\r", ""), "\n", "")
-	if got != "keep goingqueue" {
+	// The mode arrives under the current name and the earlier one.
+	if got != "keep goingqueuequeue" {
 		t.Errorf("got %q", b)
 	}
 }

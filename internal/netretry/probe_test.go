@@ -47,23 +47,23 @@ func TestProbeOnline(t *testing.T) {
 	}
 	// The default target honors the probe's own timeout, shorter or longer
 	// than net-retry's eight seconds.
-	t.Setenv("KEEPGOING_NET_PROBE", "")
-	t.Setenv("KEEPGOING_NET_PROBE_URL", slow.URL)
+	t.Setenv("LOOPTENDER_NET_PROBE", "")
+	t.Setenv("LOOPTENDER_NET_PROBE_URL", slow.URL)
 	start = time.Now()
 	if (Probe{Timeout: 200 * time.Millisecond}).Online(ctx) || time.Since(start) > 5*time.Second {
 		t.Fatal("the default target ignored the probe timeout")
 	}
 	late := httptest.NewServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) { time.Sleep(600 * time.Millisecond) }))
 	defer late.Close()
-	t.Setenv("KEEPGOING_NET_PROBE_URL", late.URL)
+	t.Setenv("LOOPTENDER_NET_PROBE_URL", late.URL)
 	if (Probe{Timeout: 100 * time.Millisecond}).Online(ctx) || !(Probe{Timeout: 5 * time.Second}).Online(ctx) {
 		t.Fatal("the default target did not follow the configured timeout")
 	}
 	// With neither set the environment decides, as for net-retry.
-	t.Setenv("KEEPGOING_NET_PROBE_URL", up.URL)
-	t.Setenv("KEEPGOING_NET_PROBE", "")
+	t.Setenv("LOOPTENDER_NET_PROBE_URL", up.URL)
+	t.Setenv("LOOPTENDER_NET_PROBE", "")
 	if !(Probe{}).Online(ctx) {
-		t.Fatal("the default probe ignored KEEPGOING_NET_PROBE_URL")
+		t.Fatal("the default probe ignored LOOPTENDER_NET_PROBE_URL")
 	}
 }
 
