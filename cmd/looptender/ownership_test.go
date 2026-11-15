@@ -9,12 +9,15 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/looptender/looptender/internal/control"
 	"github.com/looptender/looptender/internal/lock"
+	"github.com/looptender/looptender/internal/session"
+	"github.com/looptender/looptender/internal/testexec"
 )
 
 func ownerControl(t *testing.T, f *fixture) control.File {
@@ -423,5 +426,84 @@ func TestOnlyATakeoverWaitsForTheCheckLock(t *testing.T) {
 		if code, _, errs := f.run(cmd); code != exitSkipped || !strings.Contains(errs, "lock held by another process") {
 			t.Fatalf("%s: exit %d: %s", cmd, code, errs)
 		}
+	}
+}
+
+func TestSupervisedSessionCannotClearItsOwnHold(t *testing.T) {
+	f := newFixture(t)
+	state := filepath.Join(f.dir, "state")
+	if c, _, e := f.run("enable"); c != 0 {
+		t.Fatal(e)
+	}
+	if c, _, e := f.run("await-user", "--note", "Fictional question"); c != 0 {
+		t.Fatal(e)
+	}
+	held, _ := os.ReadFile(filepath.Join(state, control.FileName))
+	refused := func(why string, args ...string) {
+		t.Helper()
+		code, _, errs := f.run(args...)
+		after, _ := os.ReadFile(filepath.Join(state, control.FileName))
+		if code != exitFailed || !strings.Contains(errs, "supervised session") || string(after) != string(held) {
+			t.Fatalf("%s %v: code=%d error=%s", why, args, code, errs)
+		}
+	}
+	// The target's own BB thread, with no owner recorded.
+	t.Setenv("BB_THREAD_ID", "thr_primary")
+	refused("target thread", "resume")
+	refused("target thread", "retarget", "primary")
+	// A process this loop's supervisor started.
+	t.Setenv("BB_THREAD_ID", "")
+	t.Setenv(control.SupervisedLoopVar, state)
+	refused("supervised process", "resume")
+	refused("supervised process", "retarget", "primary")
+	// Another loop's marker is no reason to refuse; a person at a terminal resumes.
+	t.Setenv(control.SupervisedLoopVar, t.TempDir())
+	if code, _, e := f.run("resume"); code != 0 {
+		t.Fatal(e)
+	}
+	t.Setenv(control.SupervisedLoopVar, "")
+
+	// The target thread also owns the loop: still refused, and a person
+	// at a terminal still resumes.
+	t.Setenv("BB_THREAD_ID", "thr_primary")
+	if c, _, e := f.run("enable"); c != 0 {
+		t.Fatal(e)
+	}
+	f.run("pause")
+	held, _ = os.ReadFile(filepath.Join(state, control.FileName))
+	refused("owning target thread", "resume")
+	t.Setenv("BB_THREAD_ID", "")
+	if code, _, e := f.run("resume"); code != 0 || ownerControl(t, f).Paused {
+		t.Fatal(e)
+	}
+
+	// An operator thread that is not the target resumes as before.
+	t.Setenv("BB_THREAD_ID", "thr_operator")
+	if c, _, e := f.run("enable", "--take-over"); c != 0 {
+		t.Fatal(e)
+	}
+	f.run("pause")
+	if code, _, e := f.run("resume"); code != 0 || ownerControl(t, f).Paused {
+		t.Fatal(e)
+	}
+}
+
+func TestCheckMarksWhatItStartsAsSupervised(t *testing.T) {
+	f := newFixture(t)
+	t.Setenv(control.SupervisedLoopVar, "")
+	testexec.Shared(t, filepath.Join(f.dir, "bin", "bb"), strings.Replace(fakeBB, "\n", "\necho \"$"+control.SupervisedLoopVar+"\" >> \"$FAKE_BB/marked\"\n", 1))
+	if c, _, e := f.run("enable"); c != 0 {
+		t.Fatal(e)
+	}
+	if c, _, e := f.run("tick"); c != 0 {
+		t.Fatal(e)
+	}
+	want := session.CleanPath(filepath.Join(f.dir, "state"))
+	lines := strings.Fields(f.read("marked"))
+	if len(lines) == 0 || !slices.Contains(lines, want) || slices.ContainsFunc(lines, func(l string) bool { return l != want }) {
+		t.Fatalf("bb started by the check saw %q, want %q", lines, want)
+	}
+	if os.Getenv(control.SupervisedLoopVar) != "" {
+		t.Fatal("the check left its marker in the caller's environment")
 	}
 }

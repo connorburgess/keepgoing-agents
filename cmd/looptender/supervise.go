@@ -165,6 +165,9 @@ func tickOnce(e env, cfg *config.Config, now time.Time, dryRun, fixedNow bool, l
 		return exitFailed
 	}
 	defer l.Release()
+	// Everything this check starts is the supervised session's, not a
+	// person's: it inherits the marker that keeps it from clearing a hold.
+	defer markSupervised(cfg.Loop.StateDir)()
 	if err := checkOwnership(cfg.Loop.StateDir, firstLease(leases)); err != nil {
 		return ownershipError(e, err)
 	}
@@ -219,6 +222,7 @@ func daemon(e env, cfg *config.Config, cfgPath string, dryRun bool, takeOver ...
 		return exitFailed
 	}
 	defer l.Release()
+	defer markSupervised(cfg.Loop.StateDir)()
 	lease, err := bindDaemonOwner(cfg.Loop.StateDir, len(takeOver) > 0 && takeOver[0])
 	if err != nil {
 		return ownershipError(e, err)
@@ -1393,6 +1397,9 @@ func controlCmdLanes(e env, cfg *config.Config, cmd, note string, lanes, dropQue
 			if err := control.CheckOwner(*f, os.Getenv("BB_THREAD_ID"), false); err != nil {
 				return err
 			}
+			if err := checkHoldClearer(cfg, os.Getenv("BB_THREAD_ID")); err != nil {
+				return err
+			}
 			if err := resumeEpisode(cfg.Loop.StateDir, f.EpisodeHold, time.Now().UTC(), cfg.Loop.Errors.MaxReprompts, f.BriefHold...); err != nil {
 				return fmt.Errorf("%w, so nothing was changed and the loop is still %s: %v", errEpisodeState, f.Summary(), err)
 			}
@@ -1517,6 +1524,10 @@ func retarget(e env, cfg *config.Config, id, note string, discardPending bool) i
 	defer l.Release()
 	if err := checkOwnership(cfg.Loop.StateDir, nil); err != nil {
 		return ownershipError(e, err)
+	}
+	if err := checkHoldClearer(cfg, os.Getenv("BB_THREAD_ID")); err != nil {
+		e.errf("%v; no retarget performed", err)
+		return exitFailed
 	}
 	if err := checkTransferSources(cfg, false); err != nil {
 		e.errf("%v; no retarget performed; reload and retry", err)

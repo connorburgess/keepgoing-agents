@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- The supervised session cannot clear its own loop's hold. `resume`, `retarget`, `client prepare-resume`, `client resume`, and the panel's and `client review`'s resume are refused, even for the loop's owner, when `BB_THREAD_ID` is the loop's current target thread or when the process carries `LOOPTENDER_SUPERVISED_LOOP` for this loop. `tick` and `daemon` now set that variable for every turn, probe and command they start. Nothing is changed; the issue code is `supervised_session`. A person at an ordinary terminal or panel, and an operator thread that is not the target, resume as before. The check is cooperative: a session can unset the variable. Fixtures only. See [the supervised session cannot clear its own hold](docs/operations.md#the-supervised-session-cannot-clear-its-own-hold).
+
 - Scope account login phrases to the selected CLI and link Accounts to existing recorded Routes/Allowances usage. Preserve observation age and unavailable/stale evidence; route usage remains unassociated with named account cards, with no new polling or collector.
 
 - Fix account status checks refusing across agent tool invocations: exclude only the incidental CODEX_TOOL_CALL_ID from the context fingerprint, using existing platform name semantics. Preserve the actual caller and execution environment, all other bindings and explicit revision-bound updates; no automatic catalog migration.

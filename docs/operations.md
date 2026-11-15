@@ -240,7 +240,7 @@ On the next check, a completed loop skips observation, yield checks, progress re
 
 Declaring completion also ends a wait on a person, so `status` shows the loop as completed and not as awaiting user. What the person was being asked is not thrown away: the hold may have been raised by a check (a child waiting on a person, a spent cap), its note is stored nowhere else, and a completed loop stops observing. `complete` prints that a question was still open (without repeating the note), `control.json` keeps the hold's note and the time as `openQuestion`, `status` shows it on an `open question:` line until a `resume`, and the `complete` entry in `timeline` records that an awaiting-user hold was outstanding. The incident history never stores notes, so the note itself is only in `control.json` and `status`. A pause or a stop is the operator's and stays.
 
-To reopen the task, or continue with a revised `prompt` or `prompt_file`, run `keepgoing resume`. Resume explicitly clears completion along with pause, stop, and awaiting-user, and clears the old note. It preserves the current target and session; it does not create a fresh conversation. It also does not enable a disabled loop: use `enable` separately in that case. `enable` alone never clears completion. Manual commands such as `fallbacks check` remain explicit operations and can still run while a task is completed.
+To reopen the task, or continue with a revised `prompt` or `prompt_file`, run `keepgoing resume`. The supervised session cannot run it on its own loop ([why](#the-supervised-session-cannot-clear-its-own-hold)). Resume explicitly clears completion along with pause, stop, and awaiting-user, and clears the old note. It preserves the current target and session; it does not create a fresh conversation. It also does not enable a disabled loop: use `enable` separately in that case. `enable` alone never clears completion. Manual commands such as `fallbacks check` remain explicit operations and can still run while a task is completed.
 
 Use `await-user` when unfinished work needs a person, and `complete` when all authorized work is done. If the task is an entire roadmap, completing one item is not completion of the task.
 
@@ -538,7 +538,7 @@ The reset is recorded. `runs.jsonl` gets a `session_reset` event with the target
 - **The target is gone.** An archived, deleted, or missing target marks the loop awaiting user and reports `await_user`.
 - **The saved session cannot be used.** Unreleased source. For an agent defined in configuration that continues a session, a saved identifier that is no longer usable, with a last turn that did not report one, holds the loop and reports `await_user`. keepgoing does not start a new conversation by itself. See [starting a new conversation on purpose](#starting-a-new-conversation-on-purpose).
 - **A headless turn was stopped.** Stopping a headless turn ends its process without an exit code, so it reads as an `unknown` error. After `keepgoing resume`, it is re-prompted under the ordinary error rules.
-- **Only `resume` clears a stop.** `enable` does not.
+- **Only `resume` clears a stop.** `enable` does not. The session the loop supervises cannot run that `resume` itself; see [the supervised session cannot clear its own hold](#the-supervised-session-cannot-clear-its-own-hold).
 
 ### A refused or restricted turn
 
@@ -1146,7 +1146,7 @@ With the option on, a lane that a check saw working and a later check finds in e
 
 When `keepgoing enable` runs inside BB, it records `BB_THREAD_ID` in `control.ownership`, with a generation number. The owner is the thread operating the loop; it is separate from the configured agent target. Claiming or transferring ownership never retargets the loop or changes a BB parent/child relationship. `status` shows the owner and latest handoff, and `status --json` includes the ownership metadata.
 
-A different BB thread is refused by `validate`, `enable`, `start`, and `daemon`, as well as direct ticks, resume, retarget, and executing manual probes. Read-only status/doctor and probe previews remain available. Disable, pause, stop, complete, and await-user remain available from any thread. Missing `BB_THREAD_ID` identifies an external scheduler or ordinary terminal: commands use the existing claim without changing it. Legacy loops without ownership metadata continue working; their first enable from a BB thread records the claim. This relies on cooperative callers and private runtime files, not an authentication boundary.
+A different BB thread is refused by `validate`, `enable`, `start`, and `daemon`, as well as direct ticks, resume, retarget, and executing manual probes. Read-only status/doctor and probe previews remain available. Disable, pause, stop, complete, and await-user remain available from any thread. Missing `BB_THREAD_ID` identifies an external scheduler or ordinary terminal: commands use the existing claim without changing it. A process the loop's own supervisor started is the exception for clearing holds ([below](#the-supervised-session-cannot-clear-its-own-hold)). Legacy loops without ownership metadata continue working; their first enable from a BB thread records the claim. This relies on cooperative callers and private runtime files, not an authentication boundary.
 
 From the BB thread that should become the new owner:
 
@@ -1167,6 +1167,17 @@ Ownership and transfers use the runtime state directory, so multiple config path
 Claims and transfers serialize with ticks and early polls. If a tick is in flight, takeover exits 75 and must be retried; it never interrupts or rolls back that tick's work. Control updates have a separate short lock, preserving concurrent pause/stop requests without waiting for long provider calls. Control-lock contention also exits 75. No thread is created, stopped, re-parented, or messaged by ownership operations.
 
 Offline fixtures verify conflicting identities, preview and explicit takeover, shared-state config paths, simultaneous claiming processes, directory aliases, control-file symlink refusal, hold preservation, scheduler access, and old-daemon exit including a transfer back to its original owner. Live transfers between real threads remain unverified; the tests make no live model calls.
+
+### The supervised session cannot clear its own hold
+
+Unreleased source. Supervision never clears a hold; a person does. On top of the ownership rule above, `resume`, `retarget`, `client prepare-resume`, `client resume`, and the panel's and `client review`'s resume refuse two callers, even when they own the loop:
+
+- **The loop's current target thread.** `BB_THREAD_ID` equals the BB thread of the route the loop is on now. Every command the session runs, and a BB terminal opened on that thread, carries that ID.
+- **Anything this loop's supervisor started.** `tick` and `daemon` put `LOOPTENDER_SUPERVISED_LOOP`, set to the loop's state directory, in their own environment. A headless Claude Code, Codex or Cursor turn, a process-adapter command, a probe and every program those start inherit it. A process carrying another loop's state directory there is not refused for this loop.
+
+Nothing is changed. The command says the request came from the supervised session, and exits 1. `client prepare-resume` and `client resume` report the issue `supervised_session`. A person resumes from an ordinary terminal or from a panel started there; an operator thread that is not the target resumes as before. `pause`, `stop`, `complete` and `await-user` stay available to the session: they add a hold. `enable` is not refused: it clears no hold.
+
+This is cooperative, like ownership. `BB_THREAD_ID` is taken as the session says it, not checked with BB, and a session can unset either variable or write `control.json`. A session the supervisor did not start and that is not the current target is treated like any other caller. That includes a lane, a former target and an unrelated agent; when the loop has an owner, the ownership rule still refuses a BB lane. A headless turn started by a daemon that a BB thread launched by hand also inherits that thread's `BB_THREAD_ID`, so it passes owner checks for commands that clear no hold. Offline fixtures only; no live session was asked to resume.
 
 
 ## Owned headless cancellation
