@@ -159,6 +159,20 @@ prints). It goes on a loop's first route (`loop.account`), on a fallback in
       account: 0123456789abcdef0123456789abcdef   # the "work" entry
       claude: {workdir: /projects/example, env: {CLAUDE_CONFIG_DIR: /private/example/claude-work}}
 
+**Upgrade first.** Configuration files are read strictly: a looptender build
+from before this field refuses a whole loop configuration or `fallbacks.yaml`
+that contains `account`, naming the unknown field, and cannot supervise, show
+or check that loop until the field is removed. It reads such a `routes.yaml` as
+invalid: every loop that follows the list then has no other routes to hand off
+to, and the `routes` commands refuse to change it. Add `account`
+only after every build that reads the file knows it: the loop's supervisor
+(its daemon or service), the panel, the BB plugin's CLI and the menu's CLI,
+and for `routes.yaml` every loop that follows it. Check with the panel's
+Versions view, which lists each place a build runs and whether it is behind,
+and with `doctor`, whose `supervisor.live_version` check compares the running
+daemon's build with this one. Run `validate` with each of those builds if you
+are unsure.
+
 It is your statement. looptender never sets, derives or guesses it, and it
 does not change how a route runs, is tested, is chosen or how its usage is
 recorded. Nothing refuses to run because a route has no `account`.
