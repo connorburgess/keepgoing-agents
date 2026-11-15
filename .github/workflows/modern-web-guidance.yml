@@ -1,0 +1,59 @@
+name: Modern Web Guidance advisory
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened]
+    paths:
+      - 'cmd/looptender/dockui/**'
+      - '.agents/skills/modern-web-guidance/**'
+      - 'tools/modern-web-guidance/**'
+      - '.github/workflows/modern-web-guidance.yml'
+      - 'AGENTS.md'
+  push:
+    branches: [main]
+    paths:
+      - 'cmd/looptender/dockui/**'
+      - '.agents/skills/modern-web-guidance/**'
+      - 'tools/modern-web-guidance/**'
+      - '.github/workflows/modern-web-guidance.yml'
+      - 'AGENTS.md'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  advisory:
+    name: Panel legacy-pattern scan (advisory)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: '22.23.2'
+      - name: Install exact locked package without lifecycle scripts
+        run: npm ci --prefix tools/modern-web-guidance --ignore-scripts --no-audit --no-fund
+      - name: Test report classification
+        run: python3 -m unittest discover -s tools/modern-web-guidance -p 'test_*.py'
+      - name: Record advisory, including setup failures
+        if: always()
+        run: python3 tools/modern-web-guidance/report.py
+      - name: Publish summary
+        if: always()
+        run: |
+          if [ -f tools/modern-web-guidance/report/summary.md ]; then
+            cat tools/modern-web-guidance/report/summary.md >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "Modern Web Guidance report unavailable. No clean result is available." >> "$GITHUB_STEP_SUMMARY"
+          fi
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        if: always()
+        with:
+          name: panel-modern-web-guidance-${{ github.sha }}
+          path: tools/modern-web-guidance/report/
+          if-no-files-found: error
+          retention-days: 14
