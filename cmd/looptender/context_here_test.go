@@ -89,8 +89,11 @@ func TestContextHereFindsTheLoopThatTargetsTheCaller(t *testing.T) {
 			t.Fatalf("text lacks %q:\n%s", want, text)
 		}
 	}
-	if strings.Contains(text, hereProcessLimit) {
+	if strings.Contains(text, hereProcessLimit) || strings.Contains(text, hereExactDir) {
 		t.Fatal("a BB caller is told about working directories")
+	}
+	if !strings.Contains(text, "basis:     "+hereInherited+"\n") {
+		t.Fatalf("a BB caller is not told that agents looptender starts inherit BB_THREAD_ID:\n%s", text)
 	}
 
 	// A lane of the supervised thread, and any other thread, is not
@@ -114,9 +117,16 @@ func TestContextHereFindsTheLoopThatTargetsTheCaller(t *testing.T) {
 		t.Fatalf("retarget: %d %s %s", code, out, errs)
 	}
 	t.Setenv("BB_THREAD_ID", "thr_primary")
-	code, v, _, _ = f.here()
-	if code != exitOK || v.Outcome != hereNone || len(v.NotCounted) != 1 || !v.NotCounted[0].Verified || v.NotCounted[0].Reason != `its active route "claude-other-account" targets another session` {
+	code, v, text, _ = f.here()
+	if code != exitOK || v.Outcome != hereNone || len(v.NotCounted) != 1 || !v.NotCounted[0].Verified || v.NotCounted[0].Count != 1 || v.NotCounted[0].Reason != "its active route targets another session" {
 		t.Fatalf("%d %+v", code, v)
+	}
+	// A loop that does not target the caller is counted, never named.
+	if v.NotCounted[0].Loop != "" || v.NotCounted[0].Config != "" || strings.Contains(text, "example-loop") || strings.Contains(text, f.cfg) {
+		t.Fatalf("a loop that does not target the caller is named: %+v\n%s", v.NotCounted, text)
+	}
+	if !strings.Contains(text, "not counted: 1 recorded loop(s): its active route targets another session\n") {
+		t.Fatalf("%s", text)
 	}
 }
 
@@ -156,7 +166,7 @@ func TestContextHereRevalidatesRecordedLoops(t *testing.T) {
 	write(t, filepath.Join(f.dir, "state", "state.json"), "{not json", 0o600)
 	before, calls := snapshotTree(t, f.dir), f.read("calls")
 	code, v, text, _ := f.here()
-	if code != exitFailed || v.Outcome != hereUnknown || len(v.Loops) != 0 || len(v.NotCounted) != 1 || v.NotCounted[0].Verified {
+	if code != exitFailed || v.Outcome != hereUnknown || len(v.Loops) != 0 || len(v.NotCounted) != 1 || v.NotCounted[0].Verified || v.NotCounted[0].Loop != "example-loop" {
 		t.Fatalf("%d %+v", code, v)
 	}
 	if strings.Contains(text, hereNoLoop) || !strings.Contains(text, "found:     no loop is known to target this session; whether 1 other recorded loop(s) do could not be checked\n") {
@@ -169,7 +179,7 @@ func TestContextHereRevalidatesRecordedLoops(t *testing.T) {
 	cfg, _ := os.ReadFile(f.cfg)
 	write(t, f.cfg, strings.Replace(string(cfg), "state_dir: state", "state_dir: state-moved", 1), 0o600)
 	code, v, _, _ = f.here()
-	if code != exitOK || v.Outcome != hereNone || len(v.NotCounted) != 1 || v.NotCounted[0].Reason != "its configuration now names another state directory" {
+	if code != exitOK || v.Outcome != hereNone || len(v.NotCounted) != 1 || v.NotCounted[0].Reason != "its configuration now names another state directory" || v.NotCounted[0].Loop != "" {
 		t.Fatalf("%d %+v", code, v)
 	}
 
@@ -210,17 +220,25 @@ func TestContextHereByWorkingDirectory(t *testing.T) {
 	if code != exitOK || v.Outcome != hereOne || v.Loops[0].Loop != "headless-loop" || v.Caller.Source != "working_directory" || v.Caller.Workdir != session.CleanPath(project) {
 		t.Fatalf("%d %+v", code, v)
 	}
-	for _, want := range []string{hereDirCaller, hereProcessLimit} {
+	for _, want := range []string{hereDirCaller, hereExactDir, hereProcessLimit} {
 		if !strings.Contains(text, want) {
 			t.Fatalf("text lacks %q:\n%s", want, text)
 		}
 	}
 
-	// Another directory finds none; BB_THREAD_ID set makes the working
-	// directory irrelevant.
-	t.Chdir(f.dir)
-	if code, v, _, _ := f.here(); code != exitOK || v.Outcome != hereNone {
-		t.Fatalf("%d %+v", code, v)
+	// A subdirectory or another directory finds none, and says which
+	// directory it looked for; BB_THREAD_ID set makes the working directory
+	// irrelevant.
+	sub := filepath.Join(project, "sub")
+	os.MkdirAll(sub, 0o700)
+	before = snapshotTree(t, f.dir)
+	for _, d := range []string{sub, f.dir} {
+		t.Chdir(d)
+		code, v, text, _ := f.here()
+		want := "no loop targets a session working in " + session.CleanPath(d)
+		if code != exitOK || v.Outcome != hereNone || v.Text != want || !strings.Contains(text, "found:     "+want+"\n") || strings.Contains(text, "headless-loop") {
+			t.Fatalf("%s: %d %+v\n%s", d, code, v, text)
+		}
 	}
 	t.Chdir(project)
 	t.Setenv("BB_THREAD_ID", "thr_lane1")

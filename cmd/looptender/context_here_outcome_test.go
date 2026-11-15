@@ -10,26 +10,29 @@ import (
 // checked.
 func TestContextHereOutcome(t *testing.T) {
 	loop := func(name string) hereLoop { return hereLoop{Loop: name} }
-	checked := hereSkip{Loop: "gone-loop", Reason: "its configuration file no longer exists", Verified: true}
-	unchecked := hereSkip{Loop: "odd-loop", Reason: "its state.json cannot be read, so its active route is unknown"}
+	checked := hereSkip{Count: 2, Reason: "its configuration file no longer exists", Verified: true}
+	unchecked := hereSkip{Count: 1, Loop: "odd-loop", Reason: "its state.json cannot be read, so its active route is unknown"}
 	for _, c := range []struct {
 		name        string
+		subject     string
 		loops       []hereLoop
 		skips       []hereSkip
 		unavailable string
 		outcome     string
 		text        string
 	}{
-		{"nothing recorded", nil, nil, "", hereNone, hereNoLoop},
-		{"only stale records", nil, []hereSkip{checked}, "", hereNone, hereNoLoop},
-		{"one", []hereLoop{loop("example-loop")}, []hereSkip{checked}, "", hereOne, "loop example-loop targets this session"},
-		{"several", []hereLoop{loop("example-loop"), loop("second-loop")}, nil, "", hereSeveral, "2 loops target this session: example-loop, second-loop. Two loops on one session can both prompt it, though never at the same moment"},
-		{"none known, one unchecked", nil, []hereSkip{unchecked, checked}, "", hereUnknown, "no loop is known to target this session; whether 1 other recorded loop(s) do could not be checked"},
-		{"one, one unchecked", []hereLoop{loop("example-loop")}, []hereSkip{unchecked}, "", hereUnknown, "loop example-loop targets this session; whether 1 other recorded loop(s) do could not be checked"},
-		{"records unreadable", nil, nil, "the session record of BB thread thr_example cannot be read", hereUnknown, "whether a loop targets this session is unknown: the session record of BB thread thr_example cannot be read"},
+		{"nothing recorded", "", nil, nil, "", hereNone, hereNoLoop},
+		{"only stale records", "", nil, []hereSkip{checked}, "", hereNone, hereNoLoop},
+		{"one", "", []hereLoop{loop("example-loop")}, []hereSkip{checked}, "", hereOne, "loop example-loop targets this session"},
+		{"several", "", []hereLoop{loop("example-loop"), loop("second-loop")}, nil, "", hereSeveral, "2 loops target this session: example-loop, second-loop. Two loops on one session can both prompt it, though never at the same moment"},
+		{"none known, one unchecked", "", nil, []hereSkip{unchecked, checked}, "", hereUnknown, "no loop is known to target this session; whether 1 other recorded loop(s) do could not be checked"},
+		{"one, one unchecked", "", []hereLoop{loop("example-loop")}, []hereSkip{unchecked}, "", hereUnknown, "loop example-loop targets this session; whether 1 other recorded loop(s) do could not be checked"},
+		{"records unreadable", "", nil, nil, "the session record of BB thread thr_example cannot be read", hereUnknown, "whether a loop targets this session is unknown: the session record of BB thread thr_example cannot be read"},
+		{"working directory, none", "a session working in /example/project/sub", nil, []hereSkip{checked}, "", hereNone, "no loop targets a session working in /example/project/sub"},
+		{"working directory, one", "a session working in /example/project", []hereLoop{loop("example-loop")}, nil, "", hereOne, "loop example-loop targets a session working in /example/project"},
 	} {
 		t.Run(c.name, func(t *testing.T) {
-			v := hereView{Loops: c.loops, NotCounted: c.skips, Unavailable: c.unavailable}
+			v := hereView{subject: c.subject, Loops: c.loops, NotCounted: c.skips, Unavailable: c.unavailable}
 			v.finish()
 			if v.Outcome != c.outcome || v.Text != c.text {
 				t.Fatalf("got %q %q", v.Outcome, v.Text)
@@ -50,6 +53,8 @@ func TestContextHereFixedSentences(t *testing.T) {
 		hereProcessLimit: "A process loop's session is its resume command, which a working directory cannot match, so a process loop is not found this way.",
 		hereRecordsBasis: "Loops are found only in the session records that enable and each check write, then checked against each loop's current configuration and state; a loop that has not recorded this session is not found.",
 		hereNoParent:     "Parent threads are not looked up, so a lane is not found through the loop that supervises its parent.",
+		hereExactDir:     "Only this exact directory matches: a session working in a parent or a subdirectory of it is not found.",
+		hereInherited:    "An agent that looptender's tick or daemon starts inherits the BB_THREAD_ID they were started with, so a headless or process agent asking from such a turn is identified as that BB thread, not as its own session, and may be shown another loop or none.",
 	} {
 		if got != want {
 			t.Fatalf("got %q, want %q", got, want)

@@ -41,6 +41,11 @@ const (
 	hereProcessLimit = "A process loop's session is its resume command, which a working directory cannot match, so a process loop is not found this way."
 	hereRecordsBasis = "Loops are found only in the session records that enable and each check write, then checked against each loop's current configuration and state; a loop that has not recorded this session is not found."
 	hereNoParent     = "Parent threads are not looked up, so a lane is not found through the loop that supervises its parent."
+	hereExactDir     = "Only this exact directory matches: a session working in a parent or a subdirectory of it is not found."
+	// hereInherited holds until headless and process turns stop inheriting
+	// the supervisor's BB_THREAD_ID; it is removed with that change.
+	hereInherited   = "An agent that looptender's tick or daemon starts inherits the BB_THREAD_ID they were started with, so a headless or process agent asking from such a turn is identified as that BB thread, not as its own session, and may be shown another loop or none."
+	hereThisSession = "this session"
 )
 
 // hereView is context --here's answer. Context is S1's context for each loop
@@ -55,6 +60,9 @@ type hereView struct {
 	Basis         []string   `json:"basis"`
 	Unavailable   string     `json:"unavailable,omitempty"`
 	ids           []session.Identity
+	// subject names the caller's session in the outcome sentence; empty is
+	// hereThisSession.
+	subject string
 }
 
 // hereCaller is how the calling session was identified.
@@ -72,13 +80,18 @@ type hereLoop struct {
 	Context loopcontext.View `json:"context"`
 }
 
-// hereSkip is a recorded loop that is not counted. Verified is false when
-// whether it targets this session could not be established.
+// hereSkip is recorded loops that are not counted, for one reason. Verified
+// is false when whether the loop targets this session could not be
+// established. A verified skip is a loop that does not target this session,
+// so it is reported only as a count and a reason, never by name: a session
+// does not learn about loops that do not target it. An unverified skip names
+// its one loop, which is what makes the answer unknown.
 type hereSkip struct {
-	Loop     string `json:"loop"`
-	Config   string `json:"config"`
+	Count    int    `json:"count"`
 	Reason   string `json:"reason"`
 	Verified bool   `json:"verified"`
+	Loop     string `json:"loop,omitempty"`
+	Config   string `json:"config,omitempty"`
 }
 
 // contextHereCmd prints the supervision context of the loop that targets the
@@ -138,7 +151,10 @@ func hereFind(thread, cwd string, now time.Time) hereView {
 	v := hereView{SchemaVersion: 1, Caller: caller, Loops: []hereLoop{}, NotCounted: []hereSkip{}, ids: ids}
 	v.Basis = []string{hereRecordsBasis, hereNoParent}
 	if thread == "" {
-		v.Basis = append(v.Basis, hereProcessLimit)
+		v.subject = "a session working in " + cwd
+		v.Basis = append(v.Basis, hereExactDir, hereProcessLimit)
+	} else {
+		v.Basis = append(v.Basis, hereInherited)
 	}
 	dir, _, err := session.Lookup()
 	if err != nil {
@@ -178,7 +194,17 @@ func hereFind(thread, cwd string, now time.Time) hereView {
 // the caller's session.
 func (v *hereView) check(s session.Supervisor, now time.Time) {
 	skip := func(verified bool, reason string) {
-		v.NotCounted = append(v.NotCounted, hereSkip{Loop: s.Loop, Config: s.Config, Reason: reason, Verified: verified})
+		if !verified {
+			v.NotCounted = append(v.NotCounted, hereSkip{Count: 1, Loop: s.Loop, Config: s.Config, Reason: reason})
+			return
+		}
+		for i := range v.NotCounted {
+			if c := &v.NotCounted[i]; c.Verified && c.Reason == reason {
+				c.Count++
+				return
+			}
+		}
+		v.NotCounted = append(v.NotCounted, hereSkip{Count: 1, Reason: reason, Verified: true})
 	}
 	if _, err := os.Stat(s.Config); errors.Is(err, os.ErrNotExist) {
 		skip(true, "its configuration file no longer exists")
@@ -207,7 +233,7 @@ func (v *hereView) check(s session.Supervisor, now time.Time) {
 	}
 	id, ok := session.Of(*in.TargetAgent)
 	if !ok || !v.matches(id) {
-		skip(true, fmt.Sprintf("its active route %q targets another session", in.State.Target()))
+		skip(true, "its active route targets another session")
 		return
 	}
 	v.Loops = append(v.Loops, hereLoop{Loop: cfg.Loop.Name, Config: cfg.Path(), Context: loopcontext.Build(in)})
@@ -227,27 +253,31 @@ func (v *hereView) finish() {
 	unverified := 0
 	for _, s := range v.NotCounted {
 		if !s.Verified {
-			unverified++
+			unverified += s.Count
 		}
 	}
 	names := make([]string, len(v.Loops))
 	for i, l := range v.Loops {
 		names[i] = l.Loop
 	}
+	subject := v.subject
+	if subject == "" {
+		subject = hereThisSession
+	}
 	switch {
 	case v.Unavailable != "":
-		v.Outcome, v.Text = hereUnknown, "whether a loop targets this session is unknown: "+v.Unavailable
+		v.Outcome, v.Text = hereUnknown, "whether a loop targets "+subject+" is unknown: "+v.Unavailable
 		return
 	case len(v.Loops) == 0:
-		v.Outcome, v.Text = hereNone, hereNoLoop
+		v.Outcome, v.Text = hereNone, "no loop targets "+subject
 	case len(v.Loops) == 1:
-		v.Outcome, v.Text = hereOne, "loop "+names[0]+" targets this session"
+		v.Outcome, v.Text = hereOne, "loop "+names[0]+" targets "+subject
 	default:
-		v.Outcome, v.Text = hereSeveral, fmt.Sprintf("%d loops target this session: %s. Two loops on one session can both prompt it, though never at the same moment", len(v.Loops), strings.Join(names, ", "))
+		v.Outcome, v.Text = hereSeveral, fmt.Sprintf("%d loops target %s: %s. Two loops on one session can both prompt it, though never at the same moment", len(v.Loops), subject, strings.Join(names, ", "))
 	}
 	if unverified > 0 {
 		if len(v.Loops) == 0 {
-			v.Text = "no loop is known to target this session"
+			v.Text = "no loop is known to target " + subject
 		}
 		v.Outcome = hereUnknown
 		v.Text += fmt.Sprintf("; whether %d other recorded loop(s) do could not be checked", unverified)
@@ -262,7 +292,11 @@ func (v hereView) text() string {
 	line("caller", v.Caller.Text)
 	line("found", v.Text)
 	for _, s := range v.NotCounted {
-		line("not counted", fmt.Sprintf("loop %s (%s): %s", s.Loop, s.Config, s.Reason))
+		if s.Verified {
+			line("not counted", fmt.Sprintf("%d recorded loop(s): %s", s.Count, s.Reason))
+		} else {
+			line("not counted", fmt.Sprintf("loop %s (%s): %s", s.Loop, s.Config, s.Reason))
+		}
 	}
 	for _, s := range v.Basis {
 		line("basis", s)
