@@ -107,8 +107,12 @@ func TestIdleSpacingSpacesUnchangedIdleWakes(t *testing.T) {
 		len(s.Days) != 1 || s.Days[0].Day != "2026-11-16" || s.Days[0].Counts["idle_unchanged"] != 3 {
 		t.Fatalf("status: %+v", s)
 	}
-	if code, out, _ := f.run("status", "--now", "2026-11-16T12:29:30Z"); code != exitOK || !strings.Contains(out, "next idle wake due 2026-11-16T12:30:00Z (idle_unchanged") {
+	// The line is judged at the status read time, not the wall clock.
+	if code, out, _ := f.run("status", "--now", "2026-11-16T12:29:30Z"); code != exitOK || !strings.Contains(out, "next idle wake due 2026-11-16T12:30:00Z (idle_unchanged") || strings.Contains(out, "now passed") {
 		t.Fatalf("status text: %s", out)
+	}
+	if code, out, _ := f.run("status", "--now", "2026-11-16T12:30:30Z"); code != exitOK || !strings.Contains(out, "now passed, the next check decides") {
+		t.Fatalf("status text after the due time: %s", out)
 	}
 	// Pause and resume are control changes: the next check wakes at once.
 	f.run("pause")

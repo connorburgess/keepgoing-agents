@@ -742,7 +742,7 @@ func status(e env, cfg *config.Config, now time.Time, asJSON bool, staleAfter ti
 	}
 	if !out.stateUnreadable {
 		printLimitWait(w, out.LimitWait)
-		printIdleSpacing(w, out.IdleSpacing, time.Now())
+		printIdleSpacing(w, out.IdleSpacing, now)
 	}
 	fmt.Fprintf(w, "progress flag: %s\n", out.NoProgress.Text)
 	if !out.stateUnreadable {
