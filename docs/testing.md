@@ -579,3 +579,9 @@ into a focused regression test when justified; do not force unrelated
 modernization to clear a scanner. Tool setup, provenance, first baseline,
 report tests and unverified hosted-artifact limits are documented in the
 integration notes.
+
+## Accounts slice review
+
+[Accounts](accounts.md) documents the new metadata-only boundary, private storage/limits, exact explicit status commands and separate evidence. README, panel guide, roadmap, architecture and changelog distinguish source implementation from live acceptance. No release notes or authority/answer policies are changed. Existing private-file/atomic-lock primitives are reused; provider execution is bounded and selected-context-only, with actual caller retained privately. Fictional tests and browser evidence cover storage/CLI/process failures, no subprocess on refresh and responsive text-safe disclosure/focus. No real provider, credential store, catalog or live panel was changed; native lifecycle/login/notification/installation acceptance remains unrun.
+
+Local validation: the full cmd/looptender and internal/userdir suites passed; focused Accounts/storage and existing Dock/Panel suites passed after the final guard changes. Accounts/storage race tests passed. The pinned modern-web-guidance 1.0.0 scan found no patterns (35 rules/33 guides), and the Impeccable detector and JavaScript syntax check passed. Light/wide and dark/narrow Chromium captures were inspected; native Enter disclosure and focus survived a completed read, and 64 same-label cards, empty/unavailable/stale cases, text-safe markup and widths 320/360/760/1280/2560 were checked. These are fictional fixtures, not installed-panel or real-account acceptance.

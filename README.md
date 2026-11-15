@@ -215,6 +215,8 @@ Decisions use structured status: exit codes, JSON fields, HTTP status and provid
 - [Standard route list](docs/routes.md): one ordered list of routes that loops can follow instead of a list each. Reading it is in v0.2.0. Unreleased: changing it with `keepgoing routes add`, `move`, `remove`, `off` and `on`, with a preview of every loop it affects; making a loop follow it or keep its own copy with `routes follow-standard` and `routes own`; and the offer to follow it in `init`, in guided `fallbacks add` and in the BB plugin's setup panel.
 - [Licensing](LICENSING.md): what is free, what needs a commercial agreement, and what stays under Apache-2.0.
 
+In unreleased source, the panel also has a read-only [Accounts view](docs/accounts.md) for explicitly selected Claude Code and Codex contexts, with bounded explicit status checks and retained freshness. Login reports do not verify identity, quota or model access; refresh never calls a provider. Real account and installed-panel acceptance remain open.
+
 ## Contributing
 
 See [CONTRIBUTING.md](CONTRIBUTING.md) for commit sign-offs and the short [contributor agreement](CONTRIBUTOR_LICENSE_AGREEMENT.md). Use fictional data everywhere. Roadmap completion includes a [capability and documentation review](docs/testing.md#capability-and-documentation-review); documentation must distinguish implemented, released and live-verified behavior.

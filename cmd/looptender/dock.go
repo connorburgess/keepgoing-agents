@@ -21,6 +21,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/looptender/looptender/internal/accounts"
 	"github.com/looptender/looptender/internal/config"
 	"github.com/looptender/looptender/internal/health"
 	"github.com/looptender/looptender/internal/incident"
@@ -306,14 +307,15 @@ func (s *dockServer) asset(w http.ResponseWriter, name, contentType string) {
 // read runs on the reader's own context, never a request's: a page that
 // reloads mid-read must not cut the read short for everyone else.
 type dockReader struct {
-	builds     *buildSession
-	ctx        context.Context // the command's lifetime; nil means background
-	directory  string
-	refresh    time.Duration
-	staleAfter time.Duration
-	query      clientDaemonQuery
-	now        func() time.Time
-	timeout    time.Duration // zero means dockReadTimeout
+	accountsDir string // test/private catalog override; never supplied by browser
+	builds      *buildSession
+	ctx         context.Context // the command's lifetime; nil means background
+	directory   string
+	refresh     time.Duration
+	staleAfter  time.Duration
+	query       clientDaemonQuery
+	now         func() time.Time
+	timeout     time.Duration // zero means dockReadTimeout
 
 	hostOnce sync.Once
 	host     string
@@ -392,7 +394,15 @@ func (d *dockReader) json(identifiers bool) ([]byte, error) {
 
 // read uses the same code paths as registry list, client status, status,
 // runs --registry-id and fallbacks list. It takes no lock and starts nothing.
-func (d *dockReader) read(ctx context.Context, identifiers bool) dockReport {
+func (d *dockReader) read(ctx context.Context, identifiers bool) (result dockReport) {
+	defer func() {
+		view := accounts.View{State: "unavailable", Complete: false, Cards: []accounts.Card{}}
+		if dir, err := accountsDirectory(d.accountsDir); err == nil && ctx.Err() == nil {
+			view = accounts.ReadView(dir, d.clock())
+		}
+		result.Accounts = &view
+	}()
+
 	now := d.clock()
 	dir, err := registryDirectory(d.directory)
 	if err != nil {

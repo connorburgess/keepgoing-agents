@@ -1,0 +1,191 @@
+package accounts
+
+import (
+	"encoding/json"
+	"errors"
+	"os"
+	"path/filepath"
+	"runtime"
+	"strings"
+	"testing"
+	"time"
+)
+
+func fixture(t *testing.T) (string, Entry) {
+	t.Helper()
+	dir := filepath.Join(t.TempDir(), "catalog")
+	var out Entry
+	err := Update(dir, func(f *File) error {
+		out = NewEntry(*f, Entry{Label: "Example studio", Provider: "claude-code", Mode: "inherited", CLI: filepath.Join(dir, "cli"), Workdir: dir}, "thr_example_owner", time.Now().UTC(), []string{"HOME=/example", "ANTHROPIC_API_KEY=fictional-sensitive-value"})
+		f.Entries = append(f.Entries, out)
+		return nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return dir, out
+}
+func TestCatalogBoundsCorruptionAndPrivacy(t *testing.T) {
+	for _, kind := range []string{"corrupt", "unknown", "oversize", "duplicate", "revision", "private_version", "permissions", "symlink", "lock_permissions", "directory_permissions"} {
+		t.Run(kind, func(t *testing.T) {
+			dir, e := fixture(t)
+			p := filepath.Join(dir, FileName)
+			raw, _ := os.ReadFile(p)
+			switch kind {
+			case "corrupt":
+				_ = os.WriteFile(p, []byte("{"), 0600)
+			case "unknown":
+				_ = os.WriteFile(p, []byte(strings.Replace(string(raw), "{", "{\"unknown\":true,", 1)), 0600)
+			case "oversize":
+				_ = os.WriteFile(p, make([]byte, MaxBytes+1), 0600)
+			case "duplicate":
+				f, _ := Load(dir)
+				f.Entries = append(f.Entries, e)
+				b, _ := json.Marshal(f)
+				_ = os.WriteFile(p, b, 0600)
+			case "revision":
+				f, _ := Load(dir)
+				f.Entries[0].Attempt = &Observation{Revision: "different", Context: e.Context, At: time.Now(), Auth: "reported_present"}
+				b, _ := json.Marshal(f)
+				_ = os.WriteFile(p, b, 0600)
+			case "private_version":
+				f, _ := Load(dir)
+				f.Entries[0].Attempt = &Observation{Revision: e.Revision, Context: e.Context, At: time.Now(), Auth: "reported_present", Version: "/private/example/sensitive"}
+				b, _ := json.Marshal(f)
+				_ = os.WriteFile(p, b, 0600)
+			case "permissions":
+				if runtime.GOOS == "windows" {
+					t.Skip("Unix mode guard")
+				}
+				_ = os.Chmod(p, 0644)
+			case "symlink":
+				target := filepath.Join(dir, "other")
+				_ = os.Rename(p, target)
+				if os.Symlink(target, p) != nil {
+					t.Skip("symlink unavailable")
+				}
+			case "lock_permissions":
+				if runtime.GOOS == "windows" {
+					t.Skip("Unix mode guard")
+				}
+				_ = os.Chmod(filepath.Join(dir, "accounts.lock"), 0644)
+			case "directory_permissions":
+				if runtime.GOOS == "windows" {
+					t.Skip("Unix mode guard")
+				}
+				_ = os.Chmod(dir, 0755)
+			}
+			before, _ := os.ReadFile(p)
+			if kind != "lock_permissions" {
+				if _, err := Load(dir); err == nil {
+					t.Fatal("unsafe catalog read")
+				}
+			}
+			if err := Update(dir, func(*File) error { return nil }); err == nil {
+				t.Fatal("unsafe catalog rewritten")
+			}
+			after, _ := os.ReadFile(p)
+			if string(before) != string(after) {
+				t.Fatal("corrupt record repaired")
+			}
+		})
+	}
+}
+func TestCatalogLimitsAndAtomicSnapshots(t *testing.T) {
+	dir, e := fixture(t)
+	for i := 1; i < MaxEntries; i++ {
+		if err := Update(dir, func(f *File) error { f.Entries = append(f.Entries, NewEntry(*f, e, "", time.Now(), nil)); return nil }); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := Update(dir, func(f *File) error { f.Entries = append(f.Entries, NewEntry(*f, e, "", time.Now(), nil)); return nil }); err == nil {
+		t.Fatal("entry limit")
+	}
+	// Failed writes preserve the previous complete record.
+	f, err := Load(dir)
+	if err != nil || len(f.Entries) != MaxEntries {
+		t.Fatalf("lost entries: %v", err)
+	}
+	if err := Update(dir, func(f *File) error { f.Entries[0].Label = strings.Repeat("a", 121); return nil }); err == nil {
+		t.Fatal("label limit")
+	}
+	if _, err = Load(dir); err != nil {
+		t.Fatal("failed write corrupted snapshot")
+	}
+}
+func TestContextFingerprintAndProjection(t *testing.T) {
+	dir, e := fixture(t)
+	f, _ := Load(dir)
+	a := Context(f, e, []string{"HOME=/example", "ANTHROPIC_API_KEY=a", "BB_THREAD_ID=one"})
+	if a != Context(f, e, []string{"BB_THREAD_ID=two", "ANTHROPIC_API_KEY=a", "HOME=/example"}) {
+		t.Fatal("caller changes auth context")
+	}
+	if a == Context(f, e, []string{"HOME=/example", "ANTHROPIC_API_KEY=b"}) {
+		t.Fatal("secret input not bound")
+	}
+	explicit := e
+	explicit.Mode = "explicit_directory"
+	explicit.Directory = "/selected"
+	if Context(f, explicit, []string{"CLAUDE_CONFIG_DIR=/ignored-a"}) != Context(f, explicit, []string{"CLAUDE_CONFIG_DIR=/ignored-b"}) {
+		t.Fatal("effective override not honored")
+	}
+	now := time.Now().UTC()
+	o := Observation{Revision: e.Revision, Context: e.Context, At: now.Add(-time.Minute), Auth: "reported_present", Plan: "max", Caller: "thr_example_owner"}
+	f.Entries[0].Last = &o
+	f.Entries[0].Attempt = &o
+	v := Project(f, now)
+	if v.Cards[0].Auth.Freshness != "fresh" || v.Cards[0].Plan.Text != "Max" {
+		t.Fatal("fresh evidence lost")
+	}
+	if Project(f, now.Add(5*time.Minute)).Cards[0].Auth.Freshness != "stale" {
+		t.Fatal("age promoted")
+	}
+	failure := o
+	failure.At = now
+	failure.Auth = "unavailable"
+	failure.Plan = ""
+	failure.Reason = "timeout"
+	f.Entries[0].Attempt = &failure
+	v = Project(f, now)
+	if v.Cards[0].Auth.State != "unavailable" || v.Cards[0].PreviousAuth == nil || v.Cards[0].PreviousAuth.Freshness != "stale" || v.Cards[0].Plan.Freshness != "stale" {
+		t.Fatal("failure hid or refreshed prior observation")
+	}
+	raw, _ := json.Marshal(v)
+	for _, private := range []string{"fictional-sensitive-value", "thr_example_owner", e.CLI, e.Context, e.Revision} {
+		if strings.Contains(string(raw), private) {
+			t.Fatal("private field projected")
+		}
+	}
+	if !ReadView(dir, now).Complete {
+		t.Fatal("read failure")
+	}
+	bad := ReadView(filepath.Join(dir, "accounts.lock"), now)
+	if bad.Complete || bad.State != "unavailable" {
+		t.Fatal("unavailable became empty")
+	}
+	if err := Update(dir, func(*File) error { return ErrChanged }); !errors.Is(err, ErrChanged) {
+		t.Fatal("revision refusal lost")
+	}
+}
+
+func TestAtomicCatalogReadersNeverSeePartialWrite(t *testing.T) {
+	dir, _ := fixture(t)
+	done := make(chan error, 1)
+	go func() {
+		for i := 0; i < 40; i++ {
+			if _, err := Load(dir); err != nil {
+				done <- err
+				return
+			}
+		}
+		done <- nil
+	}()
+	for i := 0; i < 20; i++ {
+		if err := Update(dir, func(f *File) error { f.Entries[0].Label = "Example alternate"; return nil }); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := <-done; err != nil {
+		t.Fatal("partial record observed", err)
+	}
+}

@@ -57,6 +57,7 @@ Local client discovery:
   client pause|stop        Save a restrictive hold for a registered loop
   client prepare-resume    Prepare a short-lived snapshot/ticket for review
   client resume            Clear holds using an unchanged prepared ticket
+  accounts list|add|update|check  Select private account contexts; explicit status only, no model calls
   registry add|list|remove  Register private loop references; never start supervision
   migrate                  Say what moving the per-user directories from keepgoing/ to looptender/ would do;
                            --apply moves them and leaves a link, --undo --apply moves them back
@@ -150,6 +151,8 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 		return registryCommand(e, rest)
 	case "migrate":
 		return migrateCommand(e, rest)
+	case "accounts":
+		return accountsCommand(e, rest, accountExec)
 	case "routes":
 		return routesCommand(e, rest)
 	case "transfer":
