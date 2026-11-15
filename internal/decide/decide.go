@@ -61,6 +61,14 @@ type Observation struct {
 	// the adapter has no such notices. Decide never reads it: the supervisor
 	// compares it between checks as one of the idle spacing rule's facts.
 	ChildOutcome int64
+	// Turns counts the turn requests and turn starts in the session's own
+	// log, from typed events only; nil when the adapter cannot count them.
+	// Decide never reads it: the supervisor compares it between checks as
+	// one of the idle spacing rule's facts, so that input looptender did not
+	// send (a person's message, another agent's message, a notice) starts
+	// the spacing over, and an idle wake counts as having changed nothing
+	// only once the turn it started has ended.
+	Turns *TurnCounts
 	// ErrorTurn names the turn an error ended, when the adapter can tell; a
 	// new turn has a new name. It counts a refused turn once however many
 	// checks see it, and never changes any other rule.
@@ -238,6 +246,15 @@ type IdleSpacing struct {
 	// SinceIdleWake is the time since the last idle wake. Negative (the
 	// clock was set back) counts as the wait having passed.
 	SinceIdleWake time.Duration
+}
+
+// TurnCounts counts events in a session's own log since it began. Requests
+// are turn requests from any sender, a provider's retry of an earlier request
+// excluded; Starts are turns that started. Neither is ever read from message
+// text.
+type TurnCounts struct {
+	Requests int64
+	Starts   int64
 }
 
 // IdleWait names why an idle wake is waiting. It is a fixed code: callers

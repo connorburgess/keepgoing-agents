@@ -14,12 +14,14 @@ import (
 
 // idleFacts is a digest of the structured facts the idle spacing rule
 // watches: the Git progress fingerprint (as the time it last changed), the
-// latest child outcome notice, the goal revision, the control record (any
-// control change, including resume), and the target with what last set it,
-// the last handoff or switch-back and the last timing step or retarget. A
-// session error is handled apart: it clears the record. Nothing here reads
-// transcript or message text, and the digest holds no identifier.
-func (t *tick) idleFacts(obs decide.Observation, ctl control.File) string {
+// latest child outcome notice, the turn counts, the goal revision, the
+// control record (any control change, including resume), and the target with
+// what last set it, the last handoff or switch-back and the last timing step
+// or retarget. It returns the digest as the facts are now, and as they will
+// be once an idle wake sent now has been requested and has started its one
+// turn. A session error is handled apart: it clears the record. Nothing here
+// reads transcript or message text, and the digest holds no identifier.
+func (t *tick) idleFacts(obs decide.Observation, ctl control.File) (now, afterWake string) {
 	ts := func(v time.Time) string { return strconv.FormatInt(v.UnixNano(), 10) }
 	goal := "none"
 	if g, err := control.LoadGoal(t.loop.StateDir); err != nil {
@@ -50,8 +52,21 @@ func (t *tick) idleFacts(obs decide.Observation, ctl control.File) string {
 		"handoff=" + ts(t.st.LastHandoffAt),
 		"timing=" + ts(step) + "/" + ts(retarget),
 	}
-	sum := sha256.Sum256([]byte(strings.Join(parts, "\n")))
-	return hex.EncodeToString(sum[:12])
+	digest := func(turns string) string {
+		sum := sha256.Sum256([]byte(strings.Join(append(parts, "turns="+turns), "\n")))
+		return hex.EncodeToString(sum[:12])
+	}
+	// A wake adds one request and, once it runs, one turn start. Matching
+	// the record therefore means exactly that happened since the wake: its
+	// turn started, nobody else asked for a turn, and, since the rule acts
+	// only on an idle session, the turn has ended. Until then, and after
+	// anyone else's message, the facts differ.
+	c := obs.Turns
+	if c == nil {
+		return digest("unknown"), digest("unknown")
+	}
+	count := func(r, s int64) string { return strconv.FormatInt(r, 10) + "/" + strconv.FormatInt(s, 10) }
+	return digest(count(c.Requests, c.Starts)), digest(count(c.Requests+1, c.Starts+1))
 }
 
 // idleSpacingInput returns the rule's input for this check. With the key off
@@ -60,14 +75,15 @@ func (t *tick) idleFacts(obs decide.Observation, ctl control.File) string {
 // recovery that follows are changes.
 func (t *tick) idleSpacingInput(obs decide.Observation, ctl control.File) decide.IdleSpacing {
 	first, max := t.loop.Progress.IdleSpacingWaits()
-	t.idleFactsNow = ""
+	t.idleFactsAfterWake = ""
 	if max <= 0 || obs.State == decide.Error {
 		t.st.IdleSpacing = nil
 		return decide.IdleSpacing{}
 	}
-	t.idleFactsNow = t.idleFacts(obs, ctl)
+	var now string
+	now, t.idleFactsAfterWake = t.idleFacts(obs, ctl)
 	in := decide.IdleSpacing{First: first, Max: max}
-	if r := t.st.IdleSpacing; r != nil && r.Facts == t.idleFactsNow && !r.LastWakeAt.IsZero() {
+	if r := t.st.IdleSpacing; r != nil && !r.LastWakeAt.IsZero() && r.Facts == now {
 		in.Unchanged = r.Unchanged + 1
 		in.SinceIdleWake = t.now.Sub(r.LastWakeAt)
 	}
@@ -78,14 +94,14 @@ func (t *tick) idleSpacingInput(obs decide.Observation, ctl control.File) decide
 // whatever it returned, like every other send record. A wake that carried a
 // child-error notice starts the count over: the notice is a change.
 func (t *tick) recordIdleWake(in decide.Input, childNotice bool) {
-	if t.idleFactsNow == "" {
+	if t.idleFactsAfterWake == "" {
 		return
 	}
 	n := in.IdleSpacing.Unchanged
 	if childNotice {
 		n = 0
 	}
-	t.st.IdleSpacing = &state.IdleSpacing{LastWakeAt: t.now, Facts: t.idleFactsNow, Unchanged: n}
+	t.st.IdleSpacing = &state.IdleSpacing{LastWakeAt: t.now, Facts: t.idleFactsAfterWake, Unchanged: n}
 }
 
 // noteIdleSpacing records the final decision of a check: when a spaced idle

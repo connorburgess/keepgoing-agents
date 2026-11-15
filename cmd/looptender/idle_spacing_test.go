@@ -4,7 +4,9 @@ package main
 
 import (
 	"encoding/json"
+	"fmt"
 	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -49,8 +51,10 @@ func TestIdleSpacingOffWakesEveryCheck(t *testing.T) {
 // The case from a live trial: a coordinator idle and waiting on CI, with no
 // lanes running. Its previous wake's turn ended with nothing to do and no
 // structured fact changed, so the next idle wake is spaced, the wait grows,
-// status says when the next is due and why, a control change wakes it at
-// once, and the counts survive in state.json between checks.
+// status says when the next is due and why, a control change or a person's
+// message wakes it at once, and the counts survive in state.json between
+// checks. The fake thread's log records each wake's request and turn, as BB
+// does; only typed events are read.
 func TestIdleSpacingSpacesUnchangedIdleWakes(t *testing.T) {
 	f := newFixture(t)
 	raw, err := os.ReadFile(f.cfg)
@@ -60,6 +64,15 @@ func TestIdleSpacingSpacesUnchangedIdleWakes(t *testing.T) {
 	write(t, f.cfg, string(raw)+"  progress: {idle_spacing: {first: 10m, max: 2h}}\n", 0o600)
 	if code, _, errs := f.run("enable"); code != exitOK {
 		t.Fatal(errs)
+	}
+	var events []string
+	turn := func(initiator string) {
+		n := len(events)
+		events = append(events,
+			fmt.Sprintf(`{"seq":%d,"type":"client/turn/requested","data":{"initiator":%q}}`, n+1, initiator),
+			fmt.Sprintf(`{"seq":%d,"type":"turn/started","data":{}}`, n+2),
+			fmt.Sprintf(`{"seq":%d,"type":"turn/completed","data":{"status":"completed"}}`, n+3))
+		write(t, filepath.Join(f.bbDir, "thr_primary.log"), "["+strings.Join(events, ",")+"]", 0o600)
 	}
 	steps := []struct{ at, action string }{
 		{"2026-11-16T12:00:00Z", "wake"}, // nothing on record: not spaced
@@ -72,6 +85,9 @@ func TestIdleSpacingSpacesUnchangedIdleWakes(t *testing.T) {
 		r := f.tickAt(s.at)
 		if r["action"] != s.action {
 			t.Fatalf("%s: %v", s.at, r)
+		}
+		if s.action == "wake" {
+			turn("user") // the wake's own request and its turn, which ends
 		}
 		if s.action == "none" && !strings.HasPrefix(r["reason"].(string), "idle; previous idle wakes changed nothing") {
 			t.Fatalf("%s: %v", s.at, r)
@@ -100,6 +116,7 @@ func TestIdleSpacingSpacesUnchangedIdleWakes(t *testing.T) {
 	if r := f.tickAt("2026-11-16T12:31:00Z"); r["action"] != "wake" {
 		t.Fatalf("after resume: %v", r)
 	}
+	turn("user")
 	cfg, _ := config.Load(f.cfg)
 	st, _ := state.Load(cfg.Loop.StateDir)
 	if st.IdleSpacing == nil || st.IdleSpacing.Unchanged != 0 || st.IdleSpacing.Wait != "" || st.IdleSpacedTotal() != 3 {
@@ -108,5 +125,14 @@ func TestIdleSpacingSpacesUnchangedIdleWakes(t *testing.T) {
 	// A spaced check sends nothing, so it never spends max_sends.
 	if st.SendsRecorded != 3 {
 		t.Fatalf("sends recorded %d", st.SendsRecorded)
+	}
+	if r := f.tickAt("2026-11-16T12:36:00Z"); r["action"] != "none" {
+		t.Fatalf("after the resumed wake's turn: %v", r)
+	}
+	// A person's message, which looptender did not send, starts the spacing
+	// over: the next check wakes at once.
+	turn("user")
+	if r := f.tickAt("2026-11-16T12:37:00Z"); r["action"] != "wake" {
+		t.Fatalf("after a person's message: %v", r)
 	}
 }

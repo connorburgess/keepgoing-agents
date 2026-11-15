@@ -222,9 +222,10 @@ type tick struct {
 	incidentControl     *incident.Controls
 	incidentProbes      incident.Probes
 	incidentLimitWait   decide.LimitWait // from the last engine decision, which sets the tick's reason
-	// idleFactsNow is this check's digest of the idle spacing rule's facts;
-	// empty when the rule is off or the session is in error.
-	idleFactsNow string
+	// idleFactsAfterWake is this check's digest of the idle spacing rule's
+	// facts as they will be once a wake sent now has started its turn; empty
+	// when the rule is off or the session is in error.
+	idleFactsAfterWake string
 	// incidentLimitWaitReport is set only by the check that detects a long limit wait.
 	incidentLimitWaitReport string
 	// incidentTurnRetry is set only by a check that asked the provider to retry a failed turn.

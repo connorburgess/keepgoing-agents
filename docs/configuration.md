@@ -250,6 +250,7 @@ loop:
 
 - the Git progress fingerprint (only with `repositories`);
 - a new child outcome notice in the session's log (BB only);
+- a turn looptender did not ask for (BB only): a person typing in the thread, a message from another agent or a `bb thread tell`, or a notice. Read from the log's typed events only: the count of turn requests (a provider's retry of a request excluded) and of turn starts. After an idle wake the count must have grown by exactly the wake's own request and its one turn; any other request or turn starts the spacing over, including a message queued into the wake's own turn;
 - the goal revision;
 - any change to `control.json`, which includes `resume`, `pause`, `enable` and a person's answer to a hold;
 - the target or what set it: a handoff, a switch-back, a `retarget`, a timing step;
@@ -257,11 +258,22 @@ loop:
 
 A loop with no `repositories` still has every other fact. The rule never reads transcript or message text, and never infers that there is nothing to do: it only notices that none of these facts moved.
 
+An idle wake counts as having changed nothing only once the adapter accepted it and the turn it started has ended. A send that failed is not recorded: the next check wakes again, as it would without the key, and the attempt still counts toward `max_sends` and the other per-attempt caps as before. On BB the turn has ended when the log holds the wake's request and its turn start and the thread is idle again; until then the next idle check is not spaced. An adapter that cannot count turns (every adapter other than BB) treats any later idle check as the turn having ended. If the clock is set back so that the last idle wake appears to be in the future, the wait counts as passed and the session is woken.
+
 It only spaces. It adds no hold, never shortens any other wait, and never overrides a stop, pause, hold, the operating window, child-work suppression, a limit wait or the error rules, all of which come first. A switch-back and a child-error notice are not idle wakes and are never spaced. A spaced check sends nothing, so it spends no `max_sends` and refunds none. The daemon keeps its usual interval; a check that comes before the next idle wake is due records `idle; previous idle wakes changed nothing looptender can see; next idle wake spaced` (cause `idle_unchanged`) and does nothing else.
 
 `status` prints an `idle spacing:` line with the next idle wake's due time and the fixed reason code `idle_unchanged`; `status --json` has `idleSpacing` with `nextIdleWakeAt`, `wait`, `unchanged`, `spacedTotal` and `days`, the count of spaced wakes per UTC day and reason code, kept for 31 days. That history is diagnostic only and never a decision input. The record lives in `state.json` and survives a restart.
 
-**Known limit.** Anything that is not one of the facts above is invisible to the rule. A coordinator idle and waiting on CI is the typical case: a CI result is not a fact looptender sees, so with the key on, a wake after CI finishes can be late by up to `max` unless something else changes. Choose `max` with that in mind. The cap is not derived from any provider's prompt-cache lifetime, which this project does not know.
+**Known limits.** Anything that is not one of the facts above is invisible to the rule, and a wake can be late by up to `max` unless something else changes. Choose `max` with that in mind. What does not start the spacing over:
+
+- a CI result or a review: a coordinator idle and waiting on CI is the typical case;
+- work that makes no Git change, or any Git change when the loop has no `repositories`;
+- a person's activity the adapter cannot see: on any adapter other than BB a person's message is not a fact, and on BB a person's work outside the thread (in a lane, in a terminal, on GitHub) is not one either;
+- a lane that ends without a child outcome notice in the parent's log;
+- an edit to the configuration file, other than turning the key off, which clears the record;
+- a daemon restart: the record persists in `state.json`, by design.
+
+The cap is not derived from any provider's prompt-cache lifetime, which this project does not know.
 
 ## limits
 
