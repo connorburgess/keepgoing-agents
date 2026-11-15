@@ -42,9 +42,10 @@ const (
 	hereRecordsBasis = "Loops are found only in the session records that enable and each check write, then checked against each loop's current configuration and state; a loop that has not recorded this session is not found."
 	hereNoParent     = "Parent threads are not looked up, so a lane is not found through the loop that supervises its parent."
 	hereExactDir     = "Only this exact directory matches: a session working in a parent or a subdirectory of it is not found."
-	// hereInherited holds until headless and process turns stop inheriting
-	// the supervisor's BB_THREAD_ID; it is removed with that change.
-	hereInherited   = "An agent that looptender's tick or daemon starts inherits the BB_THREAD_ID they were started with, so a headless or process agent asking from such a turn is identified as that BB thread, not as its own session, and may be shown another loop or none."
+	// hereOlderBuild: turns no longer inherit the supervisor's BB_THREAD_ID
+	// (envvar.SupervisorSession), but a supervisor still running an older
+	// build passes it on.
+	hereOlderBuild  = "Headless and process turns that looptender starts do not inherit the BB_THREAD_ID their supervisor was started with, unless the loop's configuration sets it in env. A supervisor on an older build passes it until it is restarted, and an agent in its turns is then identified as that BB thread, not as its own session."
 	hereThisSession = "this session"
 )
 
@@ -154,7 +155,7 @@ func hereFind(thread, cwd string, now time.Time) hereView {
 		v.subject = "a session working in " + cwd
 		v.Basis = append(v.Basis, hereExactDir, hereProcessLimit)
 	} else {
-		v.Basis = append(v.Basis, hereInherited)
+		v.Basis = append(v.Basis, hereOlderBuild)
 	}
 	dir, _, err := session.Lookup()
 	if err != nil {

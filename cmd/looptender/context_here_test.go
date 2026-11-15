@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/looptender/looptender/internal/session"
+	"github.com/looptender/looptender/internal/testexec"
 )
 
 // here runs context --here, which reads no -c, and returns its answer.
@@ -92,8 +93,8 @@ func TestContextHereFindsTheLoopThatTargetsTheCaller(t *testing.T) {
 	if strings.Contains(text, hereProcessLimit) || strings.Contains(text, hereExactDir) {
 		t.Fatal("a BB caller is told about working directories")
 	}
-	if !strings.Contains(text, "basis:     "+hereInherited+"\n") {
-		t.Fatalf("a BB caller is not told that agents looptender starts inherit BB_THREAD_ID:\n%s", text)
+	if !strings.Contains(text, "basis:     "+hereOlderBuild+"\n") {
+		t.Fatalf("a BB caller is not told about supervisors on an older build:\n%s", text)
 	}
 
 	// A lane of the supervised thread, and any other thread, is not
@@ -305,4 +306,51 @@ func TestContextHereUsage(t *testing.T) {
 		}
 	}
 	_ = f
+}
+
+// A headless agent asking from a turn that a supervisor started inside a BB
+// thread is identified by its own working directory, not as that thread, so
+// it finds its own loop. The turn does not inherit the supervisor's
+// BB_THREAD_ID.
+func TestContextHereFromAHeadlessTurnStartedInABBThread(t *testing.T) {
+	f := newFixture(t)
+	project := filepath.Join(f.dir, "project")
+	os.MkdirAll(project, 0o700)
+	self, err := os.Executable()
+	if err != nil {
+		t.Fatal(err)
+	}
+	answer := filepath.Join(f.dir, "answer")
+	agent := filepath.Join(f.dir, "bin", "claude-asks")
+	testexec.Script(t, agent, fmt.Sprintf("#!/bin/sh\n%s=%s exec %s \"$@\"\n", envContextHereAgent, answer, self))
+	cfgPath := filepath.Join(f.dir, "headless.yaml")
+	write(t, cfgPath, fmt.Sprintf("version: 1\nloop:\n  name: headless-loop\n  state_dir: headless-state\n  prompt: Continue the example task.\n  adapter: claude\n  claude: {workdir: %s, cli: %s}\n", project, agent), 0o600)
+
+	t.Setenv("BB_THREAD_ID", "thr_example_operator")
+	for _, cmd := range []string{"enable", "tick"} {
+		var out, errb bytes.Buffer
+		if code := run(context.Background(), []string{cmd, "-c", cfgPath}, &out, &errb); code != exitOK {
+			t.Fatalf("%s: %d %s %s", cmd, code, out.String(), errb.String())
+		}
+	}
+	var b []byte
+	for deadline := time.Now().Add(30 * time.Second); ; time.Sleep(50 * time.Millisecond) {
+		if b, err = os.ReadFile(answer); err == nil {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("the agent's turn did not run context --here")
+		}
+	}
+	code, body, _ := strings.Cut(string(b), "\n")
+	var v hereView
+	if err := json.Unmarshal([]byte(body), &v); err != nil {
+		t.Fatalf("%v: %s", err, b)
+	}
+	if code != "0" || v.Caller.Source != "working_directory" || v.Caller.BBThread != "" || v.Caller.Workdir != session.CleanPath(project) {
+		t.Fatalf("the turn was not identified by its working directory: %s %+v", code, v.Caller)
+	}
+	if v.Outcome != hereOne || len(v.Loops) != 1 || v.Loops[0].Loop != "headless-loop" {
+		t.Fatalf("the turn did not find its own loop: %+v", v)
+	}
 }

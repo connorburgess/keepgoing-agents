@@ -1,9 +1,32 @@
 package main
 
 import (
+	"bytes"
+	"context"
+	"fmt"
+	"os"
 	"strings"
 	"testing"
 )
+
+// envContextHereAgent makes the test binary a stand-in Claude Code agent
+// that, in its turn, runs context --here --json and writes the answer to the
+// file it names. Only the stand-in's own script sets it.
+const envContextHereAgent = "LOOPTENDER_TEST_CONTEXT_HERE_AGENT"
+
+func contextHereAgentHelper() {
+	out := os.Getenv(envContextHereAgent)
+	if out == "" {
+		return
+	}
+	os.Unsetenv(envContextHereAgent)
+	var b bytes.Buffer
+	code := run(context.Background(), []string{"context", "--here", "--json"}, &b, &bytes.Buffer{})
+	_ = os.WriteFile(out+".tmp", []byte(fmt.Sprintf("%d\n%s", code, b.String())), 0o600)
+	_ = os.Rename(out+".tmp", out)
+	fmt.Println(`{"type":"result","subtype":"success","is_error":false,"session_id":"s","result":"OK"}`)
+	os.Exit(0)
+}
 
 // The outcome sentence for each combination of counted and unchecked loops.
 // "no loop targets this session" is said only when every recorded loop was
@@ -54,7 +77,7 @@ func TestContextHereFixedSentences(t *testing.T) {
 		hereRecordsBasis: "Loops are found only in the session records that enable and each check write, then checked against each loop's current configuration and state; a loop that has not recorded this session is not found.",
 		hereNoParent:     "Parent threads are not looked up, so a lane is not found through the loop that supervises its parent.",
 		hereExactDir:     "Only this exact directory matches: a session working in a parent or a subdirectory of it is not found.",
-		hereInherited:    "An agent that looptender's tick or daemon starts inherits the BB_THREAD_ID they were started with, so a headless or process agent asking from such a turn is identified as that BB thread, not as its own session, and may be shown another loop or none.",
+		hereOlderBuild:   "Headless and process turns that looptender starts do not inherit the BB_THREAD_ID their supervisor was started with, unless the loop's configuration sets it in env. A supervisor on an older build passes it until it is restarted, and an agent in its turns is then identified as that BB thread, not as its own session.",
 	} {
 		if got != want {
 			t.Fatalf("got %q, want %q", got, want)
