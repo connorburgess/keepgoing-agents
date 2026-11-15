@@ -1237,6 +1237,9 @@ func (t *tick) run() error {
 			actErr = err
 		}
 	}
+	// After the decision and the action, so it can change neither; within
+	// what is left of the budget, and never for a lane.
+	t.readContext(a, target, d, obs, t.st.LastState)
 	t.reportLongLimitWait(target, obs)
 	t.reportChildErrors(target, obs)
 	t.st.LastState = string(obs.State)

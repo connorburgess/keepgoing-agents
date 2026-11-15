@@ -102,6 +102,25 @@ type SignalExitReporter interface {
 	SignalExits() int
 }
 
+// ContextReader is implemented by adapters whose provider reports how much
+// of the model's context window the supervised conversation uses. The reading
+// is diagnostic only: it is recorded and shown, and is never an input to a
+// decision, a send, an allowance or a hold. It reads only the supervised
+// conversation, never a lane, and never message text. An error means the
+// reading is unavailable; a caller does not retry it or warn about it.
+type ContextReader interface {
+	ReadContext(ctx context.Context) (ContextReading, error)
+}
+
+// ContextReading is one context-size reading. UsedTokens and WindowTokens are
+// as the provider reported them; Estimated says the provider marked them as
+// an estimate.
+type ContextReading struct {
+	UsedTokens   int64
+	WindowTokens int64
+	Estimated    bool
+}
+
 // CLIPather is implemented by adapters that run a provider executable: the
 // absolute path the system resolved for it on the last command started, or
 // "" before one was. A check records it, so a caller with a shorter PATH (the
