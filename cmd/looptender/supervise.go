@@ -486,6 +486,8 @@ type statusOut struct {
 	PromptSend   promptSendStatus `json:"promptSend"`
 	LimitWait    limitWaitStatus  `json:"limitWait"`
 	TurnRetry    turnRetryStatus  `json:"turnRetry"`
+	// Context is the active target's latest context-size reading.
+	Context contextStatus `json:"context"`
 	// Refusals is the refusal gauge in words and counts.
 	Refusals          refusalStatus            `json:"refusals"`
 	Lanes             lanesStatus              `json:"laneRecovery"`
@@ -547,7 +549,7 @@ type statusOut struct {
 // stateFields are the keys of status --json taken from state.json. They are
 // left out when it cannot be read.
 var stateFields = []string{"state", "targetAgent", "targetSession", "newThreads", "redundancy", "promptSend",
-	"limitWait", "turnRetry", "refusals", "laneRecovery", "childErrorReport", "takeoverBriefs"}
+	"limitWait", "turnRetry", "context", "refusals", "laneRecovery", "childErrorReport", "takeoverBriefs"}
 
 // MarshalJSON is the ordinary encoding, without what an unreadable record
 // would have filled in: "control" when control.json cannot be read, and the
@@ -739,6 +741,7 @@ func status(e env, cfg *config.Config, now time.Time, asJSON bool, staleAfter ti
 	fmt.Fprintf(w, "progress flag: %s\n", out.NoProgress.Text)
 	if !out.stateUnreadable {
 		printTurnRetry(w, out.TurnRetry)
+		printContext(w, out.Context)
 	}
 	if out.Refusals.Text != "" && !out.stateUnreadable {
 		fmt.Fprintf(w, "refusals:  %s\n", out.Refusals.Text)
@@ -1052,6 +1055,7 @@ func readStatus(ctx context.Context, cfg *config.Config, now time.Time, staleAft
 	out.PromptSend = describePromptSend(st.LastPromptSend, out.Goal)
 	out.LimitWait = describeLimitWait(st.LimitWaitReport, l, now)
 	out.TurnRetry = describeTurnRetry(st.LastTurnRetry)
+	out.Context = describeContext(st.Context, st.Target(), activeBB(cfg, st.Target()) != nil, now)
 	out.Refusals = describeRefusals(st.Refusals, ctl.Question, now)
 	out.Lanes = describeLanes(st.Lanes, activeBB(cfg, st.Target()))
 	// The lane record is per-lane hashes and their key. Status shows its
