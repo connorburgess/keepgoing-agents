@@ -148,3 +148,13 @@ func setSnapshotRename(handle syscall.Handle, info *snapshotRenameInfo, size uin
 	}
 	return nil
 }
+
+// ReplaceAtomic atomically publishes a closed same-filesystem staging file. It
+// creates no availability marker and supplies no missing-versus-unavailable
+// record semantics. Supported Windows POSIX rename is required; unsupported or
+// refused operations fail closed without legacy/remove-first fallback. Sharing
+// retries are bounded by retryBudget. Caller checks staging writes/close and
+// cleans staging. This does not supply fsync or power-loss durability.
+func ReplaceAtomic(source, target string) error {
+	return renameSnapshotWith(source, target, setSnapshotRename, time.Sleep)
+}

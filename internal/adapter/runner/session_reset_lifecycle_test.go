@@ -80,54 +80,45 @@ func TestSessionResetFencesSetupIncludingFirstStart(t *testing.T) {
 	}
 }
 
-func TestSessionResetRechecksBeforeObserveRestore(t *testing.T) {
+func TestSessionResetExcludesObserveRestore(t *testing.T) {
 	h := resetLifecycleFixture(t, true)
 	beforeSessionCommit = func() {
-		beforeSessionCommit = nil
-		if _, err := h.ResetSession(); err != nil {
-			t.Fatal(err)
+		if _, err := h.ResetSession(); !errors.Is(err, ErrTurnRunning) {
+			t.Fatalf("reset crossed retained observation guard: %v", err)
 		}
 	}
 	t.Cleanup(func() { beforeSessionCommit = nil })
-	obs, err := h.Observe(context.Background())
-	if err != nil || obs.State != decide.Idle || h.dir.Session() != "" {
+	if obs, err := h.Observe(context.Background()); err != nil || obs.State != decide.Idle {
+		t.Fatalf("observe: %+v %v", obs, err)
+	}
+	beforeSessionCommit = nil
+	if _, err := h.ResetSession(); err != nil {
+		t.Fatal(err)
+	}
+	if obs, err := h.Observe(context.Background()); err != nil || obs.State != decide.Idle || h.dir.Session() != "" {
 		t.Fatalf("restored reset session: %+v %v %q", obs, err, h.dir.Session())
 	}
 }
 
-func TestSessionResetRejectsStaleObserveAndSend(t *testing.T) {
-	for _, send := range []bool{false, true} {
-		t.Run(map[bool]string{false: "observe", true: "send"}[send], func(t *testing.T) {
-			h := resetLifecycleFixture(t, true)
-			beforeSessionCommit = func() {
-				held, err := lock.AcquireNamed(string(h.dir), turnLock)
-				if err != nil {
-					t.Fatal(err)
-				}
-				defer held.Release()
-				if _, err := h.dir.setAside(); err != nil {
-					t.Fatal(err)
-				}
-				if err := h.dir.saveRecord(Record{StopKey: "new-turn", Liveness: livenessLock, StartedAt: time.Now().UTC()}); err != nil {
-					t.Fatal(err)
-				}
-				h.dir.SaveSession("sess_new")
-			}
-			t.Cleanup(func() { beforeSessionCommit = nil })
-			var err error
-			if send {
-				err = h.Send(context.Background(), "fictional task", adapter.ModeAuto)
-			} else {
-				var obs decide.Observation
-				obs, err = h.Observe(context.Background())
-				if obs.State != decide.Unknown {
-					t.Errorf("stale observation: %+v", obs)
-				}
-			}
-			if !errors.Is(err, errSuperseded) || h.dir.Session() != "sess_new" {
-				t.Fatalf("stale commit: %v saved %q", err, h.dir.Session())
-			}
-		})
+func TestSessionResetRejectsStaleSend(t *testing.T) {
+	h := resetLifecycleFixture(t, true)
+	beforeSessionCommit = func() {
+		held, err := lock.AcquireNamed(string(h.dir), turnLock)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer held.Release()
+		if _, err := h.dir.setAside(); err != nil {
+			t.Fatal(err)
+		}
+		if err := h.dir.saveRecord(Record{StopKey: "new-turn", Liveness: livenessLock, StartedAt: time.Now().UTC()}); err != nil {
+			t.Fatal(err)
+		}
+		h.dir.SaveSession("sess_new")
+	}
+	t.Cleanup(func() { beforeSessionCommit = nil })
+	if err := h.Send(context.Background(), "fictional task", adapter.ModeAuto); !errors.Is(err, errSuperseded) || h.dir.Session() != "sess_new" {
+		t.Fatalf("stale commit: %v saved %q", err, h.dir.Session())
 	}
 }
 

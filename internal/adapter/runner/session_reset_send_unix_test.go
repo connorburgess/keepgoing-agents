@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/looptender/looptender/internal/adapter"
+	"github.com/looptender/looptender/internal/snapshot"
 )
 
 // Unlike the synthetic generation fixtures, these execute a real detached
@@ -108,4 +109,47 @@ func TestSessionResetFirstStartCompletesBeforeWaitingSend(t *testing.T) {
 	if err != nil || strings.Contains(string(args), "--session") {
 		t.Fatalf("first start resumed: %q %v", args, err)
 	}
+}
+
+// Real stand-in Send must reach bounded exclusive acquisition while a completed
+// observer is paused in shared publication, then proceed after it releases.
+func TestCompletedRestoreContentionSend(t *testing.T) {
+	h, _ := resetSendFixture(t)
+	if err := h.Send(context.Background(), "fictional first task", adapter.ModeAuto); err != nil {
+		t.Fatal(err)
+	}
+	waitPhase(t, h.dir, Finished)
+	publishing, release, sampled := make(chan struct{}), make(chan struct{}), make(chan struct{})
+	replaceRestoredSession = func(source, target string) error {
+		close(publishing)
+		<-release
+		return snapshot.ReplaceAtomic(source, target)
+	}
+	t.Cleanup(func() { replaceRestoredSession = snapshot.ReplaceAtomic; beforeSessionCommit = nil })
+	observed := make(chan error, 1)
+	go func() { _, err := h.Observe(context.Background()); observed <- err }()
+	<-publishing
+	beforeSessionCommit = func() { close(sampled) }
+	sent := make(chan error, 1)
+	go func() { sent <- h.Send(context.Background(), "fictional next task", adapter.ModeAuto) }()
+	select {
+	case <-sampled:
+	case err := <-sent:
+		close(release)
+		<-observed
+		t.Fatalf("send refused before bounded acquisition: %v", err)
+	case <-time.After(3 * time.Second):
+		close(release)
+		<-observed
+		t.Fatal("send did not sample completed generation")
+	}
+	close(release)
+	if err := <-observed; err != nil {
+		t.Fatal(err)
+	}
+	if err := <-sent; err != nil {
+		t.Fatal(err)
+	}
+	beforeSessionCommit = nil
+	waitPhase(t, h.dir, Finished)
 }

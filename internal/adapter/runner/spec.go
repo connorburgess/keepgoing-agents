@@ -49,7 +49,10 @@ type Spec struct {
 	// PromptFile, promptFile is the private file holding the prompt.
 	Argv func(set Settings, session, promptFile string) []string
 	// Read interprets a finished turn from structured output and the exit
-	// code only, never from prose. It must not have side effects.
+	// code only, never from prose. It must not have side effects, query a
+	// provider or vary for the same completed input. Defined session-file readers
+	// additionally rely on the completed agent's stable file. Observe may parse
+	// concurrently under a shared generation guard and restore identical bytes.
 	Read func(turn Status) Reading
 	// Limits, when set, is a structured account-limit lookup used when a
 	// failed turn or probe could not be classified.
@@ -420,7 +423,13 @@ var errSessionLost = errors.New("the saved session is not usable; refusing to st
 
 // Observe implements adapter.Adapter.
 func (h *Headless) Observe(ctx context.Context) (obs decide.Observation, err error) {
-	st, unread, err := h.status()
+	var guard *lock.Lock
+	st, err := h.dir.sampleStatusRetained(h.spec.MaxOutput, nil, &guard)
+	defer func() { guard.Release() }()
+	unread := errors.Is(err, errOutputOverLimit)
+	if unread {
+		st.Stdout, err = nil, nil
+	}
 	if err != nil {
 		return decide.Observation{State: decide.Unknown}, err
 	}
@@ -453,29 +462,24 @@ func (h *Headless) Observe(ctx context.Context) (obs decide.Observation, err err
 	if beforeSessionCommit != nil {
 		beforeSessionCommit()
 	}
-	// Status's shared sampling guard has ended. Revalidate the generation and
-	// reset fence with exclusive authority before restoring any session.
-	guard, guardErr := lock.AcquireNamed(string(h.dir), turnLock)
-	if guardErr != nil {
-		return decide.Observation{State: decide.Unknown}, guardErr
+	// Keep the original shared generation guard through parsing, fence validation
+	// and restoration. It excludes reset/setup, but NOT other observers. Only
+	// the same-generation idempotent restore may publish under a shared guard;
+	// generic SaveSession and other mutations still require exclusive authority.
+	if err := h.dir.sameGeneration(st); err != nil {
+		return decide.Observation{State: decide.Unknown}, err
 	}
-	commitErr := func() error {
-		defer guard.Release()
-		if err := h.dir.sameGeneration(st); err != nil {
-			return err
-		}
-		reset, err := h.dir.sessionWasReset(st.Record)
-		if err != nil {
-			return err
-		}
-		if !reset {
-			return h.dir.SaveSession(r.Session)
-		}
-		return nil
-	}()
-	if commitErr != nil {
-		return decide.Observation{State: decide.Unknown}, commitErr
+	reset, err := h.dir.sessionWasReset(st.Record)
+	if err != nil {
+		return decide.Observation{State: decide.Unknown}, err
 	}
+	if !reset {
+		if err := h.dir.restoreCompletedSession(r.Session); err != nil {
+			return decide.Observation{State: decide.Unknown}, err
+		}
+	}
+	guard.Release()
+	guard = nil
 	// Provider limit reads below never hold the turn guard.
 	// A turn that ended waiting on a person raises a hold once: it is
 	// reported until the supervisor has saved the hold (AdoptInteraction).

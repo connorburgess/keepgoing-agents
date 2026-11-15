@@ -2,6 +2,8 @@ package runner
 
 import (
 	"bytes"
+	"context"
+	"io"
 	"os"
 	"syscall"
 	"testing"
@@ -119,5 +121,47 @@ func TestSessionResetWindowsCompanionSharingRollsBack(t *testing.T) {
 	reset, fenceErr := h.dir.sessionWasReset(st.Record)
 	if !reset && fenceErr == nil {
 		t.Fatal("failed companion rollback was treated as no reset")
+	}
+}
+
+func TestCompletedRestoreWindowsHeldReader(t *testing.T) {
+	h := resetLifecycleFixture(t, true)
+	if err := h.dir.SaveSession("sess_previous"); err != nil {
+		t.Fatal(err)
+	}
+	reader, err := snapshot.Open(h.dir.path("session"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer reader.Close()
+	prior, _ := reader.Stat()
+	if _, err := h.Observe(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	current, _ := os.Stat(h.dir.path("session"))
+	if os.SameFile(prior, current) {
+		t.Fatal("restoration truncated the old session")
+	}
+	b, err := io.ReadAll(reader)
+	if err != nil || string(b) != "sess_previous\n" {
+		t.Fatalf("held session: %q %v", b, err)
+	}
+	if h.dir.Session() != "sess_old" {
+		t.Fatal("session not published")
+	}
+}
+
+func TestCompletedRestoreWindowsRefusedPublication(t *testing.T) {
+	h := resetLifecycleFixture(t, true)
+	if err := h.dir.SaveSession("sess_previous"); err != nil {
+		t.Fatal(err)
+	}
+	release := holdResetFileWithoutDeleteSharing(t, h.dir.path("session"))
+	defer release()
+	if _, err := h.Observe(context.Background()); err == nil {
+		t.Fatal("legacy reader did not refuse publication")
+	}
+	if h.dir.Session() != "sess_previous" {
+		t.Fatal("refusal changed old session")
 	}
 }

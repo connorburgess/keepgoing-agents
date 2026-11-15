@@ -39,7 +39,11 @@ func AcquireNamed(stateDir, name string) (*Lock, error) {
 
 // AcquireNamedShared takes a shared observation lock without waiting. Other
 // shared readers may overlap; existing exclusive holders and contenders keep
-// their exclusion semantics. It must never be used to authorize mutation.
+// their exclusion semantics. A shared guard fences generation changes; it does
+// not serialize writers. Generic mutation is prohibited. The runner's narrowly
+// documented same-generation idempotent session restoration is the sole
+// exception: concurrent publishers must derive identical bytes and publish
+// atomically. This does not authorize SaveSession or other runner mutations.
 func AcquireNamedShared(stateDir, name string) (*Lock, error) {
 	return acquireNamed(stateDir, name, lockFileShared)
 }

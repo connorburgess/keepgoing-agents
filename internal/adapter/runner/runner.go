@@ -266,8 +266,14 @@ func (d Dir) statusWithOutputLimit(limit int64) (Status, error) {
 }
 
 // sampleStatus may reuse an already-owned exclusive turn guard. Never acquire
-// a shared guard recursively or upgrade a shared guard to authorize mutation.
+// recursively or upgrade a shared guard.
 func (d Dir) sampleStatus(limit int64, owned *lock.Lock) (Status, error) {
+	return d.sampleStatusRetained(limit, owned, nil)
+}
+
+// retained transfers the shared sampling guard to the caller, including on error.
+// The caller must release it before provider queries or wrapper waiting.
+func (d Dir) sampleStatusRetained(limit int64, owned *lock.Lock, retained **lock.Lock) (Status, error) {
 	var st Status
 	b, err := snapshot.ReadRecord(d.path("run.json"))
 	if errors.Is(err, os.ErrNotExist) {
@@ -288,7 +294,7 @@ func (d Dir) sampleStatus(limit int64, owned *lock.Lock) (Status, error) {
 	// reread run.json: setup may have replaced the generation since our first
 	// sample, including a first start replacing a legacy record. Hold it through
 	// exit/output sampling to prevent mixed generations,
-	// and release before returning Finished to the caller.
+	// and normally release before returning Finished to the caller.
 	if owned == nil {
 		completedGuard, err := lock.AcquireNamedShared(string(d), turnLock)
 		if errors.Is(err, lock.ErrHeld) {
@@ -298,7 +304,11 @@ func (d Dir) sampleStatus(limit int64, owned *lock.Lock) (Status, error) {
 		if err != nil {
 			return st, errors.New("runner: the turn lock could not be checked" + errnoText(err))
 		}
-		defer completedGuard.Release()
+		if retained != nil {
+			*retained = completedGuard
+		} else {
+			defer completedGuard.Release()
+		}
 	}
 	b, err = snapshot.ReadRecord(d.path("run.json"))
 	if err != nil {
