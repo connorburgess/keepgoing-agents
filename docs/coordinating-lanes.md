@@ -35,9 +35,9 @@ Decide the model and the effort level as part of creating the lane, from the wor
 
 ## Keep nesting shallow
 
-Use two levels: a coordinator and its lanes. A lane does not start lanes of its own.
+Prefer two levels: a coordinator and its lanes. A lane coordinates lanes of its own only when the work needs it, and then it follows this page as their coordinator.
 
-Each level costs a full turn at that level's context. A result from a second-level lane reaches a person only after its parent lane runs a turn to relay it and the coordinator runs another to read it, and each of those turns reads that conversation's whole history. A relay is never cheaper than the conversation relaying it, and detail is lost at each one.
+Each level costs a full turn at that level's context. A result from a lane's own lane reaches a person only after its parent lane runs a turn to relay it and the coordinator runs another to read it, and each of those turns reads that conversation's whole history. A relay is never cheaper than the conversation relaying it, and detail is lost at each one.
 
 ## Where the text lives
 
