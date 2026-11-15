@@ -102,6 +102,11 @@ type savingsSends struct {
 	Total        *int          `json:"total,omitempty"`
 	ByKind       []savingsKind `json:"byKind"`
 	Text         string        `json:"text"`
+	// ContextBlocks and ContextBytes count the checks whose sends carried
+	// the supervision context (loop.prompt_context) and its length in bytes,
+	// tag line included. Absent when the history could not be read.
+	ContextBlocks *int   `json:"contextBlocks,omitempty"`
+	ContextBytes  *int64 `json:"contextBytes,omitempty"`
 }
 
 type savingsKind struct {
@@ -202,6 +207,10 @@ func describeSavings(journal *incident.Journal, spaced savingsSpaced, rec *state
 	out.WithheldWakes = savingsCountsOf(withheld, out.History, "the session idle and the loop not held; "+savingsBaseline)
 	out.ChecksSentNothing = savingsCountsOf(nothing, out.History, "holds included")
 	out.Sends = savingsSendsOf(sends, out.History)
+	if journal != nil {
+		blocks, n := savingsContextTally(*journal, from, now)
+		out.Sends.ContextBlocks, out.Sends.ContextBytes = &blocks, &n
+	}
 	out.Resets = savingsResetsOf(resets, rec, out.History)
 	out.Estimate = savingsEstimateOf(out.WithheldWakes, out.History.Partial, rec, from, now)
 	out.Lines = savingsLines(out)
@@ -358,6 +367,21 @@ func savingsTally(j incident.Journal, from, now time.Time, h *savingsHistory) (w
 	}
 	sort.SliceStable(resets, func(a, b int) bool { return resets[a].At.Before(resets[b].At) })
 	return withheld, nothing, sends, resets
+}
+
+// savingsContextTally adds up the supervision context the period's checks
+// sent: the checks whose sends carried it, and its length in bytes. A check
+// records the length only for sends the adapter did not refuse to start, so
+// a failed check still counts what it sent. A dry run sends nothing.
+func savingsContextTally(j incident.Journal, from, now time.Time) (checks int, bytes int64) {
+	for _, r := range j.Records {
+		if r.Kind != "tick" || r.DryRun || r.ContextBytes <= 0 || r.CheckStartedAt.Before(from) || r.CheckStartedAt.After(now) {
+			continue
+		}
+		checks++
+		bytes += int64(r.ContextBytes)
+	}
+	return checks, bytes
 }
 
 // savingsObservedIdle says the check observed the session idle, so a
