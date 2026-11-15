@@ -20,9 +20,10 @@ var childKey = regexp.MustCompile(`^[0-9a-f]{24}$`)
 const FileName = "graph.json"
 
 // SchemaVersion written by this build. Version 2 adds the waiting record.
-// Version 1 files are read and upgraded by their next write; a build that
-// only knows version 1 reports a version 2 file as unsupported and leaves it.
-const SchemaVersion = 2
+// Version 3 adds an attempt's supervision context length (contextBytes).
+// Older files are read and upgraded by their next write; a build that only
+// knows an older version reports a newer file as unsupported and leaves it.
+const SchemaVersion = 3
 
 // oldestSchemaVersion is the oldest version this build reads.
 const oldestSchemaVersion = 1
@@ -262,10 +263,21 @@ func (g *Graph) state() rd.State {
 	return s
 }
 
+// carriesContext says an attempt records a supervision context length, which
+// only a version 3 writer records.
+func (g *Graph) carriesContext() bool {
+	for _, a := range g.Attempts {
+		if a.ContextBytes != 0 {
+			return true
+		}
+	}
+	return false
+}
+
 // valid checks the whole record against the contract. A record that fails is
 // reported as corrupt and never rewritten.
 func (g *Graph) valid() bool {
-	if g.SchemaVersion < oldestSchemaVersion || g.SchemaVersion > SchemaVersion || g.LoopID == "" || g.UpdatedAt.IsZero() || (g.SchemaVersion < 2 && g.Waiting != nil) ||
+	if g.SchemaVersion < oldestSchemaVersion || g.SchemaVersion > SchemaVersion || g.LoopID == "" || g.UpdatedAt.IsZero() || (g.SchemaVersion < 2 && g.Waiting != nil) || (g.SchemaVersion < 3 && g.carriesContext()) ||
 		len(g.Runs) > MaxRuns || len(g.Attempts) > MaxAttempts || len(g.Links) > MaxLinks ||
 		len(g.Registrations) > MaxRegistrations || len(g.Unrecorded) > MaxUnrecorded {
 		return false
