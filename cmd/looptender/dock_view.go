@@ -49,6 +49,9 @@ type dockReport struct {
 	StaleAfterSeconds int          `json:"staleAfterSeconds"`
 	Identifiers       bool         `json:"identifiers"`
 	Registry          dockRegistry `json:"registry"`
+	// OldestUsageAgeSeconds is the age of the oldest usage reading the
+	// report shows that is older than StaleAfterSeconds; absent when none is.
+	OldestUsageAgeSeconds *int64 `json:"oldestUsageAgeSeconds,omitempty"`
 	// Complete is false when the read was cut off before every loop was read.
 	// AllClear is true only when the registry was read, every loop in it was
 	// read, and none needs a person: a page may say "nothing needs you" only
@@ -264,6 +267,10 @@ type dockUsageTarget struct {
 	AgeSeconds   *int64            `json:"ageSeconds,omitempty"`
 	Windows      []dockUsageWindow `json:"windows"`
 	Omitted      int               `json:"omitted,omitempty"`
+	// Old is true when the reading is older than the panel's stale-after,
+	// whatever its windows say; availability "stale" is that every window
+	// has reset since.
+	Old bool `json:"old,omitempty"`
 	// Reason says, when a record shows it, why there is no reading.
 	Reason string `json:"reason,omitempty"`
 	// FromAnotherLoop: the reading is another loop's record of the same
@@ -1024,6 +1031,7 @@ func buildDockReport(inputs []dockInput, now time.Time, refresh, staleAfter time
 	r.Routes, r.RoutesOmitted = dockRoutes(r.Loops, now)
 	dockShareAcrossLoops(r.Loops, r.Routes, now)
 	r.Allowances, r.AllowancesOmitted = dockAllowances(r.Routes)
+	dockMarkOldUsage(&r, staleAfter)
 	sort.SliceStable(r.NeedsYou, func(i, j int) bool {
 		a, b := r.NeedsYou[i].WaitedSeconds, r.NeedsYou[j].WaitedSeconds
 		if a == nil || b == nil {
