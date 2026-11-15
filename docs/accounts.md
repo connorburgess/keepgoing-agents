@@ -135,7 +135,7 @@ selected context.
 **Route account groups are separate labels.** A route's group (shown in the
 panel as its account group) is also free text you choose. It names the usage
 limit the route draws on and is not checked against any login or against these
-entries. Entries are not linked to routes in this slice.
+entries. Entries are not linked to routes today.
 
 **BB thread routes have no per-thread account.** BB selects the config directory
 per project, not per thread, so neither a route nor a catalog entry can pin a BB
