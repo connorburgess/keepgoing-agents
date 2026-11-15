@@ -507,3 +507,37 @@ func TestCheckMarksWhatItStartsAsSupervised(t *testing.T) {
 		t.Fatal("the check left its marker in the caller's environment")
 	}
 }
+
+// Between checks too, a daemon carries its loop's marker, so what it starts
+// outside a check (control polls, a stop from the last configuration) is
+// marked; it puts the caller's environment back when it ends.
+func TestDaemonMarksItselfForItsLifetime(t *testing.T) {
+	f := newFixture(t)
+	t.Setenv(control.SupervisedLoopVar, "")
+	if c, _, e := f.run("enable"); c != 0 {
+		t.Fatal(e)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan int, 1)
+	go func() { done <- run(ctx, []string{"daemon", "-c", f.cfg}, io.Discard, io.Discard) }()
+	cfg := loadFixture(t, f.cfg)
+	want := session.CleanPath(cfg.Loop.StateDir)
+	deadline := time.Now().Add(5 * time.Second)
+	for inspectDaemon(context.Background(), cfg.Loop.StateDir, version, false).Phase != "waiting" || os.Getenv(control.SupervisedLoopVar) != want {
+		if time.Now().After(deadline) {
+			cancel()
+			<-done
+			t.Fatalf("waiting daemon is not marked: %q", os.Getenv(control.SupervisedLoopVar))
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	cancel()
+	select {
+	case <-done:
+	case <-time.After(5 * time.Second):
+		t.Fatal("daemon did not stop")
+	}
+	if os.Getenv(control.SupervisedLoopVar) != "" {
+		t.Fatal("the daemon left its marker behind")
+	}
+}

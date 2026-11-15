@@ -261,9 +261,6 @@ func clientApply(ctx context.Context, directory, key, action, expect, caller str
 		if ctl, why := panelReadControl(entry.StateDir); why == "" && control.CheckOwner(ctl, caller, false) != nil {
 			return clientReviewReply{Result: &panelResult{Outcome: "refused", Text: clientReviewOwned}}, exitFailed
 		}
-		if entryHoldClearer(entry, caller) != nil {
-			return clientReviewReply{Result: &panelResult{Outcome: "refused", Text: panelSupervisedSession + " Nothing was changed."}}, exitFailed
-		}
 	}
 	ctx, cancel := context.WithTimeout(ctx, panelChangeTimeout)
 	defer cancel()
