@@ -314,6 +314,8 @@ The reader composes existing reads and no new evidence: `registry.Load`, `readCl
 
 `internal/prompt` combines a configured scaffold with the latest `control.LoadGoal` specification only when `loop.prompt_goal` is true. `supervise` uses it for wake/nudge/re-prompt; `handoff` uses it for generated and custom briefs, including switch-back. Configuration parsing remains independent of goal storage. Production sends and cooperating goal edits share the tick lock; arbitrary external writers and already queued messages are outside that guarantee. Invalid/missing/wrong-loop goals return fixed errors before send reservation. No references are read or executed, no goal is revised, and no task text enters decision inputs or reports. Context transport is not approval, acceptance or semantic drift detection.
 
+When `loop.prompt_context` is true, `supervise` appends the supervision context last, at its single send seam (`tick.send`, and the first message of a created BB thread): `loopcontext.Build` builds it from the configuration and the check's own control and state records, and `prompt.WithContext` adds the tag line and the fixed sentence. The BB wake header is added after, in front, so it stays first. Whether it is due is decided from a digest kept in `state.json` (see [operations](operations.md#supervision-context-in-sends)); the decision engine never reads it, and a notice-only message (`prompt.Message.NoticeOnly`) never carries it.
+
 
 ## Recorded automatic prompt provenance
 

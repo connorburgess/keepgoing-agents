@@ -45,6 +45,7 @@ loop:
 | `adapter` | yes | `bb`, `process`, `claude`, `codex`, or (v0.2.0) `cursor` or `custom` ([an agent defined in configuration](#an-agent-defined-in-configuration)), with the matching block below. |
 | `provider`, `group` | no | `group` defaults to `provider`, then to `primary`. Set `group` so a limit on this account skips fallbacks that share it. |
 | `prompt_goal` | `false` | Explicitly append the latest private goal specification and revision to automatic messages, including handoffs. A valid goal for this loop is required before sending. See [current goal context](goals.md#current-goal-context-in-wake-messages). |
+| `prompt_context` | `false` | Append the loop's supervision context, as `context -c` prints it, at the end of wakes, nudges, re-prompts and handoff briefs: with every brief, and otherwise only on the first send after it is turned on, after a control save (enable, resume, a change of owner), when the context changes, or into a new headless conversation. Never to the notice-only lane-error wake. Unreleased. See [supervision context in sends](operations.md#supervision-context-in-sends). |
 | `prompt` or `prompt_file` | one of them | The text sent on wake, nudge, and re-prompt. The file is read on every send, so you can edit it while the loop runs. |
 | `handoff_file` | no | Sent to a fallback when it takes over. When the file is missing, a brief is generated. |
 | `switch_back` | no | Returns the loop to the primary once its limit resets and an exact probe passes. Off by default. See [fallbacks.md](fallbacks.md#switching-back). |

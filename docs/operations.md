@@ -60,7 +60,7 @@ Unreleased source. Every message looptender sends to an existing BB thread with 
 Automatic looptender wake for loop example-loop: not a new instruction from a person and not an approval.
 ```
 
-This covers wakes, nudges, re-prompts, briefs to an existing thread, and child-error notices. The rest of the message is unchanged. Headless Claude Code, Codex and Cursor prompts do not get the line.
+This covers wakes, nudges, re-prompts, briefs to an existing thread, and child-error notices. The rest of the message is unchanged; a loop with [`loop.prompt_context`](#supervision-context-in-sends) adds the supervision context at the end, after the line and the whole message. Headless Claude Code, Codex and Cursor prompts do not get the line.
 
 One message is not covered: the first prompt of a [handoff to a new conversation](fallbacks.md#hand-off-to-a-new-conversation). It goes through `bb thread spawn`, so it gets no wake line and keeps the supervisor's `BB_THREAD_ID`. When a BB thread started the supervisor by hand, BB shows that prompt as sent by that thread.
 
@@ -218,7 +218,7 @@ It shows:
 - the commands a session may run, with the loop's configuration path: `context`, `status`, `complete --note` and `await-user --note`;
 - fixed statements of retained authority, each true in every configuration: supervision grants no permission; supervision adds no permission beyond the permission settings the context lists; a session must not clear a hold, resume is for a person, and looptender does not enforce this (`resume` checks only the loop's owner, and a caller without `BB_THREAD_ID` passes that check); looptender never merges or edits a repository, and never reads transcript text to make a decision; lanes are not supervised by implication.
 
-It names no device. When `control.json` or `state.json` cannot be read, it says so under `unavailable`, leaves out what came from that record rather than showing an empty one, and exits 1; an unreadable `sends.json` or `progress.json` leaves that limit's used amount unavailable. Nothing sends the context to a session, and `context -c` does not say whether the session running it is the loop's target; `context --here` does. Covered by table tests of the pure builder (`internal/loopcontext`) and command fixtures that check no file changes and no `bb` call is made.
+It names no device. When `control.json` or `state.json` cannot be read, it says so under `unavailable`, leaves out what came from that record rather than showing an empty one, and exits 1; an unreadable `sends.json` or `progress.json` leaves that limit's used amount unavailable. Nothing sends the context to a session unless the loop opts in with [`loop.prompt_context`](#supervision-context-in-sends), and `context -c` does not say whether the session running it is the loop's target; `context --here` does. Covered by table tests of the pure builder (`internal/loopcontext`) and command fixtures that check no file changes and no `bb` call is made.
 
 ### Which loop supervises this session
 
@@ -231,6 +231,41 @@ Unreleased. `keepgoing context --here [--json]` answers for the session running 
 - **`--json`.** `schemaVersion: 1`, `caller` (`source` `bb_thread_id` or `working_directory`, `bbThread` or `workdir`, `text`), `outcome` (`one`, `several`, `none` or `unknown`), `text`, `loops` (`loop`, `config`, `context` as `context --json` prints it), `notCounted` (`count`, `reason`, `verified`; `loop` and `config` only on an entry with `verified` false, which is one loop that could not be checked), `basis` (the fixed sentences above) and `unavailable`.
 
 Like `context -c` it writes nothing, takes no lock and queries neither a provider nor the daemon; it also does not create or tighten the claim directory, as checks do. Exit codes: 0 for a complete answer, 1 when it is `unknown` or a found loop's `control.json` or `state.json` could not be read, 2 for a usage error. Covered by table tests of the outcome wording and command fixtures (a BB caller, a headless turn started by a supervisor inside a BB thread that finds its own loop, a lane, a retargeted loop that is counted but not named, two loops on one session, a working directory and a subdirectory of it, stale and unreadable records, a missing or linked claim directory) that check no file changes and no `bb` call is made. Not verified against a live BB thread.
+
+### Supervision context in sends
+
+Unreleased. With `loop.prompt_context: true` (off by default, the same shape as `prompt_goal`), looptender appends the loop's [supervision context](#supervision-context) to what it sends, so a session learns which loop supervises it without running `context` itself. The text is exactly what `context -c` prints at that moment, built by the same pure builder, after a tag line and one fixed sentence:
+
+```text
+[keepgoing:context schema=1]
+keepgoing notice: the supervision context of this loop, built from its configuration, controls and state when this message was sent. Its figures are not kept current here; the context command it lists shows them now.
+context:   schema version 1
+loop:      example-loop
+...
+```
+
+The tag uses the compatibility name `keepgoing`, as the [child-error notice](#children-in-error) does; `schema=` is the context's `schemaVersion`. It names no device and states no permission beyond what `context` states.
+
+**Where it goes.** Last, after everything else in the message: after the [wake header](#how-a-wake-reads-in-a-bb-thread) and the task prompt or brief, and after the goal context of `prompt_goal` and a child-error notice that rides on a wake. It never replaces or comes before the header.
+
+| Target | Where the block goes | Where it cannot go |
+| --- | --- | --- |
+| BB thread | The text `bb thread tell` sends; for a [new conversation](fallbacks.md#hand-off-to-a-new-conversation), the end of its first message (`bb thread spawn`), after the ownership note. | Lane retries and turn retries: they send no text. |
+| Claude Code, Codex, an agent defined in configuration | The end of the turn's prompt, on standard input or in the private prompt file the runner passes. | A probe's request; a running turn, which cannot be sent to. |
+| Cursor | The end of the prompt its runner sends. | A probe's request. |
+| Generic process | The end of the resume command's standard input. | The status, stop and probe commands, which never receive prompt text. Whether the agent behind the resume command reads it is up to that command. |
+
+**When.** It goes with wakes, nudges, re-prompts, refusal continues, handoff briefs and switch-back briefs, but not with every one:
+
+- every handoff and switch-back brief carries it, including the first message of a new conversation;
+- any other send carries it when no record of a sent context exists (the first send after the key is turned on, once a check has run with it off), when the control file was saved since (`enable`, `resume`, a change of owner, a pause, a hold or a question), or when the context's content changed: the target, the owner, the holds and note, a limit's setting, the permission settings, the lane policy or the commands. Its counts used and remaining, time remaining, whether a limit is reached or its used amount could not be read, and whether the window is open now are left out of that comparison, so they alone never send it again;
+- on a headless target it also goes with the turn that starts a new conversation that looptender knows of: the turn after `session reset` (while the reset waits for that turn), and every turn of an agent defined without `exact_resume`, since each of its turns is a new conversation.
+
+The notice-only wake that [errored lanes](#children-in-error) cause while other lanes still run never carries it: that message is a notice and nothing else. looptender cannot see a new conversation behind a BB thread, a generic process or Cursor; on those, a pause and resume sends the context again.
+
+**What is recorded.** `state.json` keeps `contextSent`: a digest of the content as compared above and the time of the last control save, the time and the length in bytes, never the text. It is saved only when the adapter call returned without error, so a failed send carries the context again next time. Each send's length in bytes, tag line included, is recorded with its provenance: `contextBytes` on `promptSend.last` and on the run graph's attempt, and, for the sends of a check the adapter did not refuse to start, on that check's incident record. The [savings figures](#savings-figures) add them up. With the key off, the record is cleared and every sent byte is what it was before this setting existed.
+
+Covered by tests on stand-ins only: a BB stand-in and a headless Claude Code stand-in run with the built binary, a generic process stand-in with the real process adapter, and a fixed journey of sends compared byte for byte with what the previous build sent. Not verified against a live BB thread or provider.
 
 ## Understanding recorded status
 
@@ -271,14 +306,14 @@ Unreleased source. `status` adds what looptender's restraint amounted to for the
 - **Withheld wakes.** A check is a withheld wake only when it sent nothing, the loop was not held, and the check observed the session idle (the incident record's `observation.state`), so that a timer's send there would have started a turn; counted by the check's fixed reason code (the `cause` of the incident history, for example `idle` or `child_busy`). A check that saw the session working, in a limit wait, retrying, failing or not observed at all is not one, since a timer's send would have queued or failed, and a hold (paused, switched off, stopped, completed or awaiting a person) is not one either. The count depends on how often checks run: a shorter interval gives more checks, and so more withheld wakes, for the same idle time.
 - **Spaced wakes.** Checks at which an idle wake was spaced, one per check, by fixed code (`idle_unchanged`), summed over the period's UTC days from the `idleSpacedDays` record in `state.json`. Each is a check at which a timer would have sent. They are shown on their own and not added to withheld wakes or to the estimate. Without that record (no build writes it yet) it reads `unavailable` with reason `not_recorded`, and with a malformed one `record_unreadable`.
 - **Checks that sent nothing.** Every check that succeeded without sending, whatever the session was doing, holds included, by fixed reason code.
-- **Sends.** By kind: `wake`, `nudge`, `reprompt`, `turn_retry` (BB retried the failed turn), `handoff` and `switch_back`. A held-back nudge is not a send. A dry run and a check that failed count in none of these.
+- **Sends.** By kind: `wake`, `nudge`, `reprompt`, `turn_retry` (BB retried the failed turn), `handoff` and `switch_back`. A held-back nudge is not a send. A dry run and a check that failed count in none of these. With [`loop.prompt_context`](#supervision-context-in-sends), `contextBlocks` and `contextBytes` count the checks whose sends carried the supervision context and its length in bytes; a check that failed counts here too, since its sends were made.
 - **Context window now.** The latest context window reading, with BB's estimated flag and its age, as in `context window`.
 - **Session resets.** Each `session reset` in the period, who ran it (`thread` or `terminal`), and the nearest of the last 8 context readings before and after it, or "not recorded".
 - **Estimate.** Labelled as an estimate on its own line, with its baseline: tokens not spent because wakes were withheld, as a range, the withheld wakes times the lowest and the highest context window reading of the period's UTC days. With no reading in the period it is absent, not zero. It is worded "estimated by BB" when any of those readings was, and is never tokens billed.
 
 When retention removed records from inside the period, or a summary of folded checks began before it, the counts are a floor: the text says "at least" and the history line names why.
 
-`status --json` has the object `savings`, `version` 1: `period` (`from`, the start of the first UTC day, and `days`; it ends at status's `readAt`); `history` (`availability`, `reason` `record_unreadable`, `partial`, `partialReasons` from `history_pruned`, `history_dropped` and `collapsed_span`); `withheldWakes`, `spacedWakes` and `checksSentNothing`, each with `availability`, `reason`, `total`, `byReason` (`reason`, `count`, `text`) and `text`; `sends` (`availability`, `total`, `byKind` of `kind` and `count`, `text`); `contextNow` (`availability`, `reason`, `usedTokens`, `windowTokens`, `estimated`, `readAt`, `ageSeconds`, `text`); `resets` (`availability`, `items` of `at`, `by`, `before` and `after` readings, `text`); `estimate` (`label` always `estimate`, `availability`, `reason` `no_readings` or `record_unreadable`, `baseline`, `withheldWakes`, `lowestReading`, `highestReading`, `lowTokens`, `highTokens`, `estimated`, `text`); and `lines`, the text status prints. A total that could not be counted is absent, not zero. The panel does not show it yet.
+`status --json` has the object `savings`, `version` 1: `period` (`from`, the start of the first UTC day, and `days`; it ends at status's `readAt`); `history` (`availability`, `reason` `record_unreadable`, `partial`, `partialReasons` from `history_pruned`, `history_dropped` and `collapsed_span`); `withheldWakes`, `spacedWakes` and `checksSentNothing`, each with `availability`, `reason`, `total`, `byReason` (`reason`, `count`, `text`) and `text`; `sends` (`availability`, `total`, `byKind` of `kind` and `count`, `text`, `contextBlocks`, `contextBytes`); `contextNow` (`availability`, `reason`, `usedTokens`, `windowTokens`, `estimated`, `readAt`, `ageSeconds`, `text`); `resets` (`availability`, `items` of `at`, `by`, `before` and `after` readings, `text`); `estimate` (`label` always `estimate`, `availability`, `reason` `no_readings` or `record_unreadable`, `baseline`, `withheldWakes`, `lowestReading`, `highestReading`, `lowTokens`, `highTokens`, `estimated`, `text`); and `lines`, the text status prints. A total that could not be counted is absent, not zero. The panel does not show it yet.
 
 ### When a record cannot be read
 
