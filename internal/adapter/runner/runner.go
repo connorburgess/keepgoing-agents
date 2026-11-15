@@ -16,6 +16,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"github.com/looptender/looptender/internal/envvar"
 	"io"
 	"os"
 	"os/exec"
@@ -568,7 +569,7 @@ func wrapperAgrees(env []string) error {
 	ctx, cancel := context.WithTimeout(context.Background(), wrapperAskTimeout)
 	defer cancel()
 	cmd := exec.CommandContext(ctx, self)
-	cmd.Env = append(append(os.Environ(), env...), envTurnProbe+"=1")
+	cmd.Env = append(append(envvar.WithoutSupervisorSession(os.Environ()), env...), envTurnProbe+"=1")
 	cmd.WaitDelay = time.Second
 	var out bytes.Buffer
 	cmd.Stdout = &limitedWriter{w: &out, left: 256}

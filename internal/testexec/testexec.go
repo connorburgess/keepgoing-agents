@@ -138,3 +138,15 @@ func warm(t TB, path string) {
 		t.Fatalf("testexec: first run of %s: %v", filepath.Base(path), err)
 	}
 }
+
+// ReportNames returns shell lines that append to out the name of each of
+// names that is set in the environment, one per line. Values are never
+// written, so a test can check which variables a program received without
+// printing any of them.
+func ReportNames(out string, names ...string) string {
+	var b strings.Builder
+	for _, n := range names {
+		b.WriteString(`if [ "${` + n + `+set}" = set ]; then echo ` + n + ` >> '` + out + `'; fi` + "\n")
+	}
+	return b.String()
+}
