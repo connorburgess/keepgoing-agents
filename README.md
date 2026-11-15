@@ -6,7 +6,21 @@
 
 # looptender
 
-looptender supervises a coding agent: it wakes an idle session, handles structured failures with bounded retries, and can hand off to a confirmed fallback when configured. Your agents do the work. Looptender keeps their loops supervised, bounded, and visible.
+looptender supervises a coding agent: it wakes an idle session, handles structured failures with bounded retries, and can hand off to a confirmed fallback when configured. Your agents do the work. looptender keeps their loops supervised, bounded, and visible.
+
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="docs/assets/looptender-model-dark.svg">
+  <source media="(prefers-color-scheme: light)" srcset="docs/assets/looptender-model-light.svg">
+  <img alt="Diagram: You, at the top, set goals and give approvals to a Coordinator session that plans, assigns and reviews work. A dashed ring labelled looptender surrounds the coordinator: looptender wakes it, bounds it, recovers it and holds for you when needed. Below the ring, the coordinator delegates to three Lane conversations, which sit outside it." src="docs/assets/looptender-model-light.svg" width="960">
+</picture>
+
+The picture has three parts, using the words in the [glossary](docs/glossary.md):
+
+- **You** are the person in the loop. Goals and approvals come from you, and a **hold** sends nothing until a person acts.
+- A **coordinator** is the session you put under supervision: it hands out work and reviews it. Supervising that one session is a **loop**. looptender wakes it, keeps it within the limits you set, recovers it from structured failures and holds it for you when it needs a person. Coordinator is a role, not a setting: a session that delegates nothing is supervised the same way.
+- **Lanes** are the conversations a coordinator starts for pieces of its work. looptender does not supervise, message or create them. For a BB loop it counts them and their state, so a working lane keeps the loop from being woken as idle, and it acts on a lane in two cases only: retrying a failed turn when the loop opts in, and stopping lanes when a person asks with `stop --lanes`.
+
+The supervised session can be a BB thread, a headless Claude Code, Codex or Cursor session, an agent defined in configuration, or another program described to looptender by its status and resume commands. Which model each lane uses is the coordinator's choice; looptender does not route lanes.
 
 The core is a single binary for macOS, Linux and Windows. Use its daemon or an existing scheduler to check the loop. No separate loop skill is required. The host and supervisor must be running for checks to happen.
 
@@ -182,7 +196,7 @@ Decisions use structured status: exit codes, JSON fields, HTTP status and provid
 
 ## What it does
 
-- **Wakes, nudges and retries.** Idle sessions can wake at each ordinary check. Stall nudges and error re-prompts have separate caps/backoff. A failed BB turn is retried by reference, not prompted again. A BB loop may also opt in (`bb.children.retry_errored`, off by default) to having the failed turn of a child conversation retried the same way; a child is never messaged or created; it is retried only with `bb.children.retry_errored` and stopped only by an explicit `stop --lanes`, and only typed fields of its event log are read, never message text. Active BB children and pending provider retries suppress duplicate work; pending human input requires attention. A session that is itself in error is recovered whether or not its BB children are working.
+- **Wakes, nudges and retries.** Idle sessions can wake at each ordinary check. Stall nudges and error re-prompts have separate caps/backoff. A failed BB turn is retried by reference, not prompted again. A BB loop may also opt in (`bb.children.retry_errored`, off by default) to having the failed turn of a lane retried the same way. A lane is never messaged or created; it is retried only with `bb.children.retry_errored` and stopped only by an explicit `stop --lanes`, and only typed fields of its event log are read, never message text. Working lanes and pending provider retries suppress duplicate work; pending human input requires attention. A session that is itself in error is recovered whether or not its lanes are working.
 - **Bounds automatic work.** Optional deadlines, total send allowances and Git-based no-progress timeouts persist across turns and restarts. Failed sends count; resume does not refund them. These are not dollar budgets or proof of useful work. See [operations](docs/operations.md).
 - **Confirms fallbacks before handoff.** Eligible configured fallbacks need health evidence and an exact-model probe. Known reset times can hold recovery while ordinary checks continue. Switch-back is opt-in; no configured fallbacks means no automatic handoff. See [fallbacks](docs/fallbacks.md).
 - **One loop per session.** Two loops never act on one BB thread or headless working directory at the same moment: a check claims its session first, and one that finds it claimed by another loop sends nothing. Turning on a second loop on a supervised session is refused, naming the first, unless asked for. See [one loop per session](docs/operations.md#one-loop-per-session).
@@ -198,6 +212,10 @@ Decisions use structured status: exit codes, JSON fields, HTTP status and provid
 - Headless stop requests go to an owned wrapper, never a PID trusted from a file. Legacy turns without a stop key are refused. Acceptance is not proof of exit; abrupt wrapper death can leave descendants requiring inspection. [Cancellation details](docs/operations.md#owned-headless-cancellation).
 - A BB fallback probe uses the local Claude/Codex CLI account, not the BB thread's login. Configure the probe account explicitly when needed; looptender cannot establish account equivalence from a label.
 - Setup, transfer, multi-account recovery, installed-service lifecycle and menu interaction still have live verification gaps. Do not equate a compiled feature or passing fixture with a successful real-provider walkthrough.
+
+## Where this is headed
+
+The aim is for one person to run many coordinators and lanes at once without wasting usage: fewer and smaller turns, state kept in files instead of long conversations, and each lane on the least costly model that fits its task. Planned steps include a command that tells a supervised session what supervises it and what it may not do, recording the supervised session's context size, spacing out idle wakes that changed nothing, a panel view of a coordinator and its lanes, and moving supervision to another project or provider after a preview. None of these is in the current build. Choosing a model per lane will remain a convention that looptender does not enforce. The [roadmap](docs/roadmap.md) tracks each step and what verifies it.
 
 ## Documentation
 
