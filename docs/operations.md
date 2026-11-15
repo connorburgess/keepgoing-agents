@@ -502,12 +502,37 @@ keepgoing report test             # deliver it
 
 Events: `wake`, `nudge`, `reprompt`, `handoff`, `switch_back`, `degraded`, `recovered`, `await_user`, `limit_wait` (v0.2.0), `network_wait` (v0.2.0), `child_error` (v0.2.0), `check_gap` (v0.2.0), `hung_turn` (v0.2.0), `complete` (v0.1.3+), `stop`, `error`, `probe_failed`, `test`, or `all`. `complete`, and in v0.2.0 `limit_wait`, `network_wait` and `child_error`, are included in the default event list on `main`; an explicit event list must include them or `all`. `check_gap` and `hung_turn` are not: name them, or `all`, to receive them. `complete`, `limit_wait`, `network_wait`, `child_error`, `check_gap` and `hung_turn` make a single attempt without following redirects. Other events retain their existing one-retry policy. `keepgoing report test` sends a `test` event, whatever events are subscribed.
 
+### Starting a new conversation on purpose
+
+Unreleased source; fixture-tested with stand-in agents only.
+
+```sh
+looptender session reset -c /private/example-loop/looptender.yaml
+looptender session reset --target example-fallback -c /private/example-loop/looptender.yaml
+```
+
+`session reset` forgets the saved session of a headless target (Claude Code, Codex, or an agent defined in configuration with `exact_resume`), so that its next turn starts a new conversation. Without `--target` it acts on the active target. It is the way out when a saved session cannot be used, and it can also be used to leave a conversation behind deliberately. The agent's context in the old conversation is not carried over; the conversation itself is not deleted or touched.
+
+It sends nothing, starts nothing and clears no hold: if the loop is held, run `looptender resume` afterwards. The turn that reported the old session cannot bring it back. The next turn's session is saved and continued as usual. Older binaries do not honor the reset marker and can restore the old session from its completed turn; do not downgrade between reset and the first completed turn of the new conversation. Reset does not change the protocol 3 upgrade requirements for running wrappers.
+
+It refuses, and changes nothing:
+
+- while a turn is running on that target (wait for it, or `looptender stop` and let a check stop it);
+- while a check is running (exit code 75; try again);
+- from a BB thread that does not own the loop, as for the other control commands;
+- for a BB thread or process target, whose conversation looptender does not own; for a Cursor target, whose runner keeps its own session rule; and for a defined agent without `exact_resume`, whose every turn already starts a new conversation.
+
+If recording history fails after the session is reset, the command reports failure and says the reset already happened; inspect before retrying. An unavailable reset marker prevents observation or sending from treating the old result as a fresh session.
+
+The reset is recorded. `runs.jsonl` gets a `session_reset` event with the target, whether a session was saved, the `--note` text, and who ran it: `by` is `thread` with the BB thread ID, or `terminal` when no thread identity was present. `timeline` shows it in words (`session reset by a BB thread` or `session reset from a terminal or scheduler`) without any identity or session identifier, and keeps it among the records of who had the loop. A build older than this change shows that record's operation as `unavailable`. `--json` prints a `session_reset` object with `target`, `hadSession`, `by` and the holds still in force.
+
 ## Situations that need a person
 
 - **The agent is waiting on a person.** A pending interaction is reported once as `await_user`, and nothing is sent until it is answered. `keepgoing await-user --note` reports at once and holds the loop until `keepgoing resume`.
 - **The session stays stalled.** After `progress.max_nudges` nudges without visible progress, the loop is marked awaiting user and reports `await_user`.
 - **The turn was restricted, or refused again and again.** A provider that denied permission holds the loop at once with its own note, one `await_user` report and a question; a `resume` asks for exactly one more try. A refused turn is continued in the same session with growing spacing, and holds with a question only after `refusal.ask_after` refusals in a row. Neither is handed off. See [a refused or restricted turn](#a-refused-or-restricted-turn).
 - **The target is gone.** An archived, deleted, or missing target marks the loop awaiting user and reports `await_user`.
+- **The saved session cannot be used.** Unreleased source. For an agent defined in configuration that continues a session, a saved identifier that is no longer usable, with a last turn that did not report one, holds the loop and reports `await_user`. keepgoing does not start a new conversation by itself. See [starting a new conversation on purpose](#starting-a-new-conversation-on-purpose).
 - **A headless turn was stopped.** Stopping a headless turn ends its process without an exit code, so it reads as an `unknown` error. After `keepgoing resume`, it is re-prompted under the ordinary error rules.
 - **Only `resume` clears a stop.** `enable` does not.
 

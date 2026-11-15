@@ -74,6 +74,8 @@ Control:
   stop                     Stop the running session on the next pass, then send nothing
   complete                 Mark the task finished; hold until resume
   await-user               Mark the loop as waiting for a person
+  session reset            Forget a headless target's saved session, so its next turn starts
+                           a new conversation on purpose (--target NAME; default the active one)
   retarget <id|primary>    Point the loop at a fallback or back at the primary
                            (--discard-pending-thread: give up on an unsettled BB thread creation)
 
@@ -185,7 +187,7 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 		return ciWait(e, rest)
 	case "net-retry":
 		return netRetry(e, rest)
-	case "fallbacks", "report":
+	case "fallbacks", "report", "session":
 		if len(rest) == 0 {
 			e.errf("%s needs a subcommand; see keepgoing help", cmd)
 			return exitUsage
@@ -221,6 +223,7 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 		lanes:       fs.Bool("lanes", false, "stop: also stop the lanes, the conversations the supervised one started and theirs"),
 		immediately: fs.Bool("immediately", false, "stop: carry the stop out in this command instead of leaving it to the next check"),
 		dropQueued:  fs.Bool("drop-queued", false, "stop --lanes: also delete the messages queued in lanes that have not started or are idle; their text is not kept"),
+		target:      fs.String("target", "", "session reset: the target whose saved session is forgotten (default: the active target)"),
 	}
 	if err := fs.Parse(rest); err != nil {
 		return exitUsage
@@ -252,6 +255,10 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 	}
 	if *f.discard && cmd != "retarget" {
 		e.errf("--discard-pending-thread is only supported by retarget")
+		return exitUsage
+	}
+	if *f.target != "" && cmd != "session reset" {
+		e.errf("--target is only supported by session reset")
 		return exitUsage
 	}
 	if *f.takeOver && *f.dryRun && cmd == "daemon" {
@@ -324,6 +331,16 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 		return stopCmd(e, cfg, *f.note, *f.lanes, *f.dropQueued, *f.immediately)
 	case "disable", "pause", "resume", "await-user", "complete":
 		return controlCmd(e, cfg, cmd, *f.note, *f.takeOver, *f.keepStop)
+	case "session reset":
+		if *f.dryRun {
+			e.errf("session reset does not support --dry-run; no session reset")
+			return exitUsage
+		}
+		if len(positional) != 0 {
+			e.errf("usage: looptender session reset [--target NAME] [-c looptender.yaml]")
+			return exitUsage
+		}
+		return sessionReset(e, cfg, *f.target, *f.note, *f.asJSON)
 	case "retarget":
 		if len(positional) != 1 {
 			e.errf("usage: keepgoing retarget <candidate-id|primary> [--discard-pending-thread] [-c looptender.yaml]")
@@ -349,6 +366,7 @@ type cliFlags struct {
 	staleAfter                      *time.Duration
 	cfgPath, now, note, id, routine *string
 	client                          *string
+	target                          *string
 	asJSON, dryRun, exact, takeOver *bool
 	discard, allowShare, keepStop   *bool
 	lanes, immediately, dropQueued  *bool

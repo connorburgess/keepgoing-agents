@@ -257,7 +257,9 @@ func tierOf(r Record) string {
 		return TierActivity
 	case "control":
 		c := r.ControlChange
-		if !sameControls(r.ControlBefore, r.ControlAfter) || (c != nil && (c.OwnershipChanged || c.Operation == "daemon_takeover" || c.Operation == "transfer_begin" || c.Operation == "transfer_finish")) {
+		if !sameControls(r.ControlBefore, r.ControlAfter) || (c != nil && (c.OwnershipChanged || c.Operation == "daemon_takeover" || c.Operation == "transfer_begin" || c.Operation == "transfer_finish" ||
+			c.Operation == "session_reset_by_thread" || c.Operation == "session_reset_by_terminal")) {
+			// A session reset changes which conversation has the loop.
 			return TierKey
 		}
 		return TierActivity
@@ -552,7 +554,7 @@ func clean(r Record) Record {
 				"question_raised", "question_answered", "question_withdrawn",
 				// The file that runs a loop's checks, replaced with the panel's
 				// build or restored from its backup (no path, no label).
-				"panel_replace_build", "panel_undo_replace_build")
+				"panel_replace_build", "panel_undo_replace_build", "session_reset_by_thread", "session_reset_by_terminal")
 			c.Caller = oneOf(c.Caller, "unavailable", "owner_thread", "other_thread", "terminal", "client")
 			c.NewEpisode = c.NewEpisode && (c.Operation == "resume" || c.Operation == "panel_resume")
 			if !questionIDPattern.MatchString(c.QuestionID) {

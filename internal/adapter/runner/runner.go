@@ -409,7 +409,7 @@ func (d Dir) Start(argv []string, workdir, prompt string, env []string) error {
 
 // turnFiles are what one turn leaves, the exit code last: it is what makes a
 // turn read as finished, so it is the last to go and the last to come back.
-var turnFiles = []string{"prompt", "exit.tmp", "stdout", "stderr", "stop-request.json", "stop-ack.json", startedName, finishingName, waitAdoptedFile, "exit"}
+var turnFiles = []string{"prompt", "exit.tmp", "stdout", "stderr", "stop-request.json", "stop-ack.json", startedName, finishingName, waitAdoptedFile, sessionResetFile, "exit"}
 
 // renameFile is os.Rename. Tests replace it to make one file immovable.
 var renameFile = os.Rename
@@ -700,6 +700,48 @@ func (d Dir) waitAdopted(rec Record) bool {
 
 func (d Dir) adoptWait(rec Record) error {
 	return os.WriteFile(d.path(waitAdoptedFile), []byte(waitKey(rec)+"\n"), 0o600)
+}
+
+// sessionResetFile records that a person reset the session after the named
+// turn, so that turn's reported session is not saved again. It names the
+// turn, so it cannot apply to a later one, and a new turn removes it.
+const sessionResetFile = "session-reset"
+
+func (d Dir) sessionWasReset(rec Record) (bool, error) {
+	b, err := os.ReadFile(d.path(sessionResetFile))
+	if errors.Is(err, os.ErrNotExist) {
+		return false, nil
+	}
+	if err != nil {
+		return false, errors.New("runner: session reset record unavailable")
+	}
+	if strings.TrimSpace(string(b)) == "" {
+		return false, errors.New("runner: session reset record is empty")
+	}
+	return strings.TrimSpace(string(b)) == waitKey(rec), nil
+}
+
+// resetSession removes the saved session. The marker is written first: if
+// the removal then fails, the session is still there and still usable, and
+// if it succeeds the latest turn cannot restore it.
+func (d Dir) resetSession(st Status) (had bool, err error) {
+	if _, statErr := os.Lstat(d.path("session")); statErr == nil {
+		had = true
+	} else if !errors.Is(statErr, os.ErrNotExist) {
+		return false, statErr
+	}
+	if st.Phase != NeverRun {
+		if err := os.MkdirAll(string(d), 0o700); err != nil {
+			return had, err
+		}
+		if err := os.WriteFile(d.path(sessionResetFile), []byte(waitKey(st.Record)+"\n"), 0o600); err != nil {
+			return had, err
+		}
+	}
+	if err := os.Remove(d.path("session")); err != nil && !errors.Is(err, os.ErrNotExist) {
+		return had, err
+	}
+	return had, nil
 }
 
 // errOutputOverLimit says a turn printed more than its adapter reads.

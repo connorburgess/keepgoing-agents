@@ -16,6 +16,8 @@ The goal is to grow from one loop on your machine to fleets of agents across mac
 
 **Version guide: CLI [v0.2.0](https://github.com/looptender/looptender/releases/tag/v0.2.0) + BB plugin v0.3.0, from the same tag.** v0.2.0 is the first release under the [Sustainable Use License 1.0](LICENSE); v0.1.5 and earlier stay Apache-2.0. Its [release notes](docs/releases/v0.2.0.md) say what is new, what changes on upgrade and how to go back. Package evidence is [recorded here](docs/release-verification.md#v020-release-preparation). Check `keepgoing version` for the installed package. Installing a release does not upgrade a separately deployed supervisor executable or install the BB plugin or macOS companion.
 
+Unreleased source adds `looptender session reset` to deliberately forget a saved Claude Code, Codex or resumable defined-agent session. It sends nothing and clears no hold; see [reset behavior and refusals](docs/operations.md#starting-a-new-conversation-on-purpose). This command is not in v0.2.0.
+
 Unreleased headless runner completion requires wrapper protocol 3 (previously 2). Before upgrading, stop supervision and let old detached turns finish, or use owned stop and confirm actual exit, then replace/restart. The handshake protects new launches only; see [completion and upgrade limits](docs/operations.md#owned-headless-cancellation).
 
 | Surface | What you can use | Verification boundary |
