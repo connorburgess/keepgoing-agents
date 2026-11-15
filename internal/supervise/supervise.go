@@ -222,6 +222,10 @@ type tick struct {
 	incidentControl     *incident.Controls
 	incidentProbes      incident.Probes
 	incidentLimitWait   decide.LimitWait // from the last engine decision, which sets the tick's reason
+	// idleFactsAfterWake is this check's digest of the idle spacing rule's
+	// facts as they will be once a wake sent now has started its turn; empty
+	// when the rule is off or the session is in error.
+	idleFactsAfterWake string
 	// incidentLimitWaitReport is set only by the check that detects a long limit wait.
 	incidentLimitWaitReport string
 	// incidentTurnRetry is set only by a check that asked the provider to retry a failed turn.
@@ -1003,6 +1007,7 @@ func (t *tick) run() error {
 		SinceLastReprompt: sinceReprompt, Backoff: loop.Errors.Backoff.Duration,
 		SwitchBackReady: t.switchBackReady(target),
 	}
+	in.IdleSpacing = t.idleSpacingInput(obs, ctl)
 	// A loop held for a restricted turn runs no check until a person resumes
 	// it. Reaching this point with that same turn still showing therefore
 	// means a person resumed: their request for one try.
@@ -1241,6 +1246,9 @@ func (t *tick) run() error {
 	// After the decision and the action, so it can change neither; within
 	// what is left of the budget, and never for a lane.
 	t.readContext(a, target, d, obs, t.st.LastState)
+	if res.Action == string(d.Action) {
+		t.noteIdleSpacing(t.decisionInput, d)
+	}
 	t.reportLongLimitWait(target, obs)
 	t.reportChildErrors(target, obs)
 	t.st.LastState = string(obs.State)
@@ -1920,6 +1928,9 @@ func (t *tick) act(a adapter.Adapter, d decide.Decision) error {
 			}
 		}
 		t.st.Nudges, t.st.Reprompts, t.st.LastWakeAt, t.st.LastRepromptAt = c.Nudges, c.Reprompts, c.LastSendAt, c.LastRepromptAt
+		if d.IdleWake && err == nil {
+			t.recordIdleWake(t.decisionInput, childErrors > 0)
+		}
 		if err != nil {
 			var unsupported adapter.ErrUnsupported
 			if errors.As(err, &unsupported) {

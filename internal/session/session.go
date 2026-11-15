@@ -88,22 +88,8 @@ func (e *UnsafeError) Fix() string {
 // The variable's two names set to different directories are an *UnsafeError
 // too: honouring either would hide the claims kept in the other.
 func Dir(repair ...bool) (dir string, tightened bool, err error) {
-	dir, _, err = envvar.SessionDir.Path()
-	if err != nil {
-		v := envvar.SessionDir
-		return "", false, &UnsafeError{Path: "the session claim directory", Problem: "is named twice: " + v.Name() + " and " + v.Legacy() + " are set to different directories",
-			fix: "unset one of them, or set both to the same directory"}
-	}
-	if dir == "" {
-		// Under the state directory, in looptender/, or in keepgoing/ on a
-		// computer that already has one: see userdir.
-		dir, err = userdir.State("sessions")
-		if err != nil {
-			return "", false, &UndeterminedError{Reason: "no user state directory: HOME and XDG_STATE_HOME are not set"}
-		}
-	}
-	if !filepath.IsAbs(dir) {
-		return "", false, &UnsafeError{Path: dir, Problem: "is not an absolute path"}
+	if dir, err = dirPath(); err != nil {
+		return "", false, err
 	}
 	if err := os.MkdirAll(dir, 0o700); err != nil {
 		if info, lerr := os.Lstat(dir); lerr == nil && !info.IsDir() {
@@ -133,6 +119,58 @@ func Dir(repair ...bool) (dir string, tightened bool, err error) {
 	}
 	return dir, false, nil
 }
+
+// dirPath is the claim directory's path, without looking at it.
+func dirPath() (string, error) {
+	dir, _, err := envvar.SessionDir.Path()
+	if err != nil {
+		v := envvar.SessionDir
+		return "", &UnsafeError{Path: "the session claim directory", Problem: "is named twice: " + v.Name() + " and " + v.Legacy() + " are set to different directories",
+			fix: "unset one of them, or set both to the same directory"}
+	}
+	if dir == "" {
+		// Under the state directory, in looptender/, or in keepgoing/ on a
+		// computer that already has one: see userdir.
+		dir, err = userdir.State("sessions")
+		if err != nil {
+			return "", &UndeterminedError{Reason: "no user state directory: HOME and XDG_STATE_HOME are not set"}
+		}
+	}
+	if !filepath.IsAbs(dir) {
+		return "", &UnsafeError{Path: dir, Problem: "is not an absolute path"}
+	}
+	return dir, nil
+}
+
+// Lookup returns the claim directory for a reader that must change nothing:
+// unlike Dir it neither creates nor repairs it. A directory that does not
+// exist is returned with exists false; Recorded then finds no record in it,
+// and still looks under the tool's other directory name (see Sibling). A
+// directory that is a link, not a directory or another user's is an
+// *UnsafeError, as for Dir.
+func Lookup() (dir string, exists bool, err error) {
+	if dir, err = dirPath(); err != nil {
+		return "", false, err
+	}
+	info, err := os.Lstat(dir)
+	switch {
+	case errors.Is(err, os.ErrNotExist):
+		return dir, false, nil
+	case err != nil:
+		return "", false, &UnsafeError{Path: dir, Problem: "cannot be read"}
+	case info.Mode()&os.ModeSymlink != 0:
+		return "", false, &UnsafeError{Path: dir, Problem: "is a symbolic link"}
+	case !info.IsDir():
+		return "", false, &UnsafeError{Path: dir, Problem: "is not a directory"}
+	case !ownedByMe(info):
+		return "", false, &UnsafeError{Path: dir, Problem: "belongs to another user"}
+	}
+	return dir, true, nil
+}
+
+// HeadlessKinds are the adapter kinds whose session is their working
+// directory (see Of). A process session is its resume command instead.
+var HeadlessKinds = []string{"claude", "codex", "cursor", "custom"}
 
 // Private reports whether dir is exactly 0700, so status can say a check
 // will tighten it.

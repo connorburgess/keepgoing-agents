@@ -1113,6 +1113,51 @@ func TestDockSharedLimitMatchesTheAccountNotTheGroupName(t *testing.T) {
 	}
 }
 
+// Allowance lines that share a provider and title each say what their routes
+// are, without saying whether they are the same account; identified accounts
+// keep their numbering, and a line whose name is its own says nothing more.
+func TestDockAllowancesTellApartLinesThatShareAName(t *testing.T) {
+	route := func(key, tool, model, effort, identity string) dockRoute {
+		return dockRoute{Key: key, Provider: "example", Account: "example", Tool: tool, Model: model, Effort: effort, identity: identity,
+			Usage: dockUsageTarget{Availability: "unavailable", Windows: []dockUsageWindow{}}}
+	}
+	for _, c := range []struct {
+		name   string
+		routes []dockRoute
+		want   []string
+	}{
+		{"one untested, one identified", []dockRoute{route("rA", "BB thread", "", "", ""), route("rB", "Codex CLI", "example-large", "high", "account-1")},
+			[]string{"1 route: BB thread · which account is not identified by a test", "1 route: Codex CLI, model example-large, effort high"}},
+		{"two untested", []dockRoute{route("rA", "BB thread", "example-large", "", ""), route("rB", "BB thread", "example-small", "", "")},
+			[]string{"1 route: BB thread, model example-large · which account is not identified by a test",
+				"1 route: BB thread, model example-small · which account is not identified by a test"}},
+		{"two identified keep their numbers", []dockRoute{route("rA", "Codex CLI", "", "", "account-1"), route("rB", "Codex CLI", "", "", "account-2")},
+			[]string{"1 route: Codex CLI · account 1 of 2 named example", "1 route: Codex CLI · account 2 of 2 named example"}},
+		{"untested beside two identified", []dockRoute{route("rA", "", "example-large", "", ""), route("rB", "Claude Code", "", "", "account-1"),
+			route("rC", "Codex CLI", "", "", "account-2"), route("rD", "Cursor", "", "", "account-2")},
+			[]string{"1 route: tool not recorded, model example-large · which account is not identified by a test",
+				"1 route: Claude Code · account 1 of 2 named example", "2 routes: Codex CLI; Cursor · account 2 of 2 named example"}},
+		{"many kinds are capped", []dockRoute{route("rA", "BB thread", "", "", ""), route("rB", "Codex CLI", "m1", "", "account-1"), route("rC", "Codex CLI", "m2", "", "account-1"),
+			route("rD", "Codex CLI", "m3", "", "account-1"), route("rE", "Codex CLI", "m4", "", "account-1"), route("rF", "Codex CLI", "m4", "", "account-1")},
+			[]string{"1 route: BB thread · which account is not identified by a test",
+				"5 routes: Codex CLI, model m1; Codex CLI, model m2; Codex CLI, model m3; and 1 more"}},
+		{"a name of its own says nothing more", []dockRoute{route("rA", "BB thread", "", "", ""), {Key: "rB", Provider: "other", Account: "other", Tool: "Codex CLI", identity: "account-1",
+			Usage: dockUsageTarget{Availability: "unavailable", Windows: []dockUsageWindow{}}}},
+			[]string{"1 route · which account is not identified by a test", "1 route"}},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			allow, _ := dockAllowances(c.routes)
+			got := []string{}
+			for _, a := range allow {
+				got = append(got, a.Sub)
+			}
+			if strings.Join(got, "|") != strings.Join(c.want, "|") {
+				t.Errorf("\n got %q\nwant %q", got, c.want)
+			}
+		})
+	}
+}
+
 // Each record of the loop page's new parts, mapped to the exact words shown.
 func TestDockLoopPagePhrasesFollowEvidence(t *testing.T) {
 	// Every cause the history can record has words, except the two that
