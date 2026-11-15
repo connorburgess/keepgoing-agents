@@ -16,12 +16,13 @@ looptender is a supervisor, not an agent. It sits beside a running agent session
 ## Packages
 
 ```
-cmd/looptender               CLI: start, service, tick, daemon, status, timeline, goal, registry, client status/pause/stop/prepare-resume/resume/review/apply, dock, panel, transfer, control, fallbacks, report, adapter check, ci-wait, net-retry
+cmd/looptender               CLI: start, service, tick, daemon, status, context, timeline, goal, registry, client status/pause/stop/prepare-resume/resume/review/apply, dock, panel, transfer, control, fallbacks, report, adapter check, ci-wait, net-retry
 internal/config             a loop's configuration file (looptender.yaml, or keepgoing.yaml) and fallbacks.yaml: loading, defaults, validation
 internal/envvar             the environment variables' two names: LOOPTENDER_X, and the earlier KEEPGOING_X
 internal/userdir            the per-user directories and their name: looptender, or keepgoing where one already exists; the explicit move between them
 internal/prompt             opt-in current-goal context for wake and handoff messages
 internal/decide             the pure decision engine
+internal/loopcontext        the supervision context a session may read: built purely from configuration, control and state
 internal/supervise          one tick: observe, probe, decide, act, record
 internal/adapter            the Adapter interface and the code-to-class mapping
 internal/adapter/bb         BB threads over the bb CLI's JSON

@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Add `keepgoing context -c <config> [--json]`, a read-only supervision context with `schemaVersion: 1`: loop name, adapter, target with configured identity, recorded owner or `none recorded`, holds, bounds with used and remaining (unset loop-wide limits said as unset), permission mode or sandbox only where the configuration sets them, lane policy, session commands and fixed retained-authority statements. It states that only BB threads have a verified caller identity. It writes nothing, queries no provider, names no device and is not sent to any session. Table tests and command fixtures only. See [supervision context](docs/operations.md#supervision-context).
+
 - Scope account login phrases to the selected CLI and link Accounts to existing recorded Routes/Allowances usage. Preserve observation age and unavailable/stale evidence; route usage remains unassociated with named account cards, with no new polling or collector.
 
 - Fix account status checks refusing across agent tool invocations: exclude only the incidental CODEX_TOOL_CALL_ID from the context fingerprint, using existing platform name semantics. Preserve the actual caller and execution environment, all other bindings and explicit revision-bound updates; no automatic catalog migration.
