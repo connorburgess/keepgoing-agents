@@ -1006,7 +1006,7 @@
     }
     var sum = el("p", "route-summary");
     sum.appendChild(el("span", null, rs.total || routes.length + " routes"));
-    if (rs.inUseText) sum.appendChild(el("span", "c-good", rs.inUseText));
+    if (rs.inUseText) sum.appendChild(el("span", "", rs.inUseText));
     if (rs.trouble && rs.first) sum.appendChild(link("#/routes/" + rs.first, rs.problem, "c-warn"));
     else if (rs.problem) sum.appendChild(el("span", "sub", rs.problem));
     pane.appendChild(sum);

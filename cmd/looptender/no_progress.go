@@ -275,14 +275,16 @@ func noProgressOf(cfg *config.Config, st state.File, ctl control.File, j *incide
 		dockCapital(count(msgs, "message", "messages"))+" sent since then (wakes, nudges, re-prompts, notices about failed lanes, and briefs sent on a move to another route or back); "+flagAt(msgs)+".",
 		dockCapital(count(errs, "check", "checks"))+" since then found an error or retried the turn; "+flagAt(errs)+".")
 	if h := v.Held; h != nil {
-		held := dockSpan(time.Duration(h.Seconds) * time.Second)
+		held := "Held for a person for " + dockSpan(time.Duration(h.Seconds)*time.Second) + " of "
+		tail := ""
 		if h.Seconds == 0 {
-			held = "no time"
+			// A pause is a different hold, so a paused loop reads zero here.
+			held, tail = "Not held for a person in ", "; a pause is a different hold and is not counted here"
 		}
 		if h.AtLeast {
-			v.Lines = append(v.Lines, "Held for a person for "+held+" of "+last(time.Duration(h.CoveredSeconds)*time.Second)+", which is as far back as its history covers.")
+			v.Lines = append(v.Lines, held+last(time.Duration(h.CoveredSeconds)*time.Second)+", which is as far back as its history covers"+tail+".")
 		} else {
-			v.Lines = append(v.Lines, "Held for a person for "+held+" of "+last(window)+".")
+			v.Lines = append(v.Lines, held+last(window)+tail+".")
 		}
 	}
 	raised := []string{}
