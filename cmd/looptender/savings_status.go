@@ -37,7 +37,8 @@ type savingsStatus struct {
 	// History is the incident history the counts come from.
 	History savingsHistory `json:"history"`
 	// WithheldWakes are checks that sent nothing while the loop was not
-	// held, by fixed reason: a timer would have sent at each of them.
+	// held and the session was observed idle, by fixed reason: a timer's
+	// send at each would have started a turn.
 	WithheldWakes savingsCounts `json:"withheldWakes"`
 	// SpacedWakes are checks at which an idle wake was spaced, by fixed
 	// code, from state.json idleSpacedDays. Unavailable: not_recorded when
@@ -198,7 +199,7 @@ func describeSavings(journal *incident.Journal, spaced savingsSpaced, rec *state
 	} else {
 		withheld, nothing, sends, resets = savingsTally(*journal, from, now, &out.History)
 	}
-	out.WithheldWakes = savingsCountsOf(withheld, out.History, "while the loop was not held; "+savingsBaseline)
+	out.WithheldWakes = savingsCountsOf(withheld, out.History, "the session idle and the loop not held; "+savingsBaseline)
 	out.ChecksSentNothing = savingsCountsOf(nothing, out.History, "holds included")
 	out.Sends = savingsSendsOf(sends, out.History)
 	out.Resets = savingsResetsOf(resets, rec, out.History)
@@ -346,7 +347,7 @@ func savingsTally(j incident.Journal, from, now time.Time, h *savingsHistory) (w
 		case r.Outcome != "succeeded":
 		case r.Action == "none" || r.Action == "await_user" || heldNudge:
 			nothing[r.Cause] += n
-			if r.Action != "await_user" && timelineGate(r.ControlBefore) == "enabled" && !savingsHoldCause(r.Cause) {
+			if r.Action != "await_user" && timelineGate(r.ControlBefore) == "enabled" && !savingsHoldCause(r.Cause) && savingsObservedIdle(r.Observation) {
 				withheld[r.Cause] += n
 			}
 		case r.Action == "reprompt" && (r.TurnRetry == "retried" || r.TurnRetry == "queued"):
@@ -357,6 +358,14 @@ func savingsTally(j incident.Journal, from, now time.Time, h *savingsHistory) (w
 	}
 	sort.SliceStable(resets, func(a, b int) bool { return resets[a].At.Before(resets[b].At) })
 	return withheld, nothing, sends, resets
+}
+
+// savingsObservedIdle says the check observed the session idle, so a
+// timer's send there would have started a turn that reads the whole
+// context. At a working, waiting, failing or unobserved session it would
+// have queued or failed instead, so such a check is not a withheld wake.
+func savingsObservedIdle(o incident.Observation) bool {
+	return o.Availability == "observed" && o.State == "idle"
 }
 
 // savingsHoldCause is a cause that is itself a hold: a timer would not have

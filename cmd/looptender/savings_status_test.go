@@ -16,7 +16,14 @@ var savingsNow = time.Date(2026, 11, 16, 12, 0, 0, 0, time.UTC)
 // savingsTick is a non-dry-run check of an enabled loop that succeeded.
 func savingsTick(at time.Time, action, cause string) incident.Record {
 	return incident.Record{Kind: "tick", CheckStartedAt: at, Action: action, Cause: cause, Outcome: "succeeded", TurnRetry: "none",
+		Observation:   incident.Observation{Availability: "observed", State: "idle"},
 		ControlBefore: &incident.Controls{Enabled: true}, ControlAfter: &incident.Controls{Enabled: true}}
+}
+
+// savingsSeen is a check that observed the session in state.
+func savingsSeen(r incident.Record, state string) incident.Record {
+	r.Observation.State = state
+	return r
 }
 
 func savingsWith(r incident.Record, change func(*incident.Record)) incident.Record {
@@ -35,9 +42,16 @@ func TestSavingsCountsFromTheirRecords(t *testing.T) {
 		partial           []string
 	}{
 		{"idle check sent nothing", savingsTick(in, "none", "idle"), map[string]int{"idle": 1}, map[string]int{"idle": 1}, nil, nil},
-		{"working session left alone", savingsTick(in, "none", "active"), map[string]int{"active": 1}, map[string]int{"active": 1}, nil, nil},
-		{"held-back nudge", savingsTick(in, "nudge", "nudge_held"), map[string]int{"nudge_held": 1}, map[string]int{"nudge_held": 1}, nil, nil},
-		{"limit wait", savingsTick(in, "none", "limit_wait"), map[string]int{"limit_wait": 1}, map[string]int{"limit_wait": 1}, nil, nil},
+		{"working session left alone", savingsSeen(savingsTick(in, "none", "active"), "active"), nil, map[string]int{"active": 1}, nil, nil},
+		{"held-back nudge", savingsSeen(savingsTick(in, "nudge", "nudge_held"), "active"), nil, map[string]int{"nudge_held": 1}, nil, nil},
+		{"limit wait", savingsSeen(savingsTick(in, "none", "limit_wait"), "limited"), nil, map[string]int{"limit_wait": 1}, nil, nil},
+		{"provider retrying", savingsSeen(savingsTick(in, "none", "retrying"), "error"), nil, map[string]int{"retrying": 1}, nil, nil},
+		{"idle with child work running", savingsTick(in, "none", "child_busy"), map[string]int{"child_busy": 1}, map[string]int{"child_busy": 1}, nil, nil},
+		{"no observation state", savingsSeen(savingsTick(in, "none", "idle"), ""), nil, map[string]int{"idle": 1}, nil, nil},
+		{"observation unavailable", savingsWith(savingsTick(in, "none", "network_down"), func(r *incident.Record) {
+			r.Observation = incident.Observation{Availability: "unavailable", State: "idle"}
+		}),
+			nil, map[string]int{"network_down": 1}, nil, nil},
 		{"paused: a hold, not withheld", savingsWith(savingsTick(in, "none", "paused"), func(r *incident.Record) { r.ControlBefore.Paused = true }),
 			nil, map[string]int{"paused": 1}, nil, nil},
 		{"awaiting a person", savingsTick(in, "await_user", "stall_limit"), nil, map[string]int{"stall_limit": 1}, nil, nil},
@@ -105,10 +119,11 @@ func TestSavingsPhrasesFromTheirRecords(t *testing.T) {
 	f.NoteContext("primary", reading(10_000, in.Add(-time.Minute)))
 	journal := &incident.Journal{Records: []incident.Record{
 		savingsTick(in.Add(-3*time.Hour), "wake", "idle"),
-		savingsTick(in.Add(-2*time.Hour), "none", "active"),
-		savingsTick(in.Add(-90*time.Minute), "none", "active"),
+		savingsSeen(savingsTick(in.Add(-2*time.Hour), "none", "active"), "active"),
+		savingsTick(in.Add(-100*time.Minute), "none", "idle"),
+		savingsTick(in.Add(-90*time.Minute), "none", "child_busy"),
 		savingsWith(savingsTick(in.Add(-80*time.Minute), "none", "paused"), func(r *incident.Record) { r.ControlBefore.Paused = true }),
-		savingsTick(in.Add(-70*time.Minute), "nudge", "nudge_held"),
+		savingsSeen(savingsTick(in.Add(-70*time.Minute), "nudge", "nudge_held"), "active"),
 		{Kind: "control", ControlChange: &incident.ControlChange{Operation: sessionResetByTerminal, SaveObservedAt: in.Add(-30 * time.Minute)}},
 		savingsTick(in.Add(-10*time.Minute), "nudge", "stall"),
 	}}
@@ -116,20 +131,20 @@ func TestSavingsPhrasesFromTheirRecords(t *testing.T) {
 	got := describeSavings(journal, savingsSpaced{}, f.Context, ctx, savingsNow)
 	want := []string{
 		"savings:   last 7 UTC days, measured from looptender's records; diagnostic only, no decision uses it",
-		"  withheld wakes: 3 checks (while the loop was not held; compared with a timer that sends at every check): 2 active, 1 nudge_held",
+		"  withheld wakes: 2 checks (the session idle and the loop not held; compared with a timer that sends at every check): 1 child_busy, 1 idle",
 		"  spaced wakes: unavailable; no record of spaced wakes is kept yet",
-		"  checks that sent nothing: 4 checks (holds included): 2 active, 1 nudge_held, 1 paused",
+		"  checks that sent nothing: 5 checks (holds included): 1 active, 1 child_busy, 1 idle, 1 nudge_held, 1 paused",
 		"  sends: 2 sends: 1 wake, 1 nudge",
 		"  context now: 10,000 of 200,000 tokens (5%), estimated by BB, read 1 h 1 min ago",
 		"  session resets: 2026-11-16T10:30:00Z by terminal, before 60,000 tokens, after 10,000 tokens",
-		"  estimate: 30,000 to 180,000 tokens not spent on 3 withheld wakes, compared with a timer that sends at every check (withheld wakes times the lowest and highest context reading of the period, estimated by BB; not tokens billed)",
+		"  estimate: 20,000 to 120,000 tokens not spent on 2 withheld wakes, compared with a timer that sends at every check (withheld wakes times the lowest and highest context reading of the period, estimated by BB; not tokens billed)",
 	}
 	if !reflect.DeepEqual(got.Lines, want) {
 		t.Fatalf("lines:\n%s\nwant:\n%s", strings.Join(got.Lines, "\n"), strings.Join(want, "\n"))
 	}
 	e := got.Estimate
-	if e.Label != "estimate" || e.Availability != "recorded" || *e.WithheldWakes != 3 || *e.LowestReading != 10_000 || *e.HighestReading != 60_000 ||
-		*e.LowTokens != 30_000 || *e.HighTokens != 180_000 || !e.Estimated || e.Baseline != savingsBaseline {
+	if e.Label != "estimate" || e.Availability != "recorded" || *e.WithheldWakes != 2 || *e.LowestReading != 10_000 || *e.HighestReading != 60_000 ||
+		*e.LowTokens != 20_000 || *e.HighTokens != 120_000 || !e.Estimated || e.Baseline != savingsBaseline {
 		t.Fatalf("estimate: %+v", e)
 	}
 	if got.Period.From != time.Date(2026, 11, 10, 0, 0, 0, 0, time.UTC) || got.Period.Days != 7 || got.Version != 1 {
