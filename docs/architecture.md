@@ -34,6 +34,7 @@ internal/probe              one tiny real request to confirm a candidate works
 internal/health             probe evidence and the redundancy rule
 internal/allowance          usage reading history per window instance and the projection at reset; pure
 internal/timing             usage-aware timing: the step decision (pure) and its input from state and health records
+internal/contextwindow      context-threshold reset: the decision (pure), previewed by status only; nothing acts on it
 internal/handoff            the brief a fallback receives
 internal/report             signed webhook reports and diagnostic delivery history
 internal/incident           bounded typed tick/control/retarget history; diagnostic only
@@ -338,6 +339,10 @@ The panel owns `build-replacements/<key>/build-update.json` and its `upgrade-bac
 ## Timing decisions and steps (U4/U5, unreleased)
 
 `internal/timing.Decide` consumes recorded facts and returns an action, stable rule and reason code, and display facts. It performs no IO and keeps no state. `status` calls it assuming the next turn boundary; the supervisor applies it only when the engine wakes a verified idle session, before that wake, without another move. Disabled supervision, holds, errors, missing/unrecognized/refusal/unknown observations, other moves and failover-selected routes gate the decision. Only recorded idle/active observations can reach a next-boundary move preview; pending, stopping and awaiting-input observations remain gated. The panel and timeline read the recorded timing cause and stable decision codes.
+
+## Context window reset preview (unreleased)
+
+`internal/contextwindow.Decide` is a pure function of the latest context window reading, its age, `loop.context_window.reset_at`, the controls, the last check's observation, the run graph's lane listing from that check, and the last reset (none yet). It returns would-reset or not with a stable rule and reason code. It is its own package rather than part of timing, which moves a loop between routes on one usage allowance, and `internal/decide` never reads a reading. Only `status` calls it; no check does, so decisions, sends and saved state are the same with the key set or unset. See [context window reset preview](operations.md#context-window-reset-preview).
 
 Configuration validates optional ordered same-allowance steps after loading the loop's own fallbacks. For an externally followed standard list, unresolved or ineligible references retain a warning and withhold the preview while leaving the loop loadable. The standard resolver's primary-group exclusion is unchanged; multi-step timing needs the loop's own file. Explicit timing syntax, ceilings, thresholds and durations remain validation errors. Unreadable controls or state also withhold `timingWould`; absence is no decision. No route, control, process or account changes are made by a preview.
 

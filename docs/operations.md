@@ -255,7 +255,7 @@ Existing `control.note` output is retained for compatibility; status is a privat
 
 ### Context window reading
 
-Unreleased source. For a BB thread, a check records how much of the model's context window the supervised conversation uses, as BB reports it with `bb thread context <thread> --json`: the tokens used, the window and BB's `estimated` flag. It is a diagnostic: no decision, send, allowance or hold reads it, and a check decides and acts the same with or without it.
+Unreleased source. For a BB thread, a check records how much of the model's context window the supervised conversation uses, as BB reports it with `bb thread context <thread> --json`: the tokens used, the window and BB's `estimated` flag. It is a diagnostic: no decision, send, allowance or hold of a check reads it, and a check decides and acts the same with or without it. Only `status` reads it, for the figures and for the [context window reset preview](#context-window-reset-preview).
 
 - **When.** At most once per check, after the check's action: when it sent a wake, a re-prompt or a nudge to the target it observed, or when it is the first check to see that target's turn ended. A paused, stopped, held, switched-off or dry-run check, and one that moved the loop to another route, reads nothing. It runs only in time the [check time budget](#check-time-budget) has free after what the check still reserves and the time one routine report needs, for at most 5 seconds, and is skipped when less than a second is left.
 - **What.** The supervised thread only, never a lane, and never message text. Output over 64 KiB, an error envelope, a figure that is missing, quoted, fractional or out of range, a window of zero and a missing `estimated` flag all count as unavailable. So does a bb without the command. An unavailable reading fails nothing and warns nothing; the last good reading stays with its own time.
@@ -263,6 +263,28 @@ Unreleased source. For a BB thread, a check records how much of the model's cont
 - **Where it shows.** Only in `status`. The text prints `context window:` with the latest figures, "estimated by BB" when BB marked them as an estimate ("reported by BB" otherwise) and how long ago they were read, and `context window by day` with the three newest days. `status --json` has the object `contextWindow`, `version` 1: `availability` (`recorded` or `unavailable`), `reason` (`not_recorded` or `not_supported`), `target`, `usedTokens`, `windowTokens`, `estimated`, `readAt`, `ageSeconds`, `age`, `text`, `days` (`day`, `lowest`, `highest`, `last`, `windowTokens`, `count`, `estimated`, oldest first) and `recent` (`usedTokens`, `windowTokens`, `estimated`, `at`, oldest first). The panel does not show it yet. Every other adapter reads `unavailable`; see the [capability matrix](adapters.md#context-window-reading).
 
 Tested with fixtures and a stand-in bb only. The shape was taken from one bb build's output and is not a published contract; a bb that changes it reads as unavailable.
+
+### Context window reset preview
+
+Unreleased source, fixture-tested only. With [`loop.context_window.reset_at`](configuration.md#context_window) set, `status` previews what a context-threshold reset would do at the loop's next turn boundary. It is a preview: this build never resets, compacts, sends, asks for a checkpoint or writes anything because of it, and no check's decisions, sends or saved state change with the key set or unset. It reads recorded state only, the same records as the rest of `status`, and runs no provider or `bb` command.
+
+The decision is `contextwindow.Decide`, a pure function. It says "would reset" only when every rule below passes, tried in this order; the first that fails names the rule and a fixed reason code:
+
+| Rule | Reason codes (would not reset) | Passes when |
+| --- | --- | --- |
+| `configuration` | `not_configured` | `reset_at` is set |
+| `controls` | `controls_unreadable`, `stopped`, `paused`, `held` | `control.json` reads, and the loop is not stopped, paused, switched off, awaiting a person or completed |
+| `reading` | `not_supported`, `no_reading`, `malformed_reading`, `estimate_flag_missing`, `reading_too_old` | the active target is a BB thread, its latest reading is recorded in a layout this build reads, with a positive window, a time not in the future, BB's `estimated` flag, and is at most 15 minutes old |
+| `session` | `no_observation`, `in_error`, `limit_wait`, `retrying`, `refusal`, `awaiting_input`, `not_idle` | the last check observed the active target idle after a turn, with no error, limit wait, provider retry or turn retry at that check, refusal streak or refusal hold, and no interaction pending |
+| `lanes` | `lanes_unverified`, `lanes_active` | the run graph has a complete lane listing of the active target from that check, with no lane active or awaiting input |
+| `threshold` | `below_threshold` | used tokens over the window are at or above `reset_at` |
+| `spacing` | `too_soon`, `daily_cap_used` | at least 6 hours since the last reset, and fewer than 2 today (UTC) |
+| `would_reset` | `at_or_above_threshold` | all of the above |
+
+A reading is fresh for 15 minutes because a check records one when it sends and at a turn's end; an older one may predate the last turn. This build makes no resets, so none is recorded and `spacing` never fails yet. BB's `estimated` flag is kept in the words: "estimated by BB" or "reported by BB".
+
+- **Text.** A configured loop prints one line after the context window lines: `context window reset at the next turn boundary: would reset: 85% of the window used (170,000 of 200,000 tokens, estimated by BB), at or above the 80% threshold, …; preview only: this build never resets, compacts, sends or asks for a checkpoint`, or `would not reset:` with the reason in words. A loop without the key prints nothing new.
+- **JSON.** `status --json` has the object `contextWindowReset`, `version` 1: `preview` (always `true`), `configured`, `wouldReset`, `rule`, `reason`, `text`, and for a configured loop `threshold`, `estimated` (when the decision reached a reading), `maxReadingAgeSeconds` (900), `minIntervalSeconds` (21600) and `dailyCap` (2). A loop without the key has the fixed value `{"version":1,"preview":true,"configured":false,"wouldReset":false,"rule":"configuration","reason":"not_configured","text":"not configured"}`. Like the other objects from `state.json`, it is left out when that file cannot be read.
 
 ### Savings figures
 
