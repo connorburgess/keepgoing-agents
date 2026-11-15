@@ -127,6 +127,7 @@ func (a *Adapter) Observe(ctx context.Context) (decide.Observation, error) {
 	sig := a.signals(ctx)
 	if sig.ok {
 		obs.ModelFallback = sig.fallbackSeq
+		obs.ChildOutcome = sig.childOutcome
 	}
 	if sig.ok && sig.hasError {
 		obs.Evidence = sig.evidence
@@ -254,6 +255,7 @@ type signals struct {
 	turnStartSeq  int64
 	toolsRunning  bool
 	fallbackSeq   int64
+	childOutcome  int64
 }
 
 // signals reads the thread's new log events and returns the current error,
@@ -262,7 +264,7 @@ type signals struct {
 func (a *Adapter) signals(ctx context.Context) signals {
 	c, ok := a.scan(ctx)
 	s := signals{class: decide.ErrUnknown, ok: ok, blocked: c.Blocked, resetsAt: c.ResetsAt, pending: len(c.Pending) > 0, lastEventAt: c.LastEventAt, turnStartedMs: c.TurnStartedMs,
-		turnStartSeq: c.TurnStartSeq, toolsRunning: c.ToolsUncertain || len(c.OpenTools) > 0, fallbackSeq: c.FallbackSeq}
+		turnStartSeq: c.TurnStartSeq, toolsRunning: c.ToolsUncertain || len(c.OpenTools) > 0, fallbackSeq: c.FallbackSeq, childOutcome: c.ChildOutcomeSeq}
 	if c.Error != nil {
 		s.hasError = true
 		s.evidence = evidence.Clean(c.Error.Evidence)

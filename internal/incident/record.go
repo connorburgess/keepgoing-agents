@@ -665,6 +665,8 @@ func Cause(reason string) string {
 		return "nudge_held"
 	case decide.HungTurnReason:
 		return "hung_wait"
+	case decide.IdleSpacedReason:
+		return string(decide.IdleUnchanged)
 	}
 	// The stall rule's hold after nudges that were held back.
 	if strings.HasPrefix(reason, "no progress after ") && strings.Contains(reason, decide.HeldNudgesClause+")") {
@@ -689,11 +691,14 @@ func DecisionCause(d decide.Decision) string {
 	if d.LimitWait != "" {
 		return cleanCause(string(d.LimitWait))
 	}
+	if d.IdleWait != "" {
+		return cleanCause(string(d.IdleWait))
+	}
 	return Cause(d.Reason)
 }
 
 func cleanCause(value string) string {
-	return oneOf(value, "unavailable", "disabled", "paused", "awaiting_user", "completed", "retrying", "retry_unverified", "retry_silent", "handoff_deferred", "network_down", "deadline", "send_limit", "git_limit", "stall_limit", "stall_limit_held", "nudge_held", "hung_wait", "stall", "idle", "active", "child_input", "child_busy", "child_error", "child_unverified", "input", "stop", "limit_wait", "limit_no_fallback", "limit_failover_disabled", "limit_refusal_unrecovered", "restricted", "refused_continue", "refused_wait", "refusal_ask", "decline_acknowledged",
+	return oneOf(value, "unavailable", "disabled", "paused", "awaiting_user", "completed", "retrying", "retry_unverified", "retry_silent", "handoff_deferred", "network_down", "deadline", "send_limit", "git_limit", "stall_limit", "stall_limit_held", "nudge_held", "hung_wait", "stall", "idle", "active", "child_input", "child_busy", "child_error", "child_unverified", "input", "stop", "limit_wait", "limit_no_fallback", "limit_failover_disabled", "limit_refusal_unrecovered", "restricted", "refused_continue", "refused_wait", "refusal_ask", "decline_acknowledged", "idle_unchanged",
 		TimingStepUp, TimingStepDown, TimingReturn, TimingRepair,
 		"near_reset_unused", "projected_over_down_at", "reset_passed", "runs_out_since_step_up", "left_configuration", "unsettled_step", "route_left_configuration", "other")
 }

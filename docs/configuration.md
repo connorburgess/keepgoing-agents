@@ -228,12 +228,40 @@ A saved session identity is checked again each time it is read. A value that is 
 | `min_wake_interval` | `60m` | Minimum gap between a nudge and anything sent before it: a wake, nudge, re-prompt, or handoff. |
 | `flag_after_sends` | `6` | Messages sent with no recorded change to the repositories that raise the [no-progress flag](dock.md#the-no-progress-flag): wakes, nudges, re-prompts, notices about failed lanes, and briefs sent on a move to another route or back, each by the send's own result, and turn retries the provider accepted. `0` turns this fact off. A whole number from 0 to 1000. The flag only informs: it never holds, pauses, moves or stops anything. A binary from before this key refuses a configuration that sets it. |
 | `flag_after_errors` | `4` | Checks that found an error or retried the turn, with no recorded change to the repositories, that raise the same flag; `0` turns this fact off. A whole number from 0 to 1000. A binary from before this key refuses a configuration that sets it. |
+| `idle_spacing` | off | Opt-in. Spaces idle wakes after which nothing changed that looptender can see: `{first: 10m, max: 2h}`, with `idle_spacing: {}` taking those defaults. See [spacing idle wakes that changed nothing](#spacing-idle-wakes-that-changed-nothing). Unreleased; a binary from before this key refuses a configuration that sets it. |
 
 The fingerprint covers every worktree of each repository. It includes `HEAD`, `git status --porcelain` for tracked files, and the size and modification time of tracked files that differ from `HEAD`. Untracked files, file contents, and transcripts are never read.
 
 Without `repositories` the no-progress flag is not available: it reads "not available: no progress source is configured", never "no progress".
 
-Idle wakes follow the supervisor's check cadence, subject to other gates. `min_wake_interval` spaces stall nudges; it does not throttle idle wakes. `max_nudges` resets when a turn ends and is not a loop-wide work budget.
+Idle wakes follow the supervisor's check cadence, subject to other gates. `min_wake_interval` spaces stall nudges; it does not throttle idle wakes. `max_nudges` resets when a turn ends and is not a loop-wide work budget. Without `idle_spacing`, which is the default, an idle session is woken at every eligible check.
+
+### Spacing idle wakes that changed nothing
+
+Unreleased, fixture-tested only. With `progress.idle_spacing` set, an idle session whose previous idle wake changed nothing looptender can see is not woken at every check. After one such wake the next waits `first` (default `10m`, at least `1m`) from it; each further one in a row doubles the wait, up to `max` (default `2h`, at least `first`, at most `24h`). At the defaults: 10m, 20m, 40m, 80m, then 2h.
+
+```yaml
+loop:
+  progress:
+    idle_spacing: {first: 10m, max: 2h}
+```
+
+"Changed" means only these structured facts, compared between the last idle wake and the current check. Any one of them starts the spacing over, and the next check wakes at once:
+
+- the Git progress fingerprint (only with `repositories`);
+- a new child outcome notice in the session's log (BB only);
+- the goal revision;
+- any change to `control.json`, which includes `resume`, `pause`, `enable` and a person's answer to a hold;
+- the target or what set it: a handoff, a switch-back, a `retarget`, a timing step;
+- the session seen in error: the error and the recovery that follows.
+
+A loop with no `repositories` still has every other fact. The rule never reads transcript or message text, and never infers that there is nothing to do: it only notices that none of these facts moved.
+
+It only spaces. It adds no hold, never shortens any other wait, and never overrides a stop, pause, hold, the operating window, child-work suppression, a limit wait or the error rules, all of which come first. A switch-back and a child-error notice are not idle wakes and are never spaced. A spaced check sends nothing, so it spends no `max_sends` and refunds none. The daemon keeps its usual interval; a check that comes before the next idle wake is due records `idle; previous idle wakes changed nothing looptender can see; next idle wake spaced` (cause `idle_unchanged`) and does nothing else.
+
+`status` prints an `idle spacing:` line with the next idle wake's due time and the fixed reason code `idle_unchanged`; `status --json` has `idleSpacing` with `nextIdleWakeAt`, `wait`, `unchanged`, `spacedTotal` and `days`, the count of spaced wakes per UTC day and reason code, kept for 31 days. That history is diagnostic only and never a decision input. The record lives in `state.json` and survives a restart.
+
+**Known limit.** Anything that is not one of the facts above is invisible to the rule. A coordinator idle and waiting on CI is the typical case: a CI result is not a fact looptender sees, so with the key on, a wake after CI finishes can be late by up to `max` unless something else changes. Choose `max` with that in mind. The cap is not derived from any provider's prompt-cache lifetime, which this project does not know.
 
 ## limits
 

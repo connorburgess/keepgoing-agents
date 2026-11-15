@@ -1,0 +1,107 @@
+package supervise
+
+import (
+	"crypto/sha256"
+	"encoding/hex"
+	"strconv"
+	"strings"
+	"time"
+
+	"github.com/looptender/looptender/internal/control"
+	"github.com/looptender/looptender/internal/decide"
+	"github.com/looptender/looptender/internal/state"
+)
+
+// idleFacts is a digest of the structured facts the idle spacing rule
+// watches: the Git progress fingerprint (as the time it last changed), the
+// latest child outcome notice, the goal revision, the control record (any
+// control change, including resume), and the target with what last set it,
+// the last handoff or switch-back and the last timing step or retarget. A
+// session error is handled apart: it clears the record. Nothing here reads
+// transcript or message text, and the digest holds no identifier.
+func (t *tick) idleFacts(obs decide.Observation, ctl control.File) string {
+	ts := func(v time.Time) string { return strconv.FormatInt(v.UnixNano(), 10) }
+	goal := "none"
+	if g, err := control.LoadGoal(t.loop.StateDir); err != nil {
+		goal = "unavailable"
+	} else if g != nil {
+		s := g.Summary()
+		goal = s.ID + "/" + strconv.FormatUint(s.Revision, 10)
+	}
+	progress := "untracked"
+	if len(t.loop.Progress.Repositories) > 0 {
+		progress = ts(t.st.ProgressChangedAt)
+	}
+	var step, retarget time.Time
+	if tm := t.st.Timing; tm != nil {
+		if tm.LastMove != nil {
+			step = tm.LastMove.At
+		}
+		if tm.Retarget != nil {
+			retarget = tm.Retarget.At
+		}
+	}
+	parts := []string{
+		"progress=" + progress,
+		"child_outcome=" + strconv.FormatInt(obs.ChildOutcome, 10),
+		"goal=" + goal,
+		"control=" + ts(ctl.UpdatedAt),
+		"target=" + t.st.Target() + "/" + t.st.TargetSetBy,
+		"handoff=" + ts(t.st.LastHandoffAt),
+		"timing=" + ts(step) + "/" + ts(retarget),
+	}
+	sum := sha256.Sum256([]byte(strings.Join(parts, "\n")))
+	return hex.EncodeToString(sum[:12])
+}
+
+// idleSpacingInput returns the rule's input for this check. With the key off
+// it forgets the record and returns the zero input, which never spaces. A
+// session seen in error ends the run of unchanged wakes: the error and the
+// recovery that follows are changes.
+func (t *tick) idleSpacingInput(obs decide.Observation, ctl control.File) decide.IdleSpacing {
+	first, max := t.loop.Progress.IdleSpacingWaits()
+	t.idleFactsNow = ""
+	if max <= 0 || obs.State == decide.Error {
+		t.st.IdleSpacing = nil
+		return decide.IdleSpacing{}
+	}
+	t.idleFactsNow = t.idleFacts(obs, ctl)
+	in := decide.IdleSpacing{First: first, Max: max}
+	if r := t.st.IdleSpacing; r != nil && r.Facts == t.idleFactsNow && !r.LastWakeAt.IsZero() {
+		in.Unchanged = r.Unchanged + 1
+		in.SinceIdleWake = t.now.Sub(r.LastWakeAt)
+	}
+	return in
+}
+
+// recordIdleWake runs once the adapter was called for an ordinary idle wake,
+// whatever it returned, like every other send record. A wake that carried a
+// child-error notice starts the count over: the notice is a change.
+func (t *tick) recordIdleWake(in decide.Input, childNotice bool) {
+	if t.idleFactsNow == "" {
+		return
+	}
+	n := in.IdleSpacing.Unchanged
+	if childNotice {
+		n = 0
+	}
+	t.st.IdleSpacing = &state.IdleSpacing{LastWakeAt: t.now, Facts: t.idleFactsNow, Unchanged: n}
+}
+
+// noteIdleSpacing records the final decision of a check: when a spaced idle
+// wake is due and why, for status, and the count of spaced wakes per day.
+// Neither is ever read by a decision.
+func (t *tick) noteIdleSpacing(in decide.Input, d decide.Decision) {
+	r := t.st.IdleSpacing
+	if r == nil || t.opts.DryRun {
+		return
+	}
+	if d.IdleWait == "" {
+		r.WaitUntil, r.Wait = time.Time{}, ""
+		return
+	}
+	s := in.IdleSpacing
+	r.WaitUntil = r.LastWakeAt.Add(decide.IdleSpacingWait(s.First, s.Max, s.Unchanged))
+	r.Wait = string(d.IdleWait)
+	t.st.CountIdleSpaced(string(d.IdleWait), t.now)
+}
