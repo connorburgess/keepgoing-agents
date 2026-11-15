@@ -33,6 +33,13 @@ When a person approves something, copy their exact words into the ledger with wh
 
 Decide the model and the effort level as part of creating the lane, from the work in its handoff file, and record the choice in the ledger row. A lane does not inherit a sensible choice by default, and looptender does not route lanes: its [routes](glossary.md) apply to the loop's own conversation only.
 
+How to choose, also a convention that looptender does not enforce:
+
+- The coordinator runs on the strongest model among itself and its lanes, and chooses each lane's model by the task.
+- A lane's model is never stronger than its coordinator's.
+- Match the model to the work. Code and design-heavy work gets the strongest lane model. Docs, wording, mechanical edits and simple reviews get a mid model. Lookups and status checks get the smallest. Reviews of code changes stay on the strongest lane model or with the coordinator.
+- The coordinator steps in when a lane is stuck, has been wrong twice, or the task has turned out harder than its model. It does the work itself or re-runs the lane one level up, rather than letting it grind.
+
 ## Keep nesting shallow
 
 Prefer two levels: a coordinator and its lanes. A lane coordinates lanes of its own only when the work needs it, and then it follows this page as their coordinator.
