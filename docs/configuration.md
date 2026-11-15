@@ -398,6 +398,23 @@ Rules 3 to 5 wait `min_on_step` after the last timing move (`too_soon`). A missi
 
 **Before going back to an older binary.** A binary from before U4 refuses the step fields, and one from before `loop.timing` refuses the whole block. A U4 build can preview steps but does not apply them. An older binary also drops `targetSetBy` and the timing record from `state.json`, after which its switch-back can pull a loop off a timing step. So first run `keepgoing retarget primary -c <config>`, so the loop is on its first route, then remove `steps`, `ceiling`, `unused_at_least`, `down_at` and `min_on_step` from `loop.timing` (for a binary from before `loop.timing`, remove the whole `loop.timing` block).
 
+## context_window
+
+Unreleased source, previewed only. The [context-threshold reset](roadmap.md) is not built: this build never resets, compacts, sends or asks for a checkpoint because of this key. `status` shows what it would do at the next turn boundary; see [context window reset preview](operations.md#context-window-reset-preview).
+
+```yaml
+loop:
+  adapter: bb
+  context_window:
+    reset_at: 0.8   # share of the context window; no default
+```
+
+| Field | Default | Meaning |
+| --- | --- | --- |
+| `reset_at` | none | The share of the conversation's context window at or above which a reset would be due. Between `0.5` and `0.95`. |
+
+It has no default: without `reset_at` the feature is off, and a `context_window` block without it is refused. Below half a reset would give up a conversation with room left in it; above 95% the provider's own compaction or limit is likely to act first. Only a loop on a BB thread may set it, because only BB reports a [context window reading](adapters.md#context-window-reading); any other adapter is refused, naming the rule `context_window_reading`. While the loop is on a fallback that reports none, the preview says `not_supported`. The rule's other limits are fixed, not configured: a reading counts only while no turn is known to have run since it was taken, with a 24-hour safety limit on its age; 6 hours between resets; and at most 2 resets per UTC day.
+
 ## errors
 
 | Field | Default | Meaning |
