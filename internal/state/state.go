@@ -249,6 +249,68 @@ type File struct {
 	// ChildErrorReport is set while any child of the supervised thread is in
 	// error, so its report is not repeated by later checks or after a restart.
 	ChildErrorReport *ChildErrorReport `json:"childErrorReport,omitempty"`
+	// IdleSpacing is the record of loop.progress.idle_spacing. Nil while the
+	// key is off, after a check that saw the session in error, and before the
+	// first idle wake.
+	IdleSpacing *IdleSpacing `json:"idleSpacing,omitempty"`
+	// IdleSpacedDays counts the checks that spaced an idle wake, per UTC day
+	// and fixed reason code, newest last and at most IdleSpacedDaysKept days.
+	// It is diagnostic history only: no decision reads it.
+	IdleSpacedDays []IdleSpacedDay `json:"idleSpacedDays,omitempty"`
+}
+
+// IdleSpacedDay is one UTC day of IdleSpacedDays. Day is YYYY-MM-DD.
+type IdleSpacedDay struct {
+	Day    string         `json:"day"`
+	Counts map[string]int `json:"counts"`
+}
+
+// IdleSpacedDaysKept bounds IdleSpacedDays.
+const IdleSpacedDaysKept = 31
+
+// CountIdleSpaced adds one spaced idle wake under a fixed reason code to the
+// day of at, dropping the oldest days past the bound. A clock that moved back
+// counts into the newest day on record rather than reordering the history.
+func (f *File) CountIdleSpaced(code string, at time.Time) {
+	day := at.UTC().Format(time.DateOnly)
+	n := len(f.IdleSpacedDays)
+	if n == 0 || f.IdleSpacedDays[n-1].Day < day {
+		f.IdleSpacedDays = append(f.IdleSpacedDays, IdleSpacedDay{Day: day, Counts: map[string]int{}})
+		n++
+	}
+	last := &f.IdleSpacedDays[n-1]
+	if last.Counts == nil {
+		last.Counts = map[string]int{}
+	}
+	last.Counts[code]++
+	if n > IdleSpacedDaysKept {
+		f.IdleSpacedDays = slices.Clone(f.IdleSpacedDays[n-IdleSpacedDaysKept:])
+	}
+}
+
+// IdleSpacedTotal is the number of spaced idle wakes on record.
+func (f File) IdleSpacedTotal() int {
+	total := 0
+	for _, d := range f.IdleSpacedDays {
+		for _, c := range d.Counts {
+			total += c
+		}
+	}
+	return total
+}
+
+// IdleSpacing records the last idle wake for the idle spacing rule. Facts is
+// a digest of the structured facts the rule watches, taken at that wake; it
+// holds no identifier or text. Unchanged counts consecutive idle wakes, up to
+// and including that one, sent with no change to those facts since the one
+// before. WaitUntil and Wait are set by a check that spaced the next idle
+// wake: when it is due and the fixed code of why it waits.
+type IdleSpacing struct {
+	LastWakeAt time.Time `json:"lastWakeAt"`
+	Facts      string    `json:"facts"`
+	Unchanged  int       `json:"unchanged"`
+	WaitUntil  time.Time `json:"waitUntil,omitzero"`
+	Wait       string    `json:"wait,omitempty"`
 }
 
 // ChildErrorReport outcomes; the first three mean what the limit-wait ones do.
