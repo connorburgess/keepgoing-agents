@@ -134,3 +134,35 @@ func LegacyOf(name string) (string, bool) {
 	}
 	return "", false
 }
+
+// SupervisorSession lists, by exact name, the variables that describe the
+// session a supervisor itself was started from: the BB thread that ran it
+// and that thread's own agent session. A supervisor started by hand inside a
+// BB thread inherits them; the sessions it starts are not that thread, so
+// they do not get them. MESSAGING_TOKEN is a credential to that session.
+// Names only, no prefixes: a prefix could also remove account selection such
+// as CLAUDE_CONFIG_DIR. How to reach BB (BB_CLI, BB_SERVER_URL,
+// BB_HOST_DAEMON_PORT) is kept.
+var SupervisorSession = []string{
+	// BB, for the thread the supervisor runs in.
+	"BB_THREAD_ID", "BB_THREAD_STORAGE", "BB_PROJECT_ID", "BB_ENVIRONMENT_ID",
+	// Claude Code, for that thread's own session.
+	"CLAUDE_CODE_SESSION_ID", "CLAUDE_CODE_MESSAGING_SOCKET", "CLAUDE_CODE_MESSAGING_TOKEN", "CLAUDE_PID", "CLAUDECODE", "CLAUDE_CODE_ENTRYPOINT",
+}
+
+// WithoutSupervisorSession returns environ without the SupervisorSession
+// variables, matched in any letter case as Windows matches names.
+func WithoutSupervisorSession(environ []string) []string {
+	env := make([]string, 0, len(environ))
+	for _, kv := range environ {
+		name, _, _ := strings.Cut(kv, "=")
+		drop := false
+		for _, n := range SupervisorSession {
+			drop = drop || strings.EqualFold(name, n)
+		}
+		if !drop {
+			env = append(env, kv)
+		}
+	}
+	return env
+}

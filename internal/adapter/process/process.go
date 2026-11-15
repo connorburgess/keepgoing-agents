@@ -118,7 +118,10 @@ func (a *Adapter) run(ctx context.Context, argv []string, stdin string, extra ma
 	ctx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 	cmd := exec.CommandContext(ctx, argv[0], argv[1:]...)
-	cmd.Env = os.Environ()
+	// Not the session the supervisor was started from: the session these
+	// commands drive is not that BB thread or its agent session. The loop's
+	// own env entries are added after, so they win.
+	cmd.Env = envvar.WithoutSupervisorSession(os.Environ())
 	for k, v := range a.cfg.Env {
 		cmd.Env = append(cmd.Env, k+"="+v)
 	}

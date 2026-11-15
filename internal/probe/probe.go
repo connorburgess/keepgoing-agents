@@ -248,7 +248,9 @@ func (b *limitedBuffer) Write(p []byte) (int, error) {
 func run(ctx context.Context, argv []string, dir string, env []string, stdin string, limit int64) ([]byte, int, error) {
 	cmd := exec.CommandContext(ctx, argv[0], argv[1:]...)
 	cmd.Dir = dir
-	cmd.Env = append(os.Environ(), env...)
+	// Not the session the supervisor was started from; the probe's own
+	// entries come after, so they win.
+	cmd.Env = append(envvar.WithoutSupervisorSession(os.Environ()), env...)
 	cmd.Stdin = strings.NewReader(stdin)
 	out := &limitedBuffer{limit: limit}
 	stdout := &out.buf

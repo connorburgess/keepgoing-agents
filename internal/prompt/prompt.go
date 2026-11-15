@@ -34,6 +34,21 @@ func ComposeWake(loop config.Loop) (Message, error) {
 	return ComposeGoal(loop, text)
 }
 
+// WakeHeader is the fixed first line of every message looptender sends to a
+// BB thread. BB shows such a message as typed by the person, or as from the
+// thread that started the supervisor, and offers no way to declare another
+// origin, so the line says what it is. It is not a signature: any text can
+// copy it. loop is a validated loop name.
+func WakeHeader(loop string) string {
+	return "Automatic looptender wake for loop " + loop + ": not a new instruction from a person and not an approval."
+}
+
+// WithWakeHeader puts WakeHeader before the message, on its own line.
+func WithWakeHeader(loop string, m Message) Message {
+	m.Text = WakeHeader(loop) + "\n\n" + m.Text
+	return m
+}
+
 // WithChildErrors appends a fixed notice that n direct child threads are in
 // error. The wording never varies and carries only the count: no child ID,
 // title, task text or error detail.

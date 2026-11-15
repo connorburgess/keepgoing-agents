@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"github.com/looptender/looptender/internal/envvar"
 	"os"
 	"os/exec"
 	"slices"
@@ -1237,6 +1238,9 @@ func (t *tick) run() error {
 			actErr = err
 		}
 	}
+	// After the decision and the action, so it can change neither; within
+	// what is left of the budget, and never for a lane.
+	t.readContext(a, target, d, obs, t.st.LastState)
 	t.reportLongLimitWait(target, obs)
 	t.reportChildErrors(target, obs)
 	t.st.LastState = string(obs.State)
@@ -2054,6 +2058,11 @@ func (t *tick) childNoticeSent(childErrors int, err error) {
 // send records only a returned adapter call. It is persisted with the completed
 // tick, not a durable pre-send intent or an acknowledgement of agent execution.
 func (t *tick) send(a adapter.Adapter, message prompt.Message, mode adapter.Mode, target, action string) error {
+	if a.Name() == "bb" {
+		// A BB thread cannot otherwise tell this from a person's message
+		// or a peer thread's.
+		message = prompt.WithWakeHeader(t.cfg.Loop.Name, message)
+	}
 	attempt := t.graphBegin(target, action, string(mode), message)
 	err := a.Send(t.ctx, message.Text, mode)
 	outcome := "adapter_returned"
@@ -2221,7 +2230,8 @@ func runBusy(ctx context.Context, y config.Yield) (bool, error) {
 	ctx, cancel := context.WithTimeout(ctx, y.Timeout.Duration)
 	defer cancel()
 	cmd := exec.CommandContext(ctx, y.BusyCommand[0], y.BusyCommand[1:]...)
-	cmd.Env = os.Environ()
+	// A configured program: not the session the supervisor was started from.
+	cmd.Env = envvar.WithoutSupervisorSession(os.Environ())
 	err := cmd.Run()
 	if err == nil {
 		return true, nil
