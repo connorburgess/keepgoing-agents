@@ -161,6 +161,15 @@ func run(world string, args []string) int {
 		fmt.Fprintln(os.Stderr, "fictional: bb is unavailable")
 		return 1
 	}
+	// kill.next names a bb subcommand ("show", "log", ...). The next such
+	// call self-signals once. This proves signal termination, not its cause.
+	if b, err := os.ReadFile(filepath.Join(world, "kill.next")); err == nil && len(args) > 1 && strings.TrimSpace(string(b)) == args[1] {
+		os.Remove(filepath.Join(world, "kill.next"))
+		if p, err := os.FindProcess(os.Getpid()); err == nil {
+			p.Kill()
+		}
+		select {} // until the signal lands
+	}
 	// BB's optional retry plugin: its last decision for a thread, from
 	// <thread>.retry-decision, and its pending retries, from <thread>.retries.
 	if len(args) >= 3 && args[0] == "provider-retry" {
