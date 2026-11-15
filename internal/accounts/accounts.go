@@ -160,6 +160,11 @@ func contextForOS(f File, e Entry, env []string, windows bool) string {
 			continue
 		}
 		k = environmentKey(k, windows)
+		// This identifier changes for each agent tool invocation, not the
+		// selected authentication context. Keep it in the executed environment.
+		if k == environmentKey("CODEX_TOOL_CALL_ID", windows) {
+			continue
+		}
 		relevant := false
 		for _, name := range []string{"HOME", "USERPROFILE", "APPDATA", "LOCALAPPDATA", "XDG_CONFIG_HOME", "XDG_STATE_HOME", "HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY", "NO_PROXY", "SSL_CERT_FILE", "NODE_EXTRA_CA_CERTS"} {
 			relevant = relevant || k == environmentKey(name, windows)
