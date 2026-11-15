@@ -60,6 +60,11 @@ command in this slice.
     looptender accounts check --id CONNECTION_ID --json
     looptender accounts list --json
 
+This is the command the panel means by "the explicit accounts check command".
+Run it yourself to record a new observation for one entry; the panel never runs
+it. CONNECTION_ID is the opaque ID that accounts add returned, also listed by
+accounts list.
+
 Check runs only the selected executable's version command, then Claude's
 auth status --json or Codex's login status. Each command has a five-second
 deadline and 64 KiB stdout limit; stderr is discarded. Version output must
@@ -89,6 +94,54 @@ shown as previous/stale rather than refreshed success.
 Evidence becomes display-stale after five minutes. The timestamp and original
 fact remain visible. Freshness is not health, quota, account-identity verification
 or permission to act. Ordinary page refresh never refreshes login evidence.
+
+## Several accounts of one provider
+
+One person can keep several accounts of the same provider apart. Each account
+is a separate catalog entry with its own login context and its own label. The
+label is plain text you choose. looptender never derives, generates or checks
+it, and it is not evidence of which account a context is signed in to.
+
+**Several Claude Code subscriptions.** Sign in to each one in its own config
+directory with the official Claude Code tool, then add one explicit_directory
+entry per directory. The directory is the CLAUDE_CONFIG_DIR that entry selects:
+
+    looptender accounts add --label "work" --provider claude-code \
+      --selection explicit_directory --account-dir /private/example/claude-work \
+      --cli /usr/local/bin/claude --workdir /projects/example --json
+
+    looptender accounts add --label "personal" --provider claude-code \
+      --selection explicit_directory --account-dir /private/example/claude-personal \
+      --cli /usr/local/bin/claude --workdir /projects/example --json
+
+**Several Codex accounts.** Use a separate CODEX_HOME for each account and add
+one explicit_directory entry per home, in the same way. Codex keeps its
+credentials under that home ([fallbacks](fallbacks.md)), so separate homes are
+separate logins. The check reports only whether credentials are present: exit
+zero means present and any other exit is ambiguous. Not verified: whether any
+Codex status output names the account, or tells a ChatGPT sign-in from an
+API-key sign-in. looptender does not claim either.
+
+**An API key beside a subscription.** Give the key its own entry with its own
+label, for example "api-team". If you use the key through the provider CLI, sign
+in with it in its own config directory or CODEX_HOME and add an
+explicit_directory entry for that directory. If it reaches the CLI only through
+the inherited environment, the entry is inherited, which is not an isolated
+login. A key used with no supported CLI can be an externally_managed entry with
+--provider other. In every case the key itself is never a field: looptender
+never stores or reads it, and the entry records only the label and the
+selected context.
+
+**Route account groups are separate labels.** A route's group (shown in the
+panel as its account group) is also free text you choose. It names the usage
+limit the route draws on and is not checked against any login or against these
+entries. Entries are not linked to routes today.
+
+**BB thread routes have no per-thread account.** BB selects the config directory
+per project, not per thread, so neither a route nor a catalog entry can pin a BB
+thread to an account. A local probe for a BB route reads the CLI on this
+computer, which is BB's login only when they share it
+([fallbacks](fallbacks.md)).
 
 ## Change a selection deliberately
 
