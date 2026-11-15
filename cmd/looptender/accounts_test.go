@@ -297,3 +297,53 @@ func TestAccountsPlanAndExitParsing(t *testing.T) {
 		}
 	}
 }
+
+func TestAccountsAddCheckAcrossToolInvocations(t *testing.T) {
+	t.Setenv("BB_THREAD_ID", "thr_example_actual")
+	t.Setenv("CODEX_TOOL_CALL_ID", "example-add")
+	root, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	cli := filepath.Join(root, "fixture-cli.exe")
+	if err := os.WriteFile(cli, []byte("fictional stand-in"), 0700); err != nil {
+		t.Fatal(err)
+	}
+	dir := filepath.Join(root, "catalog")
+	var out, errOut bytes.Buffer
+	e := env{ctx: context.Background(), stdout: &out, stderr: &errOut}
+	if code := accountsCommand(e, []string{"add", "--directory", dir, "--provider", "claude-code", "--selection", "explicit_directory", "--account-dir", root, "--cli", cli, "--workdir", root, "--label", "Example studio", "--json"}, nil); code != exitOK {
+		t.Fatalf("add: %s", errOut.String())
+	}
+	f, err := accounts.Load(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	selected := f.Entries[0]
+	t.Setenv("CODEX_TOOL_CALL_ID", "example-check")
+	calls := 0
+	run := func(_ context.Context, _ string, args, environment []string, _ string) ([]byte, error) {
+		calls++
+		if !slices.Contains(environment, "BB_THREAD_ID=thr_example_actual") || !slices.Contains(environment, "CODEX_TOOL_CALL_ID=example-check") {
+			t.Fatal("execution environment changed")
+		}
+		if args[0] == "--version" {
+			return []byte("2.1.318 (Claude Code)"), nil
+		}
+		if !reflect.DeepEqual(args, []string{"auth", "status", "--json"}) {
+			t.Fatal("unexpected command")
+		}
+		return []byte(`{"loggedIn":true,"subscriptionType":"max"}`), nil
+	}
+	if code := accountsCommand(e, []string{"check", "--directory", dir, "--id", selected.ID, "--json"}, run); code != exitOK {
+		t.Fatalf("check: %s", errOut.String())
+	}
+	f, err = accounts.Load(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := f.Entries[0]
+	if calls != 2 || got.Attempt == nil || got.Attempt.Auth != "reported_present" || got.UpdatedBy != "thr_example_actual" || got.Attempt.Caller != "thr_example_actual" || got.Revision != selected.Revision {
+		t.Fatal("tool metadata invalidated selection or caller changed")
+	}
+}

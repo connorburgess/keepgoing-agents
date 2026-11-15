@@ -95,6 +95,13 @@ Context binding includes provider, canonical executable and working directory,
 selection mode/account directory, home/config locations and effective
 authentication-related environment prefixes and proxy/TLS inputs. Values are
 fingerprinted with a per-catalog keyed digest, never copied into storage.
+The exact CODEX_TOOL_CALL_ID environment name is excluded from the fingerprint:
+it identifies one agent tool invocation, not authentication. Windows applies its
+existing case-insensitive name comparison; Unix excludes only that exact case.
+The value still passes through to execution, and all other bindings remain.
+Existing records are not automatically rebound after this correction. Review
+and use an explicit revision-bound same-selection update to clear old status
+before checking under the corrected binding contract.
 Environment duplicates use last-wins semantics. Windows names are compared
 case-insensitively, including provider prefixes and proxy names. Unix names
 remain case-sensitive; lowercase http_proxy/https_proxy/all_proxy/no_proxy are

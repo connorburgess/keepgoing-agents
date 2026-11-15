@@ -260,3 +260,27 @@ func TestCatalogGenuineAbsenceDoesNotWrite(t *testing.T) {
 		t.Fatal("read created catalog")
 	}
 }
+
+func TestContextIgnoresOnlyToolCallIdentifier(t *testing.T) {
+	_, e := fixture(t)
+	f := File{Salt: strings.Repeat("ab", 16)}
+	for _, windows := range []bool{false, true} {
+		for _, name := range []string{"CODEX_TOOL_CALL_ID", "CoDeX_ToOl_CaLl_Id"} {
+			if !windows && name != "CODEX_TOOL_CALL_ID" {
+				continue
+			}
+			if contextForOS(f, e, []string{name + "=example-add"}, windows) != contextForOS(f, e, []string{name + "=example-check"}, windows) || contextForOS(f, e, nil, windows) != contextForOS(f, e, []string{name + "=example-check"}, windows) {
+				t.Fatalf("tool invocation identifier bound, windows=%t", windows)
+			}
+		}
+		for _, name := range []string{"CODEX_API_KEY", "CLAUDE_CODE_OAUTH_TOKEN", "ANTHROPIC_API_KEY", "CODEX_SESSION_ID", "CODEX_TOOL_CALL_ID_EXTRA"} {
+			if contextForOS(f, e, []string{name + "=example-a"}, windows) == contextForOS(f, e, []string{name + "=example-b"}, windows) {
+				t.Fatalf("other binding lost: %s windows=%t", name, windows)
+			}
+		}
+	}
+	// Unix's differently cased, still prefix-matching key is not the excluded name.
+	if contextForOS(f, e, []string{"CODEX_tool_call_id=example-a"}, false) == contextForOS(f, e, []string{"CODEX_tool_call_id=example-b"}, false) {
+		t.Fatal("Unix exclusion incorrectly case folded")
+	}
+}

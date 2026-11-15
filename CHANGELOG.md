@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Fix account status checks refusing across agent tool invocations: exclude only the incidental CODEX_TOOL_CALL_ID from the context fingerprint, using existing platform name semantics. Preserve the actual caller and execution environment, all other bindings and explicit revision-bound updates; no automatic catalog migration.
+
 - Add a read-only Accounts view for explicitly selected contexts, a bounded private metadata/status catalog and explicit Claude Code/Codex status commands. Preserve actual caller provenance, context revisions and previous observations on failure. Refresh never calls providers; no login orchestration, secret capture, route writes or paid tests. Fictional fixtures only; live account/panel acceptance remains open.
 
 - `looptender session reset [--target NAME]` forgets a headless target's saved session so that its next turn starts a new conversation on purpose. It refuses while a turn or a check is running and from a thread that does not own the loop, clears no hold, and is recorded in `runs.jsonl` with who ran it and in `timeline` in words. It is the way out when an agent defined in configuration has a saved session that can no longer be used: that case now has its own hold reason, which names the command, instead of the reason used for a target that is gone. No file needs editing. Stand-in fixtures only. See [starting a new conversation on purpose](docs/operations.md#starting-a-new-conversation-on-purpose).
