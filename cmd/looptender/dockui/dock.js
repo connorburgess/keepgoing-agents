@@ -171,7 +171,7 @@
       row.appendChild(el("span", "w", w.name));
       var m = el("div", "meter" + (w.stale ? " is-stale" : w.usedPercent >= 100 ? " full" : w.usedPercent >= 70 ? " hi" : ""));
       m.setAttribute("role", "img");
-      m.setAttribute("aria-label", w.name + " window " + (w.stale ? "reading is stale" : w.usedPercent + " percent used"));
+      m.setAttribute("aria-label", w.name + " window " + (w.stale ? "has ended since this reading" : w.usedPercent + " percent used"));
       var bar = el("i");
       bar.style.width = (w.stale ? 0 : Math.max(2, w.usedPercent)) + "%";
       m.appendChild(bar);
@@ -192,7 +192,11 @@
       return box;
     }
     var uh = el("div", "sub usage-read", u.readLine || "Usage reading");
-    if (u.availability === "stale") uh.appendChild(tag("stale", "Stale"));
+    // Two different marks: old is a reading older than the panel's
+    // stale-after; availability "stale" is that every window it describes
+    // has ended since it was taken.
+    if (u.old) uh.appendChild(tag("stale", "Stale"));
+    if (u.availability === "stale") uh.appendChild(tag("stale", "Windows ended"));
     box.appendChild(uh);
     box.appendChild(meters(u));
     if (u.readingsNote) box.appendChild(el("p", "sub usage-note", u.readingsNote));
@@ -555,7 +559,8 @@
     var b = el("div", "lanes is-wide");
     b.appendChild(el("span", "lanes-label", (lanes && lanes.heading) || "This loop's lanes"));
     if (!rows.length) {
-      b.appendChild(!c || c.availability === "unknown" || !c.phrase ? unknown() : el("span", "sub", c.phrase));
+      // An unknown answer carries its reason in the phrase: "Unknown: …".
+      b.appendChild(!c || !c.phrase ? unknown() : c.availability === "unknown" ? unknown(c.phrase) : el("span", "sub", c.phrase));
       return b;
     }
     var ul = el("ul", "lane-list");
@@ -1057,7 +1062,11 @@
     var r = $("readline");
     if (!state.lastOk) { r.textContent = state.failed ? "Could not read yet" : "Reading…"; return; }
     var every = refreshSeconds();
-    r.textContent = "Read at " + fmt(secFmt, state.data.readAt) + (state.paused ? " · updates paused" : " · reads again every " + (every >= 60 ? span(every) : every + " s")) +
+    // This is when the panel read its records, not how new they are: the
+    // oldest usage reading shown is named when one is past stale-after.
+    var old = state.data.oldestUsageAgeSeconds;
+    r.textContent = "Records read at " + fmt(secFmt, state.data.readAt) + (state.paused ? " · updates paused" : " · read again every " + (every >= 60 ? span(every) : every + " s")) +
+      (old != null ? " · oldest usage reading " + span(old) + " old" : "") +
       (state.failed ? " · the last read failed" : "");
     r.classList.toggle("is-stale", state.failed);
   }

@@ -2,6 +2,8 @@ package process
 
 import (
 	"context"
+	"fmt"
+	"github.com/looptender/looptender/internal/envvar"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -116,5 +118,29 @@ func TestEvidenceDistinguishesExitAndJSON(t *testing.T) {
 	o, err = a.Observe(context.Background())
 	if err != nil || o.Evidence.Source != "process_json" || o.Evidence.Code != "connection_error" || o.Evidence.ExitCode == nil || *o.Evidence.ExitCode != 0 {
 		t.Fatal(o, err)
+	}
+}
+
+// The resume command drives a session, not the BB thread that started the
+// supervisor nor that thread's agent session: it runs without
+// envvar.SupervisorSession, except what the loop's own env sets.
+func TestCommandsRunWithoutTheSupervisorsSession(t *testing.T) {
+	for _, n := range envvar.SupervisorSession {
+		t.Setenv(n, "fictional")
+	}
+	t.Setenv("CLAUDE_CONFIG_DIR", "fictional")
+	out := filepath.Join(t.TempDir(), "got.txt")
+	var sh, bat strings.Builder
+	for _, n := range append(append([]string{}, envvar.SupervisorSession...), "CLAUDE_CONFIG_DIR") {
+		fmt.Fprintf(&sh, `if [ "${%s+set}" = set ]; then echo %s >> "$OUT"; fi; `, n, n)
+		fmt.Fprintf(&bat, "if defined %s (echo %s>> \"%%OUT%%\")\r\n", n, n)
+	}
+	a := New(config.Process{ResumeCommand: []string{script(t, sh.String(), bat.String())}, Env: map[string]string{"OUT": out, "BB_PROJECT_ID": "configured"}})
+	if err := a.Send(context.Background(), "keep going", adapter.ModeAuto); err != nil {
+		t.Fatal(err)
+	}
+	b, _ := os.ReadFile(out)
+	if got := strings.Join(strings.Fields(strings.ReplaceAll(string(b), "\r", "")), " "); got != "BB_PROJECT_ID CLAUDE_CONFIG_DIR" {
+		t.Fatalf("the command received %q", got)
 	}
 }

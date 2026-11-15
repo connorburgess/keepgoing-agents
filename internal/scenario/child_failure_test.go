@@ -3,6 +3,7 @@ package scenario
 import (
 	"encoding/json"
 	"fmt"
+	"github.com/looptender/looptender/internal/prompt"
 	"strings"
 	"testing"
 	"time"
@@ -85,7 +86,8 @@ func TestScenarioChildFailureNoticeAndReport(t *testing.T) {
 	if len(s.Sent) == 1 {
 		m := s.Sent[0].Message
 		w.Check(s, "the notice is a count and nothing else", all(
-			check(strings.HasPrefix(m, "[keepgoing:child-errors count=1 running=1]"), "the message starts %q", firstLine(m)),
+			// The fixed first line of every message to a BB thread, then the notice.
+			check(strings.HasPrefix(m, prompt.WakeHeader("example-loop")+"\n\n[keepgoing:child-errors count=1 running=1]"), "the message starts %q", firstLine(m)),
 			check(!strings.Contains(m, scenarioTask), "the notice carries the task prompt"),
 			check(!strings.Contains(m, childA) && !strings.Contains(m, childB), "the notice names a child"),
 		))

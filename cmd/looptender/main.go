@@ -40,6 +40,9 @@ Supervision (read -c FILE; default ./looptender.yaml, or ./keepgoing.yaml when o
   service install|remove|status  Manage a macOS/Linux user service
   daemon                   Run passes on an interval; control changes act within seconds
   status                   Show control, active target, window, and fallback health
+  context                  Show what a supervised session may know about its loop: owner, holds,
+                           bounds used and remaining, lane policy, session commands and retained
+                           authority (text or --json); read-only, no provider or daemon queries
                            Opt-in timing preview only, not acted on; multi-step previews need
                            the loop's own fallbacks file (standard routes exclude its allowance)
   validate                 Check the configuration file and its fallbacks file
@@ -319,6 +322,12 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 		code := status(e, cfg, now, *f.asJSON, *f.staleAfter)
 		noteClient(*f.client, "")
 		return code
+	case "context":
+		if len(positional) != 0 {
+			e.errf("usage: keepgoing context [-c looptender.yaml] [--json]")
+			return exitUsage
+		}
+		return contextCmd(e, cfg, *f.cfgPath, now, *f.asJSON)
 	case "enable":
 		// A second loop on a session another enabled loop supervises would
 		// prompt it too: refused unless asked for.
