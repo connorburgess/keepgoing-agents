@@ -3,7 +3,6 @@ package state
 import (
 	"context"
 	"errors"
-	"os"
 	"path/filepath"
 	"regexp"
 	"strconv"
@@ -88,9 +87,11 @@ func DirtyCount(ctx context.Context, tree string) (int, error) {
 type BaseRef struct {
 	Name   string
 	Commit string
-	// FetchedAt is when FETCH_HEAD was last written, the closest Git record
-	// of the last fetch; zero when there is none.
-	FetchedAt time.Time
+	// RemoteTracking is true when Name is a reference under refs/remotes.
+	RemoteTracking bool
+	// UpdatedAt is when the reference last moved, from its own reflog; zero
+	// when it has none. For a remote-tracking reference only a fetch moves it.
+	UpdatedAt time.Time
 }
 
 var refName = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._/-]{0,199}$`)
@@ -112,12 +113,15 @@ func ResolveBase(ctx context.Context, repo, name string) (BaseRef, error) {
 		return BaseRef{}, errors.New("base does not resolve to a commit")
 	}
 	b := BaseRef{Name: name, Commit: commit}
-	if p, err := git(ctx, repo, "rev-parse", "--git-path", "FETCH_HEAD"); err == nil && p != "" {
-		if !filepath.IsAbs(p) {
-			p = filepath.Join(repo, p)
-		}
-		if info, err := os.Stat(p); err == nil {
-			b.FetchedAt = info.ModTime().UTC()
+	full, err := git(ctx, repo, "rev-parse", "--symbolic-full-name", name)
+	if err == nil && strings.HasPrefix(full, "refs/") {
+		b.RemoteTracking = strings.HasPrefix(full, "refs/remotes/")
+		// The reference's own reflog, unlike FETCH_HEAD, belongs to this
+		// reference and is shared by every worktree.
+		if out, err := git(ctx, repo, "reflog", "show", "-1", "--format=%ct", full, "--"); err == nil {
+			if sec, err := strconv.ParseInt(out, 10, 64); err == nil {
+				b.UpdatedAt = time.Unix(sec, 0).UTC()
+			}
 		}
 	}
 	return b, nil

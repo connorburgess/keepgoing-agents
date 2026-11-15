@@ -2,7 +2,7 @@
 
 ## Unreleased
 
-- Add read-only `keepgoing transfer inventory`: a loop's BB target and its direct child threads (provider, status, environment and working directory, from BB metadata only), and every worktree of the configured progress repositories (branch, HEAD, tracked changes, ahead or merged against a local base whose last fetch time is shown). Each thread is attributed to the worktree its working directory is inside; the rest are listed as unattributed. No events or message text, no fetch, no lock, no writes; text and `schemaVersion: 1` JSON.
+- Add read-only `keepgoing transfer inventory`: a loop's BB target and its direct child threads (provider, status, environment and working directory, from BB metadata only), and every worktree of the configured progress repositories (branch, HEAD, tracked changes, ahead against a local base whose kind and last reflog move are shown, and merged only when also clean). Each thread is attributed to the worktree its working directory is inside; the rest are listed as unattributed. No events or message text, no fetch, no lock, no writes; text and `schemaVersion: 1` JSON.
 
 - Scope account login phrases to the selected CLI and link Accounts to existing recorded Routes/Allowances usage. Preserve observation age and unavailable/stale evidence; route usage remains unassociated with named account cards, with no new polling or collector.
 

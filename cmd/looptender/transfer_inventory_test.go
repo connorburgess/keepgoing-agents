@@ -65,6 +65,13 @@ func newInventoryFixture(t *testing.T, repositories bool) *inventoryFixture {
 		t.Fatal(err)
 	}
 	inventoryGit(t, f.repo, "worktree", "add", "-q", "--detach", f.detached)
+	// Untracked files are not counted; a tracked change at the base is not merged.
+	if err := os.WriteFile(filepath.Join(f.laneB, "untracked.txt"), []byte("x\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(f.detached, "README.md"), []byte("uncommitted\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
 	raw := "version: 1\nloop:\n  name: example-loop\n  state_dir: ./state\n  adapter: bb\n  provider: codex\n  bb:\n    thread: thr_target\n  prompt: PRIVATE-PROMPT\n"
 	if repositories {
 		b, _ := json.Marshal(f.repo)
@@ -107,7 +114,7 @@ func (f *inventoryFixture) runner(t *testing.T, children string, mutate func(id 
 func (f *inventoryFixture) run(t *testing.T, runner doctorRun, extra ...string) (int, transferInventory, string, string) {
 	t.Helper()
 	var out, errs bytes.Buffer
-	code := transferCommand(env{ctx: context.Background(), stdout: &out, stderr: &errs}, append([]string{"inventory", "-c", f.config, "--json"}, extra...), runner)
+	code := transferInventoryCommand(env{ctx: context.Background(), stdout: &out, stderr: &errs}, append([]string{"inventory", "-c", f.config, "--json"}, extra...), runner, runner)
 	var r transferInventory
 	if err := json.Unmarshal(out.Bytes(), &r); err != nil {
 		t.Fatalf("no report (%d): %s %s", code, out.String(), errs.String())
@@ -167,7 +174,7 @@ func TestTransferInventoryListsLanesAndWorktrees(t *testing.T) {
 	if c.Workspace != "outside" {
 		t.Fatalf("lane c %+v", c)
 	}
-	if len(r.Repositories) != 1 || r.Repositories[0].Base == nil || r.Repositories[0].Base.Ref != "origin/main" || len(r.Repositories[0].Base.Commit) != 40 {
+	if len(r.Repositories) != 1 || r.Repositories[0].Base == nil || r.Repositories[0].Base.Ref != "origin/main" || len(r.Repositories[0].Base.Commit) != 40 || !r.Repositories[0].Base.RemoteTracking || r.Repositories[0].Base.UpdatedAt == nil {
 		t.Fatalf("repository %+v", r.Repositories)
 	}
 	trees := map[string]inventoryWorktree{}
@@ -184,13 +191,13 @@ func TestTransferInventoryListsLanesAndWorktrees(t *testing.T) {
 	if ta.Branch != "example-a" || *ta.Dirty != 1 || *ta.Ahead != 2 || *ta.Merged || !reflect.DeepEqual(ta.Threads, []string{"thr_lane_a"}) || ta.Unattributed {
 		t.Fatalf("lane a tree %+v", ta)
 	}
-	if tb.Branch != "example-b" || !*tb.Merged || !reflect.DeepEqual(tb.Threads, []string{"thr_lane_b"}) {
+	if tb.Branch != "example-b" || *tb.Dirty != 0 || !*tb.Merged || !reflect.DeepEqual(tb.Threads, []string{"thr_lane_b"}) {
 		t.Fatalf("lane b tree %+v", tb)
 	}
-	if !td.Detached || td.Branch != "" || !td.Unattributed || len(td.Head) != 40 {
+	if !td.Detached || td.Branch != "" || !td.Unattributed || len(td.Head) != 40 || *td.Ahead != 0 || *td.Dirty != 1 || *td.Merged {
 		t.Fatalf("detached %+v", td)
 	}
-	if !strings.Contains(out, "never fetches") {
+	if !strings.Contains(out, "never fetches") || !strings.Contains(out, "no tracked changes") {
 		t.Fatal("freshness not stated")
 	}
 	if !reflect.DeepEqual(before, gitSnapshot(t, f.repo)) {
@@ -205,7 +212,7 @@ func TestTransferInventoryListsLanesAndWorktrees(t *testing.T) {
 	if code := transferCommand(env{ctx: context.Background(), stdout: &text, stderr: &text}, []string{"inventory", "-c", f.config}, runner); code != exitOK {
 		t.Fatal(text.String())
 	}
-	for _, want := range []string{"Lanes: 3 direct child threads", "ahead 2", "dirty 1", "merged", "unattributed", "(detached)", "not fetched by looptender", f.laneA, "outside every progress repository"} {
+	for _, want := range []string{"Lanes: 3 direct child threads", "ahead 2", "ahead 0", "dirty 1", "merged", "unattributed", "(detached)", "remote-tracking; last moved", "not fetched by looptender", f.laneA, "outside every progress repository"} {
 		if !strings.Contains(text.String(), want) {
 			t.Fatalf("text lacks %q:\n%s", want, text.String())
 		}
@@ -263,15 +270,45 @@ func TestTransferInventoryIncompleteResults(t *testing.T) {
 	t.Run("unlistable repository", func(t *testing.T) {
 		g := newInventoryFixture(t, false)
 		raw, _ := os.ReadFile(g.config)
-		missing, _ := json.Marshal(filepath.Join(g.root, "not-a-repository"))
+		plain := filepath.Join(g.root, "not-a-repository")
+		if err := os.MkdirAll(filepath.Join(plain, "sub"), 0o700); err != nil {
+			t.Fatal(err)
+		}
+		missing, _ := json.Marshal(plain)
 		raw = append(raw, []byte("  progress:\n    repositories: ["+string(missing)+"]\n")...)
 		if err := os.WriteFile(g.config, raw, 0o600); err != nil {
 			t.Fatal(err)
 		}
-		runner, _ := g.runner(t, `[{"id":"thr_lane_c"}]`, nil)
+		runner, _ := g.runner(t, `[{"id":"thr_lane_c"},{"id":"thr_lane_d"}]`, func(id string, v map[string]any) {
+			if id == "thr_lane_d" {
+				v["environment"].(map[string]any)["path"] = filepath.Join(plain, "sub")
+			}
+		})
 		code, r, _, _ := g.run(t, runner)
 		if code != exitFailed || r.Complete || r.Repositories[0].Available || r.Lanes[0].Workspace != "unavailable" {
 			t.Fatalf("%d %+v", code, r)
+		}
+		// The configured path counts even though Git cannot list it.
+		if d := r.Lanes[1]; d.Workspace != "inside" || d.Repository != 1 || d.Worktree != plain {
+			t.Fatalf("configured path not counted: %+v", d)
+		}
+	})
+	t.Run("count that fails", func(t *testing.T) {
+		g := newInventoryFixture(t, true)
+		// A worktree whose .git file is damaged is still listed, but Git
+		// cannot count its changes there.
+		if err := os.WriteFile(filepath.Join(g.laneA, ".git"), []byte("gitdir: "+filepath.Join(g.root, "nowhere")+"\n"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		runner, _ := g.runner(t, `[]`, nil)
+		code, r, _, _ := g.run(t, runner)
+		if code != exitFailed || r.Complete {
+			t.Fatalf("failed count left the result complete: %d", code)
+		}
+		for _, w := range r.Repositories[0].Worktrees {
+			if w.Path == g.laneA && (w.Dirty != nil || w.Merged != nil) {
+				t.Fatalf("%+v", w)
+			}
 		}
 	})
 }
@@ -280,11 +317,11 @@ func TestTransferInventoryBaseAndRepositories(t *testing.T) {
 	f := newInventoryFixture(t, true)
 	runner, _ := f.runner(t, `[{"id":"thr_lane_a"}]`, nil)
 	code, r, _, _ := f.run(t, runner, "--base", "example-a")
-	if code != exitOK || r.Repositories[0].Base.Ref != "example-a" {
+	if code != exitOK || r.Repositories[0].Base.Ref != "example-a" || r.Repositories[0].Base.RemoteTracking {
 		t.Fatalf("%d %+v", code, r.Repositories)
 	}
 	for _, w := range r.Repositories[0].Worktrees {
-		if w.Path == f.laneA && (!*w.Merged || *w.Ahead != 0) {
+		if w.Path == f.laneA && (*w.Ahead != 0 || *w.Merged) {
 			t.Fatalf("explicit base ignored: %+v", w)
 		}
 	}

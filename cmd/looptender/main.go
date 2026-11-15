@@ -157,6 +157,11 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 	case "routes":
 		return routesCommand(e, rest)
 	case "transfer":
+		if len(rest) > 0 && rest[0] == "inventory" {
+			// A lane listing is about 1.5 KB per lane, so 200 lanes need
+			// more than doctor's 64 KiB.
+			return transferInventoryCommand(e, rest, doctorExec, doctorExecLimit(inventoryListLimit))
+		}
 		return transferCommand(e, rest, doctorExec)
 	case "goal":
 		return goalCommand(e, rest)

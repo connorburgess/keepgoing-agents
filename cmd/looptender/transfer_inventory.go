@@ -22,6 +22,8 @@ const (
 	inventoryMaxLanes     = 200
 	inventoryMaxWorktrees = 500
 	inventoryDeadline     = 2 * time.Minute
+	// inventoryListLimit bounds the child listing's output.
+	inventoryListLimit = 1 << 20
 )
 
 type inventoryThread struct {
@@ -50,7 +52,9 @@ type inventoryWorktree struct {
 	Locked   bool   `json:"locked,omitempty"`
 	Dirty    *int   `json:"dirty,omitempty"` // tracked files changed; nil when unavailable
 	Ahead    *int   `json:"ahead,omitempty"` // commits not in the base; nil when unavailable
-	Merged   *bool  `json:"merged,omitempty"`
+	// Merged: no commits beyond the base and no tracked changes. Nil when
+	// either is unknown.
+	Merged *bool `json:"merged,omitempty"`
 	// Threads are the target and lanes whose BB working directory is inside
 	// this worktree. None means unattributed: no guess is made from names.
 	Threads      []string `json:"threads"`
@@ -58,9 +62,14 @@ type inventoryWorktree struct {
 }
 
 type inventoryBase struct {
-	Ref       string     `json:"ref"`
-	Commit    string     `json:"commit"`
-	FetchedAt *time.Time `json:"lastFetchedAt,omitempty"`
+	Ref    string `json:"ref"`
+	Commit string `json:"commit"`
+	// RemoteTracking is true for a reference under refs/remotes, which
+	// only a fetch moves. A local branch says nothing about the remote.
+	RemoteTracking bool `json:"remoteTracking"`
+	// UpdatedAt is when the reference last moved, from its reflog; absent
+	// when there is no reflog entry.
+	UpdatedAt *time.Time `json:"refUpdatedAt,omitempty"`
 }
 
 type inventoryRepository struct {
@@ -94,7 +103,9 @@ var inventoryStatuses = map[string]bool{"pending": true, "idle": true, "starting
 // the worktrees of the configured progress repositories. It never reads
 // events, interactions or message text, never fetches, never takes a lock and
 // never writes. Paths are printed here and nowhere else.
-func transferInventoryCommand(e env, args []string, run doctorRun) int {
+// run answers thread show; listRun answers the child listing, which needs a
+// larger output limit.
+func transferInventoryCommand(e env, args []string, run, listRun doctorRun) int {
 	fs := flag.NewFlagSet("transfer inventory", flag.ContinueOnError)
 	fs.SetOutput(io.Discard)
 	path := fs.String("c", "", configFlagHelp("configuration path"))
@@ -161,7 +172,7 @@ func transferInventoryCommand(e env, args []string, run doctorRun) int {
 	if !r.Target.Available {
 		incomplete("The target thread could not be verified through BB.")
 	}
-	ids, listed := inventoryChildren(ctx, a.BB.CLI, a.BB.Thread, *timeout, run)
+	ids, listed := inventoryChildren(ctx, a.BB.CLI, a.BB.Thread, *timeout, listRun)
 	r.LanesListed = listed
 	if !listed {
 		incomplete("The target's direct child threads could not be listed completely.")
@@ -184,6 +195,22 @@ func transferInventoryCommand(e env, args []string, run doctorRun) int {
 		root string
 		ref  treeRef
 	}
+	// The configured path itself counts even when Git cannot list its
+	// worktrees (the same rule as doctor's workspace check). Tree -1 marks
+	// such a root; listed worktrees win a tie because only a strictly
+	// longer root replaces a match.
+	var configured []struct {
+		root string
+		ref  treeRef
+	}
+	for i, repo := range cfg.Loop.Progress.Repositories {
+		if root, err := filepath.EvalSymlinks(repo); err == nil {
+			configured = append(configured, struct {
+				root string
+				ref  treeRef
+			}{root, treeRef{i, -1}})
+		}
+	}
 	for i, repo := range cfg.Loop.Progress.Repositories {
 		ir := inventoryRepository{Index: i + 1, Path: repo, Worktrees: []inventoryWorktree{}}
 		qctx, qcancel := context.WithTimeout(ctx, *timeout)
@@ -202,9 +229,9 @@ func transferInventoryCommand(e env, args []string, run doctorRun) int {
 		if err != nil {
 			r.Notes = append(r.Notes, fmt.Sprintf("Progress repository %d: no comparison base (%v); ahead and merged are unavailable.", i+1, err))
 		} else {
-			ir.Base = &inventoryBase{Ref: b.Name, Commit: b.Commit}
-			if !b.FetchedAt.IsZero() {
-				ir.Base.FetchedAt = &b.FetchedAt
+			ir.Base = &inventoryBase{Ref: b.Name, Commit: b.Commit, RemoteTracking: b.RemoteTracking}
+			if !b.UpdatedAt.IsZero() {
+				ir.Base.UpdatedAt = &b.UpdatedAt
 			}
 		}
 		for _, t := range trees {
@@ -224,16 +251,25 @@ func transferInventoryCommand(e env, args []string, run doctorRun) int {
 				qctx, qcancel := context.WithTimeout(ctx, *timeout)
 				if n, err := state.DirtyCount(qctx, t.Path); err == nil {
 					w.Dirty = &n
+				} else {
+					incomplete("At least one worktree's changed files could not be counted.")
 				}
 				qcancel()
 			}
 			if ir.Base != nil && t.Head != "" {
 				qctx, qcancel := context.WithTimeout(ctx, *timeout)
 				if n, err := state.Ahead(qctx, repo, ir.Base.Commit, t.Head); err == nil {
-					merged := n == 0
-					w.Ahead, w.Merged = &n, &merged
+					w.Ahead = &n
+				} else {
+					incomplete("At least one worktree's commits beyond the base could not be counted.")
 				}
 				qcancel()
+			}
+			// Merged needs both: no commits beyond the base, and no
+			// uncommitted tracked work that a person could lose.
+			if w.Ahead != nil && w.Dirty != nil {
+				merged := *w.Ahead == 0 && *w.Dirty == 0
+				w.Merged = &merged
 			}
 			if root, err := filepath.EvalSymlinks(t.Path); err == nil {
 				roots = append(roots, struct {
@@ -246,6 +282,7 @@ func transferInventoryCommand(e env, args []string, run doctorRun) int {
 		r.Repositories = append(r.Repositories, ir)
 	}
 
+	roots = append(roots, configured...)
 	// Attribute each thread to the deepest worktree containing its BB working
 	// directory. Nothing else attributes a worktree.
 	attribute := func(t *inventoryThread) {
@@ -272,6 +309,11 @@ func transferInventoryCommand(e env, args []string, run doctorRun) int {
 			return
 		}
 		ref := roots[best].ref
+		if ref.tree < 0 {
+			// Inside the configured path, whose worktrees were not listed.
+			t.Workspace, t.Repository, t.Worktree = "inside", ref.repo+1, cfg.Loop.Progress.Repositories[ref.repo]
+			return
+		}
 		w := &r.Repositories[ref.repo].Worktrees[ref.tree]
 		w.Threads = append(w.Threads, t.Thread)
 		t.Workspace, t.Repository, t.Worktree = "inside", ref.repo+1, w.Path
@@ -290,7 +332,7 @@ func transferInventoryCommand(e env, args []string, run doctorRun) int {
 		r.Notes = append(r.Notes, "No progress repositories are configured, so no worktrees are listed.")
 	}
 	r.Notes = append(r.Notes,
-		"Ahead and merged compare each worktree's HEAD with a local reference as last fetched; looptender never fetches, so they are only as fresh as that fetch. Pull request state is not checked.",
+		"Ahead compares each worktree's HEAD with a local reference as it is now; looptender never fetches, so a remote-tracking base is only as fresh as the last fetch a person made. Merged means no commits beyond the base and no tracked changes. Pull request state is not checked.",
 		"A worktree is attributed to a thread only when BB reports that thread's working directory inside it; worktrees are never matched to lanes by name.",
 		"Read from BB metadata and Git only: no events, interactions or message text, no lock, no writes.",
 	)
@@ -358,11 +400,15 @@ func printInventory(w io.Writer, r transferInventory) {
 			continue
 		}
 		if repo.Base != nil {
-			fetched := "no fetch recorded"
-			if repo.Base.FetchedAt != nil {
-				fetched = "last fetched " + repo.Base.FetchedAt.Format(time.RFC3339)
+			moved := "no reflog entry"
+			if repo.Base.UpdatedAt != nil {
+				moved = "last moved " + repo.Base.UpdatedAt.Format(time.RFC3339)
 			}
-			fmt.Fprintf(w, "    compared with %s at %s (%s; not fetched by looptender)\n", repo.Base.Ref, short(repo.Base.Commit), fetched)
+			kind := "remote-tracking"
+			if !repo.Base.RemoteTracking {
+				kind = "local, not remote-tracking"
+			}
+			fmt.Fprintf(w, "    compared with %s at %s (%s; %s; not fetched by looptender)\n", repo.Base.Ref, short(repo.Base.Commit), kind, moved)
 		}
 		for _, t := range repo.Worktrees {
 			branch := t.Branch
