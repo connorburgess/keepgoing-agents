@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Unreleased Unix diagnostic: an observation warns when a `bb` command terminates by a signal outside the adapter timeout/cancellation. Signal source and cause remain unknown, including for self-signals or crashes; read verification and decisions are unchanged. Windows emits no such warning.
+
 - Fix: a child failure first seen after every covered child has been forgotten starts a new `child_error` report episode, with report 1 and its own cap, even if no check ran when their previously observed recovery reached the forgetting interval.
 
 - Rebranded native macOS menu labels, accessibility text, local error/notification wording and bundle display name to looptender, preserving its command protocol and application identity. Source build only; replacing a running menu remains a separate action.

@@ -40,6 +40,8 @@ type Adapter struct {
 	// cliPath is the absolute path of the bb executable this adapter last
 	// started: where the system found the configured command.
 	cliPath string
+	// signalExits counts Unix signal exits outside adapter timeout/cancellation.
+	signalExits int
 }
 
 // CLIPath implements adapter.CLIPather: the absolute path of the bb
@@ -496,6 +498,13 @@ func (a *Adapter) exec(ctx context.Context, stdin string, args ...string) ([]byt
 			a.cliPath = p
 		}
 	}
+	var exit *exec.ExitError
+	if errors.As(err, &exit) && exit.ExitCode() == -1 && ctx.Err() == nil {
+		// Unix signal termination outside this adapter's timeout/cancellation.
+		// This includes self-signals and crashes; source and cause are unknown.
+		// Go does not report Windows exits this way.
+		a.signalExits++
+	}
 	if err != nil && ctx.Err() != nil {
 		// Stopped at the limit: whatever it printed, the command did not end
 		// on its own.
@@ -503,6 +512,10 @@ func (a *Adapter) exec(ctx context.Context, stdin string, args ...string) ([]byt
 	}
 	return stdout.Bytes(), err
 }
+
+// SignalExits implements adapter.SignalExitReporter: the cumulative count
+// for this adapter, not a count scoped to a check or an observation.
+func (a *Adapter) SignalExits() int { return a.signalExits }
 
 // errStopped marks a bb command that was killed at its time limit or because
 // the check was cancelled.

@@ -95,6 +95,13 @@ type LaneRecoverer interface {
 	ForgetLanes()
 }
 
+// SignalExitReporter exposes a cumulative count of Unix signal exits outside
+// adapter timeout/cancellation. The signal's source and cause are unknown.
+// Callers take a before/after difference to scope the count to their work.
+type SignalExitReporter interface {
+	SignalExits() int
+}
+
 // CLIPather is implemented by adapters that run a provider executable: the
 // absolute path the system resolved for it on the last command started, or
 // "" before one was. A check records it, so a caller with a shorter PATH (the
