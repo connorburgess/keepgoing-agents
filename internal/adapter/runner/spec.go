@@ -11,6 +11,7 @@ import (
 	"github.com/looptender/looptender/internal/config"
 	"github.com/looptender/looptender/internal/decide"
 	"github.com/looptender/looptender/internal/evidence"
+	"github.com/looptender/looptender/internal/lock"
 )
 
 // A Spec is everything keepgoing needs to know about one command-line agent
@@ -48,7 +49,10 @@ type Spec struct {
 	// PromptFile, promptFile is the private file holding the prompt.
 	Argv func(set Settings, session, promptFile string) []string
 	// Read interprets a finished turn from structured output and the exit
-	// code only, never from prose. It must not have side effects.
+	// code only, never from prose. It must not have side effects, query a
+	// provider or vary for the same completed input. Defined session-file readers
+	// additionally rely on the completed agent's stable file. Observe may parse
+	// concurrently under a shared generation guard and restore identical bytes.
 	Read func(turn Status) Reading
 	// Limits, when set, is a structured account-limit lookup used when a
 	// failed turn or probe could not be classified.
@@ -223,7 +227,7 @@ func (s *Spec) ObservationInputs() []string {
 		in = append(in, "ResetsAt")
 	}
 	if s.ValidSession != nil {
-		in = append(in, "Gone")
+		in = append(in, "SessionLost")
 	}
 	sort.Strings(in)
 	return in
@@ -376,12 +380,56 @@ func (h *Headless) session() (session string, lost bool) {
 	return s, false
 }
 
+// Only deterministic reset lifecycle tests set these hooks; they run while
+// the documented guard is held, or at the explicitly unguarded sample boundary.
+var afterResetSample, beforeSessionCommit, afterSessionCommit func()
+
+// ResetSession forgets the saved session, so that the next turn starts a new
+// conversation. It is for a person's deliberate decision only: nothing in a
+// check calls it. had says whether a session was saved. It refuses while a
+// turn is running, and it stops the latest finished turn from saving its
+// session again.
+func (h *Headless) ResetSession() (had bool, err error) {
+	guard, err := lock.AcquireNamed(string(h.dir), turnLock)
+	if errors.Is(err, lock.ErrHeld) {
+		return false, ErrTurnRunning
+	}
+	if err != nil {
+		return false, err
+	}
+	defer guard.Release()
+	st, err := h.dir.sampleStatus(h.spec.MaxOutput, guard)
+	if errors.Is(err, errOutputOverLimit) {
+		err = nil
+	}
+	if err != nil {
+		return false, err
+	}
+	if afterResetSample != nil {
+		afterResetSample()
+	}
+	if st.Phase == Running {
+		return false, ErrTurnRunning
+	}
+	return h.dir.resetSession(st)
+}
+
+// ErrTurnRunning refuses a change that would pull a session out from under a
+// turn that is using it.
+var ErrTurnRunning = errors.New("a turn is running or its state is busy")
+
 // errSessionLost refuses a send that would silently start a new conversation.
 var errSessionLost = errors.New("the saved session is not usable; refusing to start a new conversation in its place")
 
 // Observe implements adapter.Adapter.
 func (h *Headless) Observe(ctx context.Context) (obs decide.Observation, err error) {
-	st, unread, err := h.status()
+	var guard *lock.Lock
+	st, err := h.dir.sampleStatusRetained(h.spec.MaxOutput, nil, &guard)
+	defer func() { guard.Release() }()
+	unread := errors.Is(err, errOutputOverLimit)
+	if unread {
+		st.Stdout, err = nil, nil
+	}
 	if err != nil {
 		return decide.Observation{State: decide.Unknown}, err
 	}
@@ -394,7 +442,7 @@ func (h *Headless) Observe(ctx context.Context) (obs decide.Observation, err err
 		// without anyone deciding to, so a person is asked instead. A
 		// finished turn that reported its session has saved it again by now.
 		if _, lost := h.session(); lost && err == nil && st.Phase != Running {
-			obs.Gone = true
+			obs.SessionLost = true
 		}
 	}()
 	switch st.Phase {
@@ -411,7 +459,28 @@ func (h *Headless) Observe(ctx context.Context) (obs decide.Observation, err err
 		return decide.Observation{State: decide.Error, ErrorClass: decide.ErrUnknown}, nil
 	}
 	r := h.spec.Read(st)
-	h.dir.SaveSession(r.Session)
+	if beforeSessionCommit != nil {
+		beforeSessionCommit()
+	}
+	// Keep the original shared generation guard through parsing, fence validation
+	// and restoration. It excludes reset/setup, but NOT other observers. Only
+	// the same-generation idempotent restore may publish under a shared guard;
+	// generic SaveSession and other mutations still require exclusive authority.
+	if err := h.dir.sameGeneration(st); err != nil {
+		return decide.Observation{State: decide.Unknown}, err
+	}
+	reset, err := h.dir.sessionWasReset(st.Record)
+	if err != nil {
+		return decide.Observation{State: decide.Unknown}, err
+	}
+	if !reset {
+		if err := h.dir.restoreCompletedSession(r.Session); err != nil {
+			return decide.Observation{State: decide.Unknown}, err
+		}
+	}
+	guard.Release()
+	guard = nil
+	// Provider limit reads below never hold the turn guard.
 	// A turn that ended waiting on a person raises a hold once: it is
 	// reported until the supervisor has saved the hold (AdoptInteraction).
 	waiting := h.waiting(r) && !h.dir.waitAdopted(st.Record)
@@ -445,16 +514,37 @@ func (h *Headless) Send(ctx context.Context, prompt string, mode adapter.Mode) e
 	if st.Phase == Running {
 		return adapter.ErrUnsupported{Op: fmt.Sprintf("sending to a running headless turn (%s mode)", mode)}
 	}
-	if st.Phase == Finished && !unread {
-		h.dir.SaveSession(h.spec.Read(st).Session)
+	if beforeSessionCommit != nil {
+		beforeSessionCommit()
+	}
+	// Bounded acquisition tolerates concurrent short observations. A new turn
+	// which wins meanwhile is rejected by the generation recheck below.
+	guard, err := acquireTurnLock(string(h.dir))
+	if err != nil {
+		return err
+	}
+	defer guard.Release()
+	if err := h.dir.sameGeneration(st); err != nil {
+		return err
+	}
+	reset, err := h.dir.sessionWasReset(st.Record)
+	if err != nil {
+		return err
+	}
+	if st.Phase == Finished && !unread && !reset {
+		if err := h.dir.SaveSession(h.spec.Read(st).Session); err != nil {
+			return err
+		}
 	}
 	if _, lost := h.session(); lost {
 		return errSessionLost
 	}
-	if h.spec.Prompt == PromptFile {
-		return h.dir.StartWithPromptFile(h.Args(), h.set.Workdir, prompt, envList(h.set.Env))
+	argv := h.Args()
+	if afterSessionCommit != nil {
+		afterSessionCommit()
 	}
-	return h.dir.Start(h.Args(), h.set.Workdir, prompt, envList(h.set.Env))
+	_, err = h.dir.startTurnGuarded(argv, h.set.Workdir, prompt, envList(h.set.Env), "", h.spec.Prompt == PromptFile, guard)
+	return err
 }
 
 // AdoptInteraction implements adapter.InteractionAdopter: the hold for the

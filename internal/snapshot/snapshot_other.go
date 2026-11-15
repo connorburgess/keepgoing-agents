@@ -25,3 +25,8 @@ func LstatRecord(path string) (os.FileInfo, error) { return os.Lstat(path) }
 
 // Remove deletes a record. On Windows it also deletes the record's marker.
 func Remove(path string) error { return os.Remove(path) }
+
+// ReplaceAtomic atomically publishes closed same-filesystem staging, with no
+// availability marker or missing-versus-unavailable semantics. Caller checks
+// writes/close and cleans staging. It supplies no power-loss durability.
+func ReplaceAtomic(source, target string) error { return os.Rename(source, target) }

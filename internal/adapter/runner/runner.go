@@ -262,6 +262,18 @@ var afterStatusRecordRead, beforeStatusFinished func()
 // statusWithOutputLimit bounds stdout loading for adapters with a finite stream
 // contract. Zero preserves the legacy adapters' output behavior.
 func (d Dir) statusWithOutputLimit(limit int64) (Status, error) {
+	return d.sampleStatus(limit, nil)
+}
+
+// sampleStatus may reuse an already-owned exclusive turn guard. Never acquire
+// recursively or upgrade a shared guard.
+func (d Dir) sampleStatus(limit int64, owned *lock.Lock) (Status, error) {
+	return d.sampleStatusRetained(limit, owned, nil)
+}
+
+// retained transfers the shared sampling guard to the caller, including on error.
+// The caller must release it before provider queries or wrapper waiting.
+func (d Dir) sampleStatusRetained(limit int64, owned *lock.Lock, retained **lock.Lock) (Status, error) {
 	var st Status
 	b, err := snapshot.ReadRecord(d.path("run.json"))
 	if errors.Is(err, os.ErrNotExist) {
@@ -282,16 +294,22 @@ func (d Dir) statusWithOutputLimit(limit int64) (Status, error) {
 	// reread run.json: setup may have replaced the generation since our first
 	// sample, including a first start replacing a legacy record. Hold it through
 	// exit/output sampling to prevent mixed generations,
-	// and release before returning Finished to the caller.
-	completedGuard, err := lock.AcquireNamedShared(string(d), turnLock)
-	if errors.Is(err, lock.ErrHeld) {
-		st.Phase = Running
-		return st, nil
+	// and normally release before returning Finished to the caller.
+	if owned == nil {
+		completedGuard, err := lock.AcquireNamedShared(string(d), turnLock)
+		if errors.Is(err, lock.ErrHeld) {
+			st.Phase = Running
+			return st, nil
+		}
+		if err != nil {
+			return st, errors.New("runner: the turn lock could not be checked" + errnoText(err))
+		}
+		if retained != nil {
+			*retained = completedGuard
+		} else {
+			defer completedGuard.Release()
+		}
 	}
-	if err != nil {
-		return st, errors.New("runner: the turn lock could not be checked" + errnoText(err))
-	}
-	defer completedGuard.Release()
 	b, err = snapshot.ReadRecord(d.path("run.json"))
 	if err != nil {
 		return Status{}, err
@@ -409,7 +427,7 @@ func (d Dir) Start(argv []string, workdir, prompt string, env []string) error {
 
 // turnFiles are what one turn leaves, the exit code last: it is what makes a
 // turn read as finished, so it is the last to go and the last to come back.
-var turnFiles = []string{"prompt", "exit.tmp", "stdout", "stderr", "stop-request.json", "stop-ack.json", startedName, finishingName, waitAdoptedFile, "exit"}
+var turnFiles = []string{"prompt", "exit.tmp", "stdout", "stderr", "stop-request.json", "stop-ack.json", startedName, finishingName, waitAdoptedFile, sessionResetFile, sessionResetFile + ".present", "exit"}
 
 // renameFile is os.Rename. Tests replace it to make one file immovable.
 var renameFile = os.Rename
@@ -468,7 +486,16 @@ func (d Dir) putBack(moved []string) error {
 			lost = append(lost, name)
 			continue
 		}
-		os.Remove(d.path(name)) // what the failed start wrote in its place
+		// The fence alone uses the snapshot publication marker. Other turn
+		// records retain their existing publication/removal rules.
+		if name == sessionResetFile {
+			if err := removeResetFence(d.path(name)); err != nil && !errors.Is(err, os.ErrNotExist) {
+				lost = append(lost, name+errnoText(err))
+				continue
+			}
+		} else {
+			os.Remove(d.path(name))
+		} // what the failed start wrote in its place
 		if err := renameFile(d.aside(name), d.path(name)); err != nil {
 			lost = append(lost, name+errnoText(err))
 		}
@@ -596,6 +623,16 @@ func (d Dir) StartWithPromptFile(argv []string, workdir, prompt string, env []st
 // the variable that carries it from the loop's own entries, so a value set
 // anywhere else can never take a prompt away from a turn.
 func (d Dir) startTurn(argv []string, workdir, prompt string, env []string, acp string, emptyStdin bool) (string, error) {
+	return d.startTurnGuarded(argv, workdir, prompt, env, acp, emptyStdin, nil)
+}
+
+// startTurnGuarded consumes an optional exclusive setup guard. A headless send
+// retains this guard from session-derived argv through record publication.
+// It is released at the existing protocol 3 boundary, before wrapper wait.
+func (d Dir) startTurnGuarded(argv []string, workdir, prompt string, env []string, acp string, emptyStdin bool, setup *lock.Lock) (string, error) {
+	if setup != nil {
+		defer setup.Release()
+	}
 	kept := make([]string, 0, len(env)+1)
 	for _, kv := range env {
 		if name, _, _ := strings.Cut(kv, "="); !strings.EqualFold(name, envTurnStdin) {
@@ -623,11 +660,14 @@ func (d Dir) startTurn(argv []string, workdir, prompt string, env []string, acp 
 	// previous turn's wrapper to finish exiting, so its lock can never stand
 	// in for the new wrapper's, and it is released only after the new record
 	// is written. The new wrapper then takes it and says so.
-	setup, err := acquireTurnLock(string(d))
-	if err != nil {
-		return "", notSpawned{err}
+	if setup == nil {
+		var err error
+		setup, err = acquireTurnLock(string(d))
+		if err != nil {
+			return "", notSpawned{err}
+		}
+		defer setup.Release()
 	}
-	defer setup.Release()
 	moved, err := d.setAside()
 	if err != nil {
 		return "", notSpawned{err}

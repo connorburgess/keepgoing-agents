@@ -64,7 +64,7 @@ func (h *Decisions) Add(stage string, in decide.Input, out decide.Decision) {
 	o := in.Obs
 	e := Evaluation{Stage: stage, Action: string(out.Action), Cause: DecisionCause(out), Input: DecisionInput{
 		Control: *Gate(in.Control), State: string(o.State), ErrorClass: string(o.ErrorClass),
-		Queued: o.Queued, Background: o.Background, Gone: o.Gone, Retrying: o.Retrying,
+		Queued: o.Queued, Background: o.Background, Gone: o.Gone || o.SessionLost, Retrying: o.Retrying, // a lost session is recorded as a target that is gone
 		RetryUnverified: o.RetryUnverified, AwaitingInput: o.AwaitingInput,
 		ActiveChildren: o.ActiveChildren, ChildrenUnverified: o.ChildrenUnverified, AwaitingChildren: len(o.AwaitingChildren),
 		InWindow: in.InWindow, NoProgressReached: in.NoProgressReached, SendLimitReached: in.SendLimitReached, DeadlineReached: in.DeadlineReached,

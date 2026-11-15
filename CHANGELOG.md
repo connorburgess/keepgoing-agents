@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- `looptender session reset [--target NAME]` forgets a headless target's saved session so that its next turn starts a new conversation on purpose. It refuses while a turn or a check is running and from a thread that does not own the loop, clears no hold, and is recorded in `runs.jsonl` with who ran it and in `timeline` in words. It is the way out when an agent defined in configuration has a saved session that can no longer be used: that case now has its own hold reason, which names the command, instead of the reason used for a target that is gone. No file needs editing. Stand-in fixtures only. See [starting a new conversation on purpose](docs/operations.md#starting-a-new-conversation-on-purpose).
 - Add a visual panel overview using the existing feed: expandable registered loops and their recorded direct lanes, the existing needs-you queue first, and the newest eight supplied history entries across loops. Preserve expansion and keyboard focus on refresh, title privacy, stale/held/unavailable evidence, known pruning and incomplete-history wording. No new API, provider reads, supervision behavior or answer controls; full descendant navigation remains planned.
 - Unreleased Unix diagnostic: an observation warns when a `bb` command terminates by a signal outside the adapter timeout/cancellation. Signal source and cause remain unknown, including for self-signals or crashes; read verification and decisions are unchanged. Windows emits no such warning.
 
