@@ -65,7 +65,7 @@ const actionSchema = z.enum(["pause", "resume", "stop"]);
 // What the plugin says instead of resuming: where a person resumes the loop.
 export const resumeByPerson = (configPath: string) =>
   "looptender does not resume a loop from this plugin, because it cannot tell a person's click from the supervised session. " +
-  `Resume it from the looptender panel (keepgoing panel --allow-changes) or from an ordinary terminal: keepgoing resume -c ${JSON.stringify(configPath)}`;
+  `From an ordinary terminal, not one BB opened on this loop's thread, run keepgoing resume -c ${JSON.stringify(configPath)}, or start the looptender panel there with keepgoing panel --allow-changes.`;
 
 export const rpcContract = defineRpcContract({
   transfer: { input: transferInput, output: transferResult },

@@ -33,9 +33,9 @@ var ErrSupervisedSession = errors.New("the supervised session cannot clear its o
 func CheckHoldClearer(h HoldClearer) error {
 	switch {
 	case h.Supervised:
-		return fmt.Errorf("%w: this process was started by the loop's supervisor (%s names this loop); a person resumes it from the looptender panel (keepgoing panel --allow-changes) or with keepgoing resume in an ordinary terminal", ErrSupervisedSession, SupervisedLoopVar)
+		return fmt.Errorf("%w: this process was started by the loop's supervisor (%s names this loop); a person resumes it from an ordinary terminal, with keepgoing resume or the looptender panel started there (keepgoing panel --allow-changes)", ErrSupervisedSession, SupervisedLoopVar)
 	case h.Caller != "" && h.Caller == h.TargetThread:
-		return fmt.Errorf("%w: BB thread %s is the loop's current target; a person resumes it from the looptender panel (keepgoing panel --allow-changes) or with keepgoing resume in an ordinary terminal", ErrSupervisedSession, h.Caller)
+		return fmt.Errorf("%w: BB thread %s is the loop's current target; a person resumes it from an ordinary terminal, with keepgoing resume or the looptender panel started there (keepgoing panel --allow-changes)", ErrSupervisedSession, h.Caller)
 	}
 	return nil
 }

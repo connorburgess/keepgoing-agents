@@ -99,7 +99,7 @@ function ToggleButton({ loop, threadId, onDone }: { loop: LoopView; threadId: st
     setBusy(true);
     setError("");
     rpc
-      .call("control", { configPath: loop.configPath, action: paused ? "resume" : "pause", managedId: loop.managedId, expectedThreadId: threadId })
+      .call("control", { configPath: loop.configPath, action: "pause", managedId: loop.managedId, expectedThreadId: threadId })
       .then(result => { if (!result.ok) setError(result.message); })
       .catch(() => setError("Control could not be confirmed. Refresh status before retrying."))
       .finally(() => {
@@ -111,7 +111,7 @@ function ToggleButton({ loop, threadId, onDone }: { loop: LoopView; threadId: st
     {/* Resume is a person's, from the panel or a terminal: the plugin
         cannot tell a click from the supervised session. */}
     {paused
-      ? <span>Resume from the looptender panel or a terminal: <code>keepgoing resume -c {JSON.stringify(loop.configPath)}</code></span>
+      ? <span>A person resumes this from an ordinary terminal: <code>keepgoing resume -c {JSON.stringify(loop.configPath)}</code>, or the looptender panel started there.</span>
       : <button type="button" disabled={busy} onClick={act} style={buttonStyle}>Pause</button>}
     {error && <span role="alert">{error}</span>}
   </>;
