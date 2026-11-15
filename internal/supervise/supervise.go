@@ -97,6 +97,10 @@ type Options struct {
 	// Threads creates and finds BB threads for handoffs to candidates with
 	// bb.new_thread. Swapped in tests.
 	Threads func(cli string) ThreadCreator
+	// CommandPrefix runs this build of the command, quoted for the shell,
+	// for the session commands the supervision context lists
+	// (loop.prompt_context). Empty uses DefaultCommandPrefix.
+	CommandPrefix string
 }
 
 // ProbeNote summarises a probe that ran during the tick.
@@ -196,6 +200,11 @@ type Result struct {
 }
 
 type tick struct {
+	// ctl is the control record as this check loaded it.
+	ctl control.File
+	// contextBytes adds up the supervision context blocks this check's sends
+	// carried, for the incident record.
+	contextBytes int
 	// refusalMark is "refused" or "recovered" when this check counted a
 	// refused turn or the recovery that ended a streak, for the journal.
 	refusalMark string
@@ -664,6 +673,7 @@ func (t *tick) run() error {
 		return err
 	}
 	res.Control = ctl.Summary()
+	t.ctl = ctl
 	t.briefHold, t.stopRequested = ctl.BriefHold, ctl.Stop
 	if ctl.Stop && ctl.StopLanesAt != nil {
 		t.stopLanesFor = ctl.StopLanesAt.UTC()
@@ -675,6 +685,9 @@ func (t *tick) run() error {
 		return err
 	}
 	t.incidentStateLoaded = true
+	if !loop.PromptContext {
+		t.st.ContextSent = nil // turning the key on again starts afresh
+	}
 	t.wakeAtStart = t.st.LastWakeAt
 	t.savedSends = t.st.SendsRecorded
 	// Whether a check was overdue is judged from the records as they were
@@ -2069,6 +2082,11 @@ func (t *tick) childNoticeSent(childErrors int, err error) {
 // send records only a returned adapter call. It is persisted with the completed
 // tick, not a durable pre-send intent or an acknowledgement of agent execution.
 func (t *tick) send(a adapter.Adapter, message prompt.Message, mode adapter.Mode, target, action string) error {
+	var sentContext *state.ContextSent
+	if t.loop.PromptContext && !message.NoticeOnly {
+		// Appended at the end, so the wake header below stays first.
+		message, sentContext = t.withContext(message, target, action)
+	}
 	if a.Name() == "bb" {
 		// A BB thread cannot otherwise tell this from a person's message
 		// or a peer thread's.
@@ -2094,9 +2112,25 @@ func (t *tick) send(a adapter.Adapter, message prompt.Message, mode adapter.Mode
 	t.graphFinish(attempt, graphOutcome)
 	t.st.LastPromptSend = &state.PromptSend{
 		Version: 1, CheckAt: t.now, Target: target, Action: action, Mode: string(mode), Outcome: outcome,
-		GoalID: message.GoalID, GoalRevision: message.GoalRevision,
+		GoalID: message.GoalID, GoalRevision: message.GoalRevision, ContextBytes: message.ContextBytes,
 	}
+	t.sentContext(sentContext, message.ContextBytes, outcome, err)
 	return err
+}
+
+// sentContext records a send that carried the supervision context: its
+// length for the incident record unless the adapter refused to start, and
+// the record that stops it repeating only when the call returned no error.
+func (t *tick) sentContext(rec *state.ContextSent, n int, outcome string, err error) {
+	if rec == nil {
+		return
+	}
+	if outcome != "not_started" {
+		t.contextBytes += n
+	}
+	if err == nil {
+		t.st.ContextSent = rec
+	}
 }
 
 // failureReport is the error report a failed check sends, worded by the step

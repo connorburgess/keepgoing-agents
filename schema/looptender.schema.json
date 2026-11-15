@@ -87,6 +87,10 @@
           "type": "boolean",
           "description": "Explicitly include the latest private goal revision in automatic prompts and handoff briefs. Missing or invalid goals prevent sending."
         },
+        "prompt_context": {
+          "type": "boolean",
+          "description": "Append the loop's supervision context, as the context command shows it, to wakes, nudges, re-prompts and handoff briefs: on the first send after it is turned on, a control change (enable, resume, a change of owner), a handoff or switch-back, or a new conversation, and again when the context changes. Default false."
+        },
         "handoff_file": {
           "type": "string"
         },

@@ -150,6 +150,14 @@ func (t *tick) createThread(from string, fromAgent config.Agent, c config.Candid
 		text += "\n\nContinue from @thread:" + continues + ". keepgoing started this conversation for the handoff; the earlier one was left as it was.\n"
 	}
 	text += ownershipNote(t.loop.Name)
+	var sentContext *state.ContextSent
+	if t.loop.PromptContext {
+		// After everything else, as on any other send. A created thread has
+		// no wake header: the brief is its first message.
+		var m prompt.Message
+		m, sentContext = t.withContext(prompt.Message{Text: text}, c.ID, "handoff")
+		text, brief.ContextBytes = m.Text, m.ContextBytes
+	}
 	attempt := t.graphBegin(c.ID, "handoff", string(adapter.ModeAuto), brief)
 	ctx, cancel := context.WithTimeout(t.ctx, newThreadSpawnTime)
 	thread, err := creator.Spawn(ctx, bb.SpawnRequest{Place: place, Provider: c.Provider, Model: c.BB.Model, Reasoning: c.BB.Reasoning,
@@ -161,7 +169,12 @@ func (t *tick) createThread(from string, fromAgent config.Agent, c config.Candid
 	}
 	t.graphFinish(attempt, outcome)
 	t.st.LastPromptSend = &state.PromptSend{Version: 1, CheckAt: t.now, Target: c.ID, Action: "handoff", Mode: string(adapter.ModeAuto), Outcome: outcome,
-		GoalID: brief.GoalID, GoalRevision: brief.GoalRevision}
+		GoalID: brief.GoalID, GoalRevision: brief.GoalRevision, ContextBytes: brief.ContextBytes}
+	started := outcome
+	if errors.Is(err, bb.ErrSpawnNotStarted) {
+		started = "not_started" // recorded as adapter_error above, as before
+	}
+	t.sentContext(sentContext, brief.ContextBytes, started, err)
 	if err == nil {
 		t.adoptThread(intent, thread)
 		return thread, nil
