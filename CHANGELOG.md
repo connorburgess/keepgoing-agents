@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Add a visual panel overview using the existing feed: expandable registered loops and their recorded direct lanes, the existing needs-you queue first, and the newest eight supplied history entries across loops. Preserve expansion and keyboard focus on refresh, title privacy, stale/held/unavailable evidence and incomplete-history wording. No new API, provider reads, supervision behavior or answer controls; full descendant navigation remains planned.
+
 - Fix: a child failure first seen after every covered child has been forgotten starts a new `child_error` report episode, with report 1 and its own cap, even if no check ran when their previously observed recovery reached the forgetting interval.
 
 - Rebranded native macOS menu labels, accessibility text, local error/notification wording and bundle display name to looptender, preserving its command protocol and application identity. Source build only; replacing a running menu remains a separate action.

@@ -31,6 +31,18 @@ Open the printed address in a browser on the same computer. Nothing is hosted, t
 
 Exit codes: 0 after an interrupt, 1 if it cannot listen, 2 for invalid flags.
 
+## Landing view and evidence limits
+
+**Unreleased source.** The overview opens with the existing loop needs-you queue and its recorded reason and next action. Under **Loops and lanes**, expand a loop to see the direct lanes of its last verified listing, its supervision state, last recorded decision and next known check. Expansion and keyboard focus survive ordinary reads while the page remains open. Choosing another view and returning also preserves expansion; reloading the browser page starts over. The registry's existing order keeps loops needing attention first.
+
+The tree groups existing recorded relationships, not a live inventory of every descendant. All registered loops remain independently listed, including a child that is also registered; a recorded registration key links that lane to its own loop page. This avoids treating a parent's old observation as the child's current supervision state. There is no direct link to an unregistered child conversation, no grandchildren inventory, and no inferred relationship from names. Stale lane evidence is not drawn as current; held evidence says which check supplied it. Missing and omitted evidence stay explicit. Private lane titles and keys follow the existing **Show identifiers and notes** setting and disappear when it is turned off.
+
+An active observation is not proof of progress, connectivity or healthy provider retries. Neither an absent lane nor an agent's completion declaration establishes verified work acceptance. The tree adds no child needs-you claim beyond the structured lane state already in the feed, and adds no answer or approval control. The loop's existing needs-you queue remains authoritative for its recorded holds; it is not a complete child approval inbox.
+
+**Recent activity across loops** merges up to five retained entries per loop and shows the newest eight, with each loop's link, recorded time, outcome and folded-check wording. It is a bounded sample, not a full chronology or a "while you were away" tracker. The page states missing history, incomplete registry reads and how many supplied entries were left out. The sample may contain routine checks. Inspect an individual loop or use `keepgoing timeline` for more retained history. No transcript, provider-event or network read is added.
+
+The schema, registry/record bounds, identifiers policy, panel startup caller/class, control reviews and authorization are unchanged. No loop, child, daemon or installed panel is restarted by this view. Fixture/browser evidence is recorded in the review handoff; live supervision, real screen-reader speech, Safari, Firefox and Windows acceptance remain unverified.
+
 ## Opening it with one command: `keepgoing panel`
 
 `keepgoing dock` runs in the foreground and prints an address to copy. `keepgoing panel` is the ordinary way in: it opens the same page in your browser with nothing to copy. Released in v0.2.0; tested with fixtures, real processes and a real browser on macOS. The same tests are meant to run on Linux in CI and have not yet.

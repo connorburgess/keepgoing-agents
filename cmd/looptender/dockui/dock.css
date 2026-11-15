@@ -89,6 +89,35 @@ h2 { margin: 0; font-size: 1.05rem; letter-spacing: -0.005em; font-weight: 650; 
 .dot-unknown { color: transparent; box-shadow: inset 0 0 0 1.5px var(--ink-3); }
 .linkish { font: inherit; color: var(--limit); background: none; border: 0; padding: 0; cursor: pointer; text-decoration: underline; text-underline-offset: 0.2em; border-radius: 4px; }
 
+/* Overview: a compact hierarchy of the records already available. Native
+   disclosures keep the tree usable with a keyboard and without animation. */
+.overview-heading { margin-block: 1.5rem 0.6rem; }
+.work-tree { list-style: none; padding: 0; margin: 1rem 0 0; }
+.work-evidence { font-size: 0.8125rem; max-width: 70ch; }
+.work-branch { border-top: 1px solid var(--line); }
+.work-summary { cursor: pointer; padding: 1rem 0.25rem; display: grid; grid-template-columns: minmax(0, 1fr) minmax(12rem, 1fr); gap: 0.25rem 1.5rem; }
+.work-summary::marker { content: ""; }
+.work-summary::-webkit-details-marker { display: none; }
+.work-name { font-weight: 650; display: flex; align-items: baseline; gap: 0.6rem; overflow-wrap: anywhere; }
+.work-name::before { content: ""; flex: none; width: 0.45rem; height: 0.45rem; border-inline-end: 1.5px solid currentColor; border-block-end: 1.5px solid currentColor; transform: rotate(-45deg); }
+details[open] > .work-summary .work-name::before { transform: rotate(45deg); }
+.work-status { display: flex; flex-wrap: wrap; align-items: baseline; gap: 0.5rem; }
+.work-status .dot { align-self: center; }
+.work-observation { padding-inline-start: 1.05rem; }
+.work-age, .work-observation, .work-status { font-size: 0.8125rem; overflow-wrap: anywhere; }
+.work-summary:hover { background: var(--sunk); }
+.work-body { margin-inline-start: 0.45rem; padding: 0 0 1.25rem 1.25rem; border-inline-start: 1px solid var(--line-2); }
+.work-body > p { max-width: 70ch; }
+.work-body > .sub { font-size: 0.8125rem; }
+.work-facts { margin-block: 1rem; }
+.work-inspect { display: inline-block; padding-block: 0.5rem; }
+.overview-events a { font-weight: 600; }
+@media (max-width: 650px) {
+  .work-summary { grid-template-columns: minmax(0, 1fr); gap: 0.4rem; }
+  .work-status, .work-age { padding-inline-start: 1.05rem; }
+  .work-body { padding-inline-start: 0.75rem; }
+}
+
 .skip { position: absolute; left: 1rem; top: -3rem; padding: 0.5rem 0.75rem; background: var(--surface); color: var(--ink); border-radius: 8px; z-index: 10; }
 .skip:focus { top: 0.75rem; }
 
