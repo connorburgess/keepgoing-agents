@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- `doctor` (`agent.<id>.workspace`) and `transfer preview` (`workspace.from`, `workspace.to`) warn when BB reports a thread's working directory outside every configured progress repository and its registered worktrees. The comparison runs only a read-only `git worktree list`, withholds paths, and never changes doctor's exit status or the preview's compatibility.
+
 - Scope account login phrases to the selected CLI and link Accounts to existing recorded Routes/Allowances usage. Preserve observation age and unavailable/stale evidence; route usage remains unassociated with named account cards, with no new polling or collector.
 
 - Fix account status checks refusing across agent tool invocations: exclude only the incidental CODEX_TOOL_CALL_ID from the context fingerprint, using existing platform name semantics. Preserve the actual caller and execution environment, all other bindings and explicit revision-bound updates; no automatic catalog migration.
