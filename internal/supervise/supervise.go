@@ -2058,6 +2058,11 @@ func (t *tick) childNoticeSent(childErrors int, err error) {
 // send records only a returned adapter call. It is persisted with the completed
 // tick, not a durable pre-send intent or an acknowledgement of agent execution.
 func (t *tick) send(a adapter.Adapter, message prompt.Message, mode adapter.Mode, target, action string) error {
+	if a.Name() == "bb" {
+		// A BB thread cannot otherwise tell this from a person's message
+		// or a peer thread's.
+		message = prompt.WithWakeHeader(t.cfg.Loop.Name, message)
+	}
 	attempt := t.graphBegin(target, action, string(mode), message)
 	err := a.Send(t.ctx, message.Text, mode)
 	outcome := "adapter_returned"

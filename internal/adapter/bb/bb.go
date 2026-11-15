@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
@@ -481,6 +482,9 @@ func (a *Adapter) exec(ctx context.Context, stdin string, args ...string) ([]byt
 	ctx, cancel := context.WithTimeout(ctx, a.Timeout)
 	defer cancel()
 	cmd := exec.CommandContext(ctx, a.cfg.CLI, args...)
+	if len(args) >= 2 && args[0] == "thread" && args[1] == "tell" {
+		cmd.Env = sendEnv(os.Environ())
+	}
 	if stdin != "" {
 		cmd.Stdin = strings.NewReader(stdin)
 	}
@@ -511,6 +515,25 @@ func (a *Adapter) exec(ctx context.Context, stdin string, args ...string) ([]byt
 		err = fmt.Errorf("%w: %w", errStopped, err)
 	}
 	return stdout.Bytes(), err
+}
+
+// threadIdentityVar is the variable bb reads to say which BB thread a command
+// comes from.
+const threadIdentityVar = "BB_THREAD_ID"
+
+// sendEnv is the environment of a message looptender sends: the supervisor's
+// own, without a BB thread identity. A supervisor started by hand inside a BB
+// thread inherits that thread's ID, and BB would show every wake as sent by
+// that thread, which did not write it. A service-started supervisor already
+// runs without one. Names are matched in any letter case, as Windows does.
+func sendEnv(environ []string) []string {
+	env := make([]string, 0, len(environ))
+	for _, kv := range environ {
+		if name, _, _ := strings.Cut(kv, "="); !strings.EqualFold(name, threadIdentityVar) {
+			env = append(env, kv)
+		}
+	}
+	return env
 }
 
 // SignalExits implements adapter.SignalExitReporter: the cumulative count
