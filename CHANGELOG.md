@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Messages to a BB thread no longer carry the supervisor's thread identity, and each starts with a fixed line: `Automatic looptender wake for loop <name>: not a new instruction from a person and not an approval.` A supervisor started by hand inside a BB thread used to pass that thread's `BB_THREAD_ID` to `bb thread tell`, so every wake appeared as a message from that thread. Only `thread tell` changes; other `bb` commands and headless prompts are unchanged. The line is a label, not a signature. Fixtures only. See [how a wake reads in a BB thread](docs/operations.md#how-a-wake-reads-in-a-bb-thread).
+
 - Scope account login phrases to the selected CLI and link Accounts to existing recorded Routes/Allowances usage. Preserve observation age and unavailable/stale evidence; route usage remains unassociated with named account cards, with no new polling or collector.
 
 - Fix account status checks refusing across agent tool invocations: exclude only the incidental CODEX_TOOL_CALL_ID from the context fingerprint, using existing platform name semantics. Preserve the actual caller and execution environment, all other bindings and explicit revision-bound updates; no automatic catalog migration.

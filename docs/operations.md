@@ -52,6 +52,20 @@ The background daemon disconnects from terminal input/output. Tick decisions and
 
 Background mode survives the launching terminal closing. It does not install a user service, restart after crashes or reboots, or guarantee survival across OS logout/session cleanup. It cannot execute while the host sleeps or is off. After wake, the next available check applies current controls; there is no catch-up queue of missed ticks. Network errors retain the normal structured-error policy; in v0.2.0, recovery [waits while the connectivity check fails](#network-outages). macOS and Linux user-service management are available separately through [`service install|status|remove`](services.md); live service lifecycle verification remains roadmap work. Windows service support is still planned; see the [Task Scheduler investigation](windows-services.md). Offline fixtures exercise detached startup, parent exit, duplicate refusal, status, holds, and stop with a local process adapter; no live model call or multi-account handoff is part of these checks.
 
+### How a wake reads in a BB thread
+
+Unreleased source. Every message looptender sends to a BB thread starts with one fixed line:
+
+```text
+Automatic looptender wake for loop example-loop: not a new instruction from a person and not an approval.
+```
+
+This covers wakes, nudges, re-prompts, briefs and child-error notices. The rest of the message is unchanged. Headless Claude Code, Codex and Cursor prompts do not get the line.
+
+The message is sent with `bb thread tell` and without `BB_THREAD_ID`, whatever the supervisor's environment has. Before this change, a `daemon` or `tick` started by hand inside a BB thread passed that thread's ID on, and BB showed every wake as `[bb message from thread:<that thread>]`. The target could not tell a wake from a peer agent's message. A supervisor started as a service already ran without one. Other `bb` commands, such as reads, retry, stop and thread creation, keep the supervisor's environment.
+
+BB offers no way for a command to declare another origin, so BB shows the message as coming from the person. The fixed line is what says otherwise. It is not a signature: any text can copy it, so a session should treat it as a label and judge the message by what it asks. How BB shows a message sent without a thread identity was read from BB's own interface, not checked in a live thread. Fixtures only.
+
 ## Exit codes
 
 | Code | Meaning |
