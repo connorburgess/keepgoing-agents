@@ -180,6 +180,7 @@ func (p Probe) Check(ctx context.Context) Finding {
 	switch {
 	case len(p.Command) > 0:
 		cmd := exec.CommandContext(ctx, p.Command[0], p.Command[1:]...)
+		cmd.Env = envvar.WithoutSupervisorSession(os.Environ())
 		cmd.WaitDelay = 2 * time.Second
 		if cmd.Run() != nil {
 			return CommandFailed
@@ -238,12 +239,17 @@ func fetch(ctx context.Context, url string) Finding {
 	return Reached
 }
 
-// shell runs a command line with the platform's shell.
+// shell runs a command line with the platform's shell. A connectivity probe
+// is a configured program: not the session the supervisor was started from.
 func shell(ctx context.Context, line string) *exec.Cmd {
+	var cmd *exec.Cmd
 	if runtime.GOOS == "windows" {
-		return exec.CommandContext(ctx, "cmd", "/C", line)
+		cmd = exec.CommandContext(ctx, "cmd", "/C", line)
+	} else {
+		cmd = exec.CommandContext(ctx, "/bin/sh", "-c", line)
 	}
-	return exec.CommandContext(ctx, "/bin/sh", "-c", line)
+	cmd.Env = envvar.WithoutSupervisorSession(os.Environ())
+	return cmd
 }
 
 func itoa(n int) string {

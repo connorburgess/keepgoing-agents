@@ -1231,7 +1231,23 @@ A `daemon` or `tick` started by hand inside a BB thread inherits all of these. B
 
 The list is matched by exact name in any letter case, never by prefix, so account selection such as `CLAUDE_CONFIG_DIR` or `CODEX_HOME` is never removed. How to reach BB (`BB_CLI`, `BB_SERVER_URL`, `BB_HOST_DAEMON_PORT`) is kept. An entry the loop's configuration sets in its own `env` always wins over the removal. The list is `envvar.SupervisorSession` in the source.
 
-The wrapper handshake, which runs this build to check its turn protocol, uses the same list. Commands that start no session keep the supervisor's environment: the provider's limits and version readers, and probes. The supervisor sets `LOOPTENDER_SUPERVISED_LOOP` for what it starts, on purpose ([above](#the-supervised-session-cannot-clear-its-own-hold)).
+The same list is removed for every program a supervisor runs that is configured or belongs to a provider:
+
+- the wrapper handshake, which runs this build to check its turn protocol;
+- scheduled and manual probes, built-in or `command`;
+- the Codex and custom-agent limits lookups;
+- the Cursor version check;
+- the yield `busy_command`;
+- the connectivity check's command;
+- `git` in the progress check, because a repository's configuration can name programs git runs.
+
+Each program's own configured entries still come after the removal, so they win.
+
+Programs that keep the caller's environment:
+
+- The `bb` CLI. It is BB's own program and needs BB's variables. `bb thread tell` already runs without `BB_THREAD_ID`.
+- What `keepgoing net-retry -- <command>` runs for its caller.
+- Commands a person or agent runs directly, such as `doctor` and `accounts`. The supervisor sets `LOOPTENDER_SUPERVISED_LOOP` for what it starts, on purpose ([above](#the-supervised-session-cannot-clear-its-own-hold)).
 
 **Not yet covered: a Codex operator thread.** A supervisor started from a Codex thread may inherit variables that thread's Codex session sets. No such name is listed, because none can be cited from Codex's documentation or source. This project has only observed `CODEX_TOOL_CALL_ID`, a per-call identifier, which is not removed.
 

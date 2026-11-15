@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"github.com/looptender/looptender/internal/envvar"
 	"os"
 	"os/exec"
 	"slices"
@@ -2224,7 +2225,8 @@ func runBusy(ctx context.Context, y config.Yield) (bool, error) {
 	ctx, cancel := context.WithTimeout(ctx, y.Timeout.Duration)
 	defer cancel()
 	cmd := exec.CommandContext(ctx, y.BusyCommand[0], y.BusyCommand[1:]...)
-	cmd.Env = os.Environ()
+	// A configured program: not the session the supervisor was started from.
+	cmd.Env = envvar.WithoutSupervisorSession(os.Environ())
 	err := cmd.Run()
 	if err == nil {
 		return true, nil
