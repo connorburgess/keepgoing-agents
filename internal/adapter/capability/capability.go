@@ -282,8 +282,13 @@ var Matrix = []Behaviour{
 	{ID: "context", Title: "Context window reading", What: "Record how much of the model's context window the supervised conversation uses, for status only. No decision, send, allowance or hold reads it.",
 		Cells: merge(map[string]Cell{
 			"bb":    {Yes, Fixture, "`bb thread context <thread> --json` for the supervised thread only, never a lane: used tokens, the window and BB's estimated flag. Read after a check's wake, re-prompt or nudge, or when it first sees a turn ended, within what is left of the check's budget; anything malformed, slow or missing (older bb) is unavailable. The shape was seen on one bb build; the parser runs against fixtures only.", []Ref{t("internal/adapter/bb/context_test.go", "TestReadContextAcceptsOnlyTheKnownShape"), t("internal/supervise/context_test.go", "TestContextReadingChangesNoDecision"), d("docs/operations.md#context-window-reading")}},
-			"codex": {Missing, None, "Unavailable. Per-turn usage appears in the event stream but is not read.", nil},
+			"codex": {Missing, None, "Unavailable. The per-turn token counts in the event stream are recorded as turn usage, which is not a context window size.", nil},
 		}, same(Cell{Missing, None, "Unavailable: no reading is taken.", nil}, "claude", "cursor", "process"))},
+	{ID: "turn_usage", Title: "Turn usage reading", What: "Record the token counts the agent reports for each finished turn, for status only. No decision, send, allowance or hold reads it, and no figure the agent did not report is estimated.",
+		Cells: merge(map[string]Cell{
+			"codex":  {Yes, Fixture, "The typed usage object of `turn.completed` in `codex exec --json`: input, cached input, cache write input, output and reasoning output tokens. Only plain integers up to ten billion are kept; anything else is absent. Each turn is counted once, by its run record. Unreleased; the parser runs against fixtures only.", []Ref{t("internal/adapter/runner/turnusage_test.go", "TestCodexTurnUsageReadsOnlyTypedCounts"), t("internal/supervise/turnusage_test.go", "TestTurnUsageChangesNoDecision"), d("docs/operations.md#turn-usage-reading")}},
+			"claude": {Missing, None, "Not captured: no Claude Code result object with usage fields has been recorded, so none is read.", []Ref{t("internal/adapter/runner/turnusage_test.go", "TestClaudeReportsNoTurnUsage")}},
+		}, same(Cell{Missing, None, "Unavailable: the agent reports no per-turn token counts that are read.", nil}, "bb", "cursor", "process"))},
 	{ID: "new_conversation", Title: "Handoff into a new conversation", What: "Take the work over in a conversation that did not exist before the handoff.",
 		Cells: merge(map[string]Cell{
 			"bb":      {Yes, Fixture, "Opt-in: a candidate with bb.new_thread has looptender create the thread, within loop.limits.max_new_threads.", []Ref{t("internal/supervise/newthread_test.go", "TestHandoffToANewThreadCreatesItOnce"), d("docs/fallbacks.md")}},
@@ -347,6 +352,7 @@ var customCells = map[string]Cell{
 	"switch_back":      {Yes, Fixture, fakeDecision, []Ref{t(superTest, "TestSwitchBackAfterThePrimaryResets")}},
 	"probes":           {Partial, Fixture, "With a probe in the definition: one small request with the prompt passed as a turn's is, judged by the finished and error rules.", []Ref{t("internal/probe/custom_test.go", "TestCustomProbe")}},
 	"context":          {Missing, None, "Unavailable: a definition declares no context window reading.", nil},
+	"turn_usage":       {Missing, None, "Unavailable: a definition declares no per-turn token counts.", nil},
 	"quota":            {Missing, None, "No usage reading is taken. A limit lookup, when defined, only says whether an unclassified failure is a usage limit and when it resets.", []Ref{t(definedTest, "TestDefinedAgentLimitLookup")}},
 	"new_conversation": {Yes, Fixture, "A candidate has no saved session, so the handoff brief starts one.", []Ref{t(definedTest, "TestDefinedAgentTurnLifecycle")}},
 	"run_graph":        {Partial, Fixture, "Runs and sends are recorded. The session identifier is the agent's own shape and is not shown.", []Ref{t(definedReadTest, "TestDefinitionBecomesASpecification")}},
