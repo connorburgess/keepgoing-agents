@@ -1,16 +1,16 @@
 <picture>
   <source media="(prefers-color-scheme: dark)" srcset="docs/assets/looptender-banner-hub-dark.svg">
   <source media="(prefers-color-scheme: light)" srcset="docs/assets/looptender-banner-hub-light.svg">
-  <img alt="looptender — a small tender looking after a fleet of larger ships" src="docs/assets/looptender-banner-hub-light.svg" width="1600">
+  <img alt="looptender: a small tender looking after a fleet of larger ships" src="docs/assets/looptender-banner-hub-light.svg" width="1600">
 </picture>
 
 # looptender
 
-looptender supervises a coding agent: it wakes an idle session, handles structured failures with bounded retries, and can hand off to a confirmed fallback when configured. The agent does the work; looptender never edits, commits to, or merges a repository.
+looptender supervises a coding agent: it wakes an idle session, handles structured failures with bounded retries, and can hand off to a confirmed fallback when configured. Your agents do the work. Looptender keeps their loops supervised, bounded, and visible.
 
 The core is a single binary for macOS, Linux and Windows. Use its daemon or an existing scheduler to check the loop. No separate loop skill is required. The host and supervisor must be running for checks to happen.
 
-The long-term aim is to code anywhere and manage large fleets without losing track of loops; [the roadmap](docs/roadmap.md) separates that vision from what is built today.
+The goal is to grow from one loop on your machine to fleets of agents across machines, with clear ownership, bounded execution, and work that stays visible. Today, [supervision runs on the same machine as the agents](docs/architecture.md); [cross-device coordination is planned](docs/roadmap.md#loops-across-devices-planned).
 
 ## Current availability
 
