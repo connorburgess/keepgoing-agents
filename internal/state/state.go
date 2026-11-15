@@ -15,6 +15,7 @@ import (
 	"os"
 	"path/filepath"
 	"slices"
+	"sort"
 	"strings"
 	"time"
 
@@ -119,6 +120,11 @@ type File struct {
 	// lane count run with a shorter PATH (the panel, the menu) uses it when
 	// the configured command is a bare name it cannot find.
 	BBPath string `json:"bbPath,omitempty"`
+	// Context is the latest context-size reading of the active target's
+	// conversation, with a bounded history. Diagnostic only: no decision,
+	// send, allowance or hold reads it. It is cleared with the other
+	// observations of a thread when the target changes.
+	Context *ContextRecord `json:"context,omitempty"`
 	// LaneStop is the latest stop that covered the lanes: what it found and
 	// did, by count. It is about the request in control.json's stopLanesAt.
 	LaneStop *LaneStop `json:"laneStop,omitempty"`
@@ -444,8 +450,80 @@ type BriefRecord struct {
 func (f *File) ClearChildErrors() {
 	f.ChildErrorsAnnounced, f.ChildErrorsAnnouncedV1, f.ChildErrorNoticeFor, f.ChildErrorNoticeAttempts = nil, nil, "", 0
 	f.ChildErrorReport = nil
-	// The lanes belong to the conversation that was left.
+	// The lanes belong to the conversation that was left, and so does its
+	// context reading.
 	f.Lanes = nil
+	f.Context = nil
+}
+
+// ContextRecord is the context-size readings of one target's conversation,
+// as its provider reported them: the latest, one summary per UTC day and the
+// last few readings. It is bounded: at most ContextDaysKept days and
+// ContextRecentKept readings, oldest dropped first. Diagnostic only.
+type ContextRecord struct {
+	// Version is the record's layout, ContextVersion.
+	Version int              `json:"version"`
+	Target  string           `json:"target"`
+	Latest  ContextReading   `json:"latest"`
+	Days    []ContextDay     `json:"days,omitempty"`   // oldest first
+	Recent  []ContextReading `json:"recent,omitempty"` // oldest first
+}
+
+// ContextReading is one reading. Estimated says the provider marked the
+// figures as an estimate. At is when the check read it.
+type ContextReading struct {
+	UsedTokens   int64     `json:"usedTokens"`
+	WindowTokens int64     `json:"windowTokens"`
+	Estimated    bool      `json:"estimated"`
+	At           time.Time `json:"at"`
+}
+
+// ContextDay summarizes the readings of one UTC day: the lowest, highest and
+// last used tokens, the last window, how many readings, and whether any of
+// them was marked as an estimate.
+type ContextDay struct {
+	Day          string `json:"day"` // 2006-01-02, UTC
+	Lowest       int64  `json:"lowest"`
+	Highest      int64  `json:"highest"`
+	Last         int64  `json:"last"`
+	WindowTokens int64  `json:"windowTokens"`
+	Count        int    `json:"count"`
+	Estimated    bool   `json:"estimated"`
+}
+
+// Bounds and layout of ContextRecord.
+const (
+	ContextVersion    = 1
+	ContextDaysKept   = 31
+	ContextRecentKept = 8
+)
+
+// NoteContext adds a reading of target's conversation. A record of another
+// target is replaced, not merged: readings belong to one conversation.
+func (f *File) NoteContext(target string, r ContextReading) {
+	if f.Context == nil || f.Context.Target != target {
+		f.Context = &ContextRecord{Target: target}
+	}
+	c := f.Context
+	c.Version, c.Latest = ContextVersion, r
+	c.Recent = append(c.Recent, r)
+	if n := len(c.Recent) - ContextRecentKept; n > 0 {
+		c.Recent = append([]ContextReading(nil), c.Recent[n:]...)
+	}
+	day := r.At.UTC().Format("2006-01-02")
+	i := sort.Search(len(c.Days), func(i int) bool { return c.Days[i].Day >= day })
+	if i == len(c.Days) || c.Days[i].Day != day {
+		c.Days = append(c.Days, ContextDay{})
+		copy(c.Days[i+1:], c.Days[i:])
+		c.Days[i] = ContextDay{Day: day, Lowest: r.UsedTokens, Highest: r.UsedTokens}
+	}
+	d := &c.Days[i]
+	d.Lowest, d.Highest = min(d.Lowest, r.UsedTokens), max(d.Highest, r.UsedTokens)
+	d.Last, d.WindowTokens, d.Count = r.UsedTokens, r.WindowTokens, d.Count+1
+	d.Estimated = d.Estimated || r.Estimated
+	if n := len(c.Days) - ContextDaysKept; n > 0 {
+		c.Days = append([]ContextDay(nil), c.Days[n:]...)
+	}
 }
 
 // ClearBriefs starts a new episode for handoff and switch-back briefs.

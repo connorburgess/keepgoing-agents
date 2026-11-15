@@ -239,6 +239,11 @@ func TestOptionalInterfacesMatchTheAdapters(t *testing.T) {
 		if listed := byID("child_recovery").Cells[a.ID].Status == Yes; lanes != a.LaneRecoverer || lanes != listed {
 			t.Errorf("%s: LaneRecoverer=%v; the capability table says %v and the child_recovery row says %v", a.ID, lanes, a.LaneRecoverer, listed)
 		}
+		// And the context row with whether it can read a context size.
+		_, reads := impl.(adapter.ContextReader)
+		if listed := byID("context").Cells[a.ID].Status == Yes; reads != a.ContextReader || reads != listed {
+			t.Errorf("%s: ContextReader=%v; the capability table says %v and the context row says %v", a.ID, reads, a.ContextReader, listed)
+		}
 		// And the stop_lanes row with whether it can stop lanes at all.
 		_, stops := impl.(adapter.LaneStopper)
 		if listed := byID("stop_lanes").Cells[a.ID].Status == Yes; stops != a.LaneStopper || stops != listed {
