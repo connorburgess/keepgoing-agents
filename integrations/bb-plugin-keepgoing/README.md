@@ -2,7 +2,7 @@
 
 **The product is now looptender (formerly keepgoing).** From plugin v0.3.1 (on `main`, not yet in a release) BB shows this plugin as looptender, and its labels and messages say looptender. Everything you type is unchanged for now: the plugin id (`keepgoing`), the `bb keepgoing` command, the `keepgoingPath` setting and the `keepgoing` executable. Guided setup with a CLI from after v0.2.0 creates `looptender.yaml` in place of `keepgoing.yaml` (the plugin accepts either; existing loops keep their file). Updating keeps the plugin's settings, secrets and schedules, because BB keeps them under the plugin id. This guide calls the product looptender and keeps executable, command and configuration identifiers literal.
 
-A thin [BB](https://getbb.app) plugin for [looptender](../../README.md). It shows looptender's state on every thread a loop supervises, with Pause/Resume controls, guided setup and explicit held transfers. It also adds a `bb keepgoing` command. All decisions stay in looptender; the plugin only runs the `keepgoing` CLI and renders its JSON.
+A thin [BB](https://getbb.app) plugin for [looptender](../../README.md). It shows looptender's state on every thread a loop supervises, with Pause controls, guided setup and explicit held transfers. It also adds a `bb keepgoing` command. All decisions stay in looptender; the plugin only runs the `keepgoing` CLI and renders its JSON.
 
 The plugin reports its version with `--client bb-plugin@VERSION` when it reads a loop's status, so the looptender panel's Versions view can say which plugin and which looptender build it runs. The version is a constant in `client-flag.ts`, kept equal to `package.json` by a test. A looptender too old to know the flag answers with a usage error. The plugin then asks again without it, and stops sending it to that executable only if that second call succeeds. It sends the flag again once the executable changes: a different path, size or modification time, as after an upgrade. A plugin reload also resets this.
 
@@ -43,7 +43,7 @@ This flow is implemented on `main` and requires a looptender build containing `i
 3. Choose **Create disabled setup**. The host runs the shared `init` command, with task text on stdin. For goal setup, one private `task.md` snapshot is referenced by goal revision 1 while `prompt.md` holds stable wake instructions. Configuration and prompt files go into the CLI's new private setup directory outside the checkout. No agent, probe, scheduler, or account is started or created.
 4. Review the shared doctor results. **Start background supervision** appears only when the saved target matches, BB identity diagnostics pass without errors, no control hold prevents start, and no responding daemon was found. Clicking it calls the existing `start --background` command on the recorded host. It enables supervision with the thread's ownership identity; it does not take over another owner or clear holds. Subsequent ticks may prompt the agent normally.
 
-The **Setup** control / expanded banner can refresh diagnostics later. Pause/resume/stop route to the recorded host. Resume explicitly clears holds; it does not start a missing daemon. New disabled setups use the separate start action instead of a misleading Resume button. Stop/completion behavior remains in looptender, with no separate loop skill required.
+The **Setup** control / expanded banner can refresh diagnostics later. Pause/stop route to the recorded host. The plugin does not resume a loop (unreleased source): a Resume click, an agent's `bb plugin rpc call` and `bb keepgoing resume` all reach it the same way, so it cannot tell a person from the session the loop supervises, and supervision never clears its own hold. A held loop shows where a person resumes it instead: the looptender panel (`keepgoing panel --allow-changes`) or `keepgoing resume -c <config>` in an ordinary terminal. Resume explicitly clears holds; it does not start a missing daemon. New disabled setups use the separate start action. Stop/completion behavior remains in looptender, with no separate loop skill required.
 
 The setup service never spawns, forks, re-parents, sends to, or changes the provider/model of a BB thread. Preview tickets expire after five minutes or plugin reload, are bound to the task hash, goal choice, target metadata, binary selection and resolved plan, and permit one creation attempt. Task text is not persisted in plugin storage, logged, or put in subprocess arguments; it remains in private `task.md` for goal setup or `prompt.md` for task-only setup after creation. Task input is limited to 256 KiB in the UI flow. Paths and target references in private plugin storage are operational metadata.
 
@@ -111,7 +111,7 @@ Implemented on `main` after v0.1.3 and fixture-tested. The transfer CLI is relea
 1. Open the destination thread’s looptender banner or **Supervise this thread** / **Setup** card panel. Under **Move supervision here**, choose an existing plugin-created loop in the same project, environment, host, workspace and provider.
 2. Click **Preview move**. Review the old/new threads, provider, current owner, all control flags and any goal ID/revision. Model/account identity remains unverified. Five-minute tickets are single-use and expire on reload; changed target metadata, controls, goal or configured labels require a new preview.
 3. Click **Move and keep held**. This explicitly authorizes destination ownership takeover. The CLI preserves existing holds, goals and work accounting, adds awaiting-user, resets thread observations and fences stale configs/daemons. It does not cancel the old thread’s running turn, send work, create/re-parent a thread or change a timer.
-4. Once status verifies the held destination, the plugin updates its saved reference. Review **Setup** diagnostics. **Resume** is a separate explicit action that clears holds; it does not start a missing daemon. A Resume click from a stale view of the source thread is refused. A disabled loop uses its separate start action after holds are resolved. Never resume a completed task or a task still waiting on a person.
+4. Once status verifies the held destination, the plugin updates its saved reference. Review **Setup** diagnostics. Resuming is a separate explicit action by a person, from the looptender panel or a terminal, that clears holds; it does not start a missing daemon. The plugin does not resume. A disabled loop uses its separate start action after holds are resolved. Never resume a completed task or a task still waiting on a person.
 
 Only plugin-created setups appear. Manually listed configurations still use `keepgoing transfer preview|apply|recover` on their host; importing them into this UI remains planned. A duplicate manual reference to the selected setup blocks the UI move. Known destination supervision or unverified status blocks another loop; arbitrary external timers/configurations are not discovered.
 
@@ -129,7 +129,7 @@ Verification uses SDK fake-host/host-entry tests, controller failure fixtures an
 
 BB shows thread context in one of two places. The plugin uses whichever one is showing:
 
-- **The context banner above the message box.** This is the default. A `looptender: …` item sits at the right of the banner. Click it to expand the loop diagnostics and a Pause or Resume button.
+- **The context banner above the message box.** This is the default. A `looptender: …` item sits at the right of the banner. Click it to expand the loop diagnostics and a Pause button, or for a held loop where a person resumes it.
 - **The thread context card** at the top right of a thread page. This shows when BB's thread context card experiment is on. The looptender row sits in the card's lower group.
 
 The rebuilt plugin also shows recorded goal identity/revision in setup diagnostics and expanded status. Goal titles, task text and references are withheld; metadata is not verified completion. Missing fields say “not reported” (no record or an older CLI), malformed records are unavailable, and unavailable goal metadata prevents a new start through setup. Editing the goal choice invalidates its preview. The original task source and edits to referenced files are not revision-tracked; see [goal setup](../../docs/setup.md#optional-goal-during-setup). This flow and display are fixture-tested; live deployment and first-loop verification remain open.
@@ -153,7 +153,7 @@ These richer diagnostics are implemented after v0.1.3 and require rebuilt plugin
 ```sh
 bb keepgoing status
 bb keepgoing pause <loop>
-bb keepgoing resume <loop>
+bb keepgoing resume <loop>   # refused: prints where a person resumes the loop
 bb keepgoing stop <loop>
 ```
 

@@ -62,6 +62,11 @@ export type LoopView = z.infer<typeof loopSchema>;
 
 const actionSchema = z.enum(["pause", "resume", "stop"]);
 
+// What the plugin says instead of resuming: where a person resumes the loop.
+export const resumeByPerson = (configPath: string) =>
+  "looptender does not resume a loop from this plugin, because it cannot tell a person's click from the supervised session. " +
+  `Resume it from the looptender panel (keepgoing panel --allow-changes) or from an ordinary terminal: keepgoing resume -c ${JSON.stringify(configPath)}`;
+
 export const rpcContract = defineRpcContract({
   transfer: { input: transferInput, output: transferResult },
   setup: { input: setupInput, output: setupResult },
@@ -220,21 +225,16 @@ export default async function plugin(bb: BbPluginApi) {
   // Control only loops listed in settings: the path comes from the browser,
   // so it must never choose an arbitrary config file.
   const control = async (configPath: string, action: z.infer<typeof actionSchema>, managedId?: string, expectedThreadId?: string) => {
+    // A Resume click, an agent's `bb plugin rpc call` and `bb keepgoing
+    // resume` all reach this plugin the same way, so it cannot tell a person
+    // from the session the loop supervises. Supervision never clears its own
+    // hold: the plugin never resumes and says where a person can.
+    if (action === "resume") return { ok: false, message: resumeByPerson(configPath) };
     const { bin, paths } = await configured();
-    if (action === "resume" && (await intents()).some(i => i.record.id === managedId || i.record.configPath === configPath)) return { ok: false, message: "A move requires inspection. Check move status from its destination before resuming." };
     if (managedId) {
       const record = (await records()).find(r => r.id === managedId && r.configPath === configPath);
       if (!record) return { ok: false, message: "That setup is not registered with this plugin." };
-      if (action === "resume" && expectedThreadId !== record.threadId) return { ok: false, message: "This setup moved or the view is stale. Open its current thread and refresh before resuming." };
       try {
-        if (action === "resume") {
-          const current = await resolveTarget(record.threadId);
-          const status = await hostCommand(bin, record, "status");
-          const parsed = statusSchema.safeParse(status.data);
-          // A loop that follows the standard route list may be on one of its
-          // routes: this thread on another model. Its agents still match.
-          if (JSON.stringify(current) !== JSON.stringify(targetOf(record)) || status.code !== 0 || !parsed.success || (parsed.data.target !== "primary" && !statusFollowsStandard(status.data)) || parsed.data.primaryAgent.bbThread !== record.threadId || parsed.data.targetAgent.bbThread !== record.threadId || parsed.data.primaryAgent.provider !== record.provider || parsed.data.targetAgent.provider !== record.provider) throw new Error("Target changed");
-        }
         const result = await hostCommand(bin, record, action);
         bb.realtime.publish(CHANGED, { at: Date.now() });
         return { ok: result.code === 0, message: result.code === 0 ? `${action} done` : `looptender ${action} failed; inspect host status` };
@@ -366,7 +366,7 @@ export default async function plugin(bb: BbPluginApi) {
     commands: [
       { name: "status", summary: "List configured loops with their control state and target", usage: "bb keepgoing status" },
       { name: "pause", summary: "Pause a loop by name", usage: "bb keepgoing pause <loop>" },
-      { name: "resume", summary: "Resume a loop by name", usage: "bb keepgoing resume <loop>" },
+      { name: "resume", summary: "Refused: says where a person resumes the loop", usage: "bb keepgoing resume <loop>" },
       { name: "stop", summary: "Stop a loop's running session by name", usage: "bb keepgoing stop <loop>" },
     ],
     async run(argv) {
