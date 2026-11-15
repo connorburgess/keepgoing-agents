@@ -54,17 +54,21 @@ Background mode survives the launching terminal closing. It does not install a u
 
 ### How a wake reads in a BB thread
 
-Unreleased source. Every message looptender sends to a BB thread starts with one fixed line:
+Unreleased source. Every message looptender sends to an existing BB thread with `bb thread tell` starts with one fixed line:
 
 ```text
 Automatic looptender wake for loop example-loop: not a new instruction from a person and not an approval.
 ```
 
-This covers wakes, nudges, re-prompts, briefs and child-error notices. The rest of the message is unchanged. Headless Claude Code, Codex and Cursor prompts do not get the line.
+This covers wakes, nudges, re-prompts, briefs to an existing thread, and child-error notices. The rest of the message is unchanged. Headless Claude Code, Codex and Cursor prompts do not get the line.
+
+One message is not covered: the first prompt of a [handoff to a new conversation](fallbacks.md#hand-off-to-a-new-conversation). It goes through `bb thread spawn`, so it gets no wake line and keeps the supervisor's `BB_THREAD_ID`. When a BB thread started the supervisor by hand, BB shows that prompt as sent by that thread.
 
 The message is sent with `bb thread tell` and without `BB_THREAD_ID`, whatever the supervisor's environment has. Before this change, a `daemon` or `tick` started by hand inside a BB thread passed that thread's ID on, and BB showed every wake as `[bb message from thread:<that thread>]`. The target could not tell a wake from a peer agent's message. A supervisor started as a service already ran without one. Other `bb` commands, such as reads, retry, stop and thread creation, keep the supervisor's environment.
 
-BB offers no way for a command to declare another origin, so BB shows the message as coming from the person. The fixed line is what says otherwise. It is not a signature: any text can copy it, so a session should treat it as a label and judge the message by what it asks. How BB shows a message sent without a thread identity was read from BB's own interface, not checked in a live thread. Fixtures only.
+BB offers no way for a command to declare another origin, so BB shows the message as coming from the person. The fixed line is what says otherwise. It is not a signature: any text can copy it, so a session should treat it as a label and judge the message by what it asks. How BB shows a message sent without a thread identity was read from BB's own interface, not checked in a live thread.
+
+Only a supervisor on this build sends this way. A `daemon` or service already running an older build keeps sending wakes with its thread identity and without the line until it is restarted on this build. Fixtures only.
 
 ## Exit codes
 

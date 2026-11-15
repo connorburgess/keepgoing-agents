@@ -2,7 +2,7 @@
 
 ## Unreleased
 
-- Messages to a BB thread no longer carry the supervisor's thread identity, and each starts with a fixed line: `Automatic looptender wake for loop <name>: not a new instruction from a person and not an approval.` A supervisor started by hand inside a BB thread used to pass that thread's `BB_THREAD_ID` to `bb thread tell`, so every wake appeared as a message from that thread. Only `thread tell` changes; other `bb` commands and headless prompts are unchanged. The line is a label, not a signature. Fixtures only. See [how a wake reads in a BB thread](docs/operations.md#how-a-wake-reads-in-a-bb-thread).
+- Messages to a BB thread no longer carry the supervisor's thread identity, and each starts with a fixed line: `Automatic looptender wake for loop <name>: not a new instruction from a person and not an approval.` A supervisor started by hand inside a BB thread used to pass that thread's `BB_THREAD_ID` to `bb thread tell`, so every wake appeared as a message from that thread. Only `thread tell` changes. Other `bb` commands are unchanged, including the first prompt of a new-thread handoff, which goes through `bb thread spawn`, and so are headless prompts. A supervisor running an older build sends the old way until restarted. The line is a label, not a signature. Fixtures only. See [how a wake reads in a BB thread](docs/operations.md#how-a-wake-reads-in-a-bb-thread).
 
 - Scope account login phrases to the selected CLI and link Accounts to existing recorded Routes/Allowances usage. Preserve observation age and unavailable/stale evidence; route usage remains unassociated with named account cards, with no new polling or collector.
 
