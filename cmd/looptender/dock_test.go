@@ -123,7 +123,7 @@ func TestDockReportCoversEveryStateFromFixtures(t *testing.T) {
 	if docs.CurrentRoute != (dockTarget{Availability: "known", Role: "main", Tool: "BB thread", Provider: "claude-code", Model: "claude-opus-5-5"}) {
 		t.Errorf("%+v", docs.CurrentRoute)
 	}
-	if docs.NextCheck.Availability != "unknown" || !strings.Contains(docs.NextCheck.Detail, "no looptender scheduler is on record") {
+	if docs.NextCheck.Availability != "unknown" || !strings.HasPrefix(docs.NextCheck.Detail, "the last check ran 3 min ago") || !strings.Contains(docs.NextCheck.Detail, "No looptender scheduler is on record to say when the next is due.") {
 		t.Errorf("next check must be unknown without a daemon: %+v", docs.NextCheck)
 	}
 	if f := docs.Fallbacks; f.Availability != "known" || f.Ready != 1 || f.Eligible != 2 || !f.Enough {
@@ -442,8 +442,32 @@ func TestDockPhrasesFollowEvidence(t *testing.T) {
 		{daemonStatus{State: "responsive", Phase: "waiting", NextCheckAt: &next}, "known", ""},
 		{daemonStatus{State: "responsive", Phase: "checking"}, "in_progress", ""},
 	} {
-		if n := dockNextCheck(&clientSnapshot{Daemon: c.daemon}, dockNow); n.Availability != c.availability || n.Detail != c.detail {
+		if n := dockNextCheck(&clientSnapshot{Daemon: c.daemon}, nil, dockNow); n.Availability != c.availability || n.Detail != c.detail {
 			t.Errorf("%+v: %+v", c.daemon, n)
+		}
+	}
+
+	// With no looptender scheduler on record, what the record shows of past
+	// checks is said: never a time for the next one.
+	const noNext = "No looptender scheduler is on record to say when the next is due."
+	minuteAgo, future := dockNow.Add(-70*time.Second), dockNow.Add(time.Hour)
+	for _, c := range []struct {
+		name     string
+		schedule scheduleStatus
+		want     string
+	}{
+		{"never checked", scheduleStatus{}, "no looptender scheduler is on record for this loop, and one outside looptender is not visible"},
+		{"a last check dated ahead of the clock", scheduleStatus{LastCheckAt: &future}, "no looptender scheduler is on record for this loop, and one outside looptender is not visible"},
+		{"too few gaps to say how often", scheduleStatus{LastCheckAt: &minuteAgo, sch: state.Schedule{GapsSeen: 2}}, "the last check ran 1 min ago. " + noNext},
+		{"held, with checks about every 10 min", scheduleStatus{LastCheckAt: &minuteAgo, NotJudged: "held", sch: state.Schedule{Recent: 10 * time.Minute}},
+			"the last check ran 1 min ago, and recent checks ran about 10 min apart (past checks, not a forecast). " + noNext},
+		{"started by a BB automation", scheduleStatus{LastCheckAt: &minuteAgo, StartedBy: &state.Routine{Source: state.RoutineBBAutomation, Routine: "auto_example"}, sch: state.Schedule{Recent: 15 * time.Minute}},
+			"the last check ran 1 min ago, started by a BB automation, and recent checks ran about 15 min apart (past checks, not a forecast). " + noNext},
+	} {
+		st := &statusOut{Schedule: c.schedule}
+		n := dockNextCheck(&clientSnapshot{Daemon: daemonStatus{State: "not_recorded"}}, st, dockNow)
+		if n.Availability != "unknown" || n.At != nil || n.Detail != c.want {
+			t.Errorf("%s: %+v", c.name, n)
 		}
 	}
 
@@ -648,7 +672,13 @@ func TestDockRoutesAreCappedAndKeyedByAccount(t *testing.T) {
 	// Durations read the same on both sides of a limit.
 	changed := dockNow.Add(-(3*time.Hour + 12*time.Minute))
 	limits := dockLimits(&statusOut{ProgressAllowance: &progressAllowanceStatus{Timeout: "24h0m0s", ChangedAt: &changed}}, dockNow)
-	if len(limits) != 1 || limits[0].Phrase != "3 h 12 min of 24 h" {
+	if len(limits) != 1 || limits[0].Phrase != "3 h 12 min of 24 h" || limits[0].Reached || limits[0].Effect != "" {
+		t.Errorf("%+v", limits)
+	}
+	// A reached limit says what it does to the loop.
+	long := dockNow.Add(-54 * time.Hour)
+	limits = dockLimits(&statusOut{ProgressAllowance: &progressAllowanceStatus{Timeout: "24h0m0s", ChangedAt: &long, Due: true}}, dockNow)
+	if len(limits) != 1 || limits[0].Phrase != "2 days 6 h of 24 h" || !limits[0].Reached || limits[0].Effect != dockNoProgressLimitEffect {
 		t.Errorf("%+v", limits)
 	}
 	for d, want := range map[time.Duration]string{40 * time.Second: "1 min", 90 * time.Minute: "1 h 30 min", 54 * time.Hour: "2 days 6 h", 48 * time.Hour: "2 days", -time.Hour: "0 min"} {
