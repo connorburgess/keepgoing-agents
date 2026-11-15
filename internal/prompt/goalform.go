@@ -89,5 +89,5 @@ func ConversationHash(key string) string {
 // shortGoalText is the fixed line that replaces an unchanged goal.
 func shortGoalText(text, id string, revision uint64) string {
 	return text + fmt.Sprintf("\n\nCurrent keepgoing goal: %s revision %d, unchanged since the last full copy this loop sent to this conversation. "+
-		"Use that copy; if you no longer have it, run looptender goal show.\n", id, revision)
+		"Use that copy; if you no longer have it, the full copy can be read from this loop's private goal record.\n", id, revision)
 }

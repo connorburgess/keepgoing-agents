@@ -92,7 +92,7 @@ func TestComposeWakeOnChangeShortLineIsFixed(t *testing.T) {
 	var gotRev uint64
 	short, err := ComposeWakeOnChange(loop, func(id string, rev uint64) bool { gotID, gotRev = id, rev; return true })
 	want := loop.Prompt + "\n\nCurrent keepgoing goal: " + g.ID + " revision 1, unchanged since the last full copy this loop sent to this conversation. " +
-		"Use that copy; if you no longer have it, run looptender goal show.\n"
+		"Use that copy; if you no longer have it, the full copy can be read from this loop's private goal record.\n"
 	if err != nil || short.Text != want || short.GoalForm != GoalShort || short.GoalID != g.ID || short.GoalRevision != 1 || gotID != g.ID || gotRev != 1 {
 		t.Fatalf("short: %+v %v", short, err)
 	}

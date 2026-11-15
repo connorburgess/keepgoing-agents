@@ -86,8 +86,10 @@ Offline fixtures cover revised goals across ticks, opt-in privacy, legacy behavi
 Unreleased. Off by default. With `prompt_goal: true` every wake, nudge and re-prompt repeats the whole goal specification and its fixed preamble. Set `loop.prompt_goal_on_change: true` as well to send the goal in full only when the conversation may not have it, and otherwise one fixed line:
 
 ```text
-Current keepgoing goal: goal_<id> revision <n>, unchanged since the last full copy this loop sent to this conversation. Use that copy; if you no longer have it, run looptender goal show.
+Current keepgoing goal: goal_<id> revision <n>, unchanged since the last full copy this loop sent to this conversation. Use that copy; if you no longer have it, the full copy can be read from this loop's private goal record.
 ```
+
+The line names no command: the composer knows neither the command name nor the configuration path the loop's own prompt uses, and a person or the loop's prompt can say how to read the goal record (for example `keepgoing goal show --private -c <config>`).
 
 ```yaml
 loop:
