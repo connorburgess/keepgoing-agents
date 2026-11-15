@@ -1,6 +1,6 @@
 # Coordinating lanes
 
-A convention for a coordinator: a conversation that hands out [lane](glossary.md) work and reviews it. It is written for agents and the people who set them up.
+A convention for a [coordinator](glossary.md): a conversation that hands out lane work and reviews it, and is the parent of those lanes. It is written for agents and the people who set them up.
 
 **looptender enforces none of this.** It does not read a ledger, check a report's length, record approvals, choose a lane's model or limit nesting. Each rule below is something a coordinator does by itself. What looptender does for lanes today is listed [at the end](#what-looptender-does-for-lanes-today).
 

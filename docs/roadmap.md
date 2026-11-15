@@ -527,7 +527,7 @@ The owner wants keepgoing to move to another target at a usage threshold, for ex
 
 #### Coordinating lanes (planned)
 
-For a coordinator: a conversation that hands out [lane](glossary.md) work and reviews it. The convention it follows is on [coordinating lanes](coordinating-lanes.md); looptender enforces none of it. Related items elsewhere: [V6a, V6b and V6c](#visual-landing-view-and-child-conversations) show loops, lanes and recent activity in the panel, and [P8](#preferred-routes-planned) leaves the bound on repeated wakes open. Everything below is planned, not built.
+For a [coordinator](glossary.md): a conversation that hands out lane work and reviews it, and is the parent of those lanes. The convention it follows is on [coordinating lanes](coordinating-lanes.md); looptender enforces none of it. Related items elsewhere: [V6a, V6b and V6c](#visual-landing-view-and-child-conversations) show loops, lanes and recent activity in the panel, and [P8](#preferred-routes-planned) leaves the bound on repeated wakes open. Everything below is planned, not built.
 
 - [ ] **Coordinator view in the panel.** One place showing a coordinator's loop with its lanes, built on V6a to V6c and on the measured figures below.
 - [ ] **Moving supervision across projects or providers.** Let supervision of a coordinator move to a conversation in another project or on another provider. Awaiting owner decisions.
