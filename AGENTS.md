@@ -60,3 +60,13 @@ Use the project's own words in new docs, command output, interface text, commits
 - Read [docs/architecture.md](docs/architecture.md) before changing package boundaries. Update README.md in the same change when behavior, setup, or limitations make it inaccurate.
 - Before checking off a roadmap item or merging a capability/release change, apply the [capability and documentation review](docs/testing.md#capability-and-documentation-review). Record reviewed docs, command/release evidence and remaining gaps in the PR; if no doc change is needed, explain why. Review again when the implementation or release scope changes. A documentation edit does not close unverified acceptance criteria.
 - For process lifecycle, OS integration or installer changes, apply the [lifecycle and platform review checks](docs/testing.md#lifecycle-and-platform-review). Distinguish platform compilation, native fixture execution and live acceptance; record unrun checks explicitly.
+
+## Panel frontend guidance
+
+For HTML, CSS and client-side JavaScript in cmd/looptender/dockui, use
+Impeccable for design and the project-local
+[Modern Web Guidance skill](.agents/skills/modern-web-guidance/SKILL.md) for
+browser-platform choices. Prefer Baseline Widely available features; newer
+features need progressive enhancement and a tested fallback. Follow the pinned
+local tooling and its privacy constraints. These frontend rules do not change
+Go supervision or native app behavior.

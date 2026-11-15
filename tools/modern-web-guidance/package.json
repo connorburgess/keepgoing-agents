@@ -1,0 +1,7 @@
+{
+  "name": "looptender-modern-web-guidance",
+  "private": true,
+  "version": "1.0.0",
+  "engines": { "node": ">=22.0.0" },
+  "devDependencies": { "modern-web-guidance": "1.0.0" }
+}
