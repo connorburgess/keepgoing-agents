@@ -1568,6 +1568,47 @@ func TestDockMaximalRegistryStaysUnderTheResponseBound(t *testing.T) {
 	}
 }
 
+// The tree row calls a loop's target "coordinator" only when the listing shown
+// has lanes, and sums its lanes people first.
+func TestDockLaneSummaryAndCoordinatorRole(t *testing.T) {
+	threeHours, listedAt := int64(3*3600), dockNow.Add(-3*time.Hour)
+	kids := func(statuses ...string) []runsChild {
+		out := []runsChild{}
+		for i, s := range statuses {
+			out = append(out, runsChild{Ref: fmt.Sprintf("child:example%d", i), Status: s})
+		}
+		return out
+	}
+	for _, c := range []struct {
+		name          string
+		blocker       runsBlocker
+		role, summary string
+	}{
+		{"current", runsBlocker{Availability: blockerListed, CheckedAt: &listedAt, AgeSeconds: &threeHours,
+			Children: kids("active", "awaiting_input", "error", "active", "awaiting_input", "active", "active")}, "coordinator", "2 waiting \u00B7 1 failed \u00B7 4 working"},
+		{"working only", runsBlocker{Availability: blockerListed, Children: kids("active")}, "coordinator", "1 working"},
+		{"more than stored", runsBlocker{Availability: blockerListed, Children: kids("active"), OmittedChildren: 5}, "coordinator", "1 working \u00B7 5 more not itemized"},
+		{"before a pause", runsBlocker{Availability: blockerBeforeHold, LastCheckCause: "paused", CheckedAt: &listedAt, AgeSeconds: &threeHours, Children: kids("error", "active")},
+			"coordinator", "1 failed \u00B7 1 working \u00B7 as of the check before it was paused, 3 h ago; not current"},
+		{"before a hold", runsBlocker{Availability: blockerBeforeHold, LastCheckCause: "awaiting_user", CheckedAt: &listedAt, AgeSeconds: &threeHours, Children: kids("active")},
+			"coordinator", "1 working \u00B7 as of the check before it was held, 3 h ago; not current"},
+		{"held by a lane", runsBlocker{Availability: blockerHeld, CheckedAt: &listedAt, AgeSeconds: &threeHours, Children: kids("awaiting_input")},
+			"coordinator", "1 waiting \u00B7 as of the check that held it, 3 h ago"},
+		{"no lanes", runsBlocker{Availability: blockerNone, CheckedAt: &listedAt, AgeSeconds: &threeHours}, "", ""},
+		{"stale listing", runsBlocker{Availability: blockerUnknown, Reason: "last_check_older_than_stale_after", Children: kids("active")}, "", ""},
+		{"not observed", runsBlocker{Availability: blockerUnknown, Reason: "not_refreshed_by_the_last_check", LastCheckCause: "paused"}, "", ""},
+	} {
+		l := dockLaneList(runsLoop{Blocker: c.blocker}, true, false, false, nil, dockNow)
+		if l.Role != c.role || l.Summary != c.summary {
+			t.Errorf("%s: role %q, summary %q; want %q, %q", c.name, l.Role, l.Summary, c.role, c.summary)
+		}
+	}
+	// An unread loop is never called a coordinator.
+	if l := dockLaneList(runsLoop{Blocker: runsBlocker{Availability: blockerListed, Children: kids("active")}}, false, false, false, nil, dockNow); l.Role != "" || l.Summary != "" {
+		t.Errorf("unknown loop: %+v", l)
+	}
+}
+
 // The review's mutations: each record that must not be worded as more than it
 // is, and the rules every time in a sentence follows.
 func TestDockSentencesSayNoMoreThanTheirRecords(t *testing.T) {
