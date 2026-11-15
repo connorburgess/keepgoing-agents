@@ -41,22 +41,22 @@ func TestContextPhrasesFromTheirRecord(t *testing.T) {
 		avail  string
 	}{
 		{"estimated by BB", record("primary", r(90_000, 200_000, true, at.Add(-time.Hour)), r(48_000, 200_000, true, at)), true,
-			"context:   48,000 of 200,000 tokens (24%), estimated by BB; read 12 min ago, at the check of 2026-11-16T11:48:00Z; diagnostic only, no decision uses it\n" +
-				"context by day (UTC, tokens, estimated by BB): 2026-11-16 lowest 48,000, highest 90,000, last 48,000 (2 readings)", "", "recorded"},
+			"context window: 48,000 of 200,000 tokens (24%), estimated by BB; read 12 min ago, at the check of 2026-11-16T11:48:00Z; diagnostic only, no decision uses it\n" +
+				"context window by day (UTC, tokens, estimated by BB): 2026-11-16 lowest 48,000, highest 90,000, last 48,000 (2 readings)", "", "recorded"},
 		{"not marked as an estimate", record("primary", r(1_234_567, 2_000_000, false, at)), true,
-			"context:   1,234,567 of 2,000,000 tokens (61%), reported by BB; read 12 min ago, at the check of 2026-11-16T11:48:00Z; diagnostic only, no decision uses it\n" +
-				"context by day (UTC, tokens, reported by BB): 2026-11-16 lowest 1,234,567, highest 1,234,567, last 1,234,567 (1 reading)", "", "recorded"},
+			"context window: 1,234,567 of 2,000,000 tokens (61%), reported by BB; read 12 min ago, at the check of 2026-11-16T11:48:00Z; diagnostic only, no decision uses it\n" +
+				"context window by day (UTC, tokens, reported by BB): 2026-11-16 lowest 1,234,567, highest 1,234,567, last 1,234,567 (1 reading)", "", "recorded"},
 		{"five days, three shown", record("primary", month...), true,
-			"context:   50,000 of 200,000 tokens (25%), estimated by BB; read 12 min ago, at the check of 2026-11-16T11:48:00Z; diagnostic only, no decision uses it\n" +
-				"context by day (UTC, tokens, estimated by BB): 2026-11-16 lowest 50,000, highest 50,000, last 50,000 (1 reading); 2026-11-15 lowest 40,000, highest 40,000, last 40,000 (1 reading); 2026-11-14 lowest 30,000, highest 30,000, last 30,000 (1 reading); 2 days more in status --json", "", "recorded"},
+			"context window: 50,000 of 200,000 tokens (25%), estimated by BB; read 12 min ago, at the check of 2026-11-16T11:48:00Z; diagnostic only, no decision uses it\n" +
+				"context window by day (UTC, tokens, estimated by BB): 2026-11-16 lowest 50,000, highest 50,000, last 50,000 (1 reading); 2026-11-15 lowest 40,000, highest 40,000, last 40,000 (1 reading); 2026-11-14 lowest 30,000, highest 30,000, last 30,000 (1 reading); 2 days more in status --json", "", "recorded"},
 		{"no reading yet", nil, true,
-			"context:   unavailable; BB has not given a reading for this thread at a check yet", "not_recorded", "unavailable"},
+			"context window: unavailable; BB has not given a reading for this thread at a check yet", "not_recorded", "unavailable"},
 		{"a record of another target", record("claude-other", r(10, 100, true, at)), true,
-			"context:   unavailable; BB has not given a reading for this thread at a check yet", "not_recorded", "unavailable"},
+			"context window: unavailable; BB has not given a reading for this thread at a check yet", "not_recorded", "unavailable"},
 		{"a reading with no window", record("primary", r(10, 0, true, at)), true,
-			"context:   unavailable; BB has not given a reading for this thread at a check yet", "not_recorded", "unavailable"},
+			"context window: unavailable; BB has not given a reading for this thread at a check yet", "not_recorded", "unavailable"},
 		{"not a BB target", record("primary", r(10, 100, true, at)), false,
-			"context:   unavailable; this target's agent reports no context size", "not_supported", "unavailable"},
+			"context window: unavailable; this target's agent reports no context window size", "not_supported", "unavailable"},
 	}
 	for _, c := range cases {
 		got := describeContext(c.r, "primary", c.isBB, now)
@@ -96,16 +96,16 @@ func TestContextReadingThroughStatus(t *testing.T) {
 		t.Fatalf("context calls: %q", calls)
 	}
 	_, text, _ := f.run("status")
-	if !strings.Contains(text, "context:   48,000 of 200,000 tokens (24%), estimated by BB; read ") || !strings.Contains(text, "diagnostic only, no decision uses it") {
+	if !strings.Contains(text, "context window: 48,000 of 200,000 tokens (24%), estimated by BB; read ") || !strings.Contains(text, "diagnostic only, no decision uses it") {
 		t.Fatalf("status:\n%s", text)
 	}
 	_, out, _ := f.run("status", "--json")
 	var v struct {
-		Context contextStatus `json:"context"`
+		ContextWindow contextStatus `json:"contextWindow"`
 	}
-	if err := json.Unmarshal([]byte(out), &v); err != nil || v.Context.Availability != "recorded" || *v.Context.UsedTokens != 48000 || *v.Context.WindowTokens != 200000 || !v.Context.Estimated ||
-		v.Context.Version != 1 || len(v.Context.Days) != 1 || v.Context.Days[0].Count != 1 || len(v.Context.Recent) != 1 {
-		t.Fatalf("status --json context: %+v %v", v.Context, err)
+	if err := json.Unmarshal([]byte(out), &v); err != nil || v.ContextWindow.Availability != "recorded" || *v.ContextWindow.UsedTokens != 48000 || *v.ContextWindow.WindowTokens != 200000 || !v.ContextWindow.Estimated ||
+		v.ContextWindow.Version != 1 || len(v.ContextWindow.Days) != 1 || v.ContextWindow.Days[0].Count != 1 || len(v.ContextWindow.Recent) != 1 {
+		t.Fatalf("status --json contextWindow: %+v %v", v.ContextWindow, err)
 	}
 
 	f.run("pause")
@@ -125,11 +125,11 @@ func TestContextReadingThroughStatus(t *testing.T) {
 	if strings.Count(f.read("calls"), "thread context") != before+1 {
 		t.Fatal("the malformed reading was not asked for")
 	}
-	if _, text, _ := f.run("status"); !strings.Contains(text, "context:   48,000 of 200,000 tokens (24%)") {
+	if _, text, _ := f.run("status"); !strings.Contains(text, "context window: 48,000 of 200,000 tokens (24%)") {
 		t.Fatalf("the last good reading was not kept:\n%s", text)
 	}
 	_, out, _ = f.run("status", "--json")
-	if err := json.Unmarshal([]byte(out), &v); err != nil || len(v.Context.Recent) != 1 || v.Context.Days[0].Count != 1 {
-		t.Fatalf("an unavailable reading entered the history: %+v %v", v.Context, err)
+	if err := json.Unmarshal([]byte(out), &v); err != nil || len(v.ContextWindow.Recent) != 1 || v.ContextWindow.Days[0].Count != 1 {
+		t.Fatalf("an unavailable reading entered the history: %+v %v", v.ContextWindow, err)
 	}
 }
