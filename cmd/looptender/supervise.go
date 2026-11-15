@@ -491,6 +491,8 @@ type statusOut struct {
 	// Savings is the loop's measured savings figures over the last seven UTC
 	// days, and one labelled estimate.
 	Savings savingsStatus `json:"savings"`
+	// IdleSpacing is loop.progress.idle_spacing and its history.
+	IdleSpacing idleSpacingStatus `json:"idleSpacing"`
 	// Refusals is the refusal gauge in words and counts.
 	Refusals          refusalStatus            `json:"refusals"`
 	Lanes             lanesStatus              `json:"laneRecovery"`
@@ -740,6 +742,7 @@ func status(e env, cfg *config.Config, now time.Time, asJSON bool, staleAfter ti
 	}
 	if !out.stateUnreadable {
 		printLimitWait(w, out.LimitWait)
+		printIdleSpacing(w, out.IdleSpacing, now)
 	}
 	fmt.Fprintf(w, "progress flag: %s\n", out.NoProgress.Text)
 	if !out.stateUnreadable {
@@ -1058,6 +1061,7 @@ func readStatus(ctx context.Context, cfg *config.Config, now time.Time, staleAft
 	}
 	out.PromptSend = describePromptSend(st.LastPromptSend, out.Goal)
 	out.LimitWait = describeLimitWait(st.LimitWaitReport, l, now)
+	out.IdleSpacing = describeIdleSpacing(st, l.Progress)
 	out.TurnRetry = describeTurnRetry(st.LastTurnRetry)
 	out.ContextWindow = describeContext(st.Context, st.Target(), activeBB(cfg, st.Target()) != nil, now)
 	out.Savings = describeSavings(journal, loadSavingsSpaced(l.StateDir), st.Context, out.ContextWindow, now)
@@ -1098,6 +1102,7 @@ func readStatus(ctx context.Context, cfg *config.Config, now time.Time, staleAft
 			a.ChangedAt, a.ObservedAt, a.Due = &p.ChangedAt, &p.ObservedAt, p.Reached(now, timeout)
 		}
 	}
+	out.NoProgress.explainNoCheck(ctl, out.ProgressAllowance)
 	out.Deadline, out.DeadlineReached = l.Limits.Deadline, l.Limits.DeadlineReached(now)
 	out.TakeoverBriefs = takeoverBriefsStatus{Cap: l.Errors.MaxReprompts, Capped: []string{}, SwitchBackRejected: st.SwitchBackRejected,
 		SwitchBackStopped: l.SwitchBack.Enabled && st.Target() != state.Primary && st.SwitchBackRejected >= l.Errors.MaxReprompts}

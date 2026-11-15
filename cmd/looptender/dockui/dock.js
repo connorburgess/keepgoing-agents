@@ -157,6 +157,7 @@
       row.appendChild(l.unknown ? unknown(say(l.text)) : document.createTextNode(say(l.text)));
       if (l.reached) row.appendChild(tag("reached", "Reached"));
       f.appendChild(row);
+      if (l.reached && l.effect) f.appendChild(el("div", "sub", "Reached: " + l.effect));
     });
     if (!wait && !list(items).length) f.appendChild(unknown());
     return f;

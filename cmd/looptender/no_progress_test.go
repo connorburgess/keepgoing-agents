@@ -401,3 +401,40 @@ func TestNoProgressSaysWhenTheGraphNoLongerCoversTheWindow(t *testing.T) {
 		t.Fatalf("%s %q %+v", v.Availability, v.Text, v.Messages)
 	}
 }
+
+// The flag counts from a record written only by a check that looks at the
+// session; the no-progress limit keeps its own, written earlier in the
+// check. When the flag has no record yet, it says why, and points to the
+// limit's figure, so the two never contradict each other.
+func TestNoProgressNoCheckAgreesWithTheLimit(t *testing.T) {
+	changed := time.Date(2026, 3, 2, 9, 0, 0, 0, time.UTC)
+	const fromLimit = " The time without Git progress under its limits comes from the limit's own record."
+	noCheck := "Not available: no check has recorded its progress repositories yet."
+	for _, c := range []struct {
+		name  string
+		v     noProgressView
+		ctl   control.File
+		limit *progressAllowanceStatus
+		want  string
+	}{
+		{"no limit, not held", noProgressView{Availability: "not_available", Reason: "no_check", Text: noCheck}, control.File{Enabled: true}, nil, noCheck},
+		{"held, no limit", noProgressView{Availability: "not_available", Reason: "no_check", Text: noCheck}, control.File{Enabled: true, Paused: true}, nil,
+			"Not counted yet: checks start this count only once they look at the session, and they do not while the loop is held."},
+		{"held by its reached limit", noProgressView{Availability: "not_available", Reason: "no_check", Text: noCheck}, control.File{Enabled: true, AwaitingUser: true}, &progressAllowanceStatus{Timeout: "24h0m0s", ChangedAt: &changed, Due: true},
+			"Not counted yet: checks start this count only once they look at the session, and they do not while the loop is held." + fromLimit},
+		{"limit reached, hold not yet applied", noProgressView{Availability: "not_available", Reason: "no_check", Text: noCheck}, control.File{Enabled: true}, &progressAllowanceStatus{Timeout: "24h0m0s", ChangedAt: &changed, Due: true},
+			"Not counted yet: checks start this count only once they look at the session, and they stop before that while its no-progress limit is reached." + fromLimit},
+		{"limit recorded, not reached", noProgressView{Availability: "not_available", Reason: "no_check", Text: noCheck}, control.File{Enabled: true}, &progressAllowanceStatus{Timeout: "24h0m0s", ChangedAt: &changed},
+			"Not counted yet: no check has looked at the session since this count began." + fromLimit},
+		{"limit record unreadable", noProgressView{Availability: "not_available", Reason: "no_check", Text: noCheck}, control.File{Enabled: true}, &progressAllowanceStatus{Timeout: "24h0m0s", Error: "unreadable"}, noCheck},
+		{"limit baseline pending", noProgressView{Availability: "not_available", Reason: "no_check", Text: noCheck}, control.File{Enabled: true}, &progressAllowanceStatus{Timeout: "24h0m0s", BaselinePending: true}, noCheck},
+		{"another reason is left alone", noProgressView{Availability: "not_available", Reason: "history_unavailable", Text: "Not available: its history could not be read."}, control.File{Enabled: true, Paused: true}, &progressAllowanceStatus{ChangedAt: &changed, Due: true}, "Not available: its history could not be read."},
+		{"a counted flag is left alone", noProgressView{Availability: "clear", Text: "No progress flag."}, control.File{Enabled: true, Paused: true}, &progressAllowanceStatus{ChangedAt: &changed, Due: true}, "No progress flag."},
+	} {
+		v := c.v
+		v.explainNoCheck(c.ctl, c.limit)
+		if v.Text != c.want || v.Reason != c.v.Reason || v.Availability != c.v.Availability {
+			t.Errorf("%s: %+v", c.name, v)
+		}
+	}
+}
