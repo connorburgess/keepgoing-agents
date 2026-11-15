@@ -401,6 +401,9 @@ func panelReviewForCaller(ctx context.Context, registryDir string, reader *dockR
 	if action == "resume" && control.CheckOwner(ctl, caller, false) != nil {
 		return panelReviewed{}, &panelResult{Outcome: "refused", Text: "This panel cannot resume the loop with its startup caller. Nothing was changed."}
 	}
+	if action == "resume" && entryHoldClearer(entry, caller) != nil {
+		return panelReviewed{}, &panelResult{Outcome: "refused", Text: panelSupervisedSession + " Nothing was changed."}
+	}
 	// The rest of the loop as it is now, read the way the page reads it.
 	loop := panelLoopNow(ctx, reader, dir, entry, all, now)
 	ttl := panelHoldFormTTL
@@ -676,6 +679,8 @@ func panelOutcome(action string, r clientHoldReport) panelResult {
 		switch code := r.Issues[0]; code {
 		case "resume_evidence_unavailable":
 			why = "Its records could not be read and checked the way a resume requires."
+		case "supervised_session":
+			why = panelSupervisedSession
 		case "ticket_unavailable":
 			why = "A review could not be prepared."
 		case "cancelled":
@@ -696,4 +701,18 @@ func (d *dockReader) forget() {
 	d.mu.Lock()
 	defer d.mu.Unlock()
 	d.cache = nil
+}
+
+// panelSupervisedSession is said when the session a loop supervises, or a
+// process its supervisor started, asks to resume it.
+const panelSupervisedSession = "This was asked from the session the loop supervises, and supervision never clears its own hold. A person resumes it from an ordinary terminal or a panel started there."
+
+// entryHoldClearer is checkHoldClearer for a registered loop. A configuration
+// that cannot be loaded refuses nothing here: the resume itself then fails.
+func entryHoldClearer(entry registry.Entry, caller string) error {
+	cfg, ok := clientConfig(entry)
+	if !ok {
+		return nil
+	}
+	return checkHoldClearer(cfg, caller)
 }
