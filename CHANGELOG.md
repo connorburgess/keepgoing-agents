@@ -3,6 +3,7 @@
 ## Unreleased
 
 - Add a visual panel overview using the existing feed: expandable registered loops and their recorded direct lanes, the existing needs-you queue first, and the newest eight supplied history entries across loops. Preserve expansion and keyboard focus on refresh, title privacy, stale/held/unavailable evidence and incomplete-history wording. No new API, provider reads, supervision behavior or answer controls; full descendant navigation remains planned.
+- Unreleased Unix diagnostic: an observation warns when a `bb` command terminates by a signal outside the adapter timeout/cancellation. Signal source and cause remain unknown, including for self-signals or crashes; read verification and decisions are unchanged. Windows emits no such warning.
 
 - Fix: a child failure first seen after every covered child has been forgotten starts a new `child_error` report episode, with report 1 and its own cap, even if no check ran when their previously observed recovery reached the forgetting interval.
 

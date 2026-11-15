@@ -2799,7 +2799,19 @@ func (t *tick) observe(a adapter.Adapter) (decide.Observation, error) {
 	limit := observeTimeout - t.observeSpent // less a lookup for an unsettled thread creation
 	ctx, cancel := context.WithTimeout(t.ctx, limit)
 	defer cancel()
+	// A factory may reuse an adapter across checks, and one check may observe
+	// more than once. Only exits during this observation belong in its warning.
+	var signals adapter.SignalExitReporter
+	before := 0
+	if k, ok := a.(adapter.SignalExitReporter); ok {
+		signals, before = k, k.SignalExits()
+	}
 	obs, err := a.Observe(ctx)
+	if signals != nil {
+		if n := signals.SignalExits() - before; n > 0 {
+			t.warn("%d provider command(s) during this observation terminated by a Unix signal outside the adapter timeout/cancellation; signal source and cause are unknown; affected reads remain unverified", n)
+		}
+	}
 	if err == nil && ctx.Err() != nil {
 		err = fmt.Errorf("observation exceeded %s", limit)
 	}
