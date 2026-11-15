@@ -39,6 +39,7 @@ case "$1 $2" in
 "thread show") if [ -f "$d/$t.show" ]; then cat "$d/$t.show"; else echo '{"thread":{"status":"idle"}}'; fi ;;
 "thread list") t="$4"; if [ -f "$d/$t.children" ]; then cat "$d/$t.children"; else echo '[]'; fi ;;
 "thread log")  if [ -f "$d/$t.log" ]; then cat "$d/$t.log"; else echo '[]'; fi ;;
+"thread context") if [ -f "$d/$t.context" ]; then cat "$d/$t.context"; else echo '{"ok":true}'; fi ;;
 "thread interactions") t="$4"; if [ -f "$d/$t.interactions" ]; then cat "$d/$t.interactions"; else echo '[]'; fi ;;
 "thread queue") t="$4"; if [ "$3" = list ]; then if [ -f "$d/$t.queue" ]; then cat "$d/$t.queue"; else echo '[]'; fi; else echo '{"ok":true}'; fi ;;
 "thread tell") cat >> "$d/$t.told"; echo >> "$d/$t.told"; echo '{"ok":true}' ;;
