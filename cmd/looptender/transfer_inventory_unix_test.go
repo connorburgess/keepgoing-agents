@@ -53,9 +53,7 @@ esac
 	if err := os.WriteFile(config, []byte(raw), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	run := func(listRun doctorRun) (int, transferInventory) {
-		var out, errs bytes.Buffer
-		code := transferInventoryCommand(env{ctx: context.Background(), stdout: &out, stderr: &errs}, []string{"inventory", "-c", config, "--json", "--timeout", "20s"}, doctorExec, listRun)
+	decode := func(code int, out, errs *bytes.Buffer) (int, transferInventory) {
 		var r transferInventory
 		if err := json.Unmarshal(out.Bytes(), &r); err != nil {
 			t.Fatalf("no report (%d): %s", code, errs.String())
@@ -65,12 +63,19 @@ esac
 		}
 		return code, r
 	}
-	code, r := run(doctorExecLimit(inventoryListLimit))
+	args := []string{"inventory", "-c", config, "--json", "--timeout", "20s"}
+	// Through the command's real wiring, as `keepgoing transfer inventory`
+	// runs it: the listing must use the larger limit there.
+	var out, errs bytes.Buffer
+	code, r := decode(run(context.Background(), append([]string{"transfer"}, args...), &out, &errs), &out, &errs)
 	if code != exitOK || !r.Complete || !r.LanesListed || len(r.Lanes) != lanes {
 		t.Fatalf("%d complete=%t listed=%t lanes=%d notes=%v", code, r.Complete, r.LanesListed, len(r.Lanes), r.Notes)
 	}
 	// Doctor's limit would have lost the whole listing.
-	if code, r = run(doctorExec); code != exitFailed || r.LanesListed || len(r.Lanes) != 0 {
+	out.Reset()
+	errs.Reset()
+	code, r = decode(transferInventoryCommand(env{ctx: context.Background(), stdout: &out, stderr: &errs}, args, doctorExec, doctorExec), &out, &errs)
+	if code != exitFailed || r.LanesListed || len(r.Lanes) != 0 {
 		t.Fatalf("64 KiB runner listed lanes: %d %d", code, len(r.Lanes))
 	}
 }

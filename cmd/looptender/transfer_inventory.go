@@ -65,7 +65,8 @@ type inventoryBase struct {
 	Ref    string `json:"ref"`
 	Commit string `json:"commit"`
 	// RemoteTracking is true for a reference under refs/remotes, which
-	// only a fetch moves. A local branch says nothing about the remote.
+	// moves when a person fetches from or pushes to that remote. A local
+	// branch says nothing about the remote.
 	RemoteTracking bool `json:"remoteTracking"`
 	// UpdatedAt is when the reference last moved, from its reflog; absent
 	// when there is no reflog entry.
@@ -332,7 +333,7 @@ func transferInventoryCommand(e env, args []string, run, listRun doctorRun) int 
 		r.Notes = append(r.Notes, "No progress repositories are configured, so no worktrees are listed.")
 	}
 	r.Notes = append(r.Notes,
-		"Ahead compares each worktree's HEAD with a local reference as it is now; looptender never fetches, so a remote-tracking base is only as fresh as the last fetch a person made. Merged means no commits beyond the base and no tracked changes. Pull request state is not checked.",
+		"Ahead compares each worktree's HEAD with a local reference as it is now; looptender never fetches, so a remote-tracking base is only as fresh as the last fetch or push a person made. Merged means no commits beyond the base and no tracked changes. Pull request state is not checked.",
 		"A worktree is attributed to a thread only when BB reports that thread's working directory inside it; worktrees are never matched to lanes by name.",
 		"Read from BB metadata and Git only: no events, interactions or message text, no lock, no writes.",
 	)

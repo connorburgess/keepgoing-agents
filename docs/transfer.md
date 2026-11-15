@@ -63,7 +63,7 @@ What it never does:
 - It never fetches, prunes, takes a lock, creates a runtime directory or writes anything. Git runs with optional locks off, so `git status` does not refresh the index on disk.
 - It never checks pull requests.
 
-The base is `--base` when given (a local reference such as `origin/main` or a branch), otherwise each repository's recorded `origin/HEAD`. The report shows its commit, whether it is remote-tracking (under `refs/remotes`, which only a fetch moves) or a local branch, and when it last moved according to its own reflog. A remote-tracking base is only as fresh as the last fetch a person made; a local base says nothing about the remote. A base that does not resolve leaves ahead and merged unavailable and is noted.
+The base is `--base` when given (a local reference such as `origin/main` or a branch), otherwise each repository's recorded `origin/HEAD`. The report shows its commit, whether it is remote-tracking (under `refs/remotes`, which a fetch from or a push to that remote moves) or a local branch, and when it last moved according to its own reflog. A remote-tracking base is only as fresh as the last fetch or push a person made; a local base says nothing about the remote. A base that does not resolve leaves ahead and merged unavailable and is noted.
 
 Unlike preview, the inventory prints absolute paths: it is local operator output for this command only. Do not paste it where paths should not appear. Paths are not written to logs, reports, incidents or state.
 

@@ -90,7 +90,8 @@ type BaseRef struct {
 	// RemoteTracking is true when Name is a reference under refs/remotes.
 	RemoteTracking bool
 	// UpdatedAt is when the reference last moved, from its own reflog; zero
-	// when it has none. For a remote-tracking reference only a fetch moves it.
+	// when it has none. A remote-tracking reference moves on a fetch from, or
+	// a push to, its remote.
 	UpdatedAt time.Time
 }
 
