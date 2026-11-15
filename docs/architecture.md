@@ -41,7 +41,7 @@ internal/registry           explicit private local loop references; independent 
 internal/rundiscovery       pure run identity/boundary contract; no IO
 internal/rungraph           graph.json: persisted run references, attempts and links; diagnostic only
 internal/control            control.json and goal.json: holds, BB ownership/transfer fences, private goal revisions, serialized updates
-internal/state              state.json, sends.json, progress.json, runs.jsonl, and the progress fingerprint
+internal/state              state.json, sends.json, progress.json, runs.jsonl, the progress fingerprint, and read-only worktree listings
 internal/window             weekly time windows
 internal/lock               named advisory locks for ticks, daemon, controls, and services
 internal/snapshot           read-only opens and atomic replacement that do not block each other on Windows; used for the records in the state directory that one command replaces while another reads; also where the records a check saves (state, the send ledger, controls, the incident and delivery journals) are flushed to the device before they are published, which only a test binary can turn off
@@ -266,6 +266,10 @@ The view retains normalized source/sequence references, local timestamp bases, h
 ## Transfer preview
 
 The command layer implements `transfer preview` as an advisory read-only view. It loads bounded control/state/goal records and optionally makes two bounded `bb thread show --json` queries through the diagnostic subprocess runner. Only validated identity/provider/status fields are projected; environment paths are compared internally and withheld. It rechecks configuration source snapshots at the end, but independent reads are not an atomic snapshot and no lock or durable ticket is acquired. It never invokes adapters, controls, model changes, scheduling or thread creation. `compatible_metadata` describes only the checked subset, while `applySupported` identifies command availability rather than authorization. Model/account identity remains unavailable; see [transfer preview](transfer.md).
+
+## Transfer inventory
+
+The command layer implements `transfer inventory` as a read-only listing for a person planning a move: the configured BB primary, its direct child threads through the adapter's listing and `thread show`, and the progress repositories' worktrees through read-only Git commands in `internal/state` (`ListWorktrees`, `DirtyCount`, `ResolveBase`, `Ahead`). A thread is attributed to a worktree only when BB reports its working directory inside it. It reads no events, interactions, titles or message text. It takes no lock, never fetches and writes nothing. It prints paths, unlike preview, and nothing it reads is retained. See [inventory](transfer.md#inventory-what-a-move-involves-unreleased).
 
 ## Applying a BB transfer
 

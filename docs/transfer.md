@@ -39,6 +39,36 @@ Invalid arguments/configuration return usage exit code 2 without a report. Missi
 
 The command rechecks config/fallback source snapshots after its reads. Changes make the preview unavailable (or leave an already-blocked result blocked). Other reads remain independent: controls, owner, goal, threads and environments may change between observations. This is neither a reservation nor an authorization token. The apply command revalidates under the tick lock and uses the recovery protocol below. An existing pause, stop, awaiting-user or completion hold never authorizes automatic resume.
 
+## Inventory what a move involves (unreleased)
+
+Before moving a loop, or a coordinator and its lanes, list what is there:
+
+```sh
+keepgoing transfer inventory -c loop.yaml
+keepgoing transfer inventory -c loop.yaml --json
+keepgoing transfer inventory -c loop.yaml --base origin/main --timeout 10s
+```
+
+The inventory is read-only. It reports:
+
+- The configured BB primary thread: provider, status, project, environment, host and the working directory BB reports for it. It also reports the loop's control flags, recorded owner and whether a transfer is pending.
+- The thread's direct child threads (its lanes), found with the same listing the BB adapter uses: `thread list --parent-thread <id> --include-hidden --json`, then `thread show` for each lane, at most 200. Each lane gets the same fields, plus whether it is archived.
+- For each configured progress repository, every registered worktree from `git worktree list --porcelain`: path, branch or detached, HEAD, how many tracked files differ from HEAD (untracked files are not counted, as in progress detection), whether Git marks it prunable or locked, and how many commits it has that the base does not (`merged` when none).
+- For each thread, whether its working directory is `inside` a worktree (which one), `outside` all of them, or `unavailable`. A worktree that no thread's working directory is inside is `unattributed`.
+
+What it never does:
+
+- It never reads events, interactions, titles or message text. Titles are left out.
+- It never matches a worktree to a lane by directory or branch name. Names of hand-made worktrees often carry stale thread IDs, so such a match would be a guess.
+- It never fetches, prunes, takes a lock, creates a runtime directory or writes anything. Git runs with optional locks off, so `git status` does not refresh the index on disk.
+- It never checks pull requests.
+
+The base is `--base` when given (a local reference such as `origin/main` or a branch), otherwise each repository's recorded `origin/HEAD`. The report shows its commit and the time `FETCH_HEAD` was last written. The comparison is only as fresh as the last fetch a person made. A base that does not resolve leaves ahead and merged unavailable and is noted.
+
+Unlike preview, the inventory prints absolute paths: it is local operator output for this command only. Do not paste it where paths should not appear. Paths are not written to logs, reports, incidents or state.
+
+The JSON has `schemaVersion: 1`, `outcome: "inventory"`, `readAt`, `complete`, `loop`, `controls`, `owner`, `pendingTransfer`, `target`, `lanesListed`, `lanes`, `repositories` (each with `index`, `path`, `available`, `base` and `worktrees`) and `notes`. Exit code 0 means every listing was complete. 1 means something could not be read, the lane listing was not a bounded list of valid IDs, there were more than 200 lanes or 500 worktrees, or the two-minute overall deadline passed. The report is still printed and says what is missing. 2 means invalid arguments or a loop whose primary is not a BB thread.
+
 ## Apply explicitly
 
 ```sh
@@ -72,4 +102,4 @@ This protocol covers cooperating processes and atomic file replacement, not powe
 
 ## Verification
 
-Offline command fixtures verify matching and incompatible metadata, missing/corrupt records, ownership/goal display, all holds, unchanged private files, query failures/timeouts, stale config and output privacy. Windows CI runs the preview, apply/recovery and config-edit fixtures; Unix CI additionally runs the process-crash journey and existing setup/recovery smoke gates. A Unix child-process fixture exits immediately after config replacement, then verifies blocked resume, pending stop, recovery, a wake only to the new fictional thread and rejection of a stale config copy. Other fixtures interrupt after hold/state writes and cover write/history failures, ownership conflicts and unchanged allowance/goal files. No live transfer, model call, account change, timer change or installed-binary upgrade is part of this feature's verification.
+Offline command fixtures verify matching and incompatible metadata, missing/corrupt records, ownership/goal display, all holds, unchanged private files, query failures/timeouts, stale config and output privacy. Windows CI runs the preview, apply/recovery and config-edit fixtures; Unix CI additionally runs the process-crash journey and existing setup/recovery smoke gates. A Unix child-process fixture exits immediately after config replacement, then verifies blocked resume, pending stop, recovery, a wake only to the new fictional thread and rejection of a stale config copy. Other fixtures interrupt after hold/state writes and cover write/history failures, ownership conflicts and unchanged allowance/goal files. Inventory fixtures build a temporary repository with a recorded `origin/HEAD`, a lane worktree that is ahead and dirty, a merged one, a detached unattributed one and a stand-in for BB. They cover duplicate and over-limit child listings, malformed listings, unverifiable or deleted threads, an unlistable repository, explicit, missing and unsafe base names, no progress repositories, absent titles and messages, and an unchanged Git directory with no runtime state created. No live transfer, model call, account change, timer change or installed-binary upgrade is part of this feature's verification.
