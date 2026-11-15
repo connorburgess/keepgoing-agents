@@ -12,7 +12,8 @@ import (
 
 // A supervisor started by hand inside a BB thread inherits that thread's
 // variables and its agent session's. The headless session it starts is
-// neither, so its turn receives none of envvar.SupervisorSession. Names only.
+// neither, so its turn receives none of envvar.SupervisorSession. It still
+// receives the supervised-loop marker (#276). Names only.
 func TestScenarioHeadlessTurnIsNotItsSupervisorsSession(t *testing.T) {
 	t.Parallel()
 	for _, cli := range []string{"claude", "codex"} {
@@ -39,7 +40,7 @@ func TestScenarioHeadlessTurnIsNotItsSupervisorsSession(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			if got := strings.TrimSpace(string(b)); got != `{"cli":"`+cli+`","received":""}` {
+			if got := strings.TrimSpace(string(b)); got != `{"cli":"`+cli+`","received":"LOOPTENDER_SUPERVISED_LOOP"}` {
 				t.Fatalf("the turn received %s", got)
 			}
 		})

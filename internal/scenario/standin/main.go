@@ -73,6 +73,7 @@ package main
 import (
 	"encoding/json"
 	"fmt"
+	"github.com/looptender/looptender/internal/control"
 	"github.com/looptender/looptender/internal/envvar"
 	"io"
 	"os"
@@ -488,7 +489,8 @@ func turn(world, cli string, args []string) int {
 	// Which of the supervisor's own session variables the turn received, by
 	// name only, so a scenario can check a session is not given them.
 	var received []string
-	for _, n := range envvar.SupervisorSession {
+	// The supervised-loop marker is reported too: it must still arrive.
+	for _, n := range append(append([]string{}, envvar.SupervisorSession...), control.SupervisedLoopVar) {
 		if _, set := os.LookupEnv(n); set {
 			received = append(received, n)
 		}
