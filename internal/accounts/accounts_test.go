@@ -189,3 +189,74 @@ func TestAtomicCatalogReadersNeverSeePartialWrite(t *testing.T) {
 		t.Fatal("partial record observed", err)
 	}
 }
+
+func TestContextEffectiveEnvironmentSemantics(t *testing.T) {
+	_, e := fixture(t)
+	f := File{Salt: strings.Repeat("ab", 16)}
+	for _, key := range []string{"http_proxy", "https_proxy", "all_proxy", "no_proxy"} {
+		a := contextForOS(f, e, []string{key + "=example-a"}, false)
+		b := contextForOS(f, e, []string{key + "=example-b"}, false)
+		if a == b {
+			t.Fatalf("Unix lowercase %s omitted", key)
+		}
+	}
+	if contextForOS(f, e, []string{"ANTHROPIC_API_KEY=a", "ANTHROPIC_API_KEY=b"}, false) != contextForOS(f, e, []string{"ANTHROPIC_API_KEY=b"}, false) {
+		t.Fatal("Unix duplicate last-wins mismatch")
+	}
+	if contextForOS(f, e, []string{"ANTHROPIC_API_KEY=a", "anthropic_api_key=b"}, false) == contextForOS(f, e, []string{"ANTHROPIC_API_KEY=b"}, false) {
+		t.Fatal("Unix names incorrectly folded")
+	}
+	if contextForOS(f, e, []string{"Anthropic_Api_Key=a", "ANTHROPIC_API_KEY=b", "Https_Proxy=example"}, true) != contextForOS(f, e, []string{"anthropic_api_key=b", "HTTPS_PROXY=example"}, true) {
+		t.Fatal("Windows case folding/last-wins mismatch")
+	}
+	if contextForOS(f, e, []string{"https_proxy=example-a"}, true) == contextForOS(f, e, []string{"HTTPS_PROXY=example-b"}, true) {
+		t.Fatal("Windows lowercase proxy omitted")
+	}
+	for _, provider := range []string{"claude-code", "codex"} {
+		explicit := e
+		explicit.Provider = provider
+		explicit.Mode = "explicit_directory"
+		explicit.Directory = filepath.Join(t.TempDir(), "selected")
+		key := "CLAUDE_CONFIG_DIR"
+		if provider == "codex" {
+			key = "CODEX_HOME"
+		}
+		for _, windows := range []bool{false, true} {
+			env := []string{strings.ToLower(key) + "=lower", key + "=old", strings.ToLower(key) + "=last", "BB_THREAD_ID=thr_example_actual"}
+			executed := executionEnvironmentForOS(explicit, env, windows)
+			if contextForOS(f, explicit, env, windows) != contextForOS(f, explicit, executed, windows) {
+				t.Fatal("fingerprint differs from actual explicit override")
+			}
+			equivalent := 0
+			for _, pair := range executed {
+				name, value, _ := strings.Cut(pair, "=")
+				match := name == key
+				if windows {
+					match = strings.EqualFold(name, key)
+				}
+				if match {
+					equivalent++
+					if value != explicit.Directory {
+						t.Fatal("old selected directory retained")
+					}
+				}
+			}
+			if equivalent != 1 {
+				t.Fatal("duplicate override names")
+			}
+			if !strings.Contains(strings.Join(executed, "\n"), "BB_THREAD_ID=thr_example_actual") {
+				t.Fatal("actual caller changed")
+			}
+		}
+	}
+}
+func TestCatalogGenuineAbsenceDoesNotWrite(t *testing.T) {
+	dir := filepath.Join(t.TempDir(), "never-created")
+	f, err := Load(dir)
+	if err != nil || len(f.Entries) != 0 {
+		t.Fatal("genuine absence not empty")
+	}
+	if _, err := os.Stat(dir); !errors.Is(err, os.ErrNotExist) {
+		t.Fatal("read created catalog")
+	}
+}

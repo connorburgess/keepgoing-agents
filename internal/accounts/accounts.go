@@ -24,6 +24,7 @@ import (
 	"github.com/looptender/looptender/internal/config"
 	"github.com/looptender/looptender/internal/control"
 	"github.com/looptender/looptender/internal/lock"
+	"github.com/looptender/looptender/internal/snapshot"
 )
 
 const MaxEntries = 64
@@ -149,15 +150,27 @@ func validPlan(s string) bool {
 // Context fingerprints relevant effective auth inputs without retaining values.
 // It does not read credentials or attest provider identity.
 func Context(f File, e Entry, env []string) string {
+	return contextForOS(f, e, env, runtime.GOOS == "windows")
+}
+func contextForOS(f File, e Entry, env []string, windows bool) string {
 	m := map[string]string{}
 	for _, pair := range env {
 		k, v, ok := strings.Cut(pair, "=")
 		if !ok {
 			continue
 		}
-		relevant := k == "HOME" || k == "USERPROFILE" || k == "APPDATA" || k == "LOCALAPPDATA" || k == "XDG_CONFIG_HOME" || k == "XDG_STATE_HOME" || k == "HTTP_PROXY" || k == "HTTPS_PROXY" || k == "ALL_PROXY" || k == "NO_PROXY" || k == "SSL_CERT_FILE" || k == "NODE_EXTRA_CA_CERTS"
+		k = environmentKey(k, windows)
+		relevant := false
+		for _, name := range []string{"HOME", "USERPROFILE", "APPDATA", "LOCALAPPDATA", "XDG_CONFIG_HOME", "XDG_STATE_HOME", "HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY", "NO_PROXY", "SSL_CERT_FILE", "NODE_EXTRA_CA_CERTS"} {
+			relevant = relevant || k == environmentKey(name, windows)
+		}
+		if !windows {
+			for _, name := range []string{"http_proxy", "https_proxy", "all_proxy", "no_proxy"} {
+				relevant = relevant || k == name
+			}
+		}
 		for _, prefix := range []string{"ANTHROPIC_", "CLAUDE_", "CODEX_", "OPENAI_", "AWS_", "GOOGLE_", "AZURE_"} {
-			relevant = relevant || strings.HasPrefix(k, prefix)
+			relevant = relevant || strings.HasPrefix(k, environmentKey(prefix, windows))
 		}
 		if relevant {
 			m[k] = v
@@ -168,7 +181,7 @@ func Context(f File, e Entry, env []string) string {
 		if e.Provider == "codex" {
 			k = "CODEX_HOME"
 		}
-		m[k] = e.Directory
+		m[environmentKey(k, windows)] = e.Directory
 	}
 	keys := make([]string, 0, len(m))
 	for k := range m {
@@ -209,15 +222,33 @@ func Load(dir string) (File, error) {
 		return File{}, ErrInvalid
 	}
 	p := filepath.Join(dir, FileName)
-	st, err := os.Lstat(p)
+	st, err := snapshot.LstatRecord(p)
 	if errors.Is(err, os.ErrNotExist) {
 		return File{SchemaVersion: 1, Entries: []Entry{}}, nil
 	}
-	if err != nil || !config.PrivateFile(st) {
+	if err != nil || !config.PrivateFile(st) || st.Size() > MaxBytes {
 		return File{}, ErrInvalid
 	}
-	raw, err := config.ReadRoutesFile(p)
+	opened, err := snapshot.OpenRecord(p)
 	if err != nil {
+		return File{}, ErrInvalid
+	}
+	defer opened.Close()
+	// Validate the held snapshot, not just a pathname inspected before opening.
+	// Record handles allow replacement on Windows without resetting missing data.
+	info, err := opened.Stat()
+	if err != nil || !config.PrivateFile(info) || info.Mode()&os.ModeSymlink != 0 || info.Size() > MaxBytes {
+		return File{}, ErrInvalid
+	}
+	// Reject a pathname that became a link while it was opened. Do not compare
+	// pathname file IDs: a concurrent atomic replacement may name another valid
+	// generation while this checked handle retains its own complete snapshot.
+	pathInfo, err := snapshot.LstatRecord(p)
+	if err != nil || !config.PrivateFile(pathInfo) || pathInfo.Mode()&os.ModeSymlink != 0 {
+		return File{}, ErrInvalid
+	}
+	raw, err := io.ReadAll(io.LimitReader(opened, MaxBytes+1))
+	if err != nil || len(raw) > MaxBytes {
 		return File{}, ErrInvalid
 	}
 	var f File
@@ -418,4 +449,41 @@ func observationSource(provider, version string) string {
 		return provider + " status"
 	}
 	return provider + " CLI " + version + " status"
+}
+
+// ExecutionEnvironment applies the one supported account-directory override
+// using the same name equivalence as os/exec (case insensitive on Windows).
+// Other environment entries remain ephemeral and are passed through as before.
+func ExecutionEnvironment(e Entry, env []string) []string {
+	return executionEnvironmentForOS(e, env, runtime.GOOS == "windows")
+}
+func executionEnvironmentForOS(e Entry, env []string, windows bool) []string {
+	if e.Mode != "explicit_directory" {
+		return append([]string(nil), env...)
+	}
+	key := "CLAUDE_CONFIG_DIR"
+	if e.Provider == "codex" {
+		key = "CODEX_HOME"
+	}
+	out := make([]string, 0, len(env)+1)
+	for _, pair := range env {
+		name, _, _ := strings.Cut(pair, "=")
+		same := name == key
+		if windows {
+			same = environmentKey(name, true) == environmentKey(key, true)
+		}
+		if !same {
+			out = append(out, pair)
+		}
+	}
+	return append(out, key+"="+e.Directory)
+}
+
+// Go os/exec dedupEnvCase lowercases Windows names, then retains the last
+// occurrence. Use that exact key equivalence for binding and overrides too.
+func environmentKey(name string, windows bool) string {
+	if windows {
+		return strings.ToLower(name)
+	}
+	return name
 }

@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -43,7 +44,7 @@ func TestAccountsFixedCommandsContextAndCaller(t *testing.T) {
 			dir, e := accountFixture(t, provider)
 			calls := [][]string{}
 			run := func(ctx context.Context, cli string, args, environment []string, cwd string) ([]byte, error) {
-				if cli != e.CLI || cwd != e.Workdir || !contains(environment, "BB_THREAD_ID=thr_example_actual") {
+				if cli != e.CLI || cwd != e.Workdir || !slices.Contains(environment, "BB_THREAD_ID=thr_example_actual") {
 					t.Fatal("execution context or caller changed")
 				}
 				if _, ok := ctx.Deadline(); !ok {

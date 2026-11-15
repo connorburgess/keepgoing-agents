@@ -11,7 +11,6 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
-	"strings"
 	"time"
 
 	"github.com/looptender/looptender/internal/accounts"
@@ -230,13 +229,7 @@ func accountCheck(ctx context.Context, dir, id, caller string, run accountRun, n
 	} else if selected.Provider != "claude-code" && selected.Provider != "codex" {
 		o.Reason = "unsupported"
 	} else {
-		if selected.Mode == "explicit_directory" {
-			key := "CLAUDE_CONFIG_DIR"
-			if selected.Provider == "codex" {
-				key = "CODEX_HOME"
-			}
-			effective = replaceAccountEnv(effective, key, selected.Directory)
-		}
+		effective = accounts.ExecutionEnvironment(selected, effective)
 		call := func(args ...string) ([]byte, error) {
 			c, cancel := context.WithTimeout(ctx, 5*time.Second)
 			defer cancel()
@@ -280,15 +273,6 @@ func accountCheck(ctx context.Context, dir, id, caller string, run accountRun, n
 		}
 		return nil
 	})
-}
-func replaceAccountEnv(env []string, key, value string) []string {
-	out := make([]string, 0, len(env)+1)
-	for _, s := range env {
-		if !strings.HasPrefix(s, key+"=") {
-			out = append(out, s)
-		}
-	}
-	return append(out, key+"="+value)
 }
 func accountLogin(e accounts.Entry, o accounts.Observation, raw []byte, err error) accounts.Observation {
 	if errors.Is(err, context.DeadlineExceeded) {

@@ -95,7 +95,11 @@ Context binding includes provider, canonical executable and working directory,
 selection mode/account directory, home/config locations and effective
 authentication-related environment prefixes and proxy/TLS inputs. Values are
 fingerprinted with a per-catalog keyed digest, never copied into storage.
-Explicit account-directory overrides are applied before fingerprinting.
+Environment duplicates use last-wins semantics. Windows names are compared
+case-insensitively, including provider prefixes and proxy names. Unix names
+remain case-sensitive; lowercase http_proxy/https_proxy/all_proxy/no_proxy are
+also bound as separate relevant inputs. Explicit account-directory overrides
+use those same platform name semantics in both fingerprinting and execution.
 Paths are revalidated before and after checks; status is committed only if
 the selected revision/context still match under the catalog lock.
 This detects input/context changes, not credential rotation inside provider
@@ -109,6 +113,11 @@ configuration directory, including its legacy-directory selection rules.
 Metadata and retained observations share one atomic private record, at most
 1 MiB. On Unix, the catalog directory must be owner-only and files 0600;
 ownership, regular-file, size, schema and revision guards reject unsafe data.
+The reader uses snapshot LstatRecord/OpenRecord semantics: on Windows an
+existing publication marker with a missing primary means unavailable, never a
+new empty catalog. The opened handle is validated and read with a hard byte
+limit; checked shared handles allow atomic replacement while a reader remains
+open. Genuine never-created absence stays empty without creating files.
 Windows uses existing private-file/ownership conventions and filesystem ACLs.
 No new Windows ACL policy is claimed.
 
@@ -148,3 +157,9 @@ called for implementation. Real selected-account confirmation, installed-panel
 opening, Safari/Firefox, screen-reader speech and Windows execution remain
 unverified. The owner should be notified accounts are running only after a
 separately authorized live opening actually shows their selected cards.
+
+Native Windows regression coverage for marked-missing refusal, genuine absence
+and held-reader replacement is wired into the Windows storage/controls job:
+the whole internal/accounts package runs with race detection, followed by
+TestAccounts command fixtures. Local Windows cross-compilation is not native
+execution; native reproduction and acceptance remain pending CI.
