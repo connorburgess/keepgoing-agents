@@ -135,9 +135,9 @@ func TestSavingsPhrasesFromTheirRecords(t *testing.T) {
 		"  spaced wakes: unavailable; no record of spaced wakes is kept yet",
 		"  checks that sent nothing: 5 checks (holds included): 1 active, 1 child_busy, 1 idle, 1 nudge_held, 1 paused",
 		"  sends: 2 sends: 1 wake, 1 nudge",
-		"  context now: 10,000 of 200,000 tokens (5%), estimated by BB, read 1 h 1 min ago",
+		"  context window now: 10,000 of 200,000 tokens (5%), estimated by BB, read 1 h 1 min ago",
 		"  session resets: 2026-11-16T10:30:00Z by terminal, before 60,000 tokens, after 10,000 tokens",
-		"  estimate: 20,000 to 120,000 tokens not spent on 2 withheld wakes, compared with a timer that sends at every check (withheld wakes times the lowest and highest context reading of the period, estimated by BB; not tokens billed)",
+		"  estimate: 20,000 to 120,000 tokens not spent on 2 withheld wakes, compared with a timer that sends at every check (withheld wakes times the lowest and highest context window reading of the period, estimated by BB; not tokens billed)",
 	}
 	if !reflect.DeepEqual(got.Lines, want) {
 		t.Fatalf("lines:\n%s\nwant:\n%s", strings.Join(got.Lines, "\n"), strings.Join(want, "\n"))
@@ -184,7 +184,7 @@ func TestSavingsAbsentWhenNotRecorded(t *testing.T) {
 		t.Fatalf("counts: %+v resets %+v", old.WithheldWakes, old.Resets)
 	}
 	if old.ContextNow.Availability != "unavailable" || old.ContextNow.UsedTokens != nil {
-		t.Fatalf("context now: %+v", old.ContextNow)
+		t.Fatalf("context window now: %+v", old.ContextNow)
 	}
 
 	// Retention removed records from inside the period: counts are a floor.

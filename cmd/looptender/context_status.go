@@ -10,7 +10,7 @@ import (
 	"github.com/looptender/looptender/internal/state"
 )
 
-// contextStatus is the active target's context-size readings as status
+// contextStatus is the active target's context window readings as status
 // shows them: the latest and a bounded history (one summary per UTC day and
 // the last few readings, oldest first). It is diagnostic only: no decision,
 // send, allowance or hold reads it. Availability is recorded or
@@ -45,7 +45,7 @@ func describeContext(r *state.ContextRecord, target string, isBB bool, now time.
 	out := contextStatus{Version: state.ContextVersion, Availability: "unavailable", Days: []state.ContextDay{}, Recent: []state.ContextReading{}}
 	switch {
 	case !isBB:
-		out.Reason, out.Text = "not_supported", "unavailable; this target's agent reports no context size"
+		out.Reason, out.Text = "not_supported", "unavailable; this target's agent reports no context window size"
 		return out
 	case r == nil || r.Target != target || r.Latest.At.IsZero() || r.Latest.WindowTokens <= 0:
 		out.Reason, out.Text = "not_recorded", "unavailable; BB has not given a reading for this thread at a check yet"
@@ -89,10 +89,10 @@ func groupDigits(n int64) string {
 
 func printContext(w io.Writer, c contextStatus) {
 	if c.Availability != "recorded" {
-		fmt.Fprintf(w, "context:   %s\n", c.Text)
+		fmt.Fprintf(w, "context window: %s\n", c.Text)
 		return
 	}
-	fmt.Fprintf(w, "context:   %s; read %s, at the check of %s; diagnostic only, no decision uses it\n", c.Text, c.Age, when(*c.ReadAt))
+	fmt.Fprintf(w, "context window: %s; read %s, at the check of %s; diagnostic only, no decision uses it\n", c.Text, c.Age, when(*c.ReadAt))
 	if len(c.Days) == 0 {
 		return
 	}
@@ -109,5 +109,5 @@ func printContext(w io.Writer, c contextStatus) {
 	if n := len(c.Days) - len(days); n > 0 {
 		more = fmt.Sprintf("; %s more in status --json", dockPlural(n, "day", "days"))
 	}
-	fmt.Fprintf(w, "context by day (UTC, tokens, %s): %s%s\n", contextSource(estimated), strings.Join(days, "; "), more)
+	fmt.Fprintf(w, "context window by day (UTC, tokens, %s): %s%s\n", contextSource(estimated), strings.Join(days, "; "), more)
 }

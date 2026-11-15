@@ -109,7 +109,7 @@ type savingsKind struct {
 	Count int    `json:"count"`
 }
 
-// savingsContext is the latest context reading, as the context object of
+// savingsContext is the latest context window reading, as the contextWindow object of
 // status has it, with BB's estimated flag and its age.
 type savingsContext struct {
 	Availability string     `json:"availability"`
@@ -521,13 +521,13 @@ func savingsEstimateOf(w savingsCounts, partial bool, rec *state.ContextRecord, 
 	}
 	if !found {
 		out.Estimated = false
-		out.Reason, out.Text = "no_readings", "estimate unavailable; no context reading was recorded in the period"
+		out.Reason, out.Text = "no_readings", "estimate unavailable; no context window reading was recorded in the period"
 		return out
 	}
 	n := *w.Total
 	lo, hi := int64(n)*low, int64(n)*high
 	out.Availability, out.WithheldWakes, out.LowestReading, out.HighestReading, out.LowTokens, out.HighTokens = "recorded", &n, &low, &high, &lo, &hi
-	out.Text = fmt.Sprintf("estimate: %s to %s tokens not spent on %s%s, %s (withheld wakes times the lowest and highest context reading of the period, %s; not tokens billed)",
+	out.Text = fmt.Sprintf("estimate: %s to %s tokens not spent on %s%s, %s (withheld wakes times the lowest and highest context window reading of the period, %s; not tokens billed)",
 		groupDigits(lo), groupDigits(hi), savingsAtLeast(savingsHistory{Partial: partial}), dockPlural(n, "withheld wake", "withheld wakes"), savingsBaseline, contextSource(out.Estimated))
 	return out
 }
@@ -542,7 +542,7 @@ func savingsLines(s savingsStatus) []string {
 		"  spaced wakes: " + s.SpacedWakes.Text,
 		"  checks that sent nothing: " + s.ChecksSentNothing.Text,
 		"  sends: " + s.Sends.Text,
-		"  context now: " + s.ContextNow.Text,
+		"  context window now: " + s.ContextNow.Text,
 		"  session resets: " + s.Resets.Text,
 		"  " + s.Estimate.Text,
 	}
