@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Record a BB thread's context size for diagnosis. After a check's wake, re-prompt or nudge, or when it first sees the turn ended, looptender reads `bb thread context <thread> --json` for the supervised thread only, within what is left of the check's budget, and keeps the latest reading, one lowest/highest/last summary per UTC day for at most 31 days and the last 8 readings in `state.json` (cleared on a change of target or a transfer). `status` and `status --json` (object `context`, version 1) show them with their age, worded "estimated by BB" when BB marks them so, and "unavailable" otherwise and for every other adapter. The panel does not show them yet. No decision, send, allowance or hold reads it; a missing, slow or malformed answer (older bb) fails and warns nothing. Fixtures and a stand-in bb only. See [context reading](docs/operations.md#context-reading).
+
 - Scope account login phrases to the selected CLI and link Accounts to existing recorded Routes/Allowances usage. Preserve observation age and unavailable/stale evidence; route usage remains unassociated with named account cards, with no new polling or collector.
 
 - Fix account status checks refusing across agent tool invocations: exclude only the incidental CODEX_TOOL_CALL_ID from the context fingerprint, using existing platform name semantics. Preserve the actual caller and execution environment, all other bindings and explicit revision-bound updates; no automatic catalog migration.
