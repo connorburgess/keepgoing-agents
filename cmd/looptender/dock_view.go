@@ -1576,10 +1576,13 @@ func dockChildWork(r runsLoop, known bool) dockChildren {
 	b := r.Blocker
 	c.CheckedAt, c.AgeSeconds = b.CheckedAt, b.AgeSeconds
 	switch b.Availability {
-	case blockerBlocked, blockerHeld, blockerListed, blockerNone:
+	case blockerBlocked, blockerHeld, blockerListed, blockerNone, blockerBeforeHold:
 		c.Availability, c.Holding = "current", b.Availability == blockerBlocked
-		if b.Availability == blockerHeld {
+		switch b.Availability {
+		case blockerHeld:
 			c.Availability = "held"
+		case blockerBeforeHold:
+			c.Availability = "before_hold"
 		}
 		for _, child := range b.Children {
 			switch child.Status {
@@ -1607,11 +1610,18 @@ func dockChildWork(r runsLoop, known bool) dockChildren {
 		c.Phrase = strings.Join(parts, ", ")
 		if len(parts) == 0 {
 			c.Phrase = "None at the last check"
+			if b.Availability == blockerBeforeHold {
+				c.Phrase = "None"
+			}
 		}
-		if b.Availability == blockerHeld {
+		switch b.Availability {
+		case blockerHeld:
 			c.Phrase += " (as of the check that held it)"
+		case blockerBeforeHold:
+			c.Phrase += " (" + dockBeforeHold(b) + "; not current)"
 		}
 	case blockerUnknown:
+		c.Phrase = "Unknown: " + dockUnknownLanes(b)
 		switch b.Reason {
 		case "no_open_run", "no_child_evidence_recorded":
 			c.Availability, c.Phrase = "none_recorded", "None recorded"
@@ -1620,6 +1630,49 @@ func dockChildWork(r runsLoop, known bool) dockChildren {
 		}
 	}
 	return c
+}
+
+// dockBeforeHold says which check a listing kept across a hold or pause came
+// from, and how long ago: "as of the check before it was paused, 3 h ago".
+func dockBeforeHold(b runsBlocker) string {
+	s := "as of the check before it was held"
+	if b.LastCheckCause == "paused" {
+		s = "as of the check before it was paused"
+	}
+	if b.AgeSeconds == nil {
+		return s + ", at an unknown time"
+	}
+	if *b.AgeSeconds < 45 {
+		return s + ", just now"
+	}
+	return s + ", " + dockSpan(time.Duration(*b.AgeSeconds)*time.Second) + " ago"
+}
+
+// dockUnknownLanes says, in plain words, why the lanes cannot be shown.
+func dockUnknownLanes(b runsBlocker) string {
+	switch b.Reason {
+	case "not_refreshed_by_the_last_check":
+		switch b.LastCheckCause {
+		case "paused":
+			return "the loop is paused, so its checks do not look at its lanes, and no complete listing was recorded before the pause"
+		case "awaiting_user":
+			return "the loop is held for a person, so its checks do not look at its lanes, and no complete listing was recorded before the hold"
+		case "disabled":
+			return "the loop is turned off, so its checks do not look at its lanes"
+		case "completed":
+			return "the loop is marked finished, so its checks do not look at its lanes"
+		}
+		return "the last check did not list the lanes, so the listing on record is from an earlier check and is not shown"
+	case "child_listing_incomplete":
+		return "the last check could not see every lane, and a partial list would read as the whole answer"
+	case "last_check_not_recorded":
+		return "no check is on record for this loop"
+	case "graph_unavailable":
+		return "the loop's run record cannot be read"
+	case "binding_unavailable":
+		return "the loop's configuration cannot be read or did not validate"
+	}
+	return "the records do not say why"
 }
 
 func dockLastCheck(st *statusOut, now time.Time, staleAfter time.Duration) dockCheck {

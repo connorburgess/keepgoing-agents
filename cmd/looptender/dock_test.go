@@ -448,6 +448,7 @@ func TestDockPhrasesFollowEvidence(t *testing.T) {
 	}
 
 	// Lanes, from the runs blocker.
+	threeHours := int64(3 * 3600)
 	for _, c := range []struct {
 		blocker              runsBlocker
 		availability, phrase string
@@ -459,8 +460,21 @@ func TestDockPhrasesFollowEvidence(t *testing.T) {
 		{runsBlocker{Availability: blockerHeld, Children: []runsChild{{Status: "awaiting_input"}}}, "held", "1 waiting for an answer (as of the check that held it)", false},
 		{runsBlocker{Availability: blockerUnknown, Reason: "no_open_run"}, "none_recorded", "None recorded", false},
 		{runsBlocker{Availability: blockerUnknown, Reason: "last_check_older_than_stale_after"}, "stale", "Stale: the last listing is too old to show as current", false},
-		{runsBlocker{Availability: blockerUnknown, Reason: "child_listing_incomplete"}, "unknown", "Unknown", false},
-		{runsBlocker{Availability: blockerUnknown, Reason: "not_refreshed_by_the_last_check"}, "unknown", "Unknown", false},
+		{runsBlocker{Availability: blockerBeforeHold, LastCheckCause: "paused", AgeSeconds: &threeHours, Children: []runsChild{{Status: "active"}, {Status: "active"}}}, "before_hold", "2 working (as of the check before it was paused, 3 h ago; not current)", false},
+		{runsBlocker{Availability: blockerBeforeHold, LastCheckCause: "awaiting_user", AgeSeconds: &threeHours, Children: []runsChild{{Status: "active"}}}, "before_hold", "1 working (as of the check before it was held, 3 h ago; not current)", false},
+		{runsBlocker{Availability: blockerBeforeHold, LastCheckCause: "paused", AgeSeconds: &threeHours}, "before_hold", "None (as of the check before it was paused, 3 h ago; not current)", false},
+		{runsBlocker{Availability: blockerBeforeHold, LastCheckCause: "paused"}, "before_hold", "None (as of the check before it was paused, at an unknown time; not current)", false},
+		{runsBlocker{Availability: blockerUnknown, Reason: "no_child_evidence_recorded"}, "none_recorded", "None recorded", false},
+		{runsBlocker{Availability: blockerUnknown, Reason: "child_listing_incomplete"}, "unknown", "Unknown: the last check could not see every lane, and a partial list would read as the whole answer", false},
+		{runsBlocker{Availability: blockerUnknown, Reason: "not_refreshed_by_the_last_check", LastCheckCause: "paused"}, "unknown", "Unknown: the loop is paused, so its checks do not look at its lanes, and no complete listing was recorded before the pause", false},
+		{runsBlocker{Availability: blockerUnknown, Reason: "not_refreshed_by_the_last_check", LastCheckCause: "awaiting_user"}, "unknown", "Unknown: the loop is held for a person, so its checks do not look at its lanes, and no complete listing was recorded before the hold", false},
+		{runsBlocker{Availability: blockerUnknown, Reason: "not_refreshed_by_the_last_check", LastCheckCause: "disabled"}, "unknown", "Unknown: the loop is turned off, so its checks do not look at its lanes", false},
+		{runsBlocker{Availability: blockerUnknown, Reason: "not_refreshed_by_the_last_check", LastCheckCause: "completed"}, "unknown", "Unknown: the loop is marked finished, so its checks do not look at its lanes", false},
+		{runsBlocker{Availability: blockerUnknown, Reason: "not_refreshed_by_the_last_check", LastCheckCause: "active"}, "unknown", "Unknown: the last check did not list the lanes, so the listing on record is from an earlier check and is not shown", false},
+		{runsBlocker{Availability: blockerUnknown, Reason: "last_check_not_recorded"}, "unknown", "Unknown: no check is on record for this loop", false},
+		{runsBlocker{Availability: blockerUnknown, Reason: "graph_unavailable"}, "unknown", "Unknown: the loop's run record cannot be read", false},
+		{runsBlocker{Availability: blockerUnknown, Reason: "binding_unavailable"}, "unknown", "Unknown: the loop's configuration cannot be read or did not validate", false},
+		{runsBlocker{Availability: blockerUnknown, Reason: "a_reason_this_build_does_not_know"}, "unknown", "Unknown: the records do not say why", false},
 	} {
 		if got := dockChildWork(runsLoop{Blocker: c.blocker}, true); got.Availability != c.availability || got.Phrase != c.phrase || got.Holding != c.holding {
 			t.Errorf("%+v: %+v", c.blocker, got)
@@ -1497,6 +1511,22 @@ func TestDockSentencesSayNoMoreThanTheirRecords(t *testing.T) {
 	// Lanes from a listing too old to be current are not listed.
 	stale := runsLoop{Blocker: runsBlocker{Availability: blockerUnknown, Reason: "last_check_older_than_stale_after", Children: []runsChild{{Status: "active"}}}}
 	if l := dockLaneList(stale, true, false, true, nil, dockNow); len(l.Lanes) != 0 || l.Availability != "stale" {
+		t.Errorf("%+v", l)
+	}
+	// Lanes kept from before a hold or pause are listed, but never as current.
+	threeHours, listedAt := int64(3*3600), dockNow.Add(-3*time.Hour)
+	for cause, word := range map[string]string{"paused": "paused", "awaiting_user": "held"} {
+		before := runsLoop{Blocker: runsBlocker{Availability: blockerBeforeHold, LastCheckCause: cause, CheckedAt: &listedAt, AgeSeconds: &threeHours,
+			Children: []runsChild{{Ref: "child:example1", Status: "active"}, {Ref: "child:example2", Status: "error"}}}}
+		l := dockLaneList(before, true, false, true, nil, dockNow)
+		if l.Availability != "before_hold" || len(l.Lanes) != 2 || l.Lanes[0].Phrase != "Had failed" || l.Lanes[1].Phrase != "Was working" ||
+			l.Heading != "This loop's lanes \u00B7 1 working, 1 failed \u00B7 as of the check before it was "+word+", 3 h ago; not current" {
+			t.Errorf("%s: %+v", cause, l)
+		}
+	}
+	// The stuck-lane hold keeps its own wording.
+	stuck := runsLoop{Blocker: runsBlocker{Availability: blockerHeld, CheckedAt: &listedAt, AgeSeconds: &threeHours, Children: []runsChild{{Ref: "child:example1", Status: "awaiting_input"}}}}
+	if l := dockLaneList(stuck, true, false, true, nil, dockNow); l.Availability != "held" || l.Lanes[0].Phrase != "Waiting for an answer" || !strings.HasSuffix(l.Heading, "as of the check that held it, 3 h ago") {
 		t.Errorf("%+v", l)
 	}
 	// "Overdue" only where scheduled tests run: not with tests off, not while
