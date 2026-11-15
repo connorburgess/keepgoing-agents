@@ -244,7 +244,7 @@ func TestNoProgressLinesAndHeldTime(t *testing.T) {
 		atLeast bool
 		line    string
 	}{
-		{"never held", nil, npOn, incident.Pruned{}, 0, false, "Held for a person for no time of the last 3 h."},
+		{"never held", nil, npOn, incident.Pruned{}, 0, false, "Not held for a person in the last 3 h; a pause is a different hold and is not counted here."},
 		{"held throughout, no change recorded", nil, control.File{Enabled: true, AwaitingUser: true}, incident.Pruned{}, 3 * time.Hour, false, "Held for a person for 3 h of the last 3 h."},
 		{"held since before the change, released", []incident.Record{change(npSince.Add(time.Hour), held, off)}, npOn, incident.Pruned{}, time.Hour, false, "Held for a person for 1 h of the last 3 h."},
 		{"held now, since an hour ago", []incident.Record{change(npSince.Add(2*time.Hour), off, held)}, control.File{Enabled: true, AwaitingUser: true}, incident.Pruned{}, time.Hour, false, "Held for a person for 1 h of the last 3 h."},
@@ -252,11 +252,11 @@ func TestNoProgressLinesAndHeldTime(t *testing.T) {
 		// the half hour after the newest pruned change is covered.
 		{"hold changes pruned: only the covered time counts", nil, npOn,
 			incident.Pruned{Key: incident.TierPruned{Count: 2, NewestAt: dockPtr(npSince.Add(2*time.Hour + 30*time.Minute))}}, 0, true,
-			"Held for a person for no time of the last 30 min, which is as far back as its history covers."},
+			"Not held for a person in the last 30 min, which is as far back as its history covers; a pause is a different hold and is not counted here."},
 		{"a hold that began after the pruned changes", []incident.Record{change(npSince.Add(2*time.Hour+40*time.Minute), off, held)}, control.File{Enabled: true, AwaitingUser: true},
 			incident.Pruned{Key: incident.TierPruned{Count: 2, NewestAt: dockPtr(npSince.Add(2*time.Hour + 30*time.Minute))}}, 20 * time.Minute, true,
 			"Held for a person for 20 min of the last 30 min, which is as far back as its history covers."},
-		{"an operation that did not change the hold", []incident.Record{change(npSince.Add(time.Hour), off, off)}, npOn, incident.Pruned{}, 0, false, "Held for a person for no time of the last 3 h."},
+		{"an operation that did not change the hold", []incident.Record{change(npSince.Add(time.Hour), off, off)}, npOn, incident.Pruned{}, 0, false, "Not held for a person in the last 3 h; a pause is a different hold and is not counted here."},
 	} {
 		v := noProgressOf(npConfig(nil, nil), npState(), c.now, &incident.Journal{Records: c.records, Pruned: c.pruned}, &rungraph.Graph{}, dockNow)
 		if v.Held == nil || v.Held.Seconds != int64(c.held/time.Second) || v.Held.AtLeast != c.atLeast || v.Lines[3] != c.line {

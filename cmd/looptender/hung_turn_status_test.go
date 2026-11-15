@@ -41,3 +41,26 @@ func TestHeldNudgesAreToldFromSentOnes(t *testing.T) {
 		t.Fatalf("%+v", n)
 	}
 }
+
+// A hold's fixed advice must not contradict its note: with a note the advice
+// points at the note first, and a stated cause keeps its own advice.
+func TestDockHoldAdviceFollowsNote(t *testing.T) {
+	noted := &statusOut{}
+	noted.Control.Note = "waiting for example-team to free a slot"
+	for _, c := range []struct {
+		name  string
+		st    *statusOut
+		cause string
+		want  string
+	}{
+		{"no note", &statusOut{}, "", dockHoldAdvice},
+		{"note, shown", noted, "", dockHoldAdviceNote},
+		{"cause keeps its advice", noted, "input", "Answer it in the conversation, then resume the loop."},
+	} {
+		for _, ids := range []bool{true, false} {
+			if n := dockHoldNeed(c.st, &dockHold{Cause: c.cause}, ids); n.Action != c.want {
+				t.Errorf("%s (identifiers %v): %q", c.name, ids, n.Action)
+			}
+		}
+	}
+}

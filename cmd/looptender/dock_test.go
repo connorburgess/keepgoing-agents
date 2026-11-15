@@ -847,7 +847,7 @@ func TestDockLeftRouteLimitAndAllowances(t *testing.T) {
 		say(d.Text) != "Hit a usage limit here on Sun 3 Mar, and the loop moved on. The provider reported a reset for Sat 9 Mar, 12:00 (in 5 days). looptender returns after that, once a test passes." {
 		t.Errorf("%+v %q", d, say(d.Text))
 	}
-	if say(pay.Short) != "On its second choice since Sun 3 Mar" || say(pay.Why) != "First choice at a usage limit until Sat 9 Mar" || payLoop.PickerState != "Supervising · on its second choice" {
+	if say(pay.Short) != "On its second route since Sun 3 Mar" || say(pay.Why) != "First choice at a usage limit until Sat 9 Mar" || payLoop.PickerState != "Supervising · on its second route after usage limits" {
 		t.Errorf("%q %q %q", say(pay.Short), say(pay.Why), payLoop.PickerState)
 	}
 	// The departure is the first note on the route it left; the used-up reading

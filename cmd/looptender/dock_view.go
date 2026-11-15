@@ -92,7 +92,7 @@ type dockRoutesLine struct {
 	First   string `json:"first,omitempty"` // the key of the first route in trouble
 	Picker  string `json:"picker"`          // "9 routes, 4 at a limit or not ready"
 	Total   string `json:"total"`           // "9 routes"
-	InUseT  string `json:"inUseText"`       // "3 in use"
+	InUseT  string `json:"inUseText"`       // "3 running now"
 	Problem string `json:"problem"`         // "4 at a limit or not ready, listed first"
 }
 
@@ -1005,7 +1005,7 @@ func buildDockReport(inputs []dockInput, now time.Time, refresh, staleAfter time
 		StaleAfterSeconds: int(staleAfter / time.Second), Identifiers: identifiers, NeedsYou: []dockNeed{}, Worth: []dockWorth{}, Loops: []dockLoop{},
 		Routes: []dockRoute{}, Allowances: []dockAllowance{}, Registry: dockRegistry{Availability: "unavailable"}, Complete: complete,
 		NeedsLine: "Needs you: unknown"}
-	r.RoutesSummary = dockRoutesLine{Picker: "No routes", Total: "No routes", InUseT: "0 in use", Problem: "none at a limit or failing its test"}
+	r.RoutesSummary = dockRoutesLine{Picker: "No routes", Total: "No routes", InUseT: "0 running now", Problem: "none at a limit or failing its test"}
 	if !registryOK {
 		return r
 	}
@@ -1145,7 +1145,7 @@ func dockRoutesSummary(r dockReport) dockRoutesLine {
 	}
 	s.Total = dockPlural(s.Count, "route", "routes")
 	s.Picker = s.Total
-	s.InUseT = fmt.Sprintf("%d in use", s.InUse)
+	s.InUseT = fmt.Sprintf("%d running now", s.InUse)
 	if s.Trouble > 0 {
 		s.Picker += fmt.Sprintf(", %d at a limit or not ready", s.Trouble)
 		s.Problem = fmt.Sprintf("%d at a limit or not ready, listed first", s.Trouble)
@@ -1548,11 +1548,18 @@ func dockIssue(code string) string {
 	return "Some evidence is unavailable."
 }
 
+// The advice when no cause says more. A hold's note may name something outside
+// the conversation, so with a note the advice points at it first.
+const (
+	dockHoldAdvice     = "Look at the conversation, then resume the loop when it is ready to continue."
+	dockHoldAdviceNote = "See the note left with the hold, and the conversation. Resume the loop when what it is waiting for is done."
+)
+
 // dockHoldNeed explains an awaiting-user hold from the fixed cause recorded
 // when it started. Nothing is inferred from the note's text, and the note is
 // included only with identifiers, as registered status withholds it.
 func dockHoldNeed(st *statusOut, hold *dockHold, identifiers bool) *dockNeed {
-	n := &dockNeed{Kind: "held", Reason: "It is held for a person.", Action: "Look at the conversation, then resume the loop when it is ready to continue."}
+	n := &dockNeed{Kind: "held", Reason: "It is held for a person.", Action: dockHoldAdvice}
 	cause := ""
 	switch {
 	case hold != nil && hold.Marked:
@@ -1600,6 +1607,9 @@ func dockHoldNeed(st *statusOut, hold *dockHold, identifiers bool) *dockNeed {
 		return n
 	}
 	if note := strings.TrimSpace(st.Control.Note); note != "" {
+		if n.Action == dockHoldAdvice {
+			n.Action = dockHoldAdviceNote
+		}
 		if identifiers {
 			n.Note = clip(note, dockMaxNote)
 		} else {
@@ -2119,7 +2129,12 @@ func dockHandoffChain(in *dockChainInput, use dockRouteUse, test dockTesting, f 
 	case f.Availability != "known":
 		c.Brief = "Readiness of other routes unknown"
 	case f.Ready == 0 && f.Eligible > 0:
-		c.Brief, c.Short = "No other route is ready", true
+		c.Brief, c.Short = "No standby route is ready", true
+		for _, e := range c.Entries {
+			if e.Current && e.Readiness == "current" {
+				c.Brief += "; its current route is unaffected"
+			}
+		}
 	case f.Ready == 0:
 		c.Brief, c.Short = "No other route is eligible to take over", true
 	default:

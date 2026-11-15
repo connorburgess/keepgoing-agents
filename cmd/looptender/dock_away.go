@@ -242,8 +242,8 @@ func timelineDropped(tl *timelineReport) bool {
 
 // finish writes the away sentences.
 func (a *dockAway) finish(now time.Time) {
-	a.Picker = "on its " + dockOrdinal(a.Choice) + " choice"
-	a.Short = txt("On its " + dockOrdinal(a.Choice) + " choice")
+	a.Picker = "on its " + dockOrdinal(a.Choice) + " route"
+	a.Short = txt("On its " + dockOrdinal(a.Choice) + " route")
 	if a.Since != nil {
 		a.Short = txt(a.Short, " since ", tm(*a.Since, "date"))
 	}
@@ -252,6 +252,9 @@ func (a *dockAway) finish(now time.Time) {
 		if d.Position == 0 {
 			first = d
 		}
+	}
+	if first.How == dockLeftLimit {
+		a.Picker += " after usage limits"
 	}
 	switch first.How {
 	case dockLeftLimit:
