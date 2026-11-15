@@ -134,11 +134,22 @@ func TestCompletedRestoreWindowsHeldReader(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer reader.Close()
-	prior, _ := reader.Stat()
+	prior, err := reader.Stat()
+	if err != nil {
+		t.Fatal(err)
+	}
 	if _, err := h.Observe(context.Background()); err != nil {
 		t.Fatal(err)
 	}
-	current, _ := os.Stat(h.dir.path("session"))
+	published, err := snapshot.Open(h.dir.path("session"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer published.Close()
+	current, err := published.Stat()
+	if err != nil {
+		t.Fatal(err)
+	}
 	if os.SameFile(prior, current) {
 		t.Fatal("restoration truncated the old session")
 	}

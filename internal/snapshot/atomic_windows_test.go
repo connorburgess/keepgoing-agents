@@ -23,17 +23,41 @@ func TestWindowsReplaceAtomicHeldReaderNoMarker(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer reader.Close()
-	oldInfo, _ := reader.Stat()
-	stageInfo, _ := os.Stat(source)
+	oldInfo, err := reader.Stat()
+	if err != nil {
+		t.Fatal(err)
+	}
+	// File.Stat captures identity through the handle now. Path-based Stat can
+	// defer that lookup until SameFile, when the staging name is already gone.
+	staging, err := Open(source)
+	if err != nil {
+		t.Fatal(err)
+	}
+	stageInfo, statErr := staging.Stat()
+	closeErr := staging.Close()
+	if statErr != nil {
+		t.Fatal(statErr)
+	}
+	if closeErr != nil {
+		t.Fatal(closeErr)
+	}
 	if err := ReplaceAtomic(source, target); err != nil {
 		t.Fatal(err)
 	}
-	current, err := os.Stat(target)
+	published, err := Open(target)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer published.Close()
+	current, err := published.Stat()
 	if err != nil {
 		t.Fatal(err)
 	}
 	if !os.SameFile(stageInfo, current) || os.SameFile(oldInfo, current) {
 		t.Fatal("published identity is not closed staging")
+	}
+	if _, err := os.Stat(source); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("staging name remains after publication: %v", err)
 	}
 	b, err := io.ReadAll(reader)
 	if err != nil || string(b) != "old" {
