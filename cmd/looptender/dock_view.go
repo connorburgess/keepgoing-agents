@@ -4,6 +4,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"fmt"
+	"slices"
 	"sort"
 	"strings"
 	"time"
@@ -118,6 +119,9 @@ type dockAllowance struct {
 	Notes    []dockNote      `json:"notes"`
 	Next     dockText        `json:"next,omitempty"`
 	identity string
+	// kinds says what each of its routes is, in route order and without
+	// repeats, for telling apart lines that share a name.
+	kinds []string
 }
 
 type dockRegistry struct {
@@ -804,6 +808,9 @@ func dockAllowances(routes []dockRoute) ([]dockAllowance, int) {
 		}
 		a := &out[i]
 		a.Routes++
+		if k := dockAllowanceRouteKind(r); !slices.Contains(a.kinds, k) {
+			a.kinds = append(a.kinds, k)
+		}
 		if u := r.Usage; u.AgeSeconds != nil && (a.Usage.AgeSeconds == nil || *u.AgeSeconds < *a.Usage.AgeSeconds) {
 			a.Usage = u
 			a.Usage.ReadLine = strings.Replace(u.ReadLine, "Usage read", "Read", 1)
@@ -834,8 +841,13 @@ func dockAllowances(routes []dockRoute) ([]dockAllowance, int) {
 			a.Notes = append(a.Notes, dockNote{Tone: "limit", Text: dockLimitReset(s, d, a.Usage, "datetime")})
 		}
 	}
+	// Lines that share a provider and title each say what their routes are.
+	// Only identified accounts are numbered: a line whose account is not
+	// identified is not said to be, or not to be, any other line's account.
 	names := map[string]int{}
+	shared := map[string]int{}
 	for _, a := range out {
+		shared[a.Provider+"\x00"+a.Title]++
 		if a.identity != "" {
 			names[a.Provider+"\x00"+a.Title]++
 		}
@@ -847,7 +859,11 @@ func dockAllowances(routes []dockRoute) ([]dockAllowance, int) {
 		if a.Provider != "" && a.Provider != a.Account {
 			parts = append(parts, "provider "+a.Provider)
 		}
-		parts = append(parts, dockPlural(a.Routes, "route", "routes"))
+		count := dockPlural(a.Routes, "route", "routes")
+		if shared[a.Provider+"\x00"+a.Title] > 1 {
+			count = dockAllowanceKinds(count, a.kinds)
+		}
+		parts = append(parts, count)
 		if a.identity == "" {
 			parts = append(parts, "which account is not identified by a test")
 		} else if n := names[a.Provider+"\x00"+a.Title]; n > 1 {
@@ -873,6 +889,39 @@ func dockAllowances(routes []dockRoute) ([]dockAllowance, int) {
 		}
 	}
 	return out, omitted
+}
+
+// dockAllowanceRouteKind says what a route is from its configuration: the
+// kind of route it is, and its model and effort when they are configured.
+func dockAllowanceRouteKind(r dockRoute) string {
+	parts := []string{"tool not recorded"}
+	if r.Tool != "" {
+		parts[0] = r.Tool
+	}
+	if r.Model != "" {
+		parts = append(parts, "model "+r.Model)
+	}
+	if r.Effort != "" {
+		parts = append(parts, "effort "+r.Effort)
+	}
+	return strings.Join(parts, ", ")
+}
+
+// dockAllowanceKinds ends a route count with what those routes are, at most
+// three of them, and how many more there are.
+func dockAllowanceKinds(count string, kinds []string) string {
+	if len(kinds) == 0 {
+		return count
+	}
+	shown := kinds
+	if len(shown) > 3 {
+		shown = shown[:3]
+	}
+	s := count + ": " + strings.Join(shown, "; ")
+	if more := len(kinds) - len(shown); more > 0 {
+		s += fmt.Sprintf("; and %d more", more)
+	}
+	return s
 }
 
 // dockShareAcrossLoops gives each loop's route the newest usage reading and
