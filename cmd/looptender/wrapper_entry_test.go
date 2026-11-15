@@ -19,6 +19,7 @@ import (
 func TestMain(m *testing.M) {
 	runner.MaybeRunTurn()
 	adapterCheckHelper()
+	contextHereAgentHelper()
 	cursorJourneyHelper()
 	initCursorInvocationTrap()
 	// Loaded configurations check connectivity before an error re-prompt or
