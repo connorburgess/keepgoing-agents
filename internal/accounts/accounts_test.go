@@ -284,3 +284,27 @@ func TestContextIgnoresOnlyToolCallIdentifier(t *testing.T) {
 		t.Fatal("Unix exclusion incorrectly case folded")
 	}
 }
+
+func TestLoginProjectionNamesSelectedCLI(t *testing.T) {
+	_, e := fixture(t)
+	now := time.Date(2030, 3, 4, 12, 0, 0, 0, time.UTC)
+	for _, tc := range []struct{ state, text string }{{"reported_present", "Selected CLI reports login"}, {"reported_absent", "Selected CLI reports no login"}} {
+		t.Run(tc.state, func(t *testing.T) {
+			o := Observation{Revision: e.Revision, Context: e.Context, At: now.Add(-time.Minute), Auth: tc.state, Version: "2.1.318"}
+			selected := e
+			selected.Attempt = &o
+			selected.Last = &o
+			f := File{Entries: []Entry{selected}}
+			for _, age := range []time.Duration{0, 10 * time.Minute} {
+				c := Project(f, now.Add(age)).Cards[0]
+				wantFresh := "fresh"
+				if age > 0 {
+					wantFresh = "stale"
+				}
+				if c.Auth.Text != tc.text || c.Auth.State != tc.state || c.Auth.Source != "claude-code CLI 2.1.318 status" || !c.Auth.ObservedAt.Equal(o.At) || c.Auth.Freshness != wantFresh || c.Uses != "unavailable" {
+					t.Fatal("selected CLI evidence or association changed")
+				}
+			}
+		})
+	}
+}

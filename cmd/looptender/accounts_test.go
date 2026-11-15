@@ -235,12 +235,27 @@ func TestAccountsBrowserFixture(t *testing.T) {
 		second.Last = &old
 		second.Attempt = &failed
 		external := accounts.NewEntry(*f, accounts.Entry{Label: "Example external", Provider: "bb", Mode: "externally_managed"}, "", at, nil)
-		f.Entries = append(f.Entries, second, external)
+		absent := accounts.NewEntry(*f, e, "thr_example_actual", at, os.Environ())
+		absent.Label = "Example selected CLI without login"
+		noLogin := o
+		noLogin.Revision = absent.Revision
+		noLogin.Context = absent.Context
+		noLogin.Auth = "reported_absent"
+		noLogin.Plan = ""
+		absent.Last = &noLogin
+		absent.Attempt = &noLogin
+		f.Entries = append(f.Entries, second, external, absent)
 		return nil
 	}); err != nil {
 		t.Fatal(err)
 	}
 	r := reader.read(context.Background(), false)
+	// Exercise the existing destination's stale-window and unknown-reading UI.
+	if len(r.Allowances) < 3 || len(r.Allowances[2].Usage.Windows) == 0 {
+		t.Fatal("usage fixture missing")
+	}
+	r.Allowances[2].Usage.Availability = "stale"
+	r.Allowances[2].Usage.Windows[0].Stale = true
 	raw, err := json.Marshal(r)
 	if err != nil {
 		t.Fatal(err)

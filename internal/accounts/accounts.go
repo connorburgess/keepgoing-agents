@@ -433,9 +433,9 @@ func CheckGuard(dir, id string) (*lock.Lock, error) {
 func authText(state string) string {
 	switch state {
 	case "reported_present":
-		return "Login reported"
+		return "Selected CLI reports login"
 	case "reported_absent":
-		return "Not logged in"
+		return "Selected CLI reports no login"
 	case "unchecked":
 		return "Not checked"
 	default:

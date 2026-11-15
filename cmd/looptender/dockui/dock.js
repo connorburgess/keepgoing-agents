@@ -846,7 +846,7 @@
   // One line per account: the newest recorded reading and its resets.
   function allowancesPanel(d) {
     var items = list(d.allowances);
-    var p = panel("Allowances", [el("span", "sub", "the newest reading recorded for each account; not a live reading")]);
+    var p = panel("Allowances", [el("span", "sub", "recorded readings for configured route groups; not live or linked to Accounts cards")]);
     if (!items.length) { p.appendChild(el("p", "sub chain-how", "No accounts to show.")); return p; }
     var ul = el("ul", "allow-list");
     items.forEach(function (a) {
@@ -885,6 +885,10 @@
     pane.appendChild(paneHead("Accounts"));
     pane.appendChild(el("p", "lede", "Your selected accounts, with the evidence available on this device."));
     pane.appendChild(el("p", "sub", "Read-only. Reading this page never checks a login or calls a model."));
+    var usage = el("p", "account-usage-link");
+    usage.appendChild(link("#/routes", "View recorded usage", "work-inspect"));
+    usage.appendChild(el("span", "sub", ". Readings come from configured routes, are not live, and are not linked to these account cards."));
+    pane.appendChild(usage);
     if (!a.complete || a.state !== "available") {
       pane.appendChild(emptyBox("Accounts unavailable", "The private account catalog could not be read completely. This does not mean no accounts are selected."));
       return;

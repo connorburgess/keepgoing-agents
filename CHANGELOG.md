@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Scope account login phrases to the selected CLI and link Accounts to existing recorded Routes/Allowances usage. Preserve observation age and unavailable/stale evidence; route usage remains unassociated with named account cards, with no new polling or collector.
+
 - Fix account status checks refusing across agent tool invocations: exclude only the incidental CODEX_TOOL_CALL_ID from the context fingerprint, using existing platform name semantics. Preserve the actual caller and execution environment, all other bindings and explicit revision-bound updates; no automatic catalog migration.
 
 - Add a read-only Accounts view for explicitly selected contexts, a bounded private metadata/status catalog and explicit Claude Code/Codex status commands. Preserve actual caller provenance, context revisions and previous observations on failure. Refresh never calls providers; no login orchestration, secret capture, route writes or paid tests. Fictional fixtures only; live account/panel acceptance remains open.

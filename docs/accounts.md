@@ -5,6 +5,19 @@ selected in a private device-local catalog. It shows the owner-chosen name,
 provider, selection mode and retained status evidence. It does not discover
 every account on the computer or turn route group names into verified accounts.
 
+Login wording is scoped to the selected CLI: "Selected CLI reports login" or
+"Selected CLI reports no login". It does not classify every BB session or a
+provider account globally. Another running session can have a different context.
+
+**View recorded usage** opens Routes and its existing Allowances section.
+Those readings belong to configured route groups, are not live, and are not
+linked to these account cards. Read their recorded age, stale or unavailable
+state; an old limit reading does not establish current exhaustion. Selecting an
+account does not assign its ID to a route group or usage identity. The link
+reads only the existing recorded projection; it does not invoke BB usage APIs
+or refresh provider measurements, including APIs whose refresh:false option
+may still contact a provider.
+
 The page is read-only. Refresh reads the catalog only, executes no provider
 command and sends no model request. The setup commands below do not start a
 loop, enroll a route, sign in or copy credentials. Complete provider sign-in in
