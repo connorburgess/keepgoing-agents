@@ -305,7 +305,7 @@ func TestAccountsAddCheckAcrossToolInvocations(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	cli := filepath.Join(root, "fixture-cli")
+	cli := filepath.Join(root, "fixture-cli.exe")
 	if err := os.WriteFile(cli, []byte("fictional stand-in"), 0700); err != nil {
 		t.Fatal(err)
 	}
