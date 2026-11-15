@@ -432,7 +432,7 @@ func dockLaneList(r runsLoop, known bool, identifiers bool, current bool, titles
 		when = dockBeforeHold(r.Blocker) + "; not current"
 	}
 	out.Heading = "This loop's lanes \u00B7 " + strings.Join(counts, ", ") + " \u00B7 " + when
-	out.Footer = "looptender records each lane's state and, when BB reports one, its title, which is shown with identifiers and notes; not which route it is on"
+	out.Footer = "looptender records each lane's state and, when BB reports one, its title, which is shown with identifiers; not which route it is on"
 	if identifiers {
 		out.Footer = "looptender records each lane's state and, when BB reports one, its title; not which route it is on"
 	}

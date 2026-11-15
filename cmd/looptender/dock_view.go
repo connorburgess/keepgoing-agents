@@ -138,10 +138,16 @@ type dockNeed struct {
 	Key    string `json:"key"`
 	Loop   string `json:"loop"`
 	Reason string `json:"reason"`
-	// Note is the hold's note, in the words of whoever set it. Registered
-	// status withholds notes, so it is included only with identifiers;
-	// NoteWithheld says one exists.
+	// Note is the hold's note, in the words of whoever set it. Without
+	// identifiers every token shaped like an identifier (an ID, a path, a URL,
+	// an email address) is replaced by "[hidden]" and NoteMasked is true when
+	// one was. With identifiers Note is whole, and MaskedNote is the masked
+	// text when it differs, so the page can hide identifiers at once from the
+	// data in hand. NoteWithheld is no longer set; it is kept for readers of
+	// schema 1.
 	Note         string     `json:"note,omitempty"`
+	NoteMasked   bool       `json:"noteMasked,omitempty"`
+	MaskedNote   string     `json:"maskedNote,omitempty"`
 	NoteWithheld bool       `json:"noteWithheld,omitempty"`
 	Since        *time.Time `json:"since,omitempty"`
 	// SinceEvidence is hold_recorded when Since is the time the hold was
@@ -1607,8 +1613,8 @@ const (
 )
 
 // dockHoldNeed explains an awaiting-user hold from the fixed cause recorded
-// when it started. Nothing is inferred from the note's text, and the note is
-// included only with identifiers, as registered status withholds it.
+// when it started. Nothing is inferred from the note's text. The note is
+// shown with its identifiers masked, or whole with identifiers.
 func dockHoldNeed(st *statusOut, hold *dockHold, identifiers bool) *dockNeed {
 	n := &dockNeed{Kind: "held", Reason: "It is held for a person.", Action: dockHoldAdvice}
 	cause := ""
@@ -1661,10 +1667,13 @@ func dockHoldNeed(st *statusOut, hold *dockHold, identifiers bool) *dockNeed {
 		if n.Action == dockHoldAdvice {
 			n.Action = dockHoldAdviceNote
 		}
+		masked, hid := dockMaskNote(note)
+		n.Note, n.NoteMasked = clip(masked, dockMaxNote), hid
 		if identifiers {
 			n.Note = clip(note, dockMaxNote)
-		} else {
-			n.NoteWithheld = true
+			if hid {
+				n.MaskedNote = clip(masked, dockMaxNote)
+			}
 		}
 	}
 	if t := st.Control.UpdatedAt; n.Since == nil && !t.IsZero() {

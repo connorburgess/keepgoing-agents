@@ -100,12 +100,14 @@ func TestDockReportCoversEveryStateFromFixtures(t *testing.T) {
 	}
 
 	// Needs you: the hold's recorded cause and how long it has waited, from
-	// the retained history record of the hold. The note is withheld.
+	// the retained history record of the hold. The note is shown with its
+	// identifiers masked.
 	if len(r.NeedsYou) != 1 {
 		t.Fatalf("%+v", r.NeedsYou)
 	}
 	n := r.NeedsYou[0]
-	if n.Kind != "held" || n.Loop != "billing-api-migration" || n.Reason != "A lane is waiting for an answer." || n.Note != "" || !n.NoteWithheld ||
+	if n.Kind != "held" || n.Loop != "billing-api-migration" || n.Reason != "A lane is waiting for an answer." ||
+		n.Note != "Needs a decision on the refund table: keep the old columns or migrate them? Answer in [hidden] (plan in [hidden]), then resume." || !n.NoteMasked || n.MaskedNote != "" || n.NoteWithheld ||
 		n.SinceEvidence != "hold_recorded" || n.WaitedSeconds == nil || *n.WaitedSeconds != int64((2*time.Hour+14*time.Minute)/time.Second) || !strings.Contains(n.Action, "resume") {
 		t.Errorf("%+v", n)
 	}
@@ -558,13 +560,23 @@ func TestDockHoldWaitAndNoteWithholding(t *testing.T) {
 	in := dockEvidence{controls: &clientControls{Enabled: true, AwaitingUser: true}}.input()
 	in.Status.Control = control.File{UpdatedAt: dockNow.Add(-time.Hour), Note: "  see thr_private0001 in /private/example  "}
 	// Without a history record of the hold starting, the wait is a lower
-	// bound. The note is withheld, as registered status withholds it.
+	// bound. The note is shown with its identifiers masked.
 	_, need := projectDockLoop(in, dockNow, defaultStaleAfter, false)
-	if need.SinceEvidence != "control_changed" || *need.WaitedSeconds != 3600 || need.Note != "" || !need.NoteWithheld {
+	if need.SinceEvidence != "control_changed" || *need.WaitedSeconds != 3600 || need.Note != "see [hidden] in [hidden]" || !need.NoteMasked || need.MaskedNote != "" || need.NoteWithheld ||
+		need.Action != dockHoldAdviceNote {
 		t.Errorf("%+v", need)
 	}
-	if _, need = projectDockLoop(in, dockNow, defaultStaleAfter, true); need.Note != "see thr_private0001 in /private/example" || need.NoteWithheld {
+	// With identifiers it is whole, and carries the masked text for hiding
+	// identifiers at once.
+	if _, need = projectDockLoop(in, dockNow, defaultStaleAfter, true); need.Note != "see thr_private0001 in /private/example" || !need.NoteMasked || need.MaskedNote != "see [hidden] in [hidden]" || need.NoteWithheld {
 		t.Errorf("%+v", need)
+	}
+	// A note with nothing to mask is the same in both views.
+	in.Status.Control.Note = "Waiting on the design review."
+	for _, ids := range []bool{false, true} {
+		if _, need = projectDockLoop(in, dockNow, defaultStaleAfter, ids); need.Note != "Waiting on the design review." || need.NoteMasked || need.MaskedNote != "" {
+			t.Errorf("identifiers %t: %+v", ids, need)
+		}
 	}
 	in.Hold = &dockHold{At: dockNow.Add(-2 * time.Hour), Marked: true}
 	if _, need = projectDockLoop(in, dockNow, defaultStaleAfter, false); need.SinceEvidence != "hold_recorded" || *need.WaitedSeconds != 7200 {
@@ -599,7 +611,7 @@ func TestDockWithholdsIdentifiersNotesAndPathsAndIsBounded(t *testing.T) {
 	if m := dockPrivate.Find(body); m != nil {
 		t.Errorf("identifier %s in the default report", m)
 	}
-	for _, private := range []string{root, "keepgoing.yaml", "nonexistent-provider-fixture", "state_dir", "nonexistent-probe", "long note"} {
+	for _, private := range []string{root, "keepgoing.yaml", "nonexistent-provider-fixture", "state_dir", "nonexistent-probe"} {
 		if bytes.Contains(body, []byte(private)) {
 			t.Errorf("%q in the default report", private)
 		}
@@ -608,7 +620,9 @@ func TestDockWithholdsIdentifiersNotesAndPathsAndIsBounded(t *testing.T) {
 	if err := json.Unmarshal(body, &r); err != nil {
 		t.Fatal(err)
 	}
-	if r.NeedsYou[0].Note != "" || !r.NeedsYou[0].NoteWithheld {
+	// The note is in the default report, masked and cut to its cap.
+	if n := []rune(r.NeedsYou[0].Note); !strings.HasPrefix(r.NeedsYou[0].Note, "ask in [hidden], see [hidden] long note") || !r.NeedsYou[0].NoteMasked ||
+		len(n) != dockMaxNote || n[len(n)-1] != '…' {
 		t.Errorf("%+v", r.NeedsYou[0])
 	}
 	// On request: the registration, the configured thread and the note, cut
@@ -1474,7 +1488,7 @@ func dockMaximalInput(i int) dockInput {
 	}
 	in := dockEvidence{controls: &clientControls{Enabled: true}}.input()
 	in.Entry = registry.Entry{ID: fmt.Sprintf("loop_%032x", i), Loop: long("example-loop-", i)}
-	in.Status.Control.Note = strings.Repeat("a long note ", 200)
+	in.Status.Control.Note = strings.Repeat("a long note in thr_example0001 at /example/path ", 200) // both note fields at the cap
 	cands := make([]config.Candidate, dockMaxChain+20)
 	for j := range cands {
 		c := &cands[j]

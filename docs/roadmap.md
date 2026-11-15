@@ -594,7 +594,7 @@ Order beyond the dock: the route view first, then the no-progress flag, then rev
 
 ##### Panel feature set
 
-Everything a person should be able to do from the panel, grouped by what they came to do. Each line names the step above that delivers it, or a lettered part of that step; none is built unless its step is checked. The same rules hold throughout: the page shows recorded facts only, "unknown" and "stale" are said plainly, private identifiers and notes are hidden until asked for, every change goes through an existing authorized command, is confirmed before it happens and is recorded with who made it, and the page is read-only unless it was started with changes allowed.
+Everything a person should be able to do from the panel, grouped by what they came to do. Each line names the step above that delivers it, or a lettered part of that step; none is built unless its step is checked. The same rules hold throughout: the page shows recorded facts only, "unknown" and "stale" are said plainly, private identifiers are hidden until asked for (a hold's note is shown with them masked), every change goes through an existing authorized command, is confirmed before it happens and is recorded with who made it, and the page is read-only unless it was started with changes allowed.
 
 Get to it
 
