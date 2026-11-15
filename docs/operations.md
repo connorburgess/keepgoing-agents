@@ -1086,7 +1086,7 @@ Other loops are found two ways: the [registry](local-clients.md), and a supervis
 
 ### Lane recovery
 
-Released in v0.2.0; **offline fixtures only**, and **off by default**. No live lane has been retried by keepgoing. This is the only thing looptender ever does to a lane (a direct child conversation of the supervised BB thread), and it does it only when the loop's BB target sets:
+Released in v0.2.0; **offline fixtures only**, and **off by default**. No live lane has been retried by keepgoing. Apart from stopping lanes when a person asks with [`stop --lanes`](#stopping-the-lanes-too), this is the only thing looptender ever does to a lane (a direct child conversation of the supervised BB thread), and it does it only when the loop's BB target sets:
 
 ```yaml
 bb:
