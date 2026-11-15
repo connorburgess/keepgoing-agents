@@ -9,6 +9,7 @@ import (
 	"time"
 	"unicode/utf8"
 
+	"github.com/looptender/looptender/internal/accounts"
 	"github.com/looptender/looptender/internal/config"
 	"github.com/looptender/looptender/internal/incident"
 	"github.com/looptender/looptender/internal/probe"
@@ -38,7 +39,8 @@ const (
 )
 
 type dockReport struct {
-	SchemaVersion int `json:"schemaVersion"`
+	Accounts      *accounts.View `json:"accounts,omitempty"`
+	SchemaVersion int            `json:"schemaVersion"`
 	// ReadOnly is true for every response of this schema: the page offers no
 	// control and there is no write endpoint.
 	ReadOnly          bool         `json:"readOnly"`

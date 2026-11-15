@@ -574,6 +574,11 @@ Owner-approved next panel slice: help a person arriving at the page understand w
 
 Order beyond the dock: the route view first, then the no-progress flag, then review as a lane role (section 9), then anything across devices. Each later step depends on seeing one loop clearly.
 
+##### Accounts, prioritized first slice
+
+- [ ] **V7a — Real read-only account cards.** Source implementation lists explicitly selected contexts through one bounded private metadata/status catalog and a persistent Accounts entry. Claude Code/Codex checks are explicit CLI operations; page refresh executes no provider command. Owner labels, structured auth, allowlisted reported plan and freshness remain separate; identity, model and use associations stay unavailable where not established. Fictional storage/process/browser checks are recorded in [Accounts](accounts.md). Live selected-account population and installed-panel acceptance remain open, so this item is not complete.
+- [ ] **V7b — Official sign-in completion and additional transports.** Review bounded status observation, selected-account binding, success/failure/timeout/cancel, API/credential transport and optional notification privacy separately. No browser-close inference, automatic route enrollment, paid tests or authority promotion. #233, Open at Login and website holds remain.
+
 ##### Panel feature set
 
 Everything a person should be able to do from the panel, grouped by what they came to do. Each line names the step above that delivers it, or a lettered part of that step; none is built unless its step is checked. The same rules hold throughout: the page shows recorded facts only, "unknown" and "stale" are said plainly, private identifiers and notes are hidden until asked for, every change goes through an existing authorized command, is confirmed before it happens and is recorded with who made it, and the page is read-only unless it was started with changes allowed.

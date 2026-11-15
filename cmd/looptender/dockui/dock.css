@@ -395,3 +395,21 @@ details[open] > .work-summary .work-name::before { transform: rotate(45deg); }
   .change.is-review, .change-result { border: 1px solid CanvasText; }
   .btn.is-primary { forced-color-adjust: none; background: ButtonText; color: ButtonFace; }
 }
+
+/* Accounts reuse the panel's typography and native disclosure behavior. */
+.accounts-list { list-style: none; margin: 1.2rem 0; padding: 0; display: grid; gap: 1rem; }
+.account-card { border: 1px solid var(--line); border-radius: .6rem; min-width: 0; }
+.account-summary { position: relative; display: grid; grid-template-columns: minmax(0, 1.3fr) minmax(0, 1fr) minmax(0, 1fr); gap: 1rem; padding: 1.2rem 1.2rem 1.2rem 2.6rem; cursor: pointer; align-items: start; }
+.account-summary::before { content: "+"; position: absolute; left: 1rem; top: 1.2rem; }
+.account-card details[open] > .account-summary::before { content: "−"; }
+.account-title, .account-plan, .account-evidence { display: flex; flex-direction: column; gap: .3rem; min-width: 0; }
+.account-name { font-size: 1.125rem; font-weight: 650; overflow-wrap: anywhere; }
+.account-body { padding: 0 1.2rem 1.2rem; border-top: 1px solid var(--line); }
+.account-body .work-facts { margin-top: 1rem; }
+.account-evidence .tag { align-self: flex-start; }
+.account-note { border-left: 3px solid currentColor; padding-left: .8rem; }
+.account-summary > *, .account-body dd { overflow-wrap: anywhere; min-width: 0; }
+@media (max-width: 760px) {
+ .account-summary { grid-template-columns: minmax(0, 1fr); gap: 1rem; }
+ .account-plan { border-top: 1px solid var(--line); padding-top: .8rem; }
+}

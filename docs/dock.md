@@ -429,3 +429,7 @@ To see the page with fictional loops, build the fixture registry into an empty p
 KEEPGOING_DOCK_SCRATCH=/private/example-scratch go test ./cmd/looptender -run TestDockScratchForScreenshots -count=1
 keepgoing dock --directory /private/example-scratch/registry
 ```
+
+## Accounts
+
+Unreleased source adds a persistent read-only Accounts view backed by a private selected-context catalog. Refresh reads retained evidence only. Setup/status are explicit CLI operations; sign-in stays with the official provider tool. Names are owner labels, and login, plan, model and route-use evidence remain distinct. See [Accounts](accounts.md) for commands, caller/privacy boundaries and unverified live acceptance.

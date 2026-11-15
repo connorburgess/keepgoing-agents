@@ -9,7 +9,7 @@
   var SCHEMA = 1;
   var API = "api/v1/dock";
   var SERVER = "api/v1/server";
-  var state = { data: null, identifiers: false, paused: false, timer: 0, busy: false, again: false, lastOk: null, failed: false, pending: false, said: "", server: null, treeOpen: Object.create(null) };
+  var state = { data: null, identifiers: false, paused: false, timer: 0, busy: false, again: false, lastOk: null, failed: false, pending: false, said: "", server: null, treeOpen: Object.create(null), accountOpen: Object.create(null) };
 
   var TONES = {
     supervising: "good", waiting_for_you: "attn", waiting_on_limit: "limit", waiting_on_network: "limit", checks_failing: "warn",
@@ -120,6 +120,7 @@
     var h = location.hash.replace(/^#\/?/, "");
     var m = /^routes(?:\/(r[0-9a-f]+))?$/.exec(h);
     if (m) return { view: "routes", key: m[1] || "" };
+    if (h === "accounts") return { view: "accounts" };
     if (h === "versions") return { view: "versions" };
     m = /^loop\/([a-z0-9]+)$/.exec(h);
     if (m) return { view: "loop", key: m[1] };
@@ -320,6 +321,8 @@
     fixed.appendChild(top);
     var rs = d.routesSummary || {};
     fixed.appendChild(pickRow("#/routes", rs.trouble ? "dot-limit" : "dot-calm", "Routes", rs.picker || "", r.view === "routes"));
+    var ac = d.accounts || {};
+    fixed.appendChild(pickRow("#/accounts", "dot-calm", "Accounts", ac.complete ? list(ac.cards).length + " selected" : "Unavailable", r.view === "accounts"));
     var vs = d.versions || {};
     fixed.appendChild(pickRow("#/versions", vs.behind ? "dot-limit" : "dot-calm", "Versions", vs.summary || "", r.view === "versions"));
     nav.appendChild(fixed);
@@ -867,6 +870,74 @@
 
   // ---- Versions: where each build runs ----
   var versionDots = { current: "dot-good", same_file: "dot-good", newer: "dot-good", older: "dot-limit", different: "dot-limit", different_file: "dot-limit", stale: "dot-calm" };
+  function accountEvidence(e) {
+    e = e || {};
+    var wrap = el("div", "account-evidence");
+    wrap.appendChild(el("span", null, e.text || "Unavailable"));
+    if (e.freshness === "stale") wrap.appendChild(tag("stale", "Stale"));
+    if (e.observedAt) wrap.appendChild(el("span", "sub", "Observed " + fmt(secFmt, e.observedAt)));
+    if (e.source) wrap.appendChild(el("span", "sub", e.source));
+    return wrap;
+  }
+  function renderAccounts(d, pane) {
+    var a = d.accounts || {};
+    pane.appendChild(back());
+    pane.appendChild(paneHead("Accounts"));
+    pane.appendChild(el("p", "lede", "Your selected accounts, with the evidence available on this device."));
+    pane.appendChild(el("p", "sub", "Read-only. Reading this page never checks a login or calls a model."));
+    if (!a.complete || a.state !== "available") {
+      pane.appendChild(emptyBox("Accounts unavailable", "The private account catalog could not be read completely. This does not mean no accounts are selected."));
+      return;
+    }
+    var cards = list(a.cards);
+    if (!cards.length) {
+      pane.appendChild(emptyBox("No accounts selected here yet", "Select an existing account context with the accounts add command, then explicitly check it with accounts check. Provider sign-in stays in the official provider tool."));
+      return;
+    }
+    pane.appendChild(el("p", "account-count", cards.length + (cards.length === 1 ? " selected account" : " selected accounts")));
+    var ul = el("ul", "accounts-list"), retained = Object.create(null);
+    cards.forEach(function (c) {
+      var li = el("li", "account-card"), details = el("details");
+      details.open = !!state.accountOpen[c.id]; retained[c.id] = details.open;
+      var summary = el("summary", "account-summary");
+      summary.setAttribute("data-focus", "account-" + c.id);
+      var name = el("span", "account-name", c.label);
+      var provider = el("span", "sub", c.provider === "claude-code" ? "Claude Code" : c.provider === "codex" ? "Codex" : c.provider);
+      var identity = el("span", "account-title"); identity.appendChild(name); identity.appendChild(provider);
+      identity.appendChild(el("span", "sub", c.selection === "inherited" ? "Inherited context" : c.selection === "explicit_directory" ? "Selected context" : "External context"));
+      summary.appendChild(identity);
+      var status = el("span", "account-status"); status.appendChild(accountEvidence(c.auth)); summary.appendChild(status);
+      var plan = el("span", "account-plan");
+      plan.appendChild(el("span", "sub", "Reported plan"));
+      plan.appendChild(accountEvidence(c.plan)); summary.appendChild(plan);
+      details.appendChild(summary);
+      var body = el("div", "account-body");
+      var facts = el("dl", "work-facts");
+      facts.appendChild(fact("Selected context", c.selection === "explicit_directory" ? "Explicitly selected directory" : c.selection === "inherited" ? "Inherited environment and provider defaults" : "Externally managed"));
+      facts.appendChild(fact("Account identity", "Not verified. The name is your selected label."));
+      facts.appendChild(fact("Configured model", accountEvidence(c.configuredModel)));
+      facts.appendChild(fact("Actual response model", accountEvidence(c.observedModel)));
+      facts.appendChild(fact("Route associations", "Unavailable. No route has been enrolled by this selection."));
+      if (c.previousAuth) facts.appendChild(fact("Previous observation", accountEvidence(c.previousAuth)));
+      body.appendChild(facts);
+      var reasons = {
+        context_changed: "The effective context differs from the selection. Review and update it before checking again.",
+        unsupported: "Authentication is externally managed or unsupported here. Use the provider's own controls.",
+        timeout: "The latest status check timed out. It did not establish a current login.",
+        cancelled: "The latest status check was cancelled.",
+        version_unavailable: "The selected CLI version could not be established.",
+        status_unavailable: "The latest status command did not establish a recognized login result."
+      };
+      if (c.reason) body.appendChild(el("p", "account-note", reasons[c.reason] || "The latest account check is unavailable."));
+      body.appendChild(el("p", "sub", "Login and plan reports do not verify quota, model access or continuing availability. Status becomes stale after five minutes. Use the explicit accounts check command to record another observation."));
+      details.appendChild(body);
+      details.addEventListener("toggle", function () { if (details.isConnected) state.accountOpen[c.id] = details.open; });
+      li.appendChild(details); ul.appendChild(li);
+    });
+    state.accountOpen = retained;
+    pane.appendChild(ul);
+  }
+
   function renderVersions(d, pane) {
     var v = d.versions || {};
     pane.appendChild(back());
@@ -1037,6 +1108,7 @@
       if (r.view === "loop") renderLoop(d, pane, r.key);
       else if (r.view === "routes") renderRoutes(d, pane);
       else if (r.view === "versions") renderVersions(d, pane);
+      else if (r.view === "accounts") renderAccounts(d, pane);
       else renderHome(d, pane);
     } catch (err) {
       pane.replaceChildren(emptyBox("This page could not show the reply it was sent.", "Reload the page, or restart keepgoing " + served() + "."));
