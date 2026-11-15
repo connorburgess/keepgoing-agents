@@ -449,7 +449,9 @@ func TestRunsNamesTheSupervisedConversationALoopIsWaitingOn(t *testing.T) {
 	if b, out := read(); b.Availability != blockerUnknown || b.Reason != "child_listing_incomplete" || len(b.Children) != 0 || strings.Contains(out, key) {
 		t.Fatalf("%+v", b)
 	}
-	// A held check observes nothing, so the record is older than the last check.
+	// A paused check observes nothing, so the record is older than the last
+	// check: the listing before the pause is kept, marked as such, and no
+	// child is said to hold the run.
 	write(t, filepath.Join(f.bbDir, "thr_primary.children"), `[{"id":"thr_child","visibility":"hidden"}]`, 0o600)
 	write(t, filepath.Join(f.bbDir, "thr_child.show"), `{"thread":{"id":"thr_child","parentThreadId":"thr_primary","status":"active"}}`, 0o600)
 	f.tick()
@@ -458,7 +460,7 @@ func TestRunsNamesTheSupervisedConversationALoopIsWaitingOn(t *testing.T) {
 	}
 	command("pause", "-c", f.cfg)
 	f.tick()
-	if b, _ = read(); b.Availability != blockerUnknown || b.Reason != "not_refreshed_by_the_last_check" || len(b.Children) != 0 {
+	if b, _ = read(); b.Availability != blockerBeforeHold || b.LastCheckCause != "paused" || len(b.Children) != 1 || b.Children[0].Holds {
 		t.Fatalf("%+v", b)
 	}
 	// No child thread ID was ever written to the parent's graph.
