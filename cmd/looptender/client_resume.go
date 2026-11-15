@@ -228,16 +228,17 @@ func clientResume(ctx context.Context, directory, id, operation, ticket string, 
 		if !ok {
 			return fail("binding_unavailable")
 		}
-		// Supervision never clears a hold: neither a ticket nor a resume for
-		// the loop's own session or anything its supervisor started.
-		if checkHoldClearer(cfg, caller) != nil {
-			return fail("supervised_session")
-		}
 		tick, err := lock.Acquire(entry.StateDir)
 		if err != nil {
 			return err
 		}
 		defer tick.Release()
+		// Supervision never clears a hold: neither a ticket nor a resume for
+		// the loop's own session or anything its supervisor started. Under
+		// the check lock, so no handoff can change the target in between.
+		if checkHoldClearer(cfg, caller) != nil {
+			return fail("supervised_session")
+		}
 		// This check happens under both locks for each branch below.
 		binding := func() (string, control.File, error) {
 			current, ok := clientEntry(dir, id)
