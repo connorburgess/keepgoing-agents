@@ -190,7 +190,7 @@ type Command struct {
 const (
 	laneNotSupervised = "Lanes, the conversations this session starts, are not supervised by implication: looptender does not message or create them, and this context does not cover them."
 	laneRetryOff      = "Lane recovery is off: looptender does not retry a lane's failed turn."
-	laneStop          = "looptender stops a lane only for stop --lanes, which is for a person."
+	laneStop          = "looptender stops a lane only for stop --lanes, which is for a person. looptender does not enforce this."
 )
 
 // Build returns the supervision context. It is pure.

@@ -429,7 +429,7 @@ func TestFixedSentences(t *testing.T) {
 	if laneNotSupervised != "Lanes, the conversations this session starts, are not supervised by implication: looptender does not message or create them, and this context does not cover them." {
 		t.Fatalf("lanes %q", laneNotSupervised)
 	}
-	if laneStop != "looptender stops a lane only for stop --lanes, which is for a person." || laneRetryOff != "Lane recovery is off: looptender does not retry a lane's failed turn." {
+	if laneStop != "looptender stops a lane only for stop --lanes, which is for a person. looptender does not enforce this." || laneRetryOff != "Lane recovery is off: looptender does not retry a lane's failed turn." {
 		t.Fatalf("lanes %q %q", laneStop, laneRetryOff)
 	}
 	// The sentences said in both lane configurations must not deny the
