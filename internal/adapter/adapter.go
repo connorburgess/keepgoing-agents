@@ -36,6 +36,14 @@ type Adapter interface {
 	Stop(ctx context.Context) error
 }
 
+// ConversationKeyer reports which conversation the next send goes to, so
+// a goal copy can be tied to it. known is false when the adapter cannot say;
+// an empty key with known true means the next turn starts a new
+// conversation. The key is an identity, never conversation content.
+type ConversationKeyer interface {
+	ConversationKey() (key string, known bool)
+}
+
 // WakePoller consumes structured notifications that can justify an early idle
 // check. It never sends a prompt. The caller holds the tick lock, honors control
 // holds, and re-observes the target before using the signal.

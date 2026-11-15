@@ -36,7 +36,9 @@ const Primary = "primary"
 // File is what one tick leaves for the next.
 type File struct {
 	LastPromptSend *PromptSend `json:"lastPromptSend,omitempty"`
-	StallRetry     *StallRetry `json:"stallRetry,omitempty"`
+	// GoalCopy is the latest full goal copy sent; see GoalCopy.
+	GoalCopy   *GoalCopy   `json:"goalCopy,omitempty"`
+	StallRetry *StallRetry `json:"stallRetry,omitempty"`
 	// SilentRetry records when the active target was first observed with an
 	// expired retry notice, so its continued silence can be bounded.
 	SilentRetry *SilentRetry `json:"silentRetry,omitempty"`
@@ -833,6 +835,9 @@ func Load(stateDir string) (File, error) {
 	}
 	if f.LastPromptSend != nil && !f.LastPromptSend.Valid() {
 		f.LastPromptSend = nil
+	}
+	if f.GoalCopy != nil && !f.GoalCopy.Valid() {
+		f.GoalCopy = nil
 	}
 	return f, nil
 }
