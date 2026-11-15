@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- `transfer preview` can assess a move to a thread in another BB project or environment on the same host (`--across-environment`) and with changed labels (`--provider`, `--quota-group`, `--model`/`--no-model`, `--reasoning`/`--no-reasoning`), reported as an unverified `plan`. A provider change requires every label explicitly and no probe or timing section, and the destination must be inside a progress repository unless `--accept-workspace-outside` is given. Read-only; `transfer apply` does not perform these moves yet.
+
 - `doctor` (`agent.<id>.workspace`) and `transfer preview` (`workspace.from`, `workspace.to`) warn when BB reports a thread's working directory outside every configured progress repository and its registered worktrees. The comparison runs only a read-only `git worktree list`, withholds paths, and never changes doctor's exit status or the preview's compatibility.
 
 - Scope account login phrases to the selected CLI and link Accounts to existing recorded Routes/Allowances usage. Preserve observation age and unavailable/stale evidence; route usage remains unassociated with named account cards, with no new polling or collector.

@@ -50,6 +50,27 @@ type transferPreview struct {
 	Owner                string               `json:"owner,omitempty"`
 	Goal                 *control.GoalSummary `json:"goal,omitempty"`
 	Checks               []doctorCheck        `json:"checks"`
+	// Plan is present only when the preview was asked about a move across
+	// environments or with changed labels.
+	Plan *transferPlan `json:"plan,omitempty"`
+}
+
+// transferChange is one configured label before and after a planned move.
+type transferChange struct {
+	From string `json:"from"`
+	To   string `json:"to"`
+}
+
+// transferPlan is what an explicit move across environments or with new
+// labels would change. Labels come only from flags and are never verified.
+type transferPlan struct {
+	AcrossEnvironment      bool            `json:"acrossEnvironment"`
+	AcceptWorkspaceOutside bool            `json:"acceptWorkspaceOutside"`
+	Provider               *transferChange `json:"provider,omitempty"`
+	QuotaGroup             *transferChange `json:"quotaGroup,omitempty"`
+	Model                  *transferChange `json:"model,omitempty"`
+	Reasoning              *transferChange `json:"reasoning,omitempty"`
+	LabelVerification      string          `json:"labelVerification"`
 }
 
 // A preview is advisory, not a prepared transaction or an authorization token.
@@ -70,6 +91,14 @@ func transferCommand(e env, args []string, run doctorRun) int {
 	asJSON := fs.Bool("json", false, "versioned advisory preview")
 	offline := fs.Bool("offline", false, "skip BB identity queries")
 	timeout := fs.Duration("timeout", 5*time.Second, "timeout per read-only BB query (at most 30s)")
+	across := fs.Bool("across-environment", false, "assess a move to a thread in another BB project, environment or working directory on the same host")
+	acceptOutside := fs.Bool("accept-workspace-outside", false, "with --across-environment, accept a destination working directory that is not inside a progress repository or its worktrees")
+	newProvider := fs.String("provider", "", "provider label after the move (explicit; never inferred from BB)")
+	newGroup := fs.String("quota-group", "", "quota group label after the move")
+	newModel := fs.String("model", "", "BB model label after the move")
+	noModel := fs.Bool("no-model", false, "clear the BB model label in the move")
+	newReasoning := fs.String("reasoning", "", "BB reasoning label after the move")
+	noReasoning := fs.Bool("no-reasoning", false, "clear the BB reasoning label in the move")
 	if err := fs.Parse(args[1:]); err != nil {
 		if errors.Is(err, flag.ErrHelp) {
 			fs.SetOutput(e.stdout)
@@ -81,6 +110,16 @@ func transferCommand(e env, args []string, run doctorRun) int {
 	}
 	if fs.NArg() != 0 || !transferThreadID.MatchString(*thread) || *timeout <= 0 || *timeout > 30*time.Second {
 		e.errf("transfer: provide a valid --thread and a timeout greater than zero and at most 30s; no positional arguments")
+		return exitUsage
+	}
+	for _, l := range []string{*newProvider, *newGroup, *newModel, *newReasoning} {
+		if l != "" && !transferLabel.MatchString(l) {
+			e.errf("transfer: --provider, --quota-group, --model and --reasoning take a plain label")
+			return exitUsage
+		}
+	}
+	if (*newModel != "" && *noModel) || (*newReasoning != "" && *noReasoning) || (*acceptOutside && !*across) {
+		e.errf("transfer: --model and --no-model, or --reasoning and --no-reasoning, are exclusive; --accept-workspace-outside requires --across-environment")
 		return exitUsage
 	}
 	if !configDefault(e, "transfer", fs, path) {
@@ -114,6 +153,46 @@ func transferCommand(e env, args []string, run doctorRun) int {
 	} else {
 		r.ConfiguredProvider, r.ConfiguredQuotaGroup, r.ConfiguredModel, r.ConfiguredReasoning = a.Provider, a.Group, a.BB.Model, a.BB.Reasoning
 		add("labels", "ok", "Configured labels have a supported shape; this does not verify accounts or model access.")
+	}
+	// The planned labels: unchanged unless a flag names a new value.
+	plan := &transferPlan{AcrossEnvironment: *across, AcceptWorkspaceOutside: *acceptOutside, LabelVerification: "unavailable"}
+	afterProvider := a.Provider
+	change := func(from, to string) *transferChange {
+		if from == to {
+			return nil
+		}
+		return &transferChange{From: from, To: to}
+	}
+	if *newProvider != "" {
+		afterProvider = *newProvider
+		plan.Provider = change(a.Provider, *newProvider)
+	}
+	if *newGroup != "" {
+		plan.QuotaGroup = change(a.Group, *newGroup)
+	}
+	if *newModel != "" || *noModel {
+		plan.Model = change(a.BB.Model, *newModel)
+	}
+	if *newReasoning != "" || *noReasoning {
+		plan.Reasoning = change(a.BB.Reasoning, *newReasoning)
+	}
+	if *across || plan.Provider != nil || plan.QuotaGroup != nil || plan.Model != nil || plan.Reasoning != nil {
+		r.Plan = plan
+		// This CLI's apply does not perform these moves yet.
+		r.ApplySupported = false
+	}
+	if plan.Provider != nil {
+		if *newGroup == "" || (*newModel == "" && !*noModel) || (*newReasoning == "" && !*noReasoning) {
+			add("labels_required", "error", "A provider change needs explicit --quota-group, --model or --no-model, and --reasoning or --no-reasoning; no label is carried over or guessed.")
+		}
+		writesProbe, err := cfg.WritesProbe()
+		if err != nil {
+			add("provider_settings", "unavailable", "The configuration file could not be reread to check for provider-bound settings.")
+		} else if writesProbe || cfg.Loop.Timing != nil {
+			add("provider_settings", "error", "The configuration has a probe or timing section, which names the current provider's models or accounts. Remove it before planning a provider change.")
+		} else {
+			add("provider_settings", "ok", "No probe or timing section names the current provider.")
+		}
 	}
 	if cfg.Loop.HasRouteList() {
 		add("fallbacks", "error", "Fallback configurations require a broader transfer plan; this preview only assesses a single BB primary.")
@@ -160,15 +239,44 @@ func transferCommand(e env, args []string, run doctorRun) int {
 			add("threads", "unavailable", "Both live BB identities and environments could not be verified; raw output withheld.")
 		} else {
 			r.From, r.To = from, to
-			if from.Project != to.Project || from.Environment != to.Environment || from.Host != to.Host || filepath.Clean(fromPath) != filepath.Clean(toPath) {
-				add("environment", "error", "Destination differs in project, environment, host or working directory; cross-environment transfer is outside this preview.")
-			} else {
+			samePlace := from.Project == to.Project && from.Environment == to.Environment && filepath.Clean(fromPath) == filepath.Clean(toPath)
+			switch {
+			case from.Host != to.Host:
+				// Moving between devices is a hop, which this command never does.
+				add("environment", "error", "Destination is on another BB host; moving a loop between devices is not a transfer.")
+			case samePlace:
 				add("environment", "ok", "BB reports the same project, environment, host and working directory for both threads.")
+			case !*across:
+				add("environment", "error", "Destination differs in project, environment or working directory; add --across-environment to assess that move.")
+			default:
+				add("environment", "warning", "Destination differs in project, environment or working directory on the same host; assessed because --across-environment was given.")
 			}
-			if from.Provider != a.Provider || to.Provider != a.Provider {
-				add("provider", "error", "A thread provider differs from the configured provider; automatic relabeling is not supported.")
-			} else {
+			switch {
+			case from.Provider != a.Provider:
+				add("provider", "error", "The source thread's provider differs from the configured provider label; repair the configuration before planning a move.")
+			case to.Provider != afterProvider && *newProvider == "":
+				add("provider", "error", "The destination's provider differs from the configured provider; give the new label explicitly with --provider. It is never inferred.")
+			case to.Provider != afterProvider:
+				add("provider", "error", "The destination's provider differs from the --provider label.")
+			case plan.Provider != nil:
+				add("provider", "ok", "The source matches the configured provider label and the destination matches the --provider label.")
+			default:
 				add("provider", "ok", "Both thread provider IDs match the configured provider label.")
+			}
+			// A move to another place must land where progress is measured,
+			// unless a person explicitly accepts that it does not.
+			if *across && !samePlace {
+				status, _ := workspaceVerdict(e.ctx, toPath, cfg.Loop.Progress.Repositories, *timeout)
+				switch {
+				case status == "ok":
+					add("workspace", "ok", "The destination's working directory is inside a progress repository or one of its worktrees.")
+				case *acceptOutside:
+					add("workspace", "warning", "The destination's working directory is not confirmed inside a progress repository; accepted with --accept-workspace-outside. Progress there may not be seen.")
+				case status == "warning":
+					add("workspace", "error", "The destination's working directory is outside every progress repository and its worktrees. Progress there would not be seen; add --accept-workspace-outside to accept that.")
+				default:
+					add("workspace", "unavailable", "Whether the destination's working directory is inside a progress repository could not be established; add --accept-workspace-outside to proceed without it.")
+				}
 			}
 			// Advisory only: appended directly so that it never changes
 			// compatibility, whatever its status.
@@ -188,7 +296,7 @@ func transferCommand(e env, args []string, run doctorRun) int {
 	// The preview never grants authority or reserves a future apply operation.
 	r.Checks = append(r.Checks,
 		doctorCheck{ID: "model_account", Status: "unavailable", Message: "Thread show does not verify model/reasoning selection, account identity, quota or model access. Configured labels are not verification."},
-		doctorCheck{ID: "apply", Status: "warning", Message: "Preview only. Use explicit transfer apply with expected --from and --thread; it revalidates under the tick lock and leaves an awaiting-user hold. The plugin move UI is not implemented."},
+		applyCheck(r.Plan != nil),
 		doctorCheck{ID: "freshness", Status: "warning", Message: "Reads are independent, not an atomic snapshot. Holds, ownership and targets may change; a future apply operation must revalidate under locks."},
 	)
 	if *asJSON {
@@ -205,6 +313,17 @@ func transferCommand(e env, args []string, run doctorRun) int {
 			}
 		}
 		fmt.Fprintf(e.stdout, "Configured provider: %s; model: %s; reasoning: %s; quota group: %s\n", r.ConfiguredProvider, r.ConfiguredModel, r.ConfiguredReasoning, r.ConfiguredQuotaGroup)
+		if p := r.Plan; p != nil {
+			fmt.Fprintf(e.stdout, "Planned move: across-environment=%t accept-workspace-outside=%t (labels unverified)\n", p.AcrossEnvironment, p.AcceptWorkspaceOutside)
+			for _, c := range []struct {
+				name string
+				c    *transferChange
+			}{{"provider", p.Provider}, {"quota group", p.QuotaGroup}, {"model", p.Model}, {"reasoning", p.Reasoning}} {
+				if c.c != nil {
+					fmt.Fprintf(e.stdout, "  %s: %q -> %q\n", c.name, c.c.From, c.c.To)
+				}
+			}
+		}
 		if r.Controls != nil {
 			fmt.Fprintf(e.stdout, "Controls: enabled=%t paused=%t stop=%t awaiting-user=%t completed=%t\n", r.Controls.Enabled, r.Controls.Paused, r.Controls.Stop, r.Controls.AwaitingUser, r.Controls.Completed)
 		}
@@ -295,4 +414,13 @@ func inspectTransferTarget(ctx context.Context, cli, id string, timeout time.Dur
 		return transferTarget{}, "", bad
 	}
 	return transferTarget{Thread: id, Project: t.Project, Environment: t.Environment, Host: e.Host, Provider: t.Provider, Status: t.Status}, e.Path, nil
+}
+
+// applyCheck says what applying this preview takes. A plan across environments
+// or with new labels has no apply command yet.
+func applyCheck(planned bool) doctorCheck {
+	if planned {
+		return doctorCheck{ID: "apply", Status: "warning", Message: "Preview only. This CLI cannot yet apply a move across environments or with changed labels; the preview shows what such a move would require. Any future apply keeps every hold and adds an awaiting-user hold."}
+	}
+	return doctorCheck{ID: "apply", Status: "warning", Message: "Preview only. Use explicit transfer apply with expected --from and --thread; it revalidates under the tick lock and leaves an awaiting-user hold. The plugin move UI is not implemented."}
 }
