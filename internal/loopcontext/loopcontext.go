@@ -33,16 +33,18 @@ const NoOwnerRecorded = "none recorded"
 // configuration only. Nothing here asks the provider which session it is.
 const IdentityEvidence = "configuration_only"
 
-// CallerIdentity is said in every context. Only a BB thread has a verified
-// caller identity.
-const CallerIdentity = "Caller identity is verified only for a BB thread, from BB_THREAD_ID. A command run from any other session has no verified caller identity and is treated as an ordinary terminal."
+// CallerIdentity is said in every context. No caller identity is verified:
+// BB_THREAD_ID is taken as given.
+const CallerIdentity = "Caller identity is taken from BB_THREAD_ID, which is checked only for its form and not with BB. A command run without it has no caller identity and is treated as an ordinary terminal."
 
-// RetainedAuthority is said in every context, in this order.
+// RetainedAuthority is said in every context, in this order. Each sentence
+// must hold in every configuration; anything conditional belongs with the
+// setting it depends on.
 var RetainedAuthority = []string{
 	"Supervision grants no permission.",
-	"The provider's sandbox and permission mode are unchanged by supervision.",
-	"Only a person clears a hold.",
-	"looptender never merges, edits a repository or reads transcript text.",
+	"Supervision adds no permission beyond the permission settings this context lists.",
+	"A session must not clear a hold; resume is for a person. looptender does not enforce this.",
+	"looptender never merges or edits a repository, and never reads transcript text to make a decision.",
 	"Lanes are not supervised by implication.",
 }
 
@@ -62,6 +64,9 @@ type Input struct {
 	// TargetCreated: the active target is a BB thread looptender created at
 	// a handoff to a bb.new_thread candidate.
 	TargetCreated bool
+	// TargetPending: TargetAgent is nil because the active route starts a
+	// new BB thread and no thread has been recorded for it yet.
+	TargetPending bool
 	// SendsUsed is the send count against loop.limits.max_sends, or nil with
 	// SendsError when it could not be read. Read only when max_sends is set.
 	SendsUsed  *int64
@@ -183,9 +188,9 @@ type Command struct {
 
 // Fixed lane sentences.
 const (
-	laneNotSupervised = "Lanes, the conversations this session starts, are not supervised by implication: looptender does not wake, message or create them, and this context does not cover them."
+	laneNotSupervised = "Lanes, the conversations this session starts, are not supervised by implication: looptender does not message or create them, and this context does not cover them."
 	laneRetryOff      = "Lane recovery is off: looptender does not retry a lane's failed turn."
-	laneStop          = "A lane is stopped only when a person asks with stop --lanes."
+	laneStop          = "looptender stops a lane only for stop --lanes, which is for a person."
 )
 
 // Build returns the supervision context. It is pure.
@@ -260,6 +265,9 @@ func target(in Input) (*Target, string) {
 	route := in.State.Target()
 	a := in.TargetAgent
 	if a == nil {
+		if in.TargetPending {
+			return nil, fmt.Sprintf("the active route %q starts a new BB thread, and its thread has not been recorded yet", route)
+		}
 		return nil, fmt.Sprintf("the active route %q is missing or switched off in the configuration", route)
 	}
 	t := &Target{Route: route, Adapter: a.Adapter, Provider: a.Provider, IdentityEvidence: IdentityEvidence}
@@ -395,13 +403,13 @@ func permissions(in Input) Permissions {
 		// thread, so a created thread never inherits a project default.
 		p.PermissionMode = a.BB.NewThreadPermission()
 		if a.BB.PermissionMode != "" {
-			p.PermissionModeSource = "bb.permission_mode, applied when looptender created this thread"
+			p.PermissionModeSource = "bb.permission_mode, set when looptender created this thread; it may have changed since"
 		} else {
-			p.PermissionModeSource = "looptender's default, applied when it created this thread"
+			p.PermissionModeSource = "looptender's default, set when it created this thread; it may have changed since"
 		}
 	}
 	if len(extra) > 0 {
-		p.ExtraArgs = "extra_args are passed to the agent unchanged; looptender does not interpret them"
+		p.ExtraArgs = "extra_args are passed to the agent unchanged and may override the settings above; looptender does not interpret them"
 	}
 	return p
 }
@@ -427,8 +435,8 @@ func commands(prefix, cfg string) []Command {
 	return []Command{
 		{Name: "context", Command: run("context"), Use: "show this context again; read-only"},
 		{Name: "status", Command: run("status"), Use: "show the loop's recorded status; read-only"},
-		{Name: "complete", Command: run("complete") + " --note 'Task completed and verified'", Use: "declare the entire task completed and verified; the loop holds until a person resumes it"},
-		{Name: "await-user", Command: run("await-user") + " --note 'Human input required; see the conversation'", Use: "ask for a person when all remaining work needs one; the loop holds until a person resumes it"},
+		{Name: "complete", Command: run("complete") + " --note 'Task completed and verified'", Use: "declare the entire task completed and verified; the loop holds until it is resumed, which is for a person"},
+		{Name: "await-user", Command: run("await-user") + " --note 'Human input required; see the conversation'", Use: "ask for a person when all remaining work needs one; the loop holds until it is resumed, which is for a person"},
 	}
 }
 

@@ -224,7 +224,15 @@ func TestBuild(t *testing.T) {
 			in.State = &state.File{ActiveTarget: "codex-main"}
 			in.TargetAgent = nil
 		}, func(t *testing.T, v View) {
-			if v.Target != nil || !strings.Contains(v.TargetUnavailable, `"codex-main"`) || len(v.Unavailable) != 0 {
+			if v.Target != nil || v.TargetUnavailable != `the active route "codex-main" is missing or switched off in the configuration` || len(v.Unavailable) != 0 {
+				t.Fatalf("target %+v %q", v.Target, v.TargetUnavailable)
+			}
+		}},
+		{"an active new-thread route whose thread is not recorded yet", func(in *Input) {
+			in.State = &state.File{ActiveTarget: "claude-new"}
+			in.TargetAgent, in.TargetPending = nil, true
+		}, func(t *testing.T, v View) {
+			if v.Target != nil || v.TargetUnavailable != `the active route "claude-new" starts a new BB thread, and its thread has not been recorded yet` {
 				t.Fatalf("target %+v %q", v.Target, v.TargetUnavailable)
 			}
 		}},
@@ -232,7 +240,8 @@ func TestBuild(t *testing.T) {
 			in.TargetAgent = &config.Agent{Adapter: "claude", Provider: "claude-code", Claude: &config.Claude{Workdir: "/private/example-app", PermissionMode: "acceptEdits", ExtraArgs: []string{"--example"}}}
 		}, func(t *testing.T, v View) {
 			p := v.Permissions
-			if p.PermissionMode != "acceptEdits" || p.PermissionModeSource != "claude.permission_mode" || p.Sandbox != NotSetByLooptender || p.ExtraArgs == "" {
+			if p.PermissionMode != "acceptEdits" || p.PermissionModeSource != "claude.permission_mode" || p.Sandbox != NotSetByLooptender ||
+				p.ExtraArgs != "extra_args are passed to the agent unchanged and may override the settings above; looptender does not interpret them" {
 				t.Fatalf("permissions %+v", p)
 			}
 			if strings.Contains(p.ExtraArgs, "--example") {
@@ -271,7 +280,7 @@ func TestBuild(t *testing.T) {
 			in.TargetAgent = &config.Agent{Adapter: "bb", Provider: "claude-code", BB: &config.BB{Thread: "thr_created1", NewThread: true}}
 			in.TargetCreated = true
 		}, func(t *testing.T, v View) {
-			if p := v.Permissions; p.PermissionMode != config.DefaultNewThreadPermission || !strings.HasPrefix(p.PermissionModeSource, "looptender's default") {
+			if p := v.Permissions; p.PermissionMode != config.DefaultNewThreadPermission || p.PermissionModeSource != "looptender's default, set when it created this thread; it may have changed since" {
 				t.Fatalf("permissions %+v", p)
 			}
 			if v.Target.Route != "claude-new" || v.Target.BBThread != "thr_created1" {
@@ -282,7 +291,7 @@ func TestBuild(t *testing.T) {
 			in.TargetAgent = &config.Agent{Adapter: "bb", BB: &config.BB{Thread: "thr_created1", NewThread: true, PermissionMode: "auto"}}
 			in.TargetCreated = true
 		}, func(t *testing.T, v View) {
-			if p := v.Permissions; p.PermissionMode != "auto" || !strings.HasPrefix(p.PermissionModeSource, "bb.permission_mode") {
+			if p := v.Permissions; p.PermissionMode != "auto" || p.PermissionModeSource != "bb.permission_mode, set when looptender created this thread; it may have changed since" {
 				t.Fatalf("permissions %+v", p)
 			}
 		}},
@@ -384,17 +393,50 @@ commands:
   keepgoing status -c '/private/example-loop/looptender.yaml'
     show the loop's recorded status; read-only
   keepgoing complete -c '/private/example-loop/looptender.yaml' --note 'Task completed and verified'
-    declare the entire task completed and verified; the loop holds until a person resumes it
+    declare the entire task completed and verified; the loop holds until it is resumed, which is for a person
   keepgoing await-user -c '/private/example-loop/looptender.yaml' --note 'Human input required; see the conversation'
-    ask for a person when all remaining work needs one; the loop holds until a person resumes it
+    ask for a person when all remaining work needs one; the loop holds until it is resumed, which is for a person
 authority:
   Supervision grants no permission.
-  The provider's sandbox and permission mode are unchanged by supervision.
-  Only a person clears a hold.
-  looptender never merges, edits a repository or reads transcript text.
+  Supervision adds no permission beyond the permission settings this context lists.
+  A session must not clear a hold; resume is for a person. looptender does not enforce this.
+  looptender never merges or edits a repository, and never reads transcript text to make a decision.
   Lanes are not supervised by implication.
 `
 	if got := Build(in).Text(); got != want {
 		t.Fatalf("text:\n%s\nwant:\n%s", got, want)
+	}
+}
+
+// Each fixed sentence is pinned word for word. Every one must hold in every
+// configuration: a lane sentence that depends on lane recovery, or a claim
+// that only a person clears a hold, which nothing enforces, does not belong
+// here.
+func TestFixedSentences(t *testing.T) {
+	if CallerIdentity != "Caller identity is taken from BB_THREAD_ID, which is checked only for its form and not with BB. A command run without it has no caller identity and is treated as an ordinary terminal." {
+		t.Fatalf("caller identity %q", CallerIdentity)
+	}
+	want := []string{
+		"Supervision grants no permission.",
+		"Supervision adds no permission beyond the permission settings this context lists.",
+		"A session must not clear a hold; resume is for a person. looptender does not enforce this.",
+		"looptender never merges or edits a repository, and never reads transcript text to make a decision.",
+		"Lanes are not supervised by implication.",
+	}
+	if !reflect.DeepEqual(RetainedAuthority, want) {
+		t.Fatalf("retained authority %q", RetainedAuthority)
+	}
+	if laneNotSupervised != "Lanes, the conversations this session starts, are not supervised by implication: looptender does not message or create them, and this context does not cover them." {
+		t.Fatalf("lanes %q", laneNotSupervised)
+	}
+	if laneStop != "looptender stops a lane only for stop --lanes, which is for a person." || laneRetryOff != "Lane recovery is off: looptender does not retry a lane's failed turn." {
+		t.Fatalf("lanes %q %q", laneStop, laneRetryOff)
+	}
+	// The sentences said in both lane configurations must not deny the
+	// retry that lane recovery makes.
+	for _, s := range []string{laneNotSupervised, laneStop} {
+		if strings.Contains(s, "wake") || strings.Contains(s, "retry") {
+			t.Fatalf("%q depends on lane recovery", s)
+		}
 	}
 }

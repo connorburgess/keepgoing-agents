@@ -50,6 +50,8 @@ func readContextInput(cfg *config.Config, cfgPath string, now time.Time) loopcon
 			if a, known := st.CandidateAgent(c); known {
 				in.TargetAgent = &a
 				in.TargetCreated = c.Agent.BB != nil && c.Agent.BB.NewThread
+			} else {
+				in.TargetPending = true
 			}
 		}
 	}

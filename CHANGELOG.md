@@ -2,7 +2,7 @@
 
 ## Unreleased
 
-- Add `keepgoing context -c <config> [--json]`, a read-only supervision context with `schemaVersion: 1`: loop name, adapter, target with configured identity, recorded owner or `none recorded`, holds, bounds with used and remaining (unset loop-wide limits said as unset), permission mode or sandbox only where the configuration sets them, lane policy, session commands and fixed retained-authority statements. It states that only BB threads have a verified caller identity. It writes nothing, queries no provider, names no device and is not sent to any session. Table tests and command fixtures only. See [supervision context](docs/operations.md#supervision-context).
+- Add `keepgoing context -c <config> [--json]`, a read-only supervision context with `schemaVersion: 1`: loop name, adapter, target with configured identity, recorded owner or `none recorded`, holds, bounds with used and remaining (unset loop-wide limits said as unset), permission mode or sandbox only where the configuration sets them, lane policy, session commands and fixed retained-authority statements. It states that caller identity is taken from `BB_THREAD_ID` without checking it with BB, and that a session must not clear a hold, which looptender does not enforce. It writes nothing, queries no provider, names no device and is not sent to any session. Table tests and command fixtures only. See [supervision context](docs/operations.md#supervision-context).
 
 - Scope account login phrases to the selected CLI and link Accounts to existing recorded Routes/Allowances usage. Preserve observation age and unavailable/stale evidence; route usage remains unassociated with named account cards, with no new polling or collector.
 

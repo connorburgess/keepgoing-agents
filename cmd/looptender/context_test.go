@@ -101,3 +101,26 @@ func TestContextCommandRefusesArguments(t *testing.T) {
 		t.Fatalf("%d %s", code, errs)
 	}
 }
+
+// A route that starts a new BB thread and has none recorded yet is reported
+// as such, not as missing from the configuration.
+func TestContextCommandNamesANewThreadNotRecordedYet(t *testing.T) {
+	f := newFixture(t)
+	fallbacks, _ := os.ReadFile(filepath.Join(f.dir, "fallbacks.yaml"))
+	old := "bb: {thread: thr_alt, cli: " + f.dir + "/bin/bb, model: claude-fable-5-1, reasoning: medium}"
+	if !strings.Contains(string(fallbacks), old) {
+		t.Fatal("fixture fallbacks changed")
+	}
+	write(t, filepath.Join(f.dir, "fallbacks.yaml"), strings.Replace(string(fallbacks), old, "bb: {new_thread: true, cli: "+f.dir+"/bin/bb}", 1), 0o600)
+	os.MkdirAll(filepath.Join(f.dir, "state"), 0o700)
+	write(t, filepath.Join(f.dir, "state", "state.json"), `{"activeTarget":"claude-other-account"}`, 0o600)
+
+	code, out, errs := f.run("context", "--json")
+	var v loopcontext.View
+	if code != exitOK || json.Unmarshal([]byte(out), &v) != nil {
+		t.Fatalf("context --json: %d %s %s", code, out, errs)
+	}
+	if v.Target != nil || v.TargetUnavailable != `the active route "claude-other-account" starts a new BB thread, and its thread has not been recorded yet` {
+		t.Fatalf("target %+v %q", v.Target, v.TargetUnavailable)
+	}
+}
