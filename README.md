@@ -215,7 +215,7 @@ Decisions use structured status: exit codes, JSON fields, HTTP status and provid
 
 ## Where this is headed
 
-The aim is for one person to run many coordinators and lanes at once without wasting usage: fewer and smaller turns, state kept in files instead of long conversations, and each lane on the least costly model that fits its task. Planned steps include a command that tells a supervised session what supervises it and what it may not do, recording the supervised session's context size, spacing out idle wakes that changed nothing, a panel view of a coordinator and its lanes, and moving supervision to another project or provider after a preview. None of these is in the current build. Choosing a model per lane will remain a convention that looptender does not enforce. The [roadmap](docs/roadmap.md) tracks each step and what verifies it.
+The aim is for one person to run many coordinators and lanes at once without wasting usage: fewer and smaller turns, state kept in files instead of long conversations, and each lane on the least costly model that fits its task. Planned steps include a command that tells a supervised session what supervises it and what it may not do, recording the supervised session's context size, spacing out idle wakes that changed nothing, a panel view of a coordinator and its lanes, and moving supervision to another project or provider after a preview. None of these is in the current build. Choosing a model per lane will remain a convention that looptender does not enforce; see [coordinating lanes](docs/coordinating-lanes.md). The [roadmap](docs/roadmap.md) tracks each step and what verifies it.
 
 ## Documentation
 
