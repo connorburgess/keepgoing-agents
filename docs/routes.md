@@ -47,6 +47,8 @@ For a headless route on the loop's own tool, the loop's execution settings carry
 
 A route is also left out for a loop when it is switched off (`disabled: true`), when its `group` is the group of the loop's first route (it would draw on the same limit), or when it is the agent, model and account the loop already uses. Every route that is left out is listed with the reason; nothing is guessed.
 
+A route's `group` is a free-text label you choose for the usage limit it draws on. It is not checked against any login, and it is not linked to an entry in the [accounts catalog](accounts.md#several-accounts-of-one-provider). Routes that enter a BB thread have no per-thread account: BB selects the config directory per project.
+
 Left to a loop's own list: a specific other conversation, a different working directory, custom probe commands, and process or Cursor targets. A loop that needs any of those keeps a `fallbacks.yaml`. There are no per-loop overrides of the standard list.
 
 ## Following the list
