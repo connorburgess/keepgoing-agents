@@ -87,7 +87,8 @@ type dockLane struct {
 }
 
 type dockLanes struct {
-	// current, held, stale, none_recorded or unknown, as dockChildren.
+	// current, held, before_hold, stale, none_recorded or unknown, as
+	// dockChildren.
 	Availability string     `json:"availability"`
 	Lanes        []dockLane `json:"lanes"`
 	Omitted      int        `json:"omitted"`
@@ -353,7 +354,7 @@ func dockDeviceOf(st *statusOut, hostname string, identifiers bool, now time.Tim
 func dockLaneList(r runsLoop, known bool, identifiers bool, current bool, titles *state.LaneTitles, now time.Time) dockLanes {
 	c := dockChildWork(r, known)
 	out := dockLanes{Availability: c.Availability, Lanes: []dockLane{}, Heading: "This loop's lanes"}
-	if out.Availability != "current" && out.Availability != "held" {
+	if out.Availability != "current" && out.Availability != "held" && out.Availability != "before_hold" {
 		return out
 	}
 	byKey := map[string]string{}
@@ -385,6 +386,10 @@ func dockLaneList(r runsLoop, known bool, identifiers bool, current bool, titles
 			l.State, l.Phrase = "failed", "Failed"
 		default:
 			l.State, l.Phrase = "unknown", "Unknown"
+		}
+		if c.Availability == "before_hold" && l.State != "unknown" {
+			// A listing from before a hold is never drawn as current.
+			l.Phrase = map[string]string{"working": "Was working", "waiting": "Was waiting for an answer", "failed": "Had failed"}[l.State]
 		}
 		if s := child.Supervised; s.Availability == recordRecorded && s.RegistrationID != "" {
 			l.Loop, l.LoopKey = clip(s.Loop, dockMaxText), dockKey(s.RegistrationID)
@@ -422,6 +427,9 @@ func dockLaneList(r runsLoop, known bool, identifiers bool, current bool, titles
 		when += dockAgo(now, *c.CheckedAt)
 	} else {
 		when += "at an unknown time"
+	}
+	if c.Availability == "before_hold" {
+		when = dockBeforeHold(r.Blocker) + "; not current"
 	}
 	out.Heading = "This loop's lanes \u00B7 " + strings.Join(counts, ", ") + " \u00B7 " + when
 	out.Footer = "looptender records each lane's state and, when BB reports one, its title, which is shown with identifiers and notes; not which route it is on"

@@ -57,6 +57,10 @@ def fixture(kind, args):
             value = load(root / "events.json")
         elif command in (["thread", "list"], ["thread", "interactions"]):
             value = []
+        elif command == ["thread", "context"]:
+            # A bb without the command: the context reading is unavailable.
+            print("unknown command: thread context", file=sys.stderr)
+            return 1
         elif command == ["thread", "tell"]:
             require(sys.stdin.read() == PRIVATE, "Unexpected fixture task.")
             value = {"ok": True}

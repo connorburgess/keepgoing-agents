@@ -555,7 +555,8 @@
     var b = el("div", "lanes is-wide");
     b.appendChild(el("span", "lanes-label", (lanes && lanes.heading) || "This loop's lanes"));
     if (!rows.length) {
-      b.appendChild(!c || c.availability === "unknown" || !c.phrase ? unknown() : el("span", "sub", c.phrase));
+      // An unknown answer carries its reason in the phrase: "Unknown: …".
+      b.appendChild(!c || !c.phrase ? unknown() : c.availability === "unknown" ? unknown(c.phrase) : el("span", "sub", c.phrase));
       return b;
     }
     var ul = el("ul", "lane-list");
