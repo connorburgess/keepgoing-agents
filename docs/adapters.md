@@ -54,9 +54,9 @@ To change the matrix, edit the table and run `KEEPGOING_UPDATE_ADAPTERS_DOC=1 go
 | [Recover a failed turn: exact session resume](#recover-a-failed-turn-exact-session-resume) | n/a | yes · fixture | yes · fixture | yes · live | missing · none | n/a | partial · fixture |
 | [Recover a failed turn: retry the turn](#recover-a-failed-turn-retry-the-turn) | yes · fixture | missing · none | missing · none | missing · none | missing · none | missing · none | missing · none |
 | [Connection loss and the network check](#connection-loss-and-the-network-check) | yes · fixture | yes · fixture | yes · fixture | yes · fixture | missing · none | yes · fixture | yes · fixture |
-| [Child-work awareness](#child-work-awareness) | yes · live | n/a | n/a | n/a | missing · none | partial · fixture | n/a |
-| [Child failure notice and report](#child-failure-notice-and-report) | yes · fixture | n/a | n/a | n/a | missing · none | n/a | n/a |
-| [Lane recovery: retry a failed child's turn](#lane-recovery-retry-a-failed-childs-turn) | yes · fixture | missing · none | missing · none | missing · none | missing · none | missing · none | missing · none |
+| [Lane awareness](#lane-awareness) | yes · live | n/a | n/a | n/a | missing · none | partial · fixture | n/a |
+| [Lane failure notice and report](#lane-failure-notice-and-report) | yes · fixture | n/a | n/a | n/a | missing · none | n/a | n/a |
+| [Lane recovery: retry a failed lane's turn](#lane-recovery-retry-a-failed-lanes-turn) | yes · fixture | missing · none | missing · none | missing · none | missing · none | missing · none | missing · none |
 | [Handoff away from it](#handoff-away-from-it) | yes · live | yes · fixture | yes · fixture | missing · none | missing · none | yes · fixture | yes · fixture |
 | [Handoff to it](#handoff-to-it) | yes · live | yes · fixture | yes · fixture | missing · none | missing · none | yes · fixture | partial · fixture |
 | [Switch-back](#switch-back) | yes · fixture | yes · fixture | yes · fixture | missing · none | missing · none | yes · fixture | yes · fixture |
@@ -164,41 +164,47 @@ Tell an outage from a provider failure, wait it out without spending re-prompts 
 - **Generic process:** yes, evidence fixture. The decision is the same for every adapter and is tested with a fake adapter, not with this one. [`TestOutageDoesNotSpendRepromptsOrProbes`](../internal/supervise/network_test.go) [operations.md#network-outages](operations.md#network-outages)
 - **Agent defined in configuration:** yes, evidence fixture. As for the built-in headless agents. The turn that ran into the outage is spent; nothing else is sent and no hold is raised until the network returns. Run end to end with a stand-in agent. [`TestDefinedAgentOutage`](../internal/scenario/defined_agent_test.go) [operations.md#network-outages](operations.md#network-outages)
 
-### Child-work awareness
+<a id="child-work-awareness"></a>
+
+### Lane awareness
 
 Hold a parent that is not in error while conversations it started are still working, and say which. A parent in error is recovered regardless.
 
-- **BB thread:** yes, evidence live. Direct child threads are listed and verified on each check. [run-discovery.md#live-check-waiting-on](run-discovery.md#live-check-waiting-on) [`TestObserveActiveChildSuppressesParentUntilFinished`](../internal/adapter/bb/children_test.go)
-- **Claude Code headless:** n/a. A headless turn has no child conversations outside its own process. Subagents the CLI starts live and end inside the turn.
-- **Codex headless:** n/a. A headless turn has no child conversations outside its own process. Subagents the CLI starts live and end inside the turn.
-- **Cursor headless:** n/a. A headless turn has no child conversations outside its own process. Subagents the CLI starts live and end inside the turn.
+- **BB thread:** yes, evidence live. Lanes (direct child threads) are listed and verified on each check. [run-discovery.md#live-check-waiting-on](run-discovery.md#live-check-waiting-on) [`TestObserveActiveChildSuppressesParentUntilFinished`](../internal/adapter/bb/children_test.go)
+- **Claude Code headless:** n/a. A headless turn has no lanes outside its own process. Subagents the CLI starts live and end inside the turn.
+- **Codex headless:** n/a. A headless turn has no lanes outside its own process. Subagents the CLI starts live and end inside the turn.
+- **Cursor headless:** n/a. A headless turn has no lanes outside its own process. Subagents the CLI starts live and end inside the turn.
 - **Antigravity:** missing, evidence none. No adapter is registered, so a loop cannot use it. [antigravity.md](antigravity.md)
-- **Generic process:** partial, evidence fixture. A background count in the status JSON holds the loop. No child identities are reported. [`TestObserveJSON`](../internal/adapter/process/process_test.go)
+- **Generic process:** partial, evidence fixture. A background count in the status JSON holds the loop. No lane identities are reported. [`TestObserveJSON`](../internal/adapter/process/process_test.go)
 - **Agent defined in configuration:** n/a. A definition cannot declare work that outlives a turn, so none is assumed.
 
-### Child failure notice and report
+<a id="child-failure-notice-and-report"></a>
 
-Tell the parent conversation, and optionally the owner, when a child fails.
+### Lane failure notice and report
+
+Tell the parent conversation, and optionally the owner, when a lane fails.
 
 - **BB thread:** yes, evidence fixture. Running on one live loop; a notice has not been captured there. [`TestChildWorkListsErroredChildren`](../internal/adapter/bb/children_test.go) [operations.md](operations.md)
-- **Claude Code headless:** n/a. No child conversations.
-- **Codex headless:** n/a. No child conversations.
-- **Cursor headless:** n/a. No child conversations.
+- **Claude Code headless:** n/a. No lanes.
+- **Codex headless:** n/a. No lanes.
+- **Cursor headless:** n/a. No lanes.
 - **Antigravity:** missing, evidence none. No adapter is registered, so a loop cannot use it. [antigravity.md](antigravity.md)
-- **Generic process:** n/a. No child identities are reported.
-- **Agent defined in configuration:** n/a. No child conversations.
+- **Generic process:** n/a. No lane identities are reported.
+- **Agent defined in configuration:** n/a. No lanes.
 
-### Lane recovery: retry a failed child's turn
+<a id="lane-recovery-retry-a-failed-childs-turn"></a>
 
-Ask the provider to retry the failed turn of a lane (a direct child conversation) that was seen working and then failed with a connection, overload or unknown error.
+### Lane recovery: retry a failed lane's turn
+
+Ask the provider to retry the failed turn of a lane that was seen working and then failed with a connection, overload or unknown error.
 
 - **BB thread:** yes, evidence fixture. Opt-in with `bb.children.retry_errored`, off by default. Runs `bb thread retry` on the lane, by reference and with no message, at most 5 lanes a check, 3 attempts a lane 10 minutes apart and 20 retries a failure (all configurable). To tell what failed, the typed fields of the lane's event log are read (event type, error category and codes, will-retry flag); message text is never decoded or stored. Lane recovery never messages, stops, creates or moves a lane (only an explicit `stop --lanes` stops one), leaves another loop's lane alone, and one waiting on a person, rate limited or needing a login is left alone. No live lane has been retried by looptender. [`TestInspectLaneEstablishesEachFact`](../internal/adapter/bb/lanes_test.go) [`TestLaneMessageTextIsNeverDecodedOrStored`](../internal/adapter/bb/lanes_test.go) [`TestLaneRetriesAreBoundedPerCheckPerLaneAndReportedOnce`](../internal/supervise/lanes_test.go) [`TestLanesWaitOutAnOutageOfAnyLength`](../internal/supervise/lanes_test.go) [`TestEndToEndFailedLaneIsRetriedByReferenceWhenOptedIn`](../cmd/looptender/lane_recovery_test.go) [`TestScenarioOutage`](../internal/scenario/outage_test.go) [operations.md#lane-recovery](operations.md#lane-recovery)
-- **Claude Code headless:** missing, evidence none. No child conversations to recover.
-- **Codex headless:** missing, evidence none. No child conversations to recover.
-- **Cursor headless:** missing, evidence none. No child conversations to recover.
+- **Claude Code headless:** missing, evidence none. No lanes to recover.
+- **Codex headless:** missing, evidence none. No lanes to recover.
+- **Cursor headless:** missing, evidence none. No lanes to recover.
 - **Antigravity:** missing, evidence none. No adapter is registered, so a loop cannot use it. [antigravity.md](antigravity.md)
-- **Generic process:** missing, evidence none. No child identities are reported.
-- **Agent defined in configuration:** missing, evidence none. A defined agent reports no child conversations to recover.
+- **Generic process:** missing, evidence none. No lane identities are reported.
+- **Agent defined in configuration:** missing, evidence none. A defined agent reports no lanes to recover.
 
 ### Handoff away from it
 
@@ -301,12 +307,12 @@ Stop a running turn on request, signalling only a process looptender itself star
 On a person's request (`keepgoing stop --lanes`), stop the conversations the supervised one started, and theirs, along with it.
 
 - **BB thread:** yes, evidence fixture. Verified descendants by parentThreadId, 3 levels and 50 threads at most; running ones and those in error with a retry queued are stopped with `bb thread stop`, a queued provider retry is cancelled with `bb provider-retry cancel`, only with `--drop-queued`, the messages queued in a lane that has not started or is idle are deleted with `bb thread queue delete`, and another loop's lane is left to that loop. Each stop is recorded first. Run against a stand-in bb only. [`TestStopWithLanesStopsTheRunningLanesOnce`](../internal/supervise/lanestop_test.go) [`TestLaneStopRecoversAfterACheckKilledMidStop`](../internal/supervise/lanestop_test.go) [`TestScenarioStopLanesNow`](../internal/scenario/stop_lanes_test.go) [operations.md#stopping-the-lanes-too](operations.md#stopping-the-lanes-too)
-- **Claude Code headless:** n/a. Not applicable: a headless turn has no child conversations outside its own process. The stop goes ahead and its report says lanes do not apply.
-- **Codex headless:** n/a. Not applicable: a headless turn has no child conversations outside its own process. The stop goes ahead and its report says lanes do not apply.
-- **Cursor headless:** n/a. Not applicable: a headless turn has no child conversations outside its own process. The stop goes ahead and its report says lanes do not apply.
+- **Claude Code headless:** n/a. Not applicable: a headless turn has no lanes outside its own process. The stop goes ahead and its report says lanes do not apply.
+- **Codex headless:** n/a. Not applicable: a headless turn has no lanes outside its own process. The stop goes ahead and its report says lanes do not apply.
+- **Cursor headless:** n/a. Not applicable: a headless turn has no lanes outside its own process. The stop goes ahead and its report says lanes do not apply.
 - **Antigravity:** missing, evidence none. No adapter is registered, so a loop cannot use it. [antigravity.md](antigravity.md)
-- **Generic process:** n/a. Not applicable: no child identities are reported. The stop goes ahead and its report says lanes do not apply.
-- **Agent defined in configuration:** n/a. Not applicable: a defined agent reports no child conversations. The stop goes ahead and its report says lanes do not apply.
+- **Generic process:** n/a. Not applicable: no lane identities are reported. The stop goes ahead and its report says lanes do not apply.
+- **Agent defined in configuration:** n/a. Not applicable: a defined agent reports no lanes. The stop goes ahead and its report says lanes do not apply.
 
 ### Permission prompts
 
@@ -406,7 +412,7 @@ What the kit does not check:
 - `writes-stay-inside` watches the project, the home directory and the temporary directory. A write to some other absolute path is not seen.
 - `state-unwritable` and the file-mode part of `send-once` do not run on Windows or as root.
 - A send that times out is not exercised.
-- The four declarations about what an agent does for itself (retries, provider failover, scheduling, child work) are not yet compared with behaviour.
+- The four declarations about what an agent does for itself (retries, provider failover, scheduling, lane work) are not yet compared with behaviour.
 
 ### Checking your own wrapper
 
