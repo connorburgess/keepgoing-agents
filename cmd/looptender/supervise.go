@@ -165,6 +165,9 @@ func tickOnce(e env, cfg *config.Config, now time.Time, dryRun, fixedNow bool, l
 		return exitFailed
 	}
 	defer l.Release()
+	// Everything this check starts is the supervised session's, not a
+	// person's: it inherits the marker that keeps it from clearing a hold.
+	defer markSupervised(cfg.Loop.StateDir)()
 	if err := checkOwnership(cfg.Loop.StateDir, firstLease(leases)); err != nil {
 		return ownershipError(e, err)
 	}
@@ -219,6 +222,7 @@ func daemon(e env, cfg *config.Config, cfgPath string, dryRun bool, takeOver ...
 		return exitFailed
 	}
 	defer l.Release()
+	defer markSupervised(cfg.Loop.StateDir)()
 	lease, err := bindDaemonOwner(cfg.Loop.StateDir, len(takeOver) > 0 && takeOver[0])
 	if err != nil {
 		return ownershipError(e, err)
@@ -482,8 +486,11 @@ type statusOut struct {
 	PromptSend   promptSendStatus `json:"promptSend"`
 	LimitWait    limitWaitStatus  `json:"limitWait"`
 	TurnRetry    turnRetryStatus  `json:"turnRetry"`
-	// Context is the active target's latest context-size reading.
-	Context contextStatus `json:"context"`
+	// ContextWindow is the active target's latest context window reading.
+	ContextWindow contextStatus `json:"contextWindow"`
+	// Savings is the loop's measured savings figures over the last seven UTC
+	// days, and one labelled estimate.
+	Savings savingsStatus `json:"savings"`
 	// Refusals is the refusal gauge in words and counts.
 	Refusals          refusalStatus            `json:"refusals"`
 	Lanes             lanesStatus              `json:"laneRecovery"`
@@ -545,7 +552,7 @@ type statusOut struct {
 // stateFields are the keys of status --json taken from state.json. They are
 // left out when it cannot be read.
 var stateFields = []string{"state", "targetAgent", "targetSession", "newThreads", "redundancy", "promptSend",
-	"limitWait", "turnRetry", "context", "refusals", "laneRecovery", "childErrorReport", "takeoverBriefs"}
+	"limitWait", "turnRetry", "contextWindow", "savings", "refusals", "laneRecovery", "childErrorReport", "takeoverBriefs"}
 
 // MarshalJSON is the ordinary encoding, without what an unreadable record
 // would have filled in: "control" when control.json cannot be read, and the
@@ -737,7 +744,8 @@ func status(e env, cfg *config.Config, now time.Time, asJSON bool, staleAfter ti
 	fmt.Fprintf(w, "progress flag: %s\n", out.NoProgress.Text)
 	if !out.stateUnreadable {
 		printTurnRetry(w, out.TurnRetry)
-		printContext(w, out.Context)
+		printContext(w, out.ContextWindow)
+		printSavings(w, out.Savings)
 	}
 	if out.Refusals.Text != "" && !out.stateUnreadable {
 		fmt.Fprintf(w, "refusals:  %s\n", out.Refusals.Text)
@@ -1051,7 +1059,8 @@ func readStatus(ctx context.Context, cfg *config.Config, now time.Time, staleAft
 	out.PromptSend = describePromptSend(st.LastPromptSend, out.Goal)
 	out.LimitWait = describeLimitWait(st.LimitWaitReport, l, now)
 	out.TurnRetry = describeTurnRetry(st.LastTurnRetry)
-	out.Context = describeContext(st.Context, st.Target(), activeBB(cfg, st.Target()) != nil, now)
+	out.ContextWindow = describeContext(st.Context, st.Target(), activeBB(cfg, st.Target()) != nil, now)
+	out.Savings = describeSavings(journal, loadSavingsSpaced(l.StateDir), st.Context, out.ContextWindow, now)
 	out.Refusals = describeRefusals(st.Refusals, ctl.Question, now)
 	out.Lanes = describeLanes(st.Lanes, activeBB(cfg, st.Target()))
 	// The lane record is per-lane hashes and their key. Status shows its
@@ -1397,6 +1406,9 @@ func controlCmdLanes(e env, cfg *config.Config, cmd, note string, lanes, dropQue
 			if err := control.CheckOwner(*f, os.Getenv("BB_THREAD_ID"), false); err != nil {
 				return err
 			}
+			if err := checkHoldClearer(cfg, os.Getenv("BB_THREAD_ID")); err != nil {
+				return err
+			}
 			if err := resumeEpisode(cfg.Loop.StateDir, f.EpisodeHold, time.Now().UTC(), cfg.Loop.Errors.MaxReprompts, f.BriefHold...); err != nil {
 				return fmt.Errorf("%w, so nothing was changed and the loop is still %s: %v", errEpisodeState, f.Summary(), err)
 			}
@@ -1521,6 +1533,10 @@ func retarget(e env, cfg *config.Config, id, note string, discardPending bool) i
 	defer l.Release()
 	if err := checkOwnership(cfg.Loop.StateDir, nil); err != nil {
 		return ownershipError(e, err)
+	}
+	if err := checkHoldClearer(cfg, os.Getenv("BB_THREAD_ID")); err != nil {
+		e.errf("%v; no retarget performed", err)
+		return exitFailed
 	}
 	if err := checkTransferSources(cfg, false); err != nil {
 		e.errf("%v; no retarget performed; reload and retry", err)

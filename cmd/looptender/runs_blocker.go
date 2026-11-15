@@ -28,6 +28,11 @@ const (
 	// check found a child waiting on a person. Later checks do not observe,
 	// so the listing is the last verified one, shown with its age.
 	blockerHeld = "held"
+	// blockerBeforeHold: the loop is held or paused for another reason, and
+	// held or paused checks do not observe. The listing is the last complete
+	// one from the same run, from a check before the hold, shown with its age.
+	// It is not current, and no child is said to hold the run.
+	blockerBeforeHold = "before_hold"
 	// blockerListed: the last check verified every child but recorded another
 	// reason, so no child is said to hold the run.
 	blockerListed = "listed"
@@ -227,6 +232,13 @@ func (c *runsContext) blocker(st state.File, stateKnown bool, ctl control.File, 
 		// Keep the last verified listing, with its age, and say why.
 		b.Availability, b.Reason = blockerHeld, "awaiting_user_hold; children last verified at that check"
 		list(true)
+	case !current && sameRun && w.Listing == rungraph.ListingComplete && controlKnown &&
+		((ctl.Paused && b.LastCheckCause == "paused") || (ctl.AwaitingUser && b.LastCheckCause == "awaiting_user")):
+		// Held or paused for another reason, such as a command. The checks
+		// since did not observe, so keep the last complete listing, marked
+		// as from before the hold, and say no child holds the run.
+		b.Availability, b.Reason = blockerBeforeHold, b.LastCheckCause+"; children last verified before it"
+		list(false)
 	case !current:
 		b.Reason = "not_refreshed_by_the_last_check"
 	case w.Listing != rungraph.ListingComplete:
@@ -275,12 +287,13 @@ func (c *runsContext) owner(ctl control.File, controlKnown bool) runsOwner {
 }
 
 // childEdges says how a view may present the graph's child edges: as holding
-// (blocked or held), as listed without holding, or not at all.
+// (blocked or held), as listed without holding (listed, none, or the last
+// listing before a hold), or not at all.
 func (b runsBlocker) childEdges() (show, holds bool) {
 	switch b.Availability {
 	case blockerBlocked, blockerHeld:
 		return true, true
-	case blockerListed, blockerNone:
+	case blockerListed, blockerNone, blockerBeforeHold:
 		return true, false
 	}
 	return false, false

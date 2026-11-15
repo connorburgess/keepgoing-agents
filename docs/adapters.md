@@ -32,7 +32,7 @@ The matrix below is generated from one Go table, [`internal/adapter/capability`]
 - `decide.Observation` gains a field the table does not list. A new decision input cannot be introduced silently.
 - An adapter's source refers to an Observation field the table does not list for it, or stops referring to one it lists. An adapter cannot start reporting a new input without its column changing.
 - The adapter factory builds an adapter the table does not register, or the other way round.
-- An adapter gains or loses the optional activate, wake-poll or context-reading interface, or a check records a session reference for a different set of adapters than the table says.
+- An adapter gains or loses the optional activate, wake-poll or context window reading interface, or a check records a session reference for a different set of adapters than the table says.
 - A cell is empty, an implemented cell has no evidence or no reference, or a reference names a file or test that does not exist.
 - An agent on the runner contract, built in or defined in configuration, sets a field the table does not list for it: its real runner is run over sample turns and the fields it set are compared with the table. For defined agents a definition that declares everything must produce exactly the column's inputs, and one that declares nothing must produce only state, error class and evidence.
 - This document's matrix differs from the table.
@@ -62,7 +62,7 @@ To change the matrix, edit the table and run `KEEPGOING_UPDATE_ADAPTERS_DOC=1 go
 | [Switch-back](#switch-back) | yes · fixture | yes · fixture | yes · fixture | missing · none | missing · none | yes · fixture | yes · fixture |
 | [Probes](#probes) | yes · live | yes · live | yes · live | missing · none | missing · none | yes · fixture | partial · fixture |
 | [Quota readings](#quota-readings) | partial · live | yes · live | partial · live | missing · none | missing · none | missing · none | missing · none |
-| [Context reading](#context-reading) | yes · fixture | missing · none | missing · none | missing · none | missing · none | missing · none | missing · none |
+| [Context window reading](#context-window-reading) | yes · fixture | missing · none | missing · none | missing · none | missing · none | missing · none | missing · none |
 | [Handoff into a new conversation](#handoff-into-a-new-conversation) | yes · fixture | yes · fixture | yes · fixture | missing · none | missing · none | n/a | yes · fixture |
 | [Run graph and keepgoing runs](#run-graph-and-keepgoing-runs) | yes · live | yes · fixture | yes · fixture | yes · fixture | missing · none | partial · fixture | partial · fixture |
 | [Stop and owned cancellation](#stop-and-owned-cancellation) | yes · live | yes · fixture | yes · fixture | yes · live | missing · none | partial · fixture | partial · fixture |
@@ -261,17 +261,17 @@ Record how much of a usage window is used, from structured fields a probe alread
 - **Generic process:** missing, evidence none. A command probe reports health only.
 - **Agent defined in configuration:** missing, evidence none. No usage reading is taken. A limit lookup, when defined, only says whether an unclassified failure is a usage limit and when it resets. [`TestDefinedAgentLimitLookup`](../internal/adapter/runner/definition_unix_test.go)
 
-### Context reading
+### Context window reading
 
 Record how much of the model's context window the supervised conversation uses, for status only. No decision, send, allowance or hold reads it.
 
-- **BB thread:** yes, evidence fixture. `bb thread context <thread> --json` for the supervised thread only, never a lane: used tokens, the window and BB's estimated flag. Read after a check's wake, re-prompt or nudge, or when it first sees a turn ended, within what is left of the check's budget; anything malformed, slow or missing (older bb) is unavailable. The shape was seen on one bb build; the parser runs against fixtures only. [`TestReadContextAcceptsOnlyTheKnownShape`](../internal/adapter/bb/context_test.go) [`TestContextReadingChangesNoDecision`](../internal/supervise/context_test.go) [operations.md#context-reading](operations.md#context-reading)
+- **BB thread:** yes, evidence fixture. `bb thread context <thread> --json` for the supervised thread only, never a lane: used tokens, the window and BB's estimated flag. Read after a check's wake, re-prompt or nudge, or when it first sees a turn ended, within what is left of the check's budget; anything malformed, slow or missing (older bb) is unavailable. The shape was seen on one bb build; the parser runs against fixtures only. [`TestReadContextAcceptsOnlyTheKnownShape`](../internal/adapter/bb/context_test.go) [`TestContextReadingChangesNoDecision`](../internal/supervise/context_test.go) [operations.md#context-window-reading](operations.md#context-window-reading)
 - **Claude Code headless:** missing, evidence none. Unavailable: no reading is taken.
 - **Codex headless:** missing, evidence none. Unavailable. Per-turn usage appears in the event stream but is not read.
 - **Cursor headless:** missing, evidence none. Unavailable: no reading is taken.
 - **Antigravity:** missing, evidence none. No adapter is registered, so a loop cannot use it. [antigravity.md](antigravity.md)
 - **Generic process:** missing, evidence none. Unavailable: no reading is taken.
-- **Agent defined in configuration:** missing, evidence none. Unavailable: a definition declares no context reading.
+- **Agent defined in configuration:** missing, evidence none. Unavailable: a definition declares no context window reading.
 
 ### Handoff into a new conversation
 

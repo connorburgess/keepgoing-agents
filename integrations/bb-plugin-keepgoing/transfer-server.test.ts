@@ -61,8 +61,10 @@ test("SDK transfer routes verified host identities and moves the registration wi
     const setup = await f.harness.behavior.callRpc("setup", { threadId: "thr_destination", action: "inspect" }) as { canStart: boolean }; assert.equal(setup.canStart, false);
     const stale = await f.harness.behavior.callRpc("control", { configPath: f.record.configPath, managedId: f.record.id, action: "resume", expectedThreadId: "thr_source" }) as { ok: boolean };
     assert.equal(stale.ok, false); assert.ok(!f.operations.includes("resume"));
-    await f.harness.behavior.callRpc("control", { configPath: f.record.configPath, managedId: f.record.id, action: "resume", expectedThreadId: "thr_destination" });
-    assert.equal(f.operations.filter(o => o === "resume").length, 1);
+    // The destination is now the loop's target: the plugin never resumes,
+    // a person does from the panel or a terminal.
+    const fresh = await f.harness.behavior.callRpc("control", { configPath: f.record.configPath, managedId: f.record.id, action: "resume", expectedThreadId: "thr_destination" }) as { ok: boolean };
+    assert.equal(fresh.ok, false); assert.ok(!f.operations.includes("resume"));
   } finally { await f.harness.lifecycle.dispose(); }
 });
 
