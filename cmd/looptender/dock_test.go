@@ -1839,3 +1839,77 @@ func TestDockFourByteNamesStayUnderTheResponseBound(t *testing.T) {
 		t.Errorf("%d bytes, over three quarters of the %d-byte bound", len(body), dockMaxResponse)
 	}
 }
+
+// A limit note takes its reset from the limit event, then from the usage
+// reading shown with it, and says "no reset time was reported" only when
+// neither gives one.
+func TestDockLimitNotesTakeTheResetFromTheReading(t *testing.T) {
+	reported := dockNow.Add(5 * 24 * time.Hour)
+	windowReset := dockNow.Add(3 * 24 * time.Hour)
+	reading := func(used int, reset *time.Time) dockUsageTarget {
+		age := int64(3600)
+		return dockUsageTarget{Availability: "available", ObservedAt: dockPtr(dockNow.Add(-time.Hour)), AgeSeconds: &age,
+			Windows: []dockUsageWindow{{Name: "7-day", UsedPercent: used, ResetsAt: reset}}}
+	}
+	none := dockUsageTarget{Availability: "unavailable", Windows: []dockUsageWindow{}}
+	cases := []struct {
+		name          string
+		eventReset    *time.Time
+		usage         dockUsageTarget
+		allow, shares string
+	}{
+		{"event has a reset", &reported, reading(100, &windowReset),
+			"example-loop hit a usage limit on a route on this account on Mon 4 Mar; the provider reported a reset for Sat 9 Mar, 12:00.",
+			"; the provider reported a reset for Sat 9 Mar."},
+		{"event lacks a reset, the reading's used-up window has one", nil, reading(100, &windowReset),
+			"example-loop hit a usage limit on a route on this account on Mon 4 Mar; no reset was reported with the limit, and the usage reading shows the 7-day allowance resetting Thu 7 Mar, 12:00.",
+			"; no reset was reported with the limit, and the usage reading shows the 7-day allowance resetting Thu 7 Mar."},
+		{"event lacks a reset, the reading has a reset but nothing used up", nil, reading(40, &windowReset),
+			"example-loop hit a usage limit on a route on this account on Mon 4 Mar; no reset was reported with the limit; the usage reading shows when each window resets.",
+			"; no reset was reported with the limit; the usage reading shows when each window resets."},
+		{"neither has a reset", nil, reading(100, nil),
+			"example-loop hit a usage limit on a route on this account on Mon 4 Mar; no reset time was reported.",
+			"; no reset time was reported."},
+		{"no reading at all", nil, none,
+			"example-loop hit a usage limit on a route on this account on Mon 4 Mar; no reset time was reported.",
+			"; no reset time was reported."},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			a := &dockAway{Choice: 2, Return: dockReturnOff, Departures: []dockDeparture{{Position: 0, How: dockLeftLimit, At: dockPtr(dockNow.Add(-time.Hour)), ResetsAt: c.eventReset}}}
+			a.finish(dockNow)
+			entry := func(pos int, route, model string) dockChainEntry {
+				return dockChainEntry{Position: pos, Route: route, Model: model, Account: "example-group", Provider: "example", Title: model, Readiness: "unknown",
+					identity: "account-1", Usage: c.usage}
+			}
+			loops := []dockLoop{{Key: "l1", Name: "example-loop", State: "supervising", CurrentRoute: dockTarget{Availability: "known"}, Away: a,
+				Chain: dockChain{Entries: []dockChainEntry{entry(0, "rA", "example-large"), {Position: 1, Route: "rB", Model: "example-small", Title: "example-small",
+					Readiness: "unknown", Usage: none}}}},
+				{Key: "l2", Name: "example-other", State: "supervising", CurrentRoute: dockTarget{Availability: "known"},
+					Chain: dockChain{Entries: []dockChainEntry{entry(0, "rC", "example-medium")}}}}
+			routes, _ := dockRoutes(loops, dockNow)
+			shares := ""
+			for _, r := range routes {
+				for _, n := range r.Notes {
+					if s := say(n.Text, dockNow); r.Key == "rC" && strings.HasPrefix(s, "Shares its account") {
+						shares = s
+					}
+				}
+			}
+			want := "Shares its account with a route where example-loop hit a usage limit on Mon 4 Mar" + c.shares + " This route's own test result below is separate."
+			if shares != want {
+				t.Errorf("route note\n got %q\nwant %q", shares, want)
+			}
+			allow, _ := dockAllowances(routes)
+			got := []string{}
+			for _, x := range allow {
+				for _, n := range x.Notes {
+					got = append(got, say(n.Text, dockNow))
+				}
+			}
+			if len(got) != 1 || got[0] != c.allow {
+				t.Errorf("allowance notes\n got %q\nwant %q", got, c.allow)
+			}
+		})
+	}
+}

@@ -655,6 +655,7 @@ func dockRoutes(loops []dockLoop, now time.Time) ([]dockRoute, int) {
 	// never the same group name alone; a route with none claims nothing.
 	for i := range routes {
 		var best *dockDeparture
+		bestRoute := 0
 		for j := range routes {
 			if i == j || routes[i].identity == "" || routes[i].identity != routes[j].identity {
 				continue
@@ -665,7 +666,7 @@ func dockRoutes(loops []dockLoop, now time.Time) ([]dockRoute, int) {
 					continue
 				}
 				if best == nil || (d.ResetsAt != nil && (best.ResetsAt == nil || d.ResetsAt.After(*best.ResetsAt))) {
-					best = d
+					best, bestRoute = d, j
 				}
 			}
 		}
@@ -674,11 +675,11 @@ func dockRoutes(loops []dockLoop, now time.Time) ([]dockRoute, int) {
 			if best.At != nil {
 				s = txt(s, " on ", tm(*best.At, "date"))
 			}
-			if best.ResetsAt != nil {
-				s = txt(s, "; the provider reported a reset for ", tm(*best.ResetsAt, "date"), ".")
-			} else {
-				s = txt(s, "; no reset time was reported.")
+			usage := routes[i].Usage
+			if usage.Availability == "unavailable" {
+				usage = routes[bestRoute].Usage
 			}
+			s = dockLimitReset(s, *best, usage, "date")
 			s = txt(s, " This route's own test result below is separate.")
 			routes[i].Notes = append(routes[i].Notes, dockNote{Tone: "limit", Text: s})
 		}
@@ -717,6 +718,38 @@ func dockRoutes(loops []dockLoop, now time.Time) ([]dockRoute, int) {
 	return routes, omitted
 }
 
+// dockLimitReset ends a sentence about a usage limit with its reset. The
+// reset the provider reported with the limit comes first. Without one, the
+// usage reading shown with the note may still give one: the reset of its
+// window that is used up, said as the reading's. A reading with resets but no
+// window used up is pointed to rather than contradicted. Only when nothing
+// reports a reset is "no reset time was reported" said.
+func dockLimitReset(s dockText, d dockDeparture, u dockUsageTarget, layout string) dockText {
+	switch {
+	case d.ResetsAt != nil:
+		return txt(s, "; the provider reported a reset for ", tm(*d.ResetsAt, layout), ".")
+	case d.ResetFar:
+		return txt(s, "; the provider reported a reset more than a year away; it is not shown.")
+	}
+	if u.Availability == "unavailable" {
+		return txt(s, "; no reset time was reported.")
+	}
+	shown := false
+	for _, w := range u.Windows {
+		if w.Stale || w.ResetsAt == nil {
+			continue
+		}
+		if w.UsedPercent >= 100 {
+			return txt(s, "; no reset was reported with the limit, and the usage reading shows the "+w.Name+" allowance resetting ", tm(*w.ResetsAt, layout), ".")
+		}
+		shown = true
+	}
+	if shown {
+		return txt(s, "; no reset was reported with the limit; the usage reading shows when each window resets.")
+	}
+	return txt(s, "; no reset time was reported.")
+}
+
 func anyAtLimit(ds []dockDeparture) bool {
 	for _, d := range ds {
 		if d.atLimit() {
@@ -732,6 +765,7 @@ func dockAllowances(routes []dockRoute) ([]dockAllowance, int) {
 	index := map[string]int{}
 	out := []dockAllowance{}
 	omitted := 0
+	limits := map[int][]dockDeparture{}
 	for _, r := range routes {
 		// A route with no recorded account identity is a line of its own: it
 		// is not said to share an allowance with anything.
@@ -771,9 +805,17 @@ func dockAllowances(routes []dockRoute) ([]dockAllowance, int) {
 			}
 		}
 		for _, d := range r.LeftBy {
-			if !d.atLimit() {
-				continue
+			if d.atLimit() {
+				limits[i] = append(limits[i], d)
 			}
+		}
+	}
+	// The notes are written once every route is in, so a limit without a
+	// reported reset is compared with the account's newest reading, the one
+	// shown under the note.
+	for i, ds := range limits {
+		a := &out[i]
+		for _, d := range ds {
 			where := " hit a usage limit on a route on this account"
 			if a.identity == "" {
 				where = " hit a usage limit on this route"
@@ -782,12 +824,7 @@ func dockAllowances(routes []dockRoute) ([]dockAllowance, int) {
 			if d.At != nil {
 				s = txt(s, " on ", tm(*d.At, "date"))
 			}
-			if d.ResetsAt != nil {
-				s = txt(s, "; the provider reported a reset for ", tm(*d.ResetsAt, "datetime"), ".")
-			} else {
-				s = txt(s, "; no reset time was reported.")
-			}
-			a.Notes = append(a.Notes, dockNote{Tone: "limit", Text: s})
+			a.Notes = append(a.Notes, dockNote{Tone: "limit", Text: dockLimitReset(s, d, a.Usage, "datetime")})
 		}
 	}
 	names := map[string]int{}

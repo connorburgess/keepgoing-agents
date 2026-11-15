@@ -73,6 +73,9 @@ type Adapter struct {
 	LaneStopper bool
 	// SessionEvidence says a check records a chat/session reference for it.
 	SessionEvidence bool
+	// ContextReader says the adapter can read how much of the model's
+	// context window the conversation uses (adapter.ContextReader).
+	ContextReader bool
 }
 
 // Behaviour is one row of the matrix.
@@ -85,7 +88,7 @@ type Behaviour struct {
 
 // Adapters in column order.
 var Adapters = []Adapter{
-	{ID: "bb", Title: "BB thread", Registered: true, Activator: true, WakePoller: true, TurnRetrier: true, LaneRecoverer: true, LaneStopper: true, SessionEvidence: true,
+	{ID: "bb", Title: "BB thread", Registered: true, Activator: true, WakePoller: true, TurnRetrier: true, LaneRecoverer: true, LaneStopper: true, SessionEvidence: true, ContextReader: true,
 		Files: []string{"internal/adapter/bb/bb.go", "internal/adapter/bb/children.go", "internal/adapter/bb/cursor.go", "internal/adapter/bb/lanes.go", "internal/adapter/bb/wake.go"},
 		Inputs: []string{"ActiveChildIDs", "ActiveChildren", "AwaitingChildren", "AwaitingInput", "Background", "ChildTitles", "ChildrenUnverified", "ErrorClass", "ErroredChildren", "Evidence",
 			"ErrorTurn", "Gone", "HealthyChildren", "ModelFallback", "Queued", "ResetsAt", "RetryDeclined", "RetryExpired", "RetryKnown", "RetryUnverified", "Retrying", "State", "Turn", "TurnUnknown"}},
@@ -276,6 +279,11 @@ var Matrix = []Behaviour{
 			"cursor":  {Missing, None, "No probe contract.", nil},
 			"process": {Missing, None, "A command probe reports health only.", nil},
 		})},
+	{ID: "context", Title: "Context reading", What: "Record how much of the model's context window the supervised conversation uses, for status only. No decision, send, allowance or hold reads it.",
+		Cells: merge(map[string]Cell{
+			"bb":    {Yes, Fixture, "`bb thread context <thread> --json` for the supervised thread only, never a lane: used tokens, the window and BB's estimated flag. Read after a check's wake, re-prompt or nudge, or when it first sees a turn ended, within what is left of the check's budget; anything malformed, slow or missing (older bb) is unavailable. The shape was seen on one bb build; the parser runs against fixtures only.", []Ref{t("internal/adapter/bb/context_test.go", "TestReadContextAcceptsOnlyTheKnownShape"), t("internal/supervise/context_test.go", "TestContextReadingChangesNoDecision"), d("docs/operations.md#context-reading")}},
+			"codex": {Missing, None, "Unavailable. Per-turn usage appears in the event stream but is not read.", nil},
+		}, same(Cell{Missing, None, "Unavailable: no reading is taken.", nil}, "claude", "cursor", "process"))},
 	{ID: "new_conversation", Title: "Handoff into a new conversation", What: "Take the work over in a conversation that did not exist before the handoff.",
 		Cells: merge(map[string]Cell{
 			"bb":      {Yes, Fixture, "Opt-in: a candidate with bb.new_thread has looptender create the thread, within loop.limits.max_new_threads.", []Ref{t("internal/supervise/newthread_test.go", "TestHandoffToANewThreadCreatesItOnce"), d("docs/fallbacks.md")}},
@@ -338,6 +346,7 @@ var customCells = map[string]Cell{
 	"handoff_target":   {Partial, Fixture, "With a probe in the definition, or a command probe. Guided setup does not create it; the candidate is written by hand.", []Ref{t("internal/config/custom_test.go", "TestCustomAgentDefinition"), d(definedDoc)}},
 	"switch_back":      {Yes, Fixture, fakeDecision, []Ref{t(superTest, "TestSwitchBackAfterThePrimaryResets")}},
 	"probes":           {Partial, Fixture, "With a probe in the definition: one small request with the prompt passed as a turn's is, judged by the finished and error rules.", []Ref{t("internal/probe/custom_test.go", "TestCustomProbe")}},
+	"context":          {Missing, None, "Unavailable: a definition declares no context reading.", nil},
 	"quota":            {Missing, None, "No usage reading is taken. A limit lookup, when defined, only says whether an unclassified failure is a usage limit and when it resets.", []Ref{t(definedTest, "TestDefinedAgentLimitLookup")}},
 	"new_conversation": {Yes, Fixture, "A candidate has no saved session, so the handoff brief starts one.", []Ref{t(definedTest, "TestDefinedAgentTurnLifecycle")}},
 	"run_graph":        {Partial, Fixture, "Runs and sends are recorded. The session identifier is the agent's own shape and is not shown.", []Ref{t(definedReadTest, "TestDefinitionBecomesASpecification")}},
