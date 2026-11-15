@@ -55,6 +55,7 @@ func TestIdleSpacingTable(t *testing.T) {
 		{"wakes once the wait has passed", func(i *Input) { i.IdleSpacing.SinceIdleWake = 20 * m }, Wake, ""},
 		{"wait grows with each unchanged wake", func(i *Input) { i.IdleSpacing.Unchanged, i.IdleSpacing.SinceIdleWake = 4, 79*m }, None, IdleUnchanged},
 		{"wait is capped", func(i *Input) { i.IdleSpacing.Unchanged, i.IdleSpacing.SinceIdleWake = 40, 2*time.Hour }, Wake, ""},
+		{"clock set back: the wait counts as passed", func(i *Input) { i.IdleSpacing.SinceIdleWake = -3 * time.Hour }, Wake, ""},
 		{"a changed fact resets the spacing", func(i *Input) { i.IdleSpacing.Unchanged = 0 }, Wake, ""},
 		{"stop wins", func(i *Input) { i.Control.Stop = true }, None, ""},
 		{"pause wins", func(i *Input) { i.Control.Paused = true }, None, ""},

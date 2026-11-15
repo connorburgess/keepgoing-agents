@@ -235,7 +235,8 @@ type IdleSpacing struct {
 	// one, after which none of the listed facts changed. Zero when one
 	// changed, or when no idle wake is on record.
 	Unchanged int
-	// SinceIdleWake is the time since the last idle wake.
+	// SinceIdleWake is the time since the last idle wake. Negative (the
+	// clock was set back) counts as the wait having passed.
 	SinceIdleWake time.Duration
 }
 
@@ -266,10 +267,12 @@ func IdleSpacingWait(first, max time.Duration, n int) time.Duration {
 
 // idleSpaced reports whether an idle wake waits under IdleSpacing. A wake
 // that carries a child-error notice is never spaced: the notice is a change.
+// A negative time since the last idle wake means the clock was set back; the
+// wait counts as passed, so a clock change can never delay a wake.
 func idleSpaced(in Input) bool {
 	s := in.IdleSpacing
 	wait := IdleSpacingWait(s.First, s.Max, s.Unchanged)
-	return wait > 0 && s.SinceIdleWake < wait && !childErrorNoticeDue(in)
+	return wait > 0 && s.SinceIdleWake >= 0 && s.SinceIdleWake < wait && !childErrorNoticeDue(in)
 }
 
 // Failover is the supervisor's view of whether a handoff is possible.
