@@ -184,13 +184,16 @@ type Run struct {
 // Attempt with outcome "intent" was recorded before a send whose return was
 // never recorded. It is unconfirmed, not evidence that anything was sent.
 type Attempt struct {
-	ID           string     `json:"id"`
-	Run          string     `json:"run"`
-	Target       string     `json:"target"`
-	Action       string     `json:"action"`
-	Mode         string     `json:"mode"`
-	GoalID       string     `json:"goalId,omitempty"`
-	GoalRevision uint64     `json:"goalRevision,omitempty"`
+	ID           string `json:"id"`
+	Run          string `json:"run"`
+	Target       string `json:"target"`
+	Action       string `json:"action"`
+	Mode         string `json:"mode"`
+	GoalID       string `json:"goalId,omitempty"`
+	GoalRevision uint64 `json:"goalRevision,omitempty"`
+	// ContextBytes is the length of the supervision context block the send
+	// carried (loop.prompt_context), zero when it carried none.
+	ContextBytes int        `json:"contextBytes,omitempty"`
 	RecordedAt   time.Time  `json:"recordedAt"`
 	Outcome      rd.Outcome `json:"outcome"`
 	ReturnedAt   time.Time  `json:"returnedAt,omitzero"`
