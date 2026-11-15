@@ -169,6 +169,7 @@ func routesEdit(e env, op string, args []string, input io.Reader) int {
 	fs.StringVar(&rt.Model, "model", "", "add: the model")
 	fs.StringVar(&rt.Effort, "effort", "", "add: the effort, if any")
 	fs.StringVar(&rt.Group, "group", "", "add: the usage limit the route draws on")
+	fs.StringVar(&rt.Account, "account", "", "add: the accounts catalog ID of the account you state this route uses (keepgoing accounts list)")
 	fs.StringVar(&rt.Enter, "enter", "", "add: same_conversation, new_conversation or headless")
 	fs.StringVar(&rt.PermissionMode, "permission-mode", "", "add: accept-edits, auto or full, for a new_conversation route")
 	fs.StringVar(&rt.AccountDir, "account-dir", "", "add: an existing login directory, for a headless route")
@@ -190,7 +191,7 @@ func routesEdit(e env, op string, args []string, input io.Reader) int {
 		"off":    "usage: keepgoing routes off ID [--loop NAME]",
 		"on":     "usage: keepgoing routes on ID [--loop NAME]",
 	}[op]
-	addFlags := []string{"at", "like", "id", "provider", "model", "effort", "group", "enter", "permission-mode", "account-dir", "probe-model", "probe-account-dir"}
+	addFlags := []string{"at", "like", "id", "provider", "model", "effort", "group", "account", "enter", "permission-mode", "account-dir", "probe-model", "probe-account-dir"}
 	switch {
 	case op == "add" && len(positional) != 0, op != "add" && len(positional) != 1:
 		e.errf("%s", usage)
@@ -839,6 +840,7 @@ func overrideRoute(base *config.Route, flags config.Route, set map[string]bool) 
 		"model":             func() { base.Model = flags.Model },
 		"effort":            func() { base.Effort = flags.Effort },
 		"group":             func() { base.Group = flags.Group },
+		"account":           func() { base.Account = flags.Account },
 		"enter":             func() { base.Enter = flags.Enter },
 		"permission-mode":   func() { base.PermissionMode = flags.PermissionMode },
 		"account-dir":       func() { base.AccountDir = flags.AccountDir },

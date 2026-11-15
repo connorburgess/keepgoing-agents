@@ -44,6 +44,7 @@ loop:
 | `state_dir` | yes | Where control, state, health, log, lock, and turn files live. Keep it outside any repository. |
 | `adapter` | yes | `bb`, `process`, `claude`, `codex`, or (v0.2.0) `cursor` or `custom` ([an agent defined in configuration](#an-agent-defined-in-configuration)), with the matching block below. |
 | `provider`, `group` | no | `group` defaults to `provider`, then to `primary`. Set `group` so a limit on this account skips fallbacks that share it. |
+| `account` | no | The [accounts catalog](accounts.md#say-which-account-a-route-uses) ID of the account you state this route uses. Your statement only: never set or derived by looptender, and it changes nothing about how the loop runs. `validate` and `doctor` compare it with the catalog. A fallback in `fallbacks.yaml` and a route in the standard list take the same field. |
 | `prompt_goal` | `false` | Explicitly append the latest private goal specification and revision to automatic messages, including handoffs. A valid goal for this loop is required before sending. See [current goal context](goals.md#current-goal-context-in-wake-messages). |
 | `prompt` or `prompt_file` | one of them | The text sent on wake, nudge, and re-prompt. The file is read on every send, so you can edit it while the loop runs. |
 | `handoff_file` | no | Sent to a fallback when it takes over. When the file is missing, a brief is generated. |

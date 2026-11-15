@@ -199,7 +199,7 @@ How the time is spent:
 
 ## Status for other tools
 
-`keepgoing status --json` prints the control file, state, window, and redundancy summary. Check the exit code, or `unreadable`, before reading them: when `control.json` or `state.json` cannot be read, `status` exits 1 and leaves out what it could not read, rather than printing an empty record as the loop's ([when a record cannot be read](#when-a-record-cannot-be-read)). It also prints `primaryAgent` and `targetAgent`, which describe the loop's own agent and the one it is supervising right now. Each has its `adapter`, `provider`, and `model`, plus `bbThread` for a BB thread or `workdir` for a headless runner. An agent workspace can use these to show looptender's state beside the right thread.
+`keepgoing status --json` prints the control file, state, window, and redundancy summary. Check the exit code, or `unreadable`, before reading them: when `control.json` or `state.json` cannot be read, `status` exits 1 and leaves out what it could not read, rather than printing an empty record as the loop's ([when a record cannot be read](#when-a-record-cannot-be-read)). It also prints `primaryAgent` and `targetAgent`, which describe the loop's own agent and the one it is supervising right now. Each has its `adapter`, `provider`, and `model`, plus `bbThread` for a BB thread or `workdir` for a headless runner, and `account`: the [accounts catalog entry the route states](accounts.md#say-which-account-a-route-uses), or the derived account context of a route that states none. An agent workspace can use these to show looptender's state beside the right thread.
 
 ## Supervision context
 

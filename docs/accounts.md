@@ -135,13 +135,64 @@ selected context.
 **Route account groups are separate labels.** A route's group (shown in the
 panel as its account group) is also free text you choose. It names the usage
 limit the route draws on and is not checked against any login or against these
-entries. Entries are not linked to routes today.
+entries. A route can name an entry with its own `account` field (below); the
+group stays a separate label either way.
 
 **BB thread routes have no per-thread account.** BB selects the config directory
 per project, not per thread, so neither a route nor a catalog entry can pin a BB
 thread to an account. A local probe for a BB route reads the CLI on this
 computer, which is BB's login only when they share it
 ([fallbacks](fallbacks.md)).
+
+## Say which account a route uses
+
+A route can state which catalog entry it uses, with an optional `account`
+field holding the entry's ID (the 32 hexadecimal characters `accounts add`
+prints). It goes on a loop's first route (`loop.account`), on a fallback in
+`fallbacks.yaml`, or on a route in the [standard list](routes.md) (also with
+`routes add --account ID`):
+
+    loop:
+      adapter: claude
+      provider: claude-code
+      group: work
+      account: 0123456789abcdef0123456789abcdef   # the "work" entry
+      claude: {workdir: /projects/example, env: {CLAUDE_CONFIG_DIR: /private/example/claude-work}}
+
+It is your statement. looptender never sets, derives or guesses it, and it
+does not change how a route runs, is tested, is chosen or how its usage is
+recorded. Nothing refuses to run because a route has no `account`.
+
+`validate` and `doctor` compare it with the catalog, for consistency only:
+
+- The ID must be in the catalog, the entry must be for the route's provider
+  (an `other` entry stands for any provider the catalog has no word for, such
+  as a defined agent), and when both the route and the entry name an account
+  or config directory (`CLAUDE_CONFIG_DIR` or `CODEX_HOME` in the route's
+  environment, and the entry's directory) they must be the same directory.
+  For a headless or command route a mismatch is a configuration error:
+  `validate` exits 1 and `doctor` reports `agent.<route>.account` as an error.
+- A BB thread route's statement is accepted as given, because BB has no
+  account per thread. It is shown as "assigned by you; not verified". An ID
+  that is not in the catalog is a warning.
+- A catalog that cannot be read is a warning in `doctor` (`accounts.catalog`)
+  and `validate`, never a refusal. A running loop never reads the catalog.
+- No credential is read and no provider command is run. Messages name the
+  entry's ID and label, never a directory.
+
+`status --json` carries, on `primaryAgent` and `targetAgent`, and the panel
+data carries, on each route of a loop (`catalogAccount`), an `account` object:
+`id` and `label` of the entry the route names, `assigned` (`by_you` or
+`none`) and `check` (`consistent`, `not_verified`, `not_in_catalog`,
+`provider_mismatch`, `directory_mismatch` or `catalog_unavailable`). For a
+route that names no entry it carries `context` instead: a hash of the
+provider, how the account is selected (its directory, `inherited`,
+`bb_thread` or `externally_managed`) and the quota group, computed as usage
+identities are, so no path is included. Two routes with the same `context`
+select the same account context as configured; that does not make them the
+same account, and different contexts are not said to be different accounts.
+The label and ID are shown as they are in the Accounts view. The panel page
+does not show these fields yet.
 
 ## Change a selection deliberately
 

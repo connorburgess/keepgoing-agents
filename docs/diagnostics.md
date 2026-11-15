@@ -115,6 +115,10 @@ Each map entry has `state` (`saved`, `missing`, or `unavailable`), an optional `
 
 This inspection works in offline mode, does not modify holds or session files, and never reads prompt, stdout, stderr, or transcript files. A saved ID may belong to a previous turn; it does not prove that a process is running, that provider history still exists, or that a session can resume under the current account/settings. A first turn can be active before any ID has been saved. Live identity checks remain planned.
 
+## Stated accounts
+
+When a route names an [accounts catalog](accounts.md#say-which-account-a-route-uses) entry with `account`, doctor compares it with the catalog for consistency only: the entry exists, has the route's provider, and names the same account or config directory when both name one. The `agent.<route>.account` check is `ok` with the entry's label, an `error` for a headless or command route that does not match, and a `warning` for a BB thread route whose ID is not in the catalog (a BB thread route is otherwise assigned by you and not verified). A catalog that cannot be read is one `accounts.catalog` warning and never stops supervision. Routes without `account` add no check. Nothing is run and no credential or directory is read or printed.
+
 ## Headless login status
 
 For primary and enabled fallback headless agents, doctor runs the provider's status command with the target's environment overrides and working directory:
