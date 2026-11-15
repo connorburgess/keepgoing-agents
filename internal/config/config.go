@@ -102,6 +102,9 @@ type Loop struct {
 	// default. It collects usage readings of the first route's allowance and,
 	// with steps, moves the loop between them at turn boundaries.
 	Timing *Timing `yaml:"timing,omitempty"`
+	// ContextWindow is the context-threshold reset, previewed only. Off
+	// unless reset_at is set.
+	ContextWindow *ContextWindow `yaml:"context_window,omitempty"`
 }
 
 // Timing collects usage readings of the first route's allowance by probing
@@ -942,6 +945,7 @@ func (c *Config) Validate() error {
 			add("loop.timing.ceiling needs loop.timing.steps")
 		}
 	}
+	errs = append(errs, l.contextWindowErrors()...)
 	switch l.Network.Check {
 	case "on", "off":
 	default:

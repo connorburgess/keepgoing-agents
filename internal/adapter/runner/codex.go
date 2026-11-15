@@ -6,6 +6,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"strconv"
 
 	"github.com/looptender/looptender/internal/adapter"
 	"github.com/looptender/looptender/internal/config"
@@ -23,14 +24,14 @@ var codexSpec = &Spec{
 	AccountEnv:   "CODEX_HOME",
 	SettingNames: []string{"cli", "workdir", "model", "sandbox", "skip_git_repo_check", "extra_args", "env"},
 	Prompt:       PromptStdin,
-	Capabilities: Capabilities{ExactResume: true, Stoppable: true, StructuredErrors: true},
+	Capabilities: Capabilities{ExactResume: true, Stoppable: true, StructuredErrors: true, TurnUsage: true},
 	Argv:         func(set Settings, session, _ string) []string { return codexArgv(set, session) },
 	Read: func(turn Status) Reading {
 		o := ParseCodexEvents(turn.Stdout)
 		if o.Evidence.Source != "" {
 			o.Evidence.ExitCode = runnerEvidence(turn).ExitCode
 		}
-		return Reading{Session: o.ThreadID, Completed: o.Completed && !o.Failed && turn.ExitCode == 0, Class: o.Class, Evidence: o.Evidence}
+		return Reading{Session: o.ThreadID, Completed: o.Completed && !o.Failed && turn.ExitCode == 0, Class: o.Class, Evidence: o.Evidence, Usage: o.Usage}
 	},
 	// Codex's event stream reports a usage limit only as prose. Its
 	// app-server has the structured snapshot.
@@ -76,6 +77,9 @@ type CodexOutcome struct {
 	Completed bool
 	Failed    bool
 	Class     decide.ErrorClass
+	// Usage is the token counts of the last turn.completed event's usage
+	// object, or nil when it had none or no count in it was usable.
+	Usage *adapter.TurnUsage
 }
 
 // ParseCodexEvents reads the JSONL event stream.
@@ -92,7 +96,8 @@ func ParseCodexEvents(stdout []byte) CodexOutcome {
 				Type   string `json:"type"`
 				Status *int   `json:"status"`
 			} `json:"error"`
-			Code string `json:"code"`
+			Code  string          `json:"code"`
+			Usage json.RawMessage `json:"usage"`
 		}
 		if json.Unmarshal(sc.Bytes(), &e) != nil {
 			continue
@@ -102,6 +107,7 @@ func ParseCodexEvents(stdout []byte) CodexOutcome {
 			out.ThreadID = e.ThreadID
 		case "turn.completed":
 			out.Completed, out.Failed = true, false
+			out.Usage = codexUsage(e.Usage)
 			out.Evidence = evidence.Clean(evidence.Detail{Source: "codex_events"})
 		case "turn.failed", "error":
 			out.Failed = true
@@ -132,6 +138,57 @@ func ParseCodexEvents(stdout []byte) CodexOutcome {
 		}
 	}
 	return out
+}
+
+// codexUsage reads the typed usage object of turn.completed. A count is kept
+// only when it is a plain JSON integer in a sane range; anything else is
+// absent, and a usage object with no usable count is no reading at all.
+// It is decoded apart from the event, so a malformed usage value can never
+// make turn.completed itself unreadable.
+func codexUsage(raw json.RawMessage) *adapter.TurnUsage {
+	var u map[string]json.RawMessage
+	if json.Unmarshal(raw, &u) != nil {
+		return nil
+	}
+	var out adapter.TurnUsage
+	for key, dst := range map[string]**int64{
+		"input_tokens":             &out.Input,
+		"cached_input_tokens":      &out.CachedInput,
+		"cache_write_input_tokens": &out.CacheWriteInput,
+		"output_tokens":            &out.Output,
+		"reasoning_output_tokens":  &out.ReasoningOutput,
+	} {
+		*dst = tokenCount(u[key])
+	}
+	if out.Input == nil && out.CachedInput == nil && out.CacheWriteInput == nil && out.Output == nil && out.ReasoningOutput == nil {
+		return nil
+	}
+	return &out
+}
+
+// MaxTurnTokens is the largest token count a turn reading keeps. A larger
+// figure is not a sane count for one turn, and is treated as absent.
+const MaxTurnTokens = 10_000_000_000
+
+// tokenCount reads one count: digits only (no sign, fraction, exponent,
+// string or null), at most MaxTurnTokens. Otherwise nil.
+func tokenCount(raw json.RawMessage) *int64 {
+	if len(raw) == 0 || len(raw) > 11 {
+		return nil
+	}
+	for _, c := range raw {
+		if c < '0' || c > '9' {
+			return nil
+		}
+	}
+	if len(raw) > 1 && raw[0] == '0' {
+		return nil
+	}
+	n, err := strconv.ParseInt(string(raw), 10, 64)
+	if err != nil || n > MaxTurnTokens {
+		return nil
+	}
+	return &n
 }
 
 // codexSettings reads the loop's codex settings.

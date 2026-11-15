@@ -2,6 +2,8 @@ package runner
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"sort"
@@ -100,6 +102,10 @@ type Capabilities struct {
 	// StructuredWaiting: the agent reports waiting on a person in a
 	// machine-readable form. A reading's Waiting is ignored without it.
 	StructuredWaiting bool
+	// TurnUsage: the agent reports a finished turn's token counts in a
+	// structured form, and the reader sets a reading's Usage from it. It
+	// must agree with the turn_usage row of the capability matrix.
+	TurnUsage bool
 }
 
 // Settings are an agent's settings as a specification sees them, whatever
@@ -132,6 +138,10 @@ type Reading struct {
 	// Evidence is the structured error evidence. An empty Source means the
 	// output held none, and the runner's own exit evidence is used.
 	Evidence evidence.Detail
+	// Usage is the turn's token counts as the agent reported them, or nil.
+	// Only an agent that declares TurnUsage sets it. Its ID is left empty:
+	// the runner names the turn. Diagnostic only; nothing decides on it.
+	Usage *adapter.TurnUsage
 }
 
 // Limits is what an agent's own interface says about its account's usage
@@ -545,6 +555,30 @@ func (h *Headless) Send(ctx context.Context, prompt string, mode adapter.Mode) e
 	}
 	_, err = h.dir.startTurnGuarded(argv, h.set.Workdir, prompt, envList(h.set.Env), "", h.spec.Prompt == PromptFile, guard)
 	return err
+}
+
+// LatestTurnUsage implements adapter.TurnUsageReader: the token counts the
+// latest finished turn reported, for an agent that declares TurnUsage. It
+// reads the turn's saved output and changes nothing. ID names the turn by a
+// digest of its run record, so every read of one turn gives the same
+// identity and a later turn a different one; the digest keeps the record's
+// stop key out of saved state.
+func (h *Headless) LatestTurnUsage() (adapter.TurnUsage, bool) {
+	if !h.spec.Capabilities.TurnUsage {
+		return adapter.TurnUsage{}, false
+	}
+	st, unread, err := h.status()
+	if err != nil || unread || st.Phase != Finished || st.Incomplete || st.Record.StartedAt.IsZero() {
+		return adapter.TurnUsage{}, false
+	}
+	r := h.spec.Read(st)
+	if r.Usage == nil {
+		return adapter.TurnUsage{}, false
+	}
+	u := *r.Usage
+	sum := sha256.Sum256([]byte(waitKey(st.Record)))
+	u.ID = hex.EncodeToString(sum[:16])
+	return u, true
 }
 
 // AdoptInteraction implements adapter.InteractionAdopter: the hold for the

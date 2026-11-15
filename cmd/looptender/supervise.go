@@ -488,6 +488,11 @@ type statusOut struct {
 	TurnRetry    turnRetryStatus  `json:"turnRetry"`
 	// ContextWindow is the active target's latest context window reading.
 	ContextWindow contextStatus `json:"contextWindow"`
+	// ContextWindowReset previews the context-threshold reset.
+	ContextWindowReset contextWindowWould `json:"contextWindowReset"`
+	// TurnUsage is the token counts the active target's agent reported for
+	// its finished turns.
+	TurnUsage turnUsageStatus `json:"turnUsage"`
 	// Savings is the loop's measured savings figures over the last seven UTC
 	// days, and one labelled estimate.
 	Savings savingsStatus `json:"savings"`
@@ -554,7 +559,7 @@ type statusOut struct {
 // stateFields are the keys of status --json taken from state.json. They are
 // left out when it cannot be read.
 var stateFields = []string{"state", "targetAgent", "targetSession", "newThreads", "redundancy", "promptSend",
-	"limitWait", "turnRetry", "contextWindow", "savings", "refusals", "laneRecovery", "childErrorReport", "takeoverBriefs"}
+	"limitWait", "turnRetry", "contextWindow", "contextWindowReset", "turnUsage", "savings", "refusals", "laneRecovery", "childErrorReport", "takeoverBriefs"}
 
 // MarshalJSON is the ordinary encoding, without what an unreadable record
 // would have filled in: "control" when control.json cannot be read, and the
@@ -748,6 +753,8 @@ func status(e env, cfg *config.Config, now time.Time, asJSON bool, staleAfter ti
 	if !out.stateUnreadable {
 		printTurnRetry(w, out.TurnRetry)
 		printContext(w, out.ContextWindow)
+		printContextWindowWould(w, out.ContextWindowReset)
+		printTurnUsage(w, out.TurnUsage)
 		printSavings(w, out.Savings)
 	}
 	if out.Refusals.Text != "" && !out.stateUnreadable {
@@ -1064,6 +1071,8 @@ func readStatus(ctx context.Context, cfg *config.Config, now time.Time, staleAft
 	out.IdleSpacing = describeIdleSpacing(st, l.Progress)
 	out.TurnRetry = describeTurnRetry(st.LastTurnRetry)
 	out.ContextWindow = describeContext(st.Context, st.Target(), activeBB(cfg, st.Target()) != nil, now)
+	out.ContextWindowReset = contextWindowWouldOf(cfg, st, ctl, out.controlUnreadable, graph, now)
+	out.TurnUsage = describeTurnUsage(st.TurnUsage, st.Target(), targetReportsTurnUsage(cfg, st), now)
 	out.Savings = describeSavings(journal, loadSavingsSpaced(l.StateDir), st.Context, out.ContextWindow, now)
 	out.Refusals = describeRefusals(st.Refusals, ctl.Question, now)
 	out.Lanes = describeLanes(st.Lanes, activeBB(cfg, st.Target()))
