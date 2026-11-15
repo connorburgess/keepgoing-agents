@@ -125,6 +125,21 @@
               "maximum": 1000,
               "default": 4,
               "description": "checks that found an error or retried the turn, with no recorded change to the repositories, that raise the panel's no-progress flag; 0 is off"
+            },
+            "idle_spacing": {
+              "type": "object",
+              "additionalProperties": false,
+              "description": "opt-in: space idle wakes after which no structured fact changed; absent is off",
+              "properties": {
+                "first": {
+                  "$ref": "#/$defs/duration",
+                  "description": "wait after one idle wake that changed nothing; default 10m, at least 1m"
+                },
+                "max": {
+                  "$ref": "#/$defs/duration",
+                  "description": "cap of the wait, which doubles with each further unchanged wake; default 2h, at most 24h"
+                }
+              }
             }
           }
         },
