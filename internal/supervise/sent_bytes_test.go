@@ -11,6 +11,7 @@ import (
 
 	"github.com/looptender/looptender/internal/adapter"
 	"github.com/looptender/looptender/internal/config"
+	"github.com/looptender/looptender/internal/control"
 	"github.com/looptender/looptender/internal/decide"
 	"github.com/looptender/looptender/internal/health"
 	"github.com/looptender/looptender/internal/probe"
@@ -25,9 +26,10 @@ const sentBytesGolden = "testdata/sent_bytes_main.golden"
 
 // sentJourney runs one loop through a wake, a nudge, a re-prompt, a
 // handoff with its brief, a wake on the fallback, a switch-back with its
-// brief, and, on a second loop, a wake that is only a child-error notice. It
-// returns every send in order: target, mode and text. configure adjusts both
-// loops before their first check.
+// brief, and on further loops a wake that is only a child-error notice, a
+// wake with prompt_goal, and the first message of a BB thread created for a
+// handoff. It returns every send in order: target, mode and text.
+// configure adjusts every loop before its first check.
 func sentJourney(t *testing.T, configure func(*config.Loop)) string {
 	t.Helper()
 	var out strings.Builder
@@ -95,6 +97,34 @@ func sentJourney(t *testing.T, configure func(*config.Loop)) string {
 		t.Fatalf("notice-only wake: %+v %v", res, err)
 	}
 	sent("child-error notice", map[string]*fakeAdapter{state.Primary: cp})
+
+	// A wake with prompt_goal: the goal's ID is random, so it is replaced
+	// by a fixed one in what is compared.
+	g := newWorld(t, true, false)
+	g.cfg.Loop.PromptGoal = true
+	configure(&g.cfg.Loop)
+	goal, err := control.WriteGoal(g.dir, g.cfg.Loop.Name, "", control.GoalSpec{Title: "Fictional goal", ObjectiveRefs: []string{"o"}, AcceptanceRefs: []string{"a"}}, "", 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	gp := g.primary(decide.Observation{State: decide.Idle})
+	o = g.opts(t0)
+	o.NewAdapter = func(config.Agent, string, string) (adapter.Adapter, error) { return bbNamedAdapter{gp}, nil }
+	if res, err := Tick(context.Background(), g.cfg, o); err != nil || res.Action != "wake" {
+		t.Fatalf("goal wake: %+v %v", res, err)
+	}
+	for i := range gp.sent {
+		gp.sent[i] = strings.ReplaceAll(gp.sent[i], goal.ID, "goal_example")
+	}
+	sent("prompt_goal wake", map[string]*fakeAdapter{state.Primary: gp})
+
+	// The first message of a BB thread looptender creates for a handoff.
+	n, _, f := newThreadWorld(t)
+	configure(&n.cfg.Loop)
+	if res, err := threadTick(t, n, f, t0, nil); err != nil || res.Action != "handoff" || len(f.spawned) != 1 {
+		t.Fatalf("new thread: %+v %v", res, err)
+	}
+	fmt.Fprintf(&out, "=== new thread first message\n%s\n", f.spawned[0].Prompt)
 	return out.String()
 }
 

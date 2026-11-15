@@ -24,7 +24,8 @@ import (
 var contextTag = prompt.ContextTag(loopcontext.SchemaVersion)
 
 // The journey of TestPromptContextOffSendsMainBytes with the key on: the
-// context goes with the first wake, both briefs, and nothing else. The
+// context goes with each loop's first send and with every brief, and
+// nothing else. On the goal wake it comes after the goal context. The
 // notice-only wake never carries it. On a BB thread the wake header stays
 // the first line and the context comes after the whole message.
 func TestPromptContextOnlyWhereDue(t *testing.T) {
@@ -38,6 +39,8 @@ func TestPromptContextOnlyWhereDue(t *testing.T) {
 		"4h0m0s wake codex-main":        false,
 		"4h40m0s switch_back primary":   true,
 		"child-error notice primary #0": false,
+		"prompt_goal wake primary":      true,
+		"new thread first message":      true,
 	}
 	if len(sends) != len(want) {
 		t.Fatalf("%d sends:\n%s", len(sends), got)
