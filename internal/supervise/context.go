@@ -22,10 +22,14 @@ const (
 // contextReadDue says whether this check reads the target's context size:
 // a check that observed the target and either sends to it (a wake, a
 // re-prompt or a nudge that was not held back, with the target unchanged)
-// or is the first to see its turn ended. previous is the state the last
-// observed check recorded. A pure function of what the check already
-// decided; the decision never depends on it.
-func contextReadDue(d decide.Decision, obs decide.Observation, previous string, heldNudge, sameTarget, dryRun bool) bool {
+// or is the first to see its turn ended, or sends nothing to an idle target
+// whose latest reading is not after the latest send (unreadAfterSend): the
+// send's turn came and went between two checks. After that reading the
+// reading is after the send, so the last case holds again only after the
+// next send. previous is the state the last observed check recorded. A pure
+// function of what the check already decided; the decision never depends
+// on it.
+func contextReadDue(d decide.Decision, obs decide.Observation, previous string, heldNudge, sameTarget, dryRun, unreadAfterSend bool) bool {
 	if dryRun || !sameTarget || d.Action == decide.AwaitUser || d.Action == decide.Stop {
 		return false
 	}
@@ -35,7 +39,14 @@ func contextReadDue(d decide.Decision, obs decide.Observation, previous string, 
 	case decide.Nudge:
 		return !heldNudge
 	}
-	return turnEndSeen(obs, previous)
+	return turnEndSeen(obs, previous) || obs.State == decide.Idle && d.Action == decide.None && unreadAfterSend
+}
+
+// unreadAfterSend: the loop has sent to target and target's latest reading
+// is not after that send.
+func unreadAfterSend(st *state.File, target string) bool {
+	c := st.Context
+	return c != nil && c.Target == target && !st.LastSentAt.IsZero() && !c.Latest.At.After(st.LastSentAt)
 }
 
 // turnEndSeen: this check is the first to see the turn ended.
@@ -54,7 +65,7 @@ func (t *tick) readContext(a adapter.Adapter, target string, d decide.Decision, 
 		t.st.NoteTurnEnd(target, t.now)
 	}
 	r, ok := a.(adapter.ContextReader)
-	if !ok || !contextReadDue(d, obs, previous, t.heldNudge, t.st.Target() == target, t.opts.DryRun) {
+	if !ok || !contextReadDue(d, obs, previous, t.heldNudge, t.st.Target() == target, t.opts.DryRun, unreadAfterSend(&t.st, target)) {
 		return
 	}
 	limit := min(contextTimeout, t.left()-minReportTime)
