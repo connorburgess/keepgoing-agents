@@ -279,7 +279,7 @@
       note.appendChild(document.createTextNode("“" + text + "”"));
       li.appendChild(note);
       if (n.noteMasked && !state.identifiers) {
-        var p = el("p", "sub", "Parts that look like an ID, path, web address or email address are hidden. ");
+        var p = el("p", "sub", "Parts that look like an ID, path, web address, email address, network address or long code are hidden. ");
         p.appendChild(showNotesButton());
         li.appendChild(p);
       }
