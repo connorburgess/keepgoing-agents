@@ -326,7 +326,7 @@ looptender repeats work by design: each ordinary check may send one message to t
 
 | Session | Sent | Spacing | Count kept | Count resets when |
 | --- | --- | --- | --- | --- |
-| Idle | wake | none: every eligible check; with the opt-in [`progress.idle_spacing`](configuration.md#spacing-idle-wakes-that-changed-nothing), a wake after which no watched fact changed waits a growing interval up to its cap | consecutive unchanged idle wakes, only with `idle_spacing`; a wake counts once the adapter accepted it and its turn ended | a watched fact changes, including a turn looptender did not ask for (a person's message, BB only), or the session is seen in error |
+| Idle | wake | none: every eligible check; with the opt-in [`progress.idle_spacing`](configuration.md#spacing-idle-wakes-that-changed-nothing), a wake after which no watched fact changed waits a growing interval up to its cap | consecutive unchanged idle wakes, only with `idle_spacing`; a wake counts once the adapter accepted it and its turn ended | a watched fact changes, including a turn looptender did not ask for (a person's message, BB only), or the session or a direct lane is seen in error |
 | Active, Git fingerprint unchanged for `stall_after` | nudge | `min_wake_interval` since the last send | `max_nudges` | the fingerprint changes, or the session is seen in any state other than active |
 | Error | re-prompt (for a BB target in v0.2.0, a [retry of the failed turn](#recovering-a-failed-bb-turn-by-retry) with no new prompt) | `errors.backoff` | `max_reprompts` | the session is seen idle (a turn ended without an error), or it is active and the Git fingerprint changes |
 

@@ -72,11 +72,12 @@ func (t *tick) idleFacts(obs decide.Observation, ctl control.File) (now, afterWa
 // idleSpacingInput returns the rule's input for this check. With the key off
 // it forgets the record and returns the zero input, which never spaces. A
 // session seen in error ends the run of unchanged wakes: the error and the
-// recovery that follows are changes.
+// recovery that follows are changes. So does a direct lane in error, from the
+// child listing's status: while one is, idle wakes are not spaced.
 func (t *tick) idleSpacingInput(obs decide.Observation, ctl control.File) decide.IdleSpacing {
 	first, max := t.loop.Progress.IdleSpacingWaits()
 	t.idleFactsAfterWake = ""
-	if max <= 0 || obs.State == decide.Error {
+	if max <= 0 || obs.State == decide.Error || len(obs.ErroredChildren) > 0 {
 		t.st.IdleSpacing = nil
 		return decide.IdleSpacing{}
 	}

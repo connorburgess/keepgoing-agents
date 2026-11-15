@@ -52,6 +52,7 @@ func TestIdleSpacingInputFacts(t *testing.T) {
 		{"Git progress: reset", func(_ *testing.T, w *world) { w.tk.st.ProgressChangedAt = t0.Add(m) }, 0, false, false},
 		{"a control change, such as resume: reset", func(_ *testing.T, w *world) { w.ctl.UpdatedAt = t0.Add(m) }, 0, false, false},
 		{"the session in error: record cleared", func(_ *testing.T, w *world) { w.obs.State = decide.Error }, 0, true, false},
+		{"a direct lane in error: record cleared", func(_ *testing.T, w *world) { w.obs.ErroredChildren = []string{"thr_example_lane"} }, 0, true, false},
 		{"the key turned off: record cleared", func(_ *testing.T, w *world) { w.tk.loop.Progress.IdleSpacing = nil }, 0, true, false},
 	}
 	for _, c := range cases {

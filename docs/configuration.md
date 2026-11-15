@@ -254,7 +254,8 @@ loop:
 - the goal revision;
 - any change to `control.json`, which includes `resume`, `pause`, `enable` and a person's answer to a hold;
 - the target or what set it: a handoff, a switch-back, a `retarget`, a timing step;
-- the session seen in error: the error and the recovery that follows.
+- the session seen in error: the error and the recovery that follows;
+- a direct lane (child) in error, from BB's child listing status (BB only): while one is, idle wakes are not spaced.
 
 A loop with no `repositories` still has every other fact. The rule never reads transcript or message text, and never infers that there is nothing to do: it only notices that none of these facts moved.
 
@@ -270,6 +271,7 @@ It only spaces. It adds no hold, never shortens any other wait, and never overri
 - work that makes no Git change, or any Git change when the loop has no `repositories`;
 - a person's activity the adapter cannot see: on any adapter other than BB a person's message is not a fact, and on BB a person's work outside the thread (in a lane, in a terminal, on GitHub) is not one either;
 - a lane that ends without a child outcome notice in the parent's log;
+- a lane parked with a pending provider retry, for example on a rate limit: BB lists it as idle, not in error, and seeing the retry would take a further `bb provider-retry status` call per lane, which looptender does not make for this rule (a follow-up);
 - an edit to the configuration file, other than turning the key off, which clears the record;
 - a daemon restart: the record persists in `state.json`, by design.
 
