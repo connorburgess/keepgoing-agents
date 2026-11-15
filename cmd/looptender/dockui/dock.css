@@ -220,6 +220,8 @@ details[open] > .work-summary .work-name::before { transform: rotate(45deg); }
 .ids { margin: 0.85rem 0 0; padding-top: 0.7rem; border-top: 1px dashed var(--line-2); font-size: 0.8125rem; display: grid; gap: 0.2rem; }
 .ids dt { color: var(--ink-2); }
 .ids dd { margin: 0 0 0.25rem; font-family: var(--mono); overflow-wrap: anywhere; user-select: all; }
+.ids dd.copy { display: flex; flex-wrap: wrap; align-items: center; gap: 0.5rem; font-family: var(--font); user-select: auto; }
+.ids dd.copy .command { font-family: var(--mono); white-space: normal; overflow-wrap: anywhere; }
 
 /* Usage meters. One colour per meaning: amber is high, the limit colour is
    used up, and a stale window is empty and hatched. */
