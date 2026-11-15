@@ -217,6 +217,10 @@ Decisions use structured status: exit codes, JSON fields, HTTP status and provid
 
 See [CONTRIBUTING.md](CONTRIBUTING.md) for commit sign-offs and the short [contributor agreement](CONTRIBUTOR_LICENSE_AGREEMENT.md). Use fictional data everywhere. Roadmap completion includes a [capability and documentation review](docs/testing.md#capability-and-documentation-review); documentation must distinguish implemented, released and live-verified behavior.
 
+Panel frontend contributors also use [pinned browser guidance and an advisory
+legacy-pattern scan](tools/modern-web-guidance/README.md), alongside Impeccable.
+The scan is development tooling and does not establish browser compatibility.
+
 ## License
 
 looptender is **source-available** under the [Sustainable Use License 1.0](LICENSE).
