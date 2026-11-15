@@ -1177,12 +1177,37 @@ Unreleased source. Supervision never clears a hold; a person does. On top of the
 
 Nothing is changed. The command says the request came from the supervised session and names the panel and an ordinary terminal, and exits 1. `client prepare-resume` and `client resume` report the issue `supervised_session`. A person resumes from an ordinary terminal or from a panel started there; an operator thread that is not the target resumes as before. `pause`, `stop`, `complete` and `await-user` stay available to the session: they add a hold. `enable` is not refused: it clears no hold.
 
-This is cooperative, like ownership. `BB_THREAD_ID` is taken as the session says it, not checked with BB, and a session can unset either variable or write `control.json`. A session the supervisor did not start and that is not the current target is treated like any other caller. That includes a lane, a former target and an unrelated agent; when the loop has an owner, the ownership rule still refuses a BB lane. A headless turn started by a daemon that a BB thread launched by hand also inherits that thread's `BB_THREAD_ID`, so it passes owner checks for commands that clear no hold. Offline fixtures only; no live session was asked to resume.
+This is cooperative, like ownership. `BB_THREAD_ID` is taken as the session says it, not checked with BB, and a session can unset either variable or write `control.json`. A session the supervisor did not start and that is not the current target is treated like any other caller. That includes a lane, a former target and an unrelated agent; when the loop has an owner, the ownership rule still refuses a BB lane. A headless or process turn does not inherit its supervisor's `BB_THREAD_ID` or its other session variables ([below](#what-a-supervised-session-inherits)). Offline fixtures only; no live session was asked to resume.
 
 The [BB plugin](../integrations/bb-plugin-keepgoing/README.md) does not resume a loop at all, by design. A Resume click in BB, an agent running `bb plugin rpc call`, and `bb keepgoing resume` all reach the plugin the same way: its SDK reports each caller only as a client. So the plugin cannot tell a person from the session the loop supervises. A held loop's banner, and `bb keepgoing resume`, say where a person resumes it instead, from an ordinary terminal: `keepgoing resume -c <config>`, or the panel started there. A terminal BB opened on the target thread carries that thread's identity and is refused. Pause and stop from the plugin are unchanged.
 
 **Mixed versions.** Only a supervisor on this build sets `LOOPTENDER_SUPERVISED_LOOP`. A `daemon` or service started from an older build keeps running without it until it is restarted on this build, and the headless turns it starts meanwhile are not refused by the marker. The target-thread refusal does not depend on the supervisor: it applies from the first `resume` run with this build. Restart a running supervisor after upgrading. Turns it already started keep the environment they were started with.
 
+
+### What a supervised session inherits
+
+Unreleased source; a security fix. A headless Claude Code, Codex, Cursor or ACP turn, and every command of the process adapter, runs with the supervisor's environment minus an exact list of names. The names describe the session the supervisor itself was started from:
+
+| Variable | What it is |
+| --- | --- |
+| `BB_THREAD_ID`, `BB_THREAD_STORAGE`, `BB_PROJECT_ID`, `BB_ENVIRONMENT_ID` | The BB thread the supervisor was started in: its ID, its private storage directory, its project and its environment. |
+| `CLAUDE_CODE_SESSION_ID`, `CLAUDE_CODE_MESSAGING_SOCKET`, `CLAUDE_CODE_MESSAGING_TOKEN`, `CLAUDE_PID`, `CLAUDECODE`, `CLAUDE_CODE_ENTRYPOINT` | That thread's own Claude Code session. The messaging token is a credential to that session. |
+
+A `daemon` or `tick` started by hand inside a BB thread inherits all of these. Before this change it passed them on, with three effects:
+
+- The headless session looked like that thread to ownership checks.
+- The session could reach the thread's private storage.
+- The session held the thread's Claude Code messaging token.
+
+The list is matched by exact name in any letter case, never by prefix, so account selection such as `CLAUDE_CONFIG_DIR` or `CODEX_HOME` is never removed. How to reach BB (`BB_CLI`, `BB_SERVER_URL`, `BB_HOST_DAEMON_PORT`) is kept. An entry the loop's configuration sets in its own `env` always wins over the removal. The list is `envvar.SupervisorSession` in the source.
+
+The wrapper handshake, which runs this build to check its turn protocol, uses the same list. Commands that start no session keep the supervisor's environment: the provider's limits and version readers, and probes. The supervisor sets `LOOPTENDER_SUPERVISED_LOOP` for what it starts, on purpose ([above](#the-supervised-session-cannot-clear-its-own-hold)).
+
+**Not yet covered: a Codex operator thread.** A supervisor started from a Codex thread may inherit variables that thread's Codex session sets. No such name is listed, because none can be cited from Codex's documentation or source. This project has only observed `CODEX_TOOL_CALL_ID`, a per-call identifier, which is not removed.
+
+**Where these never existed.** A supervisor started as a service never had these variables: its unit clears `BB_THREAD_ID` and runs outside any BB thread. Neither did a supervisor started from a plain terminal outside BB.
+
+**Mixed versions.** Only a supervisor on this build removes them. A `daemon` already running an older build keeps passing them to the turns it starts until it is restarted on this build. A turn already running keeps the environment it was started with. Offline fixtures and the scenario harness only. The tests record variable names, never values. No live session was checked.
 
 ## Owned headless cancellation
 

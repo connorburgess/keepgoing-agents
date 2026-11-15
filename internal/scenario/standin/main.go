@@ -73,6 +73,7 @@ package main
 import (
 	"encoding/json"
 	"fmt"
+	"github.com/looptender/looptender/internal/envvar"
 	"io"
 	"os"
 	"path/filepath"
@@ -484,6 +485,15 @@ func turn(world, cli string, args []string) int {
 		}
 	}
 	appendLine(filepath.Join(world, "sends.jsonl"), map[string]string{"kind": "turn", "thread": cli, "mode": resumed, "message": string(prompt)})
+	// Which of the supervisor's own session variables the turn received, by
+	// name only, so a scenario can check a session is not given them.
+	var received []string
+	for _, n := range envvar.SupervisorSession {
+		if _, set := os.LookupEnv(n); set {
+			received = append(received, n)
+		}
+	}
+	appendLine(filepath.Join(world, "turn-session-vars.jsonl"), map[string]string{"cli": cli, "received": strings.Join(received, " ")})
 	mode := readMode(filepath.Join(world, "headless.mode"), "")
 	if mode == "" {
 		mode = readMode(filepath.Join(world, "net.mode"), "online")
