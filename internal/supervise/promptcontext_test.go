@@ -264,3 +264,22 @@ func TestPromptContextInANewThreadsFirstMessage(t *testing.T) {
 		t.Fatalf("%+v %q", res, c.sent)
 	}
 }
+
+// The operating window closing and opening again between two wakes does
+// not send the context again: whether the window is open now, and the text
+// that names the day's span, are left out of the comparison.
+func TestPromptContextNotResentWhenTheWindowOpens(t *testing.T) {
+	w, p, wake := promptContextWorld(t)
+	w.cfg.Loop.Window = &config.Window{TZ: "UTC", Days: map[string][]string{"Mon": {"09:00", "17:00"}, "Tue": {"09:00", "17:00"}}}
+	if !carries(wake(0)) { // Monday 12:00, inside Monday's span
+		t.Fatal("first send")
+	}
+	o := w.opts(t0.Add(6 * time.Hour)) // Monday 18:00: the window is closed
+	o.NewAdapter = func(config.Agent, string, string) (adapter.Adapter, error) { return bbNamedAdapter{p}, nil }
+	if res, err := Tick(context.Background(), w.cfg, o); err != nil || res.Action == "wake" {
+		t.Fatalf("outside the window: %+v %v", res, err)
+	}
+	if carries(wake(22 * time.Hour)) { // Tuesday 10:00, inside Tuesday's span
+		t.Fatal("resent when the window opened again")
+	}
+}
