@@ -138,7 +138,7 @@ The note left with a hold is withheld by default, as `client status` withholds i
 
 - **Last decision**: what the last recorded check did and why, in the fixed vocabulary of causes ("Sent nothing: lanes are working", "Sent a wake: the session was idle"), its age, and since when an unbroken run of checks has had that same result. A cause outside the vocabulary is not worded, and free-text reasons are never shown.
 - **Hold**: none, or the hold in force (paused, stop requested, held for a person, finished) and for how long. The duration comes from the retained history record of the hold starting; without one it reads "for at least" and counts from the last control change. Off is a state, not a hold.
-- **Route**, when the loop is not on its first route: which route it is on and since when, and why ("first choice at a usage limit until Wed 18 Nov"); the loop's row says "on its second route after usage limits" when the first was left at a limit.
+- **Route**, when the loop is not on its first route: which route it is on and since when, and why ("first choice at a usage limit until Wed 18 Nov"); the loop's row says "on its second route after a usage limit" when the first was left at a limit.
 
 Then the loop's **preferred routes** in order: its first route (`primary`), then each route of the loop's own list in configured order. A route is a model on an account group at an effort level; its title is its model, or the tool and "default model" or "model not configured" when no model is configured, with the account group, effort and how the loop gets onto it (continues in the same conversation, moves to another conversation, starts a new one, runs without a window, runs a command) on the line below. Each route card reads top to bottom:
 

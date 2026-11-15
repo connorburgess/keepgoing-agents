@@ -254,7 +254,7 @@ func (a *dockAway) finish(now time.Time) {
 		}
 	}
 	if first.How == dockLeftLimit {
-		a.Picker += " after usage limits"
+		a.Picker += " after a usage limit"
 	}
 	switch first.How {
 	case dockLeftLimit:

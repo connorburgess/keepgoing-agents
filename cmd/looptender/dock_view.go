@@ -2133,6 +2133,7 @@ func dockHandoffChain(in *dockChainInput, use dockRouteUse, test dockTesting, f 
 		for _, e := range c.Entries {
 			if e.Current && e.Readiness == "current" {
 				c.Brief += "; its current route is unaffected"
+				break
 			}
 		}
 	case f.Ready == 0:
