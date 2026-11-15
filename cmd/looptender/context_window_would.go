@@ -30,19 +30,20 @@ type contextWindowWould struct {
 	Threshold  *float64 `json:"threshold,omitempty"`
 	// Estimated is BB's flag on the reading the decision used, when it got
 	// that far.
-	Estimated            *bool  `json:"estimated,omitempty"`
-	MaxReadingAgeSeconds int64  `json:"maxReadingAgeSeconds,omitempty"`
-	MinIntervalSeconds   int64  `json:"minIntervalSeconds,omitempty"`
-	DailyCap             int    `json:"dailyCap,omitempty"`
-	Text                 string `json:"text"`
+	Estimated          *bool  `json:"estimated,omitempty"`
+	SafetyLimitSeconds int64  `json:"safetyLimitSeconds,omitempty"`
+	MinIntervalSeconds int64  `json:"minIntervalSeconds,omitempty"`
+	DailyCap           int    `json:"dailyCap,omitempty"`
+	Text               string `json:"text"`
 }
 
 // contextWindowPreviewNote marks every configured line as a preview.
 const contextWindowPreviewNote = "preview only: this build never resets, compacts, sends or asks for a checkpoint"
 
 // contextWindowWouldOf decides as contextwindow.Decide would at the next turn
-// boundary, from recorded state only: the latest context reading, the last
-// check's observation, the lane listing the run graph recorded at that
+// boundary, from recorded state only: the latest context reading with the
+// last turn end seen on its record, the loop's last send, the last check's
+// observation, the lane listing the run graph recorded at that
 // check, and the controls. It runs no command and reads no message text.
 // This build makes no resets, so none is recorded and spacing never applies.
 func contextWindowWouldOf(cfg *config.Config, st state.File, ctl control.File, controlUnreadable bool, graph *rungraph.Graph, now time.Time) contextWindowWould {
@@ -62,8 +63,11 @@ func contextWindowWouldOf(cfg *config.Config, st state.File, ctl control.File, c
 		// without it. Another layout is not read.
 		estimated := l.Estimated
 		in.Reading = &contextwindow.Reading{UsedTokens: l.UsedTokens, WindowTokens: l.WindowTokens, Estimated: &estimated, At: l.At,
-			Malformed: r.Version != state.ContextVersion}
+			Malformed: r.Version != state.ContextVersion, TurnEndsTracked: r.TurnEndsTracked, TurnEndSeenAt: r.TurnEndSeenAt}
 	}
+	// A send to another target would have cleared the record with the
+	// target change, so the loop's last send is this target's.
+	in.LastSentAt = st.LastSentAt
 	c := st.LastCheck
 	if c != nil && checkedTarget(c) == target {
 		in.Session = contextwindow.Session{
@@ -84,7 +88,7 @@ func contextWindowWouldOf(cfg *config.Config, st state.File, ctl control.File, c
 	}
 	threshold := d.Threshold
 	out.Threshold, out.Estimated = &threshold, d.Estimated
-	out.MaxReadingAgeSeconds, out.MinIntervalSeconds, out.DailyCap = int64(d.MaxReadingAge/time.Second), int64(d.MinInterval/time.Second), d.DailyCap
+	out.SafetyLimitSeconds, out.MinIntervalSeconds, out.DailyCap = int64(d.SafetyLimit/time.Second), int64(d.MinInterval/time.Second), d.DailyCap
 	out.Text = "context window reset at the next turn boundary: " + out.Text + "; " + contextWindowPreviewNote
 	return out
 }

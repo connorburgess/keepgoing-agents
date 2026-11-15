@@ -529,6 +529,13 @@ type ContextRecord struct {
 	Latest  ContextReading   `json:"latest"`
 	Days    []ContextDay     `json:"days,omitempty"`   // oldest first
 	Recent  []ContextReading `json:"recent,omitempty"` // oldest first
+	// TurnEndsTracked says the build that wrote the latest reading also
+	// keeps TurnEndSeenAt. TurnEndSeenAt is the last check that saw this
+	// target's turn end, the check of a turn-end reading included; zero
+	// when none has since the record began. Together with lastSentAt they
+	// show whether a turn has run since the latest reading.
+	TurnEndsTracked bool      `json:"turnEndsTracked,omitempty"`
+	TurnEndSeenAt   time.Time `json:"turnEndSeenAt,omitzero"`
 }
 
 // ContextReading is one reading. Estimated says the provider marked the
@@ -560,6 +567,15 @@ const (
 	ContextRecentKept = 8
 )
 
+// NoteTurnEnd records that a check saw target's turn end, on the context
+// record of that target. With no record there is no reading it could make
+// out of date.
+func (f *File) NoteTurnEnd(target string, at time.Time) {
+	if f.Context != nil && f.Context.Target == target {
+		f.Context.TurnEndSeenAt = at
+	}
+}
+
 // NoteContext adds a reading of target's conversation. A record of another
 // target is replaced, not merged: readings belong to one conversation.
 func (f *File) NoteContext(target string, r ContextReading) {
@@ -567,7 +583,7 @@ func (f *File) NoteContext(target string, r ContextReading) {
 		f.Context = &ContextRecord{Target: target}
 	}
 	c := f.Context
-	c.Version, c.Latest = ContextVersion, r
+	c.Version, c.Latest, c.TurnEndsTracked = ContextVersion, r, true
 	c.Recent = append(c.Recent, r)
 	if n := len(c.Recent) - ContextRecentKept; n > 0 {
 		c.Recent = append([]ContextReading(nil), c.Recent[n:]...)

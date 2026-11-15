@@ -413,7 +413,7 @@ loop:
 | --- | --- | --- |
 | `reset_at` | none | The share of the conversation's context window at or above which a reset would be due. Between `0.5` and `0.95`. |
 
-It has no default: without `reset_at` the feature is off, and a `context_window` block without it is refused. Below half a reset would give up a conversation with room left in it; above 95% the provider's own compaction or limit is likely to act first. Only a loop on a BB thread may set it, because only BB reports a [context window reading](adapters.md#context-window-reading); any other adapter is refused, naming the rule `context_window_reading`. While the loop is on a fallback that reports none, the preview says `not_supported`. The rule's other limits are fixed, not configured: a reading at most 15 minutes old, 6 hours between resets and at most 2 resets per UTC day.
+It has no default: without `reset_at` the feature is off, and a `context_window` block without it is refused. Below half a reset would give up a conversation with room left in it; above 95% the provider's own compaction or limit is likely to act first. Only a loop on a BB thread may set it, because only BB reports a [context window reading](adapters.md#context-window-reading); any other adapter is refused, naming the rule `context_window_reading`. While the loop is on a fallback that reports none, the preview says `not_supported`. The rule's other limits are fixed, not configured: a reading counts only while no turn is known to have run since it was taken, with a 24-hour safety limit on its age; 6 hours between resets; and at most 2 resets per UTC day.
 
 ## errors
 

@@ -35,6 +35,11 @@ func contextReadDue(d decide.Decision, obs decide.Observation, previous string, 
 	case decide.Nudge:
 		return !heldNudge
 	}
+	return turnEndSeen(obs, previous)
+}
+
+// turnEndSeen: this check is the first to see the turn ended.
+func turnEndSeen(obs decide.Observation, previous string) bool {
 	return obs.State == decide.Idle && previous != "" && previous != string(decide.Idle)
 }
 
@@ -43,6 +48,11 @@ func contextReadDue(d decide.Decision, obs decide.Observation, previous string, 
 // or change what the check decided or did: an unavailable reading leaves
 // the last one in place, with its own time, and adds nothing to the history.
 func (t *tick) readContext(a adapter.Adapter, target string, d decide.Decision, obs decide.Observation, previous string) {
+	// A turn end is noted before the reading, so a turn-end reading is not
+	// made out of date by its own check, and one that is unavailable is.
+	if turnEndSeen(obs, previous) && t.st.Target() == target && !t.opts.DryRun {
+		t.st.NoteTurnEnd(target, t.now)
+	}
 	r, ok := a.(adapter.ContextReader)
 	if !ok || !contextReadDue(d, obs, previous, t.heldNudge, t.st.Target() == target, t.opts.DryRun) {
 		return

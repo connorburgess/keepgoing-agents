@@ -20,11 +20,12 @@ import (
 
 // Fixed limits of the rule. They are stated in every decision.
 const (
-	// MaxReadingAge is how old the latest reading may be. A check records
-	// one when it sends and at a turn's end, so the reading behind a reset
-	// at the next turn boundary is minutes old; one older than this may
-	// predate the last turn and say nothing about the context now.
-	MaxReadingAge = 15 * time.Minute
+	// SafetyLimit is a wall-clock bound on the latest reading's age, kept
+	// only as a safety limit. Freshness itself is whether a turn is known to
+	// have run since the reading: an idle session's context does not grow,
+	// so a reading taken at a turn's end stays current however long the
+	// session stays idle, up to this.
+	SafetyLimit = 24 * time.Hour
 	// MinInterval is the least time between resets. Each reset costs sends
 	// at the largest context; a conversation that refills its window in
 	// under this needs a person, not more resets.
@@ -60,7 +61,9 @@ const (
 	NoReading           = "no_reading"
 	MalformedReading    = "malformed_reading"
 	EstimateFlagMissing = "estimate_flag_missing"
-	ReadingTooOld       = "reading_too_old"
+	FreshnessUnknown    = "freshness_unknown" // the record cannot show whether a turn ran since
+	ReadingTooOld       = "reading_too_old"   // a turn has run since the reading
+	PastSafetyLimit     = "past_safety_limit" // older than SafetyLimit
 	// RuleSession.
 	NoObservation = "no_observation"
 	InError       = "in_error"
@@ -91,6 +94,10 @@ type Reading struct {
 	At           time.Time
 	// Malformed: the record's layout is not one this build reads.
 	Malformed bool
+	// TurnEndsTracked: the record keeps TurnEndSeenAt, the last check that
+	// saw the turn end (zero: none since the record began).
+	TurnEndsTracked bool
+	TurnEndSeenAt   time.Time
 }
 
 // Controls are the person's controls of the loop.
@@ -131,10 +138,13 @@ type Input struct {
 	// Supported: the active target's agent reports a context window reading.
 	Supported bool
 	// Reading is nil when none is recorded for the active target.
-	Reading  *Reading
-	Controls Controls
-	Session  Session
-	Lanes    Lanes
+	Reading *Reading
+	// LastSentAt is when looptender last sent anything to the loop's
+	// target; zero when never. A send starts a turn.
+	LastSentAt time.Time
+	Controls   Controls
+	Session    Session
+	Lanes      Lanes
 	// LastReset is the last reset-related action and ResetsToday how many
 	// were made this UTC day. This build makes none, so status passes nil
 	// and 0.
@@ -154,19 +164,22 @@ type Decision struct {
 	Window     int64
 	Estimated  *bool
 	ReadingAge time.Duration
-	SinceReset *time.Duration
-	Lanes      int
-	State      string
+	// SentSince: a send was made at or after the reading. TurnEndSince: a
+	// turn end was seen after it.
+	SentSince, TurnEndSince bool
+	SinceReset              *time.Duration
+	Lanes                   int
+	State                   string
 	// The rule's fixed limits.
-	MaxReadingAge time.Duration
-	MinInterval   time.Duration
-	DailyCap      int
-	ResetsToday   int
+	SafetyLimit time.Duration
+	MinInterval time.Duration
+	DailyCap    int
+	ResetsToday int
 }
 
 // Decide returns what the rule would do at the next turn boundary.
 func Decide(in Input) Decision {
-	d := Decision{MaxReadingAge: MaxReadingAge, MinInterval: MinInterval, DailyCap: DailyCap, ResetsToday: in.ResetsToday, State: in.Session.State, Lanes: in.Lanes.Working}
+	d := Decision{SafetyLimit: SafetyLimit, MinInterval: MinInterval, DailyCap: DailyCap, ResetsToday: in.ResetsToday, State: in.Session.State, Lanes: in.Lanes.Working}
 	no := func(rule, reason string) Decision { d.Rule, d.Reason = rule, reason; return d }
 	if in.ResetAt == nil {
 		return no(RuleConfiguration, NotConfigured)
@@ -202,8 +215,18 @@ func Decide(in Input) Decision {
 	switch {
 	case r.Estimated == nil:
 		return no(RuleReading, EstimateFlagMissing)
-	case d.ReadingAge > MaxReadingAge:
+	case !r.TurnEndsTracked:
+		return no(RuleReading, FreshnessUnknown)
+	}
+	// A reading taken in the check that sent is taken as the turn that send
+	// began starts, so it is current only when strictly after the send.
+	d.SentSince = !in.LastSentAt.IsZero() && !in.LastSentAt.Before(r.At)
+	d.TurnEndSince = r.TurnEndSeenAt.After(r.At)
+	switch {
+	case d.SentSince || d.TurnEndSince:
 		return no(RuleReading, ReadingTooOld)
+	case d.ReadingAge > SafetyLimit:
+		return no(RuleReading, PastSafetyLimit)
 	}
 	s := in.Session
 	switch {
@@ -269,8 +292,15 @@ func (d Decision) Text(duration func(time.Duration) string) string {
 		return "would not reset: the recorded context window reading is not one this build can read"
 	case EstimateFlagMissing:
 		return "would not reset: the recorded reading does not say whether BB estimated it"
+	case FreshnessUnknown:
+		return "would not reset: the record cannot show whether a turn has run since the latest reading"
 	case ReadingTooOld:
-		return fmt.Sprintf("would not reset: the latest reading is %s old, over the %s a reading may be", duration(d.ReadingAge), duration(d.MaxReadingAge))
+		if d.SentSince {
+			return "would not reset: a turn has run since the latest reading (looptender sent to the session at or after it)"
+		}
+		return "would not reset: a turn has run since the latest reading (a check saw a turn end after it)"
+	case PastSafetyLimit:
+		return fmt.Sprintf("would not reset: the latest reading is %s old, over the %s safety limit", duration(d.ReadingAge), duration(d.SafetyLimit))
 	case NoObservation:
 		return "would not reset: no check has observed this thread yet"
 	case InError:

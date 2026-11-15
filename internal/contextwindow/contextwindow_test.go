@@ -6,7 +6,10 @@ import (
 	"time"
 )
 
-var now = time.Date(2026, 11, 9, 12, 0, 0, 0, time.UTC)
+var (
+	now    = time.Date(2026, 11, 9, 12, 0, 0, 0, time.UTC)
+	readAt = now.Add(-3 * time.Hour)
+)
 
 func ptr[T any](v T) *T { return &v }
 
@@ -16,8 +19,12 @@ func ready() Input {
 		Now:       now,
 		ResetAt:   ptr(0.8),
 		Supported: true,
-		Reading:   &Reading{UsedTokens: 170_000, WindowTokens: 200_000, Estimated: ptr(true), At: now.Add(-2 * time.Minute)},
-		Session:   Session{Observed: true, State: "idle"},
+		// Read at a turn end three hours ago, after the wake that began
+		// the turn; idle since.
+		Reading: &Reading{UsedTokens: 170_000, WindowTokens: 200_000, Estimated: ptr(true), At: readAt,
+			TurnEndsTracked: true, TurnEndSeenAt: readAt},
+		LastSentAt: readAt.Add(-40 * time.Minute),
+		Session:    Session{Observed: true, State: "idle"},
 	}
 }
 
@@ -46,7 +53,13 @@ func TestDecide(t *testing.T) {
 		{"reading with no time", func(in *Input) { in.Reading.At = time.Time{} }, RuleReading, MalformedReading, "not one this build can read"},
 		{"reading from the future", func(in *Input) { in.Reading.At = now.Add(time.Minute) }, RuleReading, MalformedReading, "not one this build can read"},
 		{"estimated flag absent", func(in *Input) { in.Reading.Estimated = nil }, RuleReading, EstimateFlagMissing, "does not say whether BB estimated it"},
-		{"stale reading", func(in *Input) { in.Reading.At = now.Add(-MaxReadingAge - time.Second) }, RuleReading, ReadingTooOld, "15m1s old, over the 15m0s"},
+		{"record keeps no turn ends", func(in *Input) { in.Reading.TurnEndsTracked = false }, RuleReading, FreshnessUnknown, "cannot show whether a turn has run"},
+		{"a send after the reading", func(in *Input) { in.LastSentAt = readAt.Add(time.Minute) }, RuleReading, ReadingTooOld, "looptender sent to the session at or after it"},
+		{"read in the check that sent", func(in *Input) { in.LastSentAt = readAt }, RuleReading, ReadingTooOld, "looptender sent to the session at or after it"},
+		{"a turn end after the reading", func(in *Input) { in.Reading.TurnEndSeenAt = readAt.Add(time.Minute) }, RuleReading, ReadingTooOld, "a check saw a turn end after it"},
+		{"past the safety limit", func(in *Input) {
+			in.Reading.At, in.Reading.TurnEndSeenAt, in.LastSentAt = now.Add(-SafetyLimit-time.Second), time.Time{}, time.Time{}
+		}, RuleReading, PastSafetyLimit, "24h0m1s old, over the 24h0m0s safety limit"},
 		{"no observation", func(in *Input) { in.Session = Session{} }, RuleSession, NoObservation, "no check has observed"},
 		{"error", func(in *Input) { in.Session.State = "error"; in.Session.LimitWait = true }, RuleSession, InError, "the session is in error"},
 		{"limit wait", func(in *Input) { in.Session.LimitWait = true }, RuleSession, LimitWait, "waiting out a provider limit"},
@@ -65,7 +78,10 @@ func TestDecide(t *testing.T) {
 		{"exactly at the threshold", func(in *Input) { in.Reading.UsedTokens = 160_000 }, RuleWouldReset, AtOrAboveThreshold, "80% of the window used"},
 		{"reported, not estimated", func(in *Input) { in.Reading.Estimated = ptr(false) }, RuleWouldReset, AtOrAboveThreshold, "reported by BB"},
 		{"spaced and under the cap", func(in *Input) { in.LastReset = ptr(now.Add(-MinInterval)); in.ResetsToday = DailyCap - 1 }, RuleWouldReset, AtOrAboveThreshold, "would reset"},
-		{"reading exactly at the age limit", func(in *Input) { in.Reading.At = now.Add(-MaxReadingAge) }, RuleWouldReset, AtOrAboveThreshold, "would reset"},
+		{"read at a turn end long ago, still idle", func(in *Input) {
+			in.Reading.At, in.Reading.TurnEndSeenAt, in.LastSentAt = now.Add(-SafetyLimit), now.Add(-SafetyLimit), now.Add(-SafetyLimit-time.Hour)
+		}, RuleWouldReset, AtOrAboveThreshold, "would reset"},
+		{"no send and no turn end recorded", func(in *Input) { in.LastSentAt, in.Reading.TurnEndSeenAt = time.Time{}, time.Time{} }, RuleWouldReset, AtOrAboveThreshold, "would reset"},
 	}
 	for _, c := range cases {
 		in := ready()
@@ -80,7 +96,7 @@ func TestDecide(t *testing.T) {
 		if got := d.Text(dur); !strings.Contains(got, c.text) {
 			t.Errorf("%s: text %q lacks %q", c.name, got, c.text)
 		}
-		if c.code != NotConfigured && (d.MaxReadingAge != MaxReadingAge || d.MinInterval != MinInterval || d.DailyCap != DailyCap) {
+		if c.code != NotConfigured && (d.SafetyLimit != SafetyLimit || d.MinInterval != MinInterval || d.DailyCap != DailyCap) {
 			t.Errorf("%s: the limits are not stated: %+v", c.name, d)
 		}
 	}
@@ -90,7 +106,7 @@ func TestDecide(t *testing.T) {
 // says why not.
 func TestOnlyOneReasonResets(t *testing.T) {
 	for _, code := range []string{NotConfigured, ControlsUnreadable, Stopped, Paused, Held, NotSupported, NoReading, MalformedReading,
-		EstimateFlagMissing, ReadingTooOld, NoObservation, InError, LimitWait, Retrying, Refusal, AwaitingInput, NotIdle,
+		EstimateFlagMissing, FreshnessUnknown, ReadingTooOld, PastSafetyLimit, NoObservation, InError, LimitWait, Retrying, Refusal, AwaitingInput, NotIdle,
 		LanesUnverified, LanesActive, BelowThreshold, DailyCapUsed} {
 		d := Decision{Reason: code, Estimated: ptr(true)}
 		if txt := d.Text(dur); code != NotConfigured && !strings.HasPrefix(txt, "would not reset: ") {

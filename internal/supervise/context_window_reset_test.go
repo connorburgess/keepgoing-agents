@@ -3,6 +3,7 @@ package supervise
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"testing"
 	"time"
 
@@ -58,5 +59,45 @@ func TestContextWindowThresholdChangesNoCheck(t *testing.T) {
 		if got := run(&v); got != unset {
 			t.Errorf("reset_at %v: the checks differ\nunset: %s\n  set: %s", v, unset, got)
 		}
+	}
+}
+
+// The check that first sees a turn end notes it on the context record,
+// before reading: a turn-end reading is as new as the turn end, and one that
+// is unavailable leaves the turn end after the latest reading.
+func TestTurnEndIsNotedOnTheContextRecord(t *testing.T) {
+	w, f := contextWorld(t, decide.Observation{State: decide.Idle})
+	if _, err := Tick(context.Background(), w.cfg, w.contextOpts(t0, f)); err != nil { // wake, reading at t0
+		t.Fatal(err)
+	}
+	f.obs = decide.Observation{State: decide.Active}
+	if _, err := Tick(context.Background(), w.cfg, w.contextOpts(t0.Add(10*time.Minute), f)); err != nil {
+		t.Fatal(err)
+	}
+	if c := loadState(t, w).Context; !c.TurnEndSeenAt.IsZero() {
+		t.Fatalf("a turn end was noted while active: %+v", c)
+	}
+	end := t0.Add(20 * time.Minute)
+	f.obs = decide.Observation{State: decide.Idle}
+	o := w.contextOpts(end, f)
+	if _, err := Tick(context.Background(), w.cfg, o); err != nil {
+		t.Fatal(err)
+	}
+	if c := loadState(t, w).Context; !c.TurnEndSeenAt.Equal(end) || !c.Latest.At.Equal(end) || !c.TurnEndsTracked {
+		t.Fatalf("turn-end reading: %+v", c)
+	}
+
+	f.obs = decide.Observation{State: decide.Active}
+	if _, err := Tick(context.Background(), w.cfg, w.contextOpts(end.Add(10*time.Minute), f)); err != nil {
+		t.Fatal(err)
+	}
+	f.err = errors.New("bb context reading unavailable")
+	later := end.Add(20 * time.Minute)
+	f.obs = decide.Observation{State: decide.Idle}
+	if _, err := Tick(context.Background(), w.cfg, w.contextOpts(later, f)); err != nil {
+		t.Fatal(err)
+	}
+	if c := loadState(t, w).Context; !c.TurnEndSeenAt.Equal(later) || !c.Latest.At.Before(later) {
+		t.Fatalf("unavailable turn-end reading: %+v", c)
 	}
 }

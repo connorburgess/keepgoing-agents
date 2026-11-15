@@ -29,9 +29,14 @@ func cwConfig(resetAt *float64) *config.Config {
 // at 85%, an idle observation of the primary and a complete lane listing
 // with only an errored lane, all from the same check.
 func cwRecords() (state.File, control.File, *rungraph.Graph) {
-	checked := cwNow.Add(-3 * time.Minute)
-	st := state.File{}
-	st.NoteContext(state.Primary, state.ContextReading{UsedTokens: 170_000, WindowTokens: 200_000, Estimated: true, At: checked})
+	// The turn began with a wake five hours ago and ended at a check three
+	// hours ago, which read the context; the session has been idle since,
+	// with a quiet check a minute ago.
+	readAt, checked := cwNow.Add(-3*time.Hour), cwNow.Add(-time.Minute)
+	st := state.File{LastSentAt: cwNow.Add(-5 * time.Hour)}
+	st.NoteTurnEnd(state.Primary, readAt) // no record yet: nothing to note
+	st.NoteContext(state.Primary, state.ContextReading{UsedTokens: 170_000, WindowTokens: 200_000, Estimated: true, At: readAt})
+	st.NoteTurnEnd(state.Primary, readAt)
 	st.LastCheck = &state.Check{At: checked, Target: state.Primary, ObservedState: "idle", Action: "none", Outcome: "succeeded"}
 	g := &rungraph.Graph{Waiting: &rungraph.Waiting{Target: state.Primary, CheckedAt: checked, Listing: rungraph.ListingComplete,
 		Children: []rungraph.Child{{Key: "lane-a", Status: rungraph.ChildErrored}}}}
@@ -60,9 +65,18 @@ func TestContextWindowWouldFromRecords(t *testing.T) {
 			s.Context.Target = "example-fallback"
 		}, "reading", "no_reading", "no context window reading"},
 		{"unknown record layout", &threshold, func(s *state.File, _ *control.File, _ **rungraph.Graph, _ *bool) { s.Context.Version = 2 }, "reading", "malformed_reading", "not one this build can read"},
-		{"stale reading", &threshold, func(s *state.File, _ *control.File, _ **rungraph.Graph, _ *bool) {
-			s.Context.Latest.At = cwNow.Add(-time.Hour)
-		}, "reading", "reading_too_old", "the latest reading is 1h 0m old, over the 15m"},
+		{"a send after the reading", &threshold, func(s *state.File, _ *control.File, _ **rungraph.Graph, _ *bool) {
+			s.LastSentAt = cwNow.Add(-2 * time.Hour)
+		}, "reading", "reading_too_old", "a turn has run since the latest reading (looptender sent"},
+		{"a turn end after the reading", &threshold, func(s *state.File, _ *control.File, _ **rungraph.Graph, _ *bool) {
+			s.NoteTurnEnd(state.Primary, cwNow.Add(-10*time.Minute))
+		}, "reading", "reading_too_old", "a check saw a turn end after it"},
+		{"record without turn ends", &threshold, func(s *state.File, _ *control.File, _ **rungraph.Graph, _ *bool) {
+			s.Context.TurnEndsTracked, s.Context.TurnEndSeenAt = false, time.Time{}
+		}, "reading", "freshness_unknown", "cannot show whether a turn has run"},
+		{"past the safety limit", &threshold, func(s *state.File, _ *control.File, _ **rungraph.Graph, _ *bool) {
+			s.Context.Latest.At, s.Context.TurnEndSeenAt, s.LastSentAt = cwNow.Add(-25*time.Hour), cwNow.Add(-25*time.Hour), cwNow.Add(-26*time.Hour)
+		}, "reading", "past_safety_limit", "25h 0m old, over the 24h 0m safety limit"},
 		{"target not BB", &threshold, func(s *state.File, _ *control.File, _ **rungraph.Graph, _ *bool) { s.ActiveTarget = "example-headless" }, "reading", "not_supported", "reports no context window size"},
 		{"no check", &threshold, func(s *state.File, _ *control.File, _ **rungraph.Graph, _ *bool) { s.LastCheck = nil }, "session", "no_observation", "no check has observed"},
 		{"error", &threshold, func(s *state.File, _ *control.File, _ **rungraph.Graph, _ *bool) { s.LastCheck.ObservedState = "error" }, "session", "in_error", "in error"},
@@ -109,7 +123,7 @@ func TestContextWindowWouldFromRecords(t *testing.T) {
 		if !got.Preview || got.Version != 1 {
 			t.Errorf("%s: not marked as a preview: %+v", c.name, got)
 		}
-		if c.resetAt != nil && (!strings.HasSuffix(got.Text, contextWindowPreviewNote) || got.MaxReadingAgeSeconds != 900 || got.MinIntervalSeconds != 6*3600 || got.DailyCap != 2) {
+		if c.resetAt != nil && (!strings.HasSuffix(got.Text, contextWindowPreviewNote) || got.SafetyLimitSeconds != 86400 || got.MinIntervalSeconds != 6*3600 || got.DailyCap != 2) {
 			t.Errorf("%s: preview note or limits missing: %+v", c.name, got)
 		}
 	}

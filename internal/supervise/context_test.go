@@ -98,7 +98,8 @@ func TestWakeRecordsTheContextReadingOnce(t *testing.T) {
 	got := loadState(t, w).Context
 	r := state.ContextReading{UsedTokens: 48_000, WindowTokens: 200_000, Estimated: true, At: t0}
 	want := &state.ContextRecord{Version: state.ContextVersion, Target: state.Primary, Latest: r, Recent: []state.ContextReading{r},
-		Days: []state.ContextDay{{Day: "2026-11-09", Lowest: 48_000, Highest: 48_000, Last: 48_000, WindowTokens: 200_000, Count: 1, Estimated: true}}}
+		Days:            []state.ContextDay{{Day: "2026-11-09", Lowest: 48_000, Highest: 48_000, Last: 48_000, WindowTokens: 200_000, Count: 1, Estimated: true}},
+		TurnEndsTracked: true}
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("recorded %+v, want %+v", got, want)
 	}
