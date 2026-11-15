@@ -262,6 +262,12 @@ var afterStatusRecordRead, beforeStatusFinished func()
 // statusWithOutputLimit bounds stdout loading for adapters with a finite stream
 // contract. Zero preserves the legacy adapters' output behavior.
 func (d Dir) statusWithOutputLimit(limit int64) (Status, error) {
+	return d.sampleStatus(limit, nil)
+}
+
+// sampleStatus may reuse an already-owned exclusive turn guard. Never acquire
+// a shared guard recursively or upgrade a shared guard to authorize mutation.
+func (d Dir) sampleStatus(limit int64, owned *lock.Lock) (Status, error) {
 	var st Status
 	b, err := snapshot.ReadRecord(d.path("run.json"))
 	if errors.Is(err, os.ErrNotExist) {
@@ -283,15 +289,17 @@ func (d Dir) statusWithOutputLimit(limit int64) (Status, error) {
 	// sample, including a first start replacing a legacy record. Hold it through
 	// exit/output sampling to prevent mixed generations,
 	// and release before returning Finished to the caller.
-	completedGuard, err := lock.AcquireNamedShared(string(d), turnLock)
-	if errors.Is(err, lock.ErrHeld) {
-		st.Phase = Running
-		return st, nil
+	if owned == nil {
+		completedGuard, err := lock.AcquireNamedShared(string(d), turnLock)
+		if errors.Is(err, lock.ErrHeld) {
+			st.Phase = Running
+			return st, nil
+		}
+		if err != nil {
+			return st, errors.New("runner: the turn lock could not be checked" + errnoText(err))
+		}
+		defer completedGuard.Release()
 	}
-	if err != nil {
-		return st, errors.New("runner: the turn lock could not be checked" + errnoText(err))
-	}
-	defer completedGuard.Release()
 	b, err = snapshot.ReadRecord(d.path("run.json"))
 	if err != nil {
 		return Status{}, err
@@ -409,7 +417,7 @@ func (d Dir) Start(argv []string, workdir, prompt string, env []string) error {
 
 // turnFiles are what one turn leaves, the exit code last: it is what makes a
 // turn read as finished, so it is the last to go and the last to come back.
-var turnFiles = []string{"prompt", "exit.tmp", "stdout", "stderr", "stop-request.json", "stop-ack.json", startedName, finishingName, waitAdoptedFile, sessionResetFile, "exit"}
+var turnFiles = []string{"prompt", "exit.tmp", "stdout", "stderr", "stop-request.json", "stop-ack.json", startedName, finishingName, waitAdoptedFile, sessionResetFile, sessionResetFile + ".present", "exit"}
 
 // renameFile is os.Rename. Tests replace it to make one file immovable.
 var renameFile = os.Rename
@@ -468,7 +476,16 @@ func (d Dir) putBack(moved []string) error {
 			lost = append(lost, name)
 			continue
 		}
-		os.Remove(d.path(name)) // what the failed start wrote in its place
+		// The fence alone uses the snapshot publication marker. Other turn
+		// records retain their existing publication/removal rules.
+		if name == sessionResetFile {
+			if err := removeResetFence(d.path(name)); err != nil && !errors.Is(err, os.ErrNotExist) {
+				lost = append(lost, name+errnoText(err))
+				continue
+			}
+		} else {
+			os.Remove(d.path(name))
+		} // what the failed start wrote in its place
 		if err := renameFile(d.aside(name), d.path(name)); err != nil {
 			lost = append(lost, name+errnoText(err))
 		}
@@ -596,6 +613,16 @@ func (d Dir) StartWithPromptFile(argv []string, workdir, prompt string, env []st
 // the variable that carries it from the loop's own entries, so a value set
 // anywhere else can never take a prompt away from a turn.
 func (d Dir) startTurn(argv []string, workdir, prompt string, env []string, acp string, emptyStdin bool) (string, error) {
+	return d.startTurnGuarded(argv, workdir, prompt, env, acp, emptyStdin, nil)
+}
+
+// startTurnGuarded consumes an optional exclusive setup guard. A headless send
+// retains this guard from session-derived argv through record publication.
+// It is released at the existing protocol 3 boundary, before wrapper wait.
+func (d Dir) startTurnGuarded(argv []string, workdir, prompt string, env []string, acp string, emptyStdin bool, setup *lock.Lock) (string, error) {
+	if setup != nil {
+		defer setup.Release()
+	}
 	kept := make([]string, 0, len(env)+1)
 	for _, kv := range env {
 		if name, _, _ := strings.Cut(kv, "="); !strings.EqualFold(name, envTurnStdin) {
@@ -623,11 +650,14 @@ func (d Dir) startTurn(argv []string, workdir, prompt string, env []string, acp 
 	// previous turn's wrapper to finish exiting, so its lock can never stand
 	// in for the new wrapper's, and it is released only after the new record
 	// is written. The new wrapper then takes it and says so.
-	setup, err := acquireTurnLock(string(d))
-	if err != nil {
-		return "", notSpawned{err}
+	if setup == nil {
+		var err error
+		setup, err = acquireTurnLock(string(d))
+		if err != nil {
+			return "", notSpawned{err}
+		}
+		defer setup.Release()
 	}
-	defer setup.Release()
 	moved, err := d.setAside()
 	if err != nil {
 		return "", notSpawned{err}
@@ -700,48 +730,6 @@ func (d Dir) waitAdopted(rec Record) bool {
 
 func (d Dir) adoptWait(rec Record) error {
 	return os.WriteFile(d.path(waitAdoptedFile), []byte(waitKey(rec)+"\n"), 0o600)
-}
-
-// sessionResetFile records that a person reset the session after the named
-// turn, so that turn's reported session is not saved again. It names the
-// turn, so it cannot apply to a later one, and a new turn removes it.
-const sessionResetFile = "session-reset"
-
-func (d Dir) sessionWasReset(rec Record) (bool, error) {
-	b, err := os.ReadFile(d.path(sessionResetFile))
-	if errors.Is(err, os.ErrNotExist) {
-		return false, nil
-	}
-	if err != nil {
-		return false, errors.New("runner: session reset record unavailable")
-	}
-	if strings.TrimSpace(string(b)) == "" {
-		return false, errors.New("runner: session reset record is empty")
-	}
-	return strings.TrimSpace(string(b)) == waitKey(rec), nil
-}
-
-// resetSession removes the saved session. The marker is written first: if
-// the removal then fails, the session is still there and still usable, and
-// if it succeeds the latest turn cannot restore it.
-func (d Dir) resetSession(st Status) (had bool, err error) {
-	if _, statErr := os.Lstat(d.path("session")); statErr == nil {
-		had = true
-	} else if !errors.Is(statErr, os.ErrNotExist) {
-		return false, statErr
-	}
-	if st.Phase != NeverRun {
-		if err := os.MkdirAll(string(d), 0o700); err != nil {
-			return had, err
-		}
-		if err := os.WriteFile(d.path(sessionResetFile), []byte(waitKey(st.Record)+"\n"), 0o600); err != nil {
-			return had, err
-		}
-	}
-	if err := os.Remove(d.path("session")); err != nil && !errors.Is(err, os.ErrNotExist) {
-		return had, err
-	}
-	return had, nil
 }
 
 // errOutputOverLimit says a turn printed more than its adapter reads.

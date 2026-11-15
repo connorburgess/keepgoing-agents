@@ -96,7 +96,7 @@ func sessionReset(e env, cfg *config.Config, target, note string, asJSON bool) i
 	}
 	had, err := h.ResetSession()
 	if errors.Is(err, runner.ErrTurnRunning) {
-		e.errf("a turn is running on %s; wait for it to end or stop it, then run this again", target)
+		e.errf("a turn is running on %s, or its turn state is busy; wait for it to end or stop it, then run this again", target)
 		return exitFailed
 	}
 	if err != nil {

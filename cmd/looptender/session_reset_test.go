@@ -260,3 +260,25 @@ func TestSessionResetPreservesAllHolds(t *testing.T) {
 		t.Fatalf("controls changed: %s %v", after, err)
 	}
 }
+
+func TestSessionResetReportsPartialDiagnosticFailure(t *testing.T) {
+	for _, name := range []string{"runs.jsonl", "incidents.json"} {
+		t.Run(name, func(t *testing.T) {
+			path, target := sessionResetFixture(t, nil)
+			file := filepath.Join(filepath.Dir(path), "state", name)
+			if err := os.Remove(file); err != nil && !os.IsNotExist(err) {
+				t.Fatal(err)
+			}
+			if err := os.Mkdir(file, 0700); err != nil {
+				t.Fatal(err)
+			}
+			code, _, errs := runKeepgoing("session", "reset", "-c", path)
+			if code != exitFailed || !strings.Contains(errs, "done;") || !strings.Contains(errs, "history write failed") {
+				t.Fatalf("partial reset hidden: %d %s", code, errs)
+			}
+			if _, err := os.Lstat(filepath.Join(target, "session")); !os.IsNotExist(err) {
+				t.Fatalf("session not actually reset: %v", err)
+			}
+		})
+	}
+}
