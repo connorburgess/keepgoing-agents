@@ -9,7 +9,7 @@
   var SCHEMA = 1;
   var API = "api/v1/dock";
   var SERVER = "api/v1/server";
-  var state = { data: null, identifiers: false, paused: false, timer: 0, busy: false, again: false, lastOk: null, failed: false, pending: false, said: "", server: null };
+  var state = { data: null, identifiers: false, paused: false, timer: 0, busy: false, again: false, lastOk: null, failed: false, pending: false, said: "", server: null, treeOpen: Object.create(null) };
 
   var TONES = {
     supervising: "good", waiting_for_you: "attn", waiting_on_limit: "limit", waiting_on_network: "limit", checks_failing: "warn",
@@ -381,7 +381,7 @@
     return changeBox({ key: "all", can: can }, true);
   }
   function renderHome(d, pane) {
-    pane.appendChild(paneHead("Needs you"));
+    pane.appendChild(paneHead("Overview"));
     var group = groupBox(d);
     if (group) pane.appendChild(group);
     if (d.registry.availability !== "available") {
@@ -403,12 +403,15 @@
       p.appendChild(document.createTextNode("Nothing needs you: every registered loop was read and none is held."));
       pane.appendChild(p);
     } else {
+      pane.appendChild(el("h2", "overview-heading", "Needs you"));
       var ol = el("ol", "need-list");
       needs.forEach(function (x) { ol.appendChild(needCard(x, true)); });
       var wrap = el("div", "panel is-need");
       wrap.appendChild(ol);
       pane.appendChild(wrap);
     }
+    pane.appendChild(workTree(d));
+    pane.appendChild(recentAcrossLoops(d));
     // Loops that do not need a person but are not routine either: waiting on
     // something, not checked, or on a later route.
     var worth = list(d.worth);
@@ -427,6 +430,94 @@
       sec.appendChild(ul);
       pane.appendChild(sec);
     }
+  }
+
+  // The existing feed verifies direct lanes at a check, not an entire live
+  // descendant tree. Keep each registered loop visible independently, even
+  // when a lane links to it: its own control state may differ from the
+  // parent's observation. No relationship is inferred from names or order.
+  function workTree(d) {
+    var p = panel("Loops and lanes");
+    p.appendChild(el("p", "sub", "Supervision and agent observations are separate. Expand a loop to see its recorded direct lanes."));
+    p.appendChild(el("p", "sub work-evidence", "Active does not prove progress or connectivity. Only direct lanes are listed; absent lanes do not establish completion. Finished means declared, not verified."));
+    var ul = el("ul", "work-tree");
+    var retainedOpen = Object.create(null);
+    list(d.loops).forEach(function (l) {
+      var li = el("li", "work-branch"), details = el("details");
+      details.dataset.loop = l.key;
+      details.open = Object.prototype.hasOwnProperty.call(state.treeOpen, l.key) ? state.treeOpen[l.key] : !!needFor(l.key);
+      retainedOpen[l.key] = details.open;
+      var summary = el("summary", "work-summary");
+      summary.setAttribute("data-focus", "tree-" + l.key);
+      var name = el("span", "work-name", l.name);
+      summary.appendChild(name);
+      var status = el("span", "work-status");
+      status.appendChild(el("span", "dot dot-" + (TONES[l.state] || "unknown")));
+      status.appendChild(el("span", null, "Supervision: " + l.phrase));
+      if (l.state === "finished") status.appendChild(tag("stale", "Unverified declaration"));
+      summary.appendChild(status);
+      summary.appendChild(el("span", "sub work-observation", "Lane evidence: " + ((l.children && l.children.phrase) || "Unknown")));
+      var age = el("span", "sub work-age", (l.lastCheck && l.lastCheck.text) || "Last check unknown");
+      if (l.lastCheck && l.lastCheck.availability === "stale") age.appendChild(tag("stale", "Stale"));
+      summary.appendChild(age);
+      details.appendChild(summary);
+      var body = el("div", "work-body");
+      body.appendChild(el("p", "detail", l.detail));
+      var facts = el("dl", "work-facts");
+      facts.appendChild(fact("Last decision", l.decision ? say(l.decision.phrase) : "Unknown"));
+      facts.appendChild(fact("Next check", nextCheck(l.nextCheck || { availability: "unknown" })));
+      body.appendChild(facts);
+      body.appendChild(laneBox(l, true));
+      body.appendChild(link("#/loop/" + l.key, "Inspect " + l.name, "work-inspect"));
+      details.appendChild(body);
+      details.addEventListener("toggle", function () {
+        if (details.isConnected) state.treeOpen[l.key] = details.open;
+      });
+      li.appendChild(details);
+      ul.appendChild(li);
+    });
+    state.treeOpen = retainedOpen;
+    p.appendChild(ul);
+    if (!d.complete || d.registry.omitted) p.appendChild(el("p", "more", "This read does not include every registered loop. Missing loops are not assumed stopped or clear."));
+    return p;
+  }
+
+  // Merge only the bounded, already-projected events. This is a recent
+  // sample, not a complete chronology or a persisted "while away" cursor.
+  function recentAcrossLoops(d) {
+    var p = panel("Recent activity across loops");
+    p.appendChild(el("p", "sub", "Newest recorded events from up to five retained entries per loop. This is a bounded sample, not a complete history."));
+    var rows = [], missing = false, pruned = false;
+    list(d.loops).forEach(function (l) {
+      if (!l.events || l.events.availability === "unknown") missing = true;
+      if (l.events && l.events.pruned) pruned = true;
+      list(l.events && l.events.events).forEach(function (e) {
+        var at = Date.parse(e.at);
+        if (!isNaN(at)) rows.push({ loop: l, event: e, at: at });
+      });
+    });
+    rows.sort(function (a, b) { return b.at - a.at || a.loop.key.localeCompare(b.loop.key); });
+    var ol = el("ol", "events overview-events");
+    rows.slice(0, 8).forEach(function (r) {
+      var x = r.event, li = el("li", "event is-" + x.tone);
+      var t = el("time", null, say(x.when));
+      t.dateTime = x.at;
+      li.appendChild(t);
+      li.appendChild(el("span", "mark"));
+      var body = el("div");
+      body.appendChild(link("#/loop/" + r.loop.key, r.loop.name));
+      body.appendChild(el("div", null, x.phrase));
+      if (x.detail) body.appendChild(el("span", "sub", x.detail));
+      if (list(x.foldedText).length) body.appendChild(el("span", "sub", say(x.foldedText)));
+      li.appendChild(body);
+      ol.appendChild(li);
+    });
+    if (rows.length) p.appendChild(ol);
+    else p.appendChild(el("p", "sub", missing ? "Recent activity is unavailable for one or more loops." : "No recent activity is recorded in this read."));
+    if (rows.length > 8) p.appendChild(el("p", "more", "Showing the newest 8 of " + rows.length + " entries supplied by this read. Inspect a loop for its retained history."));
+    if (pruned) p.appendChild(el("p", "more history-pruned", "Older history has been pruned for at least one loop. This sample cannot reconstruct it and is not a complete chronology."));
+    if ((rows.length && missing) || !d.complete || d.registry.omitted) p.appendChild(el("p", "more", "Activity is incomplete: some loop history or registered loops could not be included."));
+    return p;
   }
 
   // Last decision, hold and route: short answers under the loop's name.
@@ -456,7 +547,7 @@
 
   // Each lane of the last verified listing: its state, then what it is (its
   // title when one is recorded, otherwise its number).
-  function laneBox(l) {
+  function laneBox(l, overview) {
     var c = l.children, lanes = l.lanes, rows = list(lanes && lanes.lanes);
     var b = el("div", "lanes is-wide");
     b.appendChild(el("span", "lanes-label", (lanes && lanes.heading) || "This loop's lanes"));
@@ -485,7 +576,10 @@
       ul.appendChild(li);
     });
     b.appendChild(ul);
-    if (lanes && lanes.footer) b.appendChild(el("p", "more", lanes.footer));
+    if (overview) {
+      if (lanes.omitted) b.appendChild(el("p", "more", lanes.omitted + " more lanes are not listed."));
+      b.appendChild(el("p", "more", "Lane titles appear only with identifiers and notes. Routes for individual lanes are not recorded."));
+    } else if (lanes && lanes.footer) b.appendChild(el("p", "more", lanes.footer));
     return b;
   }
 
@@ -902,7 +996,7 @@
   // A focusable element is found again after a redraw by a key that does
   // not change when its text does (an age, a count): its tag, its link
   // target, its id or data-focus name, and which of those it was in order.
-  var FOCUSABLE = "a[href], button, [tabindex]";
+  var FOCUSABLE = "a[href], button, summary, [tabindex]";
   function signature(n) { return n.tagName + "|" + (n.getAttribute("href") || "") + "|" + (n.id || "") + "|" + (n.getAttribute("data-focus") || ""); }
   function focusKey(node, root) {
     if (!node || node === document.body || !root.contains(node) || !node.matches(FOCUSABLE)) return null;
