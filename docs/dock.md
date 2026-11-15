@@ -190,6 +190,7 @@ How the rows are compared:
 - **Labels** follow the rules above: whole labels; `dev` and a shared `-dirty` label are unknown; "older" is said only between two plain releases. A dev or dirty build against a release is "a different build", and which of them is newer is not known.
 - **Advice** is given only to a place that is older than the reference, and to a service on a different file when this panel runs the newest release here. Because that file's build is not known, the service's advice is "restart the service, or install it again from this panel's build if its file is older". Advice is never given to move to an older build, or to a build whose order is not known.
 - **The picker's count** is of the places known to need something: older than the reference, or a service on a different file. A build whose order is not known is shown but not counted. When every place seen now runs one dev build and the only release is a client's report, the count is zero.
+- **The picker's line** gives that count ("2 places need a look, against v0.1.5"), then how many places run a different build whose order is not known ("3 run a different build; which is newer is not known") and how many cannot be compared at all, such as a `dev` build or a check with no label recorded ("1 cannot be compared"). Only when every place was compared and none needs a look does it say "All on v0.1.5", or, when the reference is this panel's own build, "Everything here runs this panel's build". It never reads as an all-clear while a place cannot be compared.
 - **This panel's own row** always reads as this panel's own build, whatever its label.
 - **The plugin and the menu** are compared with the versions this build expects, never with looptender's own numbers. One newer than that reads "newer than this build expects", with no advice.
 - **Reports over seven days old** read "not seen in the last seven days", with the date of the last report in the page's time zone. They count for nothing.
@@ -391,6 +392,7 @@ A macOS menu-bar preview now opens the panel and lists a row per loop with its s
 - each label against a reference, as exact words, including a dev build against a release and the newest release across labels;
 - the plugin and menu comparison, including one newer than this build expects;
 - the review's case of dev builds everywhere with an old client report: the old report is not the reference, no dev row is advised, and nothing is advised toward an older build;
+- the picker's line, as exact words: all on one build, older releases, builds that cannot be ordered, and places that cannot be compared, never an all-clear while one cannot be compared;
 - reports over seven days old;
 - one report per client name with no path, refused values, the hour without rewriting, `0600` (not checked on Windows, where Go reports other bits), a damaged or older file replaced, and no directory created;
 - `status`, `client status` and `panel list` with `--client` answering exactly as without it, and `pause --client` refused;
