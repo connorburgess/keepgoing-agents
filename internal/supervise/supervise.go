@@ -1928,7 +1928,7 @@ func (t *tick) act(a adapter.Adapter, d decide.Decision) error {
 			}
 		}
 		t.st.Nudges, t.st.Reprompts, t.st.LastWakeAt, t.st.LastRepromptAt = c.Nudges, c.Reprompts, c.LastSendAt, c.LastRepromptAt
-		if d.IdleWake {
+		if d.IdleWake && err == nil {
 			t.recordIdleWake(t.decisionInput, childErrors > 0)
 		}
 		if err != nil {

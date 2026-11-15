@@ -90,9 +90,10 @@ func (t *tick) idleSpacingInput(obs decide.Observation, ctl control.File) decide
 	return in
 }
 
-// recordIdleWake runs once the adapter was called for an ordinary idle wake,
-// whatever it returned, like every other send record. A wake that carried a
-// child-error notice starts the count over: the notice is a change.
+// recordIdleWake runs once the adapter accepted an ordinary idle wake. A
+// failed send records nothing: it started no turn, so it is not a wake that
+// changed nothing. A wake that carried a child-error notice starts the count
+// over: the notice is a change.
 func (t *tick) recordIdleWake(in decide.Input, childNotice bool) {
 	if t.idleFactsAfterWake == "" {
 		return
