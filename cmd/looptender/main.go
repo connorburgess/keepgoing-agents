@@ -42,7 +42,9 @@ Supervision (read -c FILE; default ./looptender.yaml, or ./keepgoing.yaml when o
   status                   Show control, active target, window, and fallback health
   context                  Show what a supervised session may know about its loop: owner, holds,
                            bounds used and remaining, lane policy, session commands and retained
-                           authority (text or --json); read-only, no provider or daemon queries
+                           authority (text or --json); read-only, no provider or daemon queries.
+                           --here finds the loop whose active target is the calling session
+                           (BB_THREAD_ID, else the working directory) instead of reading -c
                            Opt-in timing preview only, not acted on; multi-step previews need
                            the loop's own fallbacks file (standard routes exclude its allowance)
   validate                 Check the configuration file and its fallbacks file
@@ -230,6 +232,7 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 		immediately: fs.Bool("immediately", false, "stop: carry the stop out in this command instead of leaving it to the next check"),
 		dropQueued:  fs.Bool("drop-queued", false, "stop --lanes: also delete the messages queued in lanes that have not started or are idle; their text is not kept"),
 		target:      fs.String("target", "", "session reset: the target whose saved session is forgotten (default: the active target)"),
+		here:        fs.Bool("here", false, "context: show the loop whose active target is the calling session (BB_THREAD_ID, else the working directory) instead of reading -c"),
 	}
 	if err := fs.Parse(rest); err != nil {
 		return exitUsage
@@ -262,6 +265,26 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 	if *f.discard && cmd != "retarget" {
 		e.errf("--discard-pending-thread is only supported by retarget")
 		return exitUsage
+	}
+	if *f.here && cmd != "context" {
+		e.errf("--here is only supported by context")
+		return exitUsage
+	}
+	if *f.here {
+		// The caller, not a configuration, says which loop: -c is not read.
+		if len(positional) != 0 || *f.cfgPath != "" {
+			e.errf("usage: keepgoing context --here [--json]")
+			return exitUsage
+		}
+		now := time.Now()
+		if *f.now != "" {
+			var err error
+			if now, err = time.Parse(time.RFC3339, *f.now); err != nil {
+				e.errf("-now: %v", err)
+				return exitUsage
+			}
+		}
+		return contextHereCmd(e, now, *f.asJSON)
 	}
 	if *f.target != "" && cmd != "session reset" {
 		e.errf("--target is only supported by session reset")
@@ -324,7 +347,7 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 		return code
 	case "context":
 		if len(positional) != 0 {
-			e.errf("usage: keepgoing context [-c looptender.yaml] [--json]")
+			e.errf("usage: keepgoing context [-c looptender.yaml | --here] [--json]")
 			return exitUsage
 		}
 		return contextCmd(e, cfg, *f.cfgPath, now, *f.asJSON)
@@ -379,6 +402,7 @@ type cliFlags struct {
 	cfgPath, now, note, id, routine *string
 	client                          *string
 	target                          *string
+	here                            *bool
 	asJSON, dryRun, exact, takeOver *bool
 	discard, allowShare, keepStop   *bool
 	lanes, immediately, dropQueued  *bool
