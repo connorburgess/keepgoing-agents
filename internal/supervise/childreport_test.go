@@ -532,3 +532,47 @@ func TestFailureDuringAHoldIsReportedAfterResume(t *testing.T) {
 		t.Fatalf("%d reports after resume", len(got))
 	}
 }
+
+// A failure after the episode has ended is report 1 of a new episode with the
+// whole cap after a previously observed recovery's forgetting interval has
+// elapsed. Without a check at that interval's end, the count used to carry over.
+func TestChildReportEpisodeEndsEvenWhenNoCheckSawTheRecovery(t *testing.T) {
+	for name, checkInBetween := range map[string]bool{"a check ran after the forgetting interval": true, "no check ran after the forgetting interval": false} {
+		w, p := childReportWorld(t)
+		all := children("thr_child_a", "thr_child_b", "thr_child_c")
+		// Three failures, one after another: the episode's three reports.
+		for i := range all {
+			p.obs.ErroredChildren = all[:i+1]
+			runTick(t, w, t0.Add(time.Duration(i)*time.Minute))
+		}
+		if got := childReports(w); len(got) != 3 || got[2].Data["report"] != 3 {
+			t.Fatalf("%s: %+v", name, got)
+		}
+		// They recover, which one check sees, and stay healthy well past
+		// min_wake_interval (one hour). In one case a check runs after that
+		// hour and ends the episode; in the other the host is asleep.
+		p.obs.ErroredChildren, p.obs.HealthyChildren = nil, all
+		runTick(t, w, t0.Add(10*time.Minute))
+		if checkInBetween {
+			runTick(t, w, t0.Add(80*time.Minute))
+		}
+		// Three hours later one fails again.
+		p.obs.ErroredChildren, p.obs.HealthyChildren = all[:1], all[1:]
+		runTick(t, w, t0.Add(3*time.Hour))
+		got := childReports(w)
+		if len(got) != 4 || got[3].Data["report"] != 1 || strings.Contains(got[3].Text, "since the last report") {
+			t.Fatalf("%s: %d reports, the last numbered %v: %q", name, len(got), got[len(got)-1].Data["report"], got[len(got)-1].Text)
+		}
+		if rec := savedChildReport(t, w); rec == nil || rec.Reports != 1 {
+			t.Fatalf("%s: %+v", name, rec)
+		}
+		// And the new episode has its own cap: two more failures are reported.
+		p.obs.ErroredChildren, p.obs.HealthyChildren = all[:2], all[2:]
+		runTick(t, w, t0.Add(3*time.Hour+time.Minute))
+		p.obs.ErroredChildren, p.obs.HealthyChildren = all, nil
+		runTick(t, w, t0.Add(3*time.Hour+2*time.Minute))
+		if got := childReports(w); len(got) != 6 || got[5].Data["report"] != 3 {
+			t.Fatalf("%s: %d reports", name, len(got))
+		}
+	}
+}
