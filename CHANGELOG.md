@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- `init` and `fallbacks add` offer the accounts you named. `--account ID` names an accounts catalog entry for a loop's first route or a new fallback: a Claude Code or Codex entry's directory is used when no `--account-dir` is given, its name is the default quota group, and `account: ID` is written. The guided questions list the entries for the route's provider by name and take a number. A typed directory states no account, and an entry that `validate` would reject is refused. The catalog is only read.
+
 - The Accounts page says why a value is missing when nothing is wrong, instead of a bare "Unavailable": "Codex does not report a plan.", why a Claude card has no plan, one line saying models are not recorded (in place of two empty model rows), and whether a route names the account, with the `account:` line to add when none does. Each card says its source, age and context once, and one footnote names `looptender accounts check --id CONNECTION_ID --json`. Account cards gain `plan.missing`, `configuredModel.missing`, `observedModel.missing` and, in the panel data, `routes`; no field is removed. See [Accounts](docs/accounts.md#explicit-status-check).
 
 - `doctor` (`agent.<id>.workspace`) and `transfer preview` (`workspace.from`, `workspace.to`) warn when BB reports a thread's working directory outside every configured progress repository and its registered worktrees. The comparison runs only a read-only `git worktree list`, withholds paths, and never changes doctor's exit status or the preview's compatibility.

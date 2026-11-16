@@ -17,6 +17,7 @@ import (
 	"unicode"
 	"unicode/utf8"
 
+	"github.com/looptender/looptender/internal/accounts"
 	"github.com/looptender/looptender/internal/adapter/runner"
 	"github.com/looptender/looptender/internal/config"
 	"github.com/looptender/looptender/internal/lock"
@@ -26,9 +27,11 @@ import (
 
 type fallbackAddOptions struct {
 	cfgPath, agent, account, group, model, probeModel, id, workdir string
-	thread, provider, reasoning, probeAccount                      string // BB candidates
-	permission                                                     string // bb new thread: its permission mode
-	threadTitle                                                    string // from a BB listing; display only
+	accountID                                                      string          // --account: a catalog entry the person names
+	accountEntry                                                   *accounts.Entry // the entry named or picked; nil for none
+	thread, provider, reasoning, probeAccount                      string          // BB candidates
+	permission                                                     string          // bb new thread: its permission mode
+	threadTitle                                                    string          // from a BB listing; display only
 	modelListed, showIDs                                           bool
 	newThread                                                      bool // bb: start a new thread at handoff instead of naming one
 	position, probeCap                                             int
@@ -38,6 +41,7 @@ type fallbackAddOptions struct {
 
 // fallbackAddPlan is the resolved change. Nothing in it has been written.
 type fallbackAddPlan struct {
+	accountEntry  *accounts.Entry // the catalog entry the person named; nil for none
 	cfg           *config.Config
 	cfgPath       string
 	fallbacksPath string
@@ -96,6 +100,15 @@ type fallbackAddCandidate struct {
 	Reasoning    string `json:"reasoning,omitempty"`
 	ModelSource  string `json:"modelSource,omitempty"`  // bb_list or unchecked
 	ProbeAccount string `json:"probeAccount,omitempty"` // inherited or explicit_directory
+	// CatalogAccount is the accounts catalog entry the person named, when
+	// they named one; it is written as the fallback's account.
+	CatalogAccount *fallbackAddCatalogAccount `json:"catalogAccount,omitempty"`
+}
+
+// fallbackAddCatalogAccount is a named account as the report shows it.
+type fallbackAddCatalogAccount struct {
+	ID    string `json:"id"`
+	Label string `json:"label"`
 }
 
 type fallbackAddTarget struct {
@@ -189,6 +202,7 @@ func fallbacksAdd(e env, args []string, input io.Reader, lookPath func(string) (
 	fs.StringVar(&o.probeAccount, "probe-account-dir", "", "bb: account directory the local probe CLI uses (default: its current login)")
 	fs.BoolVar(&o.showIDs, "show-ids", false, "bb: print thread IDs in listings, the preview and JSON")
 	fs.StringVar(&o.account, "account-dir", "", "existing account configuration directory (default: the CLI's current login)")
+	fs.StringVar(&o.accountID, "account", "", "accounts catalog ID of the account you name for this fallback (keepgoing accounts list); fills --account-dir from it and writes account: ID")
 	fs.StringVar(&o.group, "group", "", "quota group label; accounts sharing limits must share it (default: account directory name, else provider)")
 	fs.StringVar(&o.model, "model", "", "model for this fallback's turns (default: CLI configuration)")
 	fs.StringVar(&o.probeModel, "probe-model", "", "cheaper model for scheduled health probes (default: the target model)")
@@ -565,16 +579,10 @@ func (w *fallbackAddWizard) collect() error {
 	}
 
 	fmt.Fprintln(out, "\nStep 2 of 4: Account")
-	fmt.Fprintln(out, "  Give a directory you have already signed in to, or leave blank to use")
-	fmt.Fprintln(out, "  the CLI's current login. Nothing is created or copied.")
-	err = w.askValid("account-dir", "Account directory", "", &o.account, func(s string) error {
-		_, err := fallbackAddAccount(s)
-		return err
-	})
-	if err != nil {
+	if err := w.collectAccount(); err != nil {
 		return err
 	}
-	dir, _ := fallbackAddAccount(o.account)
+	dir, _ := fallbackAddAccount(setupAccountDir(o.accountEntry, o.account))
 	sameLogin := false
 	for _, l := range fallbackAddLogins(cfg) {
 		if l.kind == o.agent && l.dir == dir {
@@ -585,7 +593,13 @@ func (w *fallbackAddWizard) collect() error {
 	}
 	fmt.Fprintln(out, "  A quota group names one usage limit. Accounts that share a limit must share")
 	fmt.Fprintf(out, "  a group; a fallback must not use the primary's group (%s).\n", cfg.Loop.Group)
-	groupDef := fallbackAddFreeGroup(cfg, fallbackAddDefaultGroup(o.agent, dir))
+	base := fallbackAddDefaultGroup(o.agent, dir)
+	if o.accountEntry != nil {
+		if g := setupGroupFromLabel(o.accountEntry.Label); g != "" {
+			base = g
+		}
+	}
+	groupDef := fallbackAddFreeGroup(cfg, base)
 	if err := w.askValid("group", "Quota group", groupDef, &o.group, func(s string) error { return fallbackAddGroup(cfg, s) }); err != nil {
 		return err
 	}
@@ -612,6 +626,68 @@ func (w *fallbackAddWizard) collect() error {
 	}
 
 	return w.collectHandoff()
+}
+
+// collectAccount asks which account a headless fallback uses. When the
+// accounts catalog has entries for its provider, the person can pick one by
+// number: its directory is used and the fallback states it as its account.
+// A directory or a blank answer states none. Nothing is matched or guessed,
+// and the catalog is only read.
+func (w *fallbackAddWizard) collectAccount() error {
+	out, o := w.e.stdout, w.o
+	checkDir := func(s string) error {
+		_, err := fallbackAddAccount(s)
+		return err
+	}
+	if o.set["account"] {
+		entry, err := setupAccountEntry(o.accountID)
+		if err != nil {
+			return err
+		}
+		o.accountEntry = entry
+		fmt.Fprintf(out, "  Named account: %s\n", entry.Label)
+		return checkDir(setupAccountDir(entry, o.account))
+	}
+	var choices []accounts.Entry
+	if !o.set["account-dir"] {
+		f := setupCatalog()
+		choices = setupAccountChoices(f, o.agent, "")
+		switch {
+		case f == nil:
+			fmt.Fprintln(out, "  (Your accounts catalog could not be read, so no named accounts are offered.)")
+		case len(choices) == 0:
+			fmt.Fprintln(out, "  Name your accounts with keepgoing accounts add to pick them here.")
+		}
+	}
+	if len(choices) == 0 {
+		fmt.Fprintln(out, "  Give a directory you have already signed in to, or leave blank to use")
+		fmt.Fprintln(out, "  the CLI's current login. Nothing is created or copied.")
+		return w.askValid("account-dir", "Account directory", "", &o.account, checkDir)
+	}
+	printSetupAccountChoices(out, choices)
+	fmt.Fprintln(out, "  Type a number to use one of them, a directory you have already signed in")
+	fmt.Fprintln(out, "  to, or leave blank to use the CLI's current login. Nothing is created or copied.")
+	for {
+		s, err := w.ask("Account (number, directory or blank)", "")
+		if err != nil {
+			return err
+		}
+		entry, isNumber, err := setupPickNumber(s, choices)
+		if err == nil && !isNumber {
+			err = checkDir(s)
+		}
+		if err != nil {
+			fmt.Fprintf(out, "  ! %v\n", err)
+			continue
+		}
+		if entry != nil {
+			o.accountEntry, o.account = entry, setupAccountDir(entry, "")
+			fmt.Fprintf(out, "  Named account: %s\n", entry.Label)
+		} else {
+			o.account = s
+		}
+		return nil
+	}
 }
 
 func (w *fallbackAddWizard) collectHandoff() error {
@@ -716,6 +792,13 @@ func planFallbackAdd(cfg *config.Config, o fallbackAddOptions, lookPath func(str
 	if err := fallbackAddModelName("probe model", o.probeModel); err != nil {
 		return nil, err
 	}
+	if o.accountEntry == nil && strings.TrimSpace(o.accountID) != "" {
+		entry, err := setupAccountEntry(o.accountID)
+		if err != nil {
+			return nil, err
+		}
+		o.accountEntry = entry
+	}
 	agent, probe, warnings, err := fallbackAddTargetOf(cfg, o, lookPath)
 	if err != nil {
 		return nil, err
@@ -726,7 +809,7 @@ func planFallbackAdd(cfg *config.Config, o fallbackAddOptions, lookPath func(str
 	}
 	current := cfg.Loop.Errors.FailoverOn
 	p := &fallbackAddPlan{cfg: cfg, cfgPath: cfgPath, fallbacksPath: cfg.Loop.Fallbacks, failoverOn: append([]string{}, current...)}
-	p.warnings, p.bb = warnings, fallbackAddBBDetailOf(cfg, o, agent)
+	p.warnings, p.bb, p.accountEntry = warnings, fallbackAddBBDetailOf(cfg, o, agent), o.accountEntry
 	var existing []config.Candidate
 	if cfg.FallbackSet != nil {
 		existing = cfg.FallbackSet.Candidates
@@ -851,18 +934,25 @@ func fallbackAddTargetOf(cfg *config.Config, o fallbackAddOptions, lookPath func
 		return config.Agent{}, config.Probe{}, nil, err
 	}
 	if o.agent == "bb" {
-		return fallbackAddBBTarget(cfg, o, lookPath)
+		agent, probe, warnings, err := fallbackAddBBTarget(cfg, o, lookPath)
+		if err == nil {
+			err = setupCheckAccount(&agent, o.accountEntry)
+		}
+		return agent, probe, warnings, err
 	}
 	for _, name := range []string{"thread", "new-thread", "permission-mode", "provider", "reasoning", "probe-account-dir", "show-ids"} {
 		if o.set[name] {
 			return fail(fmt.Errorf("--%s applies only to --agent bb.", name))
 		}
 	}
-	account, err := fallbackAddAccount(o.account)
+	account, err := fallbackAddAccount(setupAccountDir(o.accountEntry, o.account))
 	if err != nil {
 		return fail(err)
 	}
 	group := strings.TrimSpace(o.group)
+	if group == "" && o.accountEntry != nil {
+		group = setupGroupFromLabel(o.accountEntry.Label)
+	}
 	if group == "" {
 		group = fallbackAddDefaultGroup(o.agent, account)
 	}
@@ -891,6 +981,9 @@ func fallbackAddTargetOf(cfg *config.Config, o fallbackAddOptions, lookPath func
 	}
 	agent, err := initAgent(o.agent, account, group, o.model, workdir, lookPath)
 	if err != nil {
+		return fail(err)
+	}
+	if err := setupCheckAccount(&agent, o.accountEntry); err != nil {
 		return fail(err)
 	}
 	var warnings []string
@@ -1134,6 +1227,9 @@ func fallbackAddReportOf(p *fallbackAddPlan, preview bool) fallbackAddReport {
 		Warnings: append([]string{}, p.warnings...), Notes: append([]string{}, p.notes...),
 		Limitations: fallbackAddLimitations,
 	}
+	if e := p.accountEntry; e != nil {
+		r.Candidate.CatalogAccount = &fallbackAddCatalogAccount{ID: e.ID, Label: e.Label}
+	}
 	if d := p.bb; d != nil {
 		r.Candidate.Account = "chosen_by_bb"
 		r.Candidate.Thread, r.Candidate.Reasoning = d.relation, c.BB.Reasoning
@@ -1199,6 +1295,9 @@ func printFallbackAddPreview(w io.Writer, p *fallbackAddPlan) {
 		printBBCandidate(w, p)
 	} else {
 		printHeadlessCandidate(w, c)
+	}
+	if e := p.accountEntry; e != nil {
+		fmt.Fprintf(w, "  Named account: %s, stated by you (written as account: %s)\n", e.Label, e.ID)
 	}
 	if len(p.warnings) > 0 {
 		fmt.Fprintln(w)
