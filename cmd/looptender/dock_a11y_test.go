@@ -73,3 +73,39 @@ func TestDockViewChangeFocusesHeadingG5(t *testing.T) {
 		t.Error("the focused heading must keep its outline")
 	}
 }
+
+// G6 (hand check, html and accessibility guides): without JavaScript the
+// page showed "Reading…" for ever and three buttons that did nothing. It
+// now says it needs JavaScript in a noscript line, and keeps the header
+// buttons and both reading lines out of sight until the script runs. The
+// page is served as is under a CSP with no inline script or style, so the
+// switch is a class the script sets and a rule in dock.css. JavaScript off
+// is checked in a headless browser outside the suite.
+func TestDockWithoutScriptSaysSoG6(t *testing.T) {
+	html, css, js := dockUIText(t, "index.html"), dockUIText(t, "dock.css"), dockUIText(t, "dock.js")
+	if !strings.Contains(html, `<main class="pane" id="pane" tabindex="-1"><noscript><div class="empty"><p>This page needs JavaScript to read and show your loops. Turn JavaScript on for this page, then reload it.</p></div></noscript></main>`) {
+		t.Error("the page must say, without JavaScript, that it needs it")
+	}
+	for _, el := range []string{
+		`<p class="readline needs-script" id="readline">Reading…</p>`,
+		`<div class="tools needs-script">`,
+		`<p class="placeholder needs-script">Reading…</p>`,
+	} {
+		if !strings.Contains(html, el) {
+			t.Errorf("index.html lacks %s", el)
+		}
+	}
+	if n := strings.Count(html, "<button"); n != strings.Count(html[strings.Index(html, `<div class="tools needs-script">`):], "<button") {
+		t.Error("every button in index.html must sit inside the script-only group")
+	}
+	if !strings.Contains(css, "html:not(.has-script) .needs-script { visibility: hidden; }") {
+		t.Error("script-only parts must stay hidden, keeping their place, until the script runs")
+	}
+	if !strings.Contains(js, `document.documentElement.classList.add("has-script");`) {
+		t.Error("dock.js must mark the page once it runs")
+	}
+	// No inline script or style: the CSP allows neither.
+	if strings.Contains(html, "<style") || strings.Contains(html, " style=") || regexp.MustCompile(`<script>|<script [^>]*>[^<]`).MatchString(html) || strings.Contains(html, " onload=") {
+		t.Error("index.html must carry no inline script or style")
+	}
+}

@@ -198,6 +198,9 @@ body.has-banner { padding-bottom: 8rem; }
 .pick-needs .count { display: inline-grid; place-items: center; min-width: 1.5rem; height: 1.5rem; padding: 0 0.4rem; border-radius: 999px; background: var(--attn); color: var(--surface); font-size: 0.8rem; font-weight: 700; }
 
 .pane { min-width: 0; }
+/* What only the script can fill or make work keeps its place but stays out
+   of sight, and out of the tab order, until the script has run. */
+html:not(.has-script) .needs-script { visibility: hidden; }
 .pane:focus { outline: none; }
 .back { display: none; align-items: center; gap: 0.35rem; margin: 0 0 0.9rem -0.35rem; padding: 0.4rem 0.6rem 0.4rem 0.35rem; font-size: 0.875rem; font-weight: 550; color: var(--ink-2); text-decoration: none; border-radius: 8px; }
 .back svg { transform: rotate(180deg); }

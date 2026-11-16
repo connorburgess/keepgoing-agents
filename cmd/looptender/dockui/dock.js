@@ -6,6 +6,9 @@
 // route is sent by the report, which the Go tests check word for word; the
 // page only shows its times in this browser's time zone.
 (function () {
+  // The header buttons and the reading lines are shown only once this runs;
+  // without a script the page says so instead (index.html, noscript).
+  document.documentElement.classList.add("has-script");
   var SCHEMA = 1;
   // How long reads may fail before the page asks a person to look (G4).
   var FAIL_LONG_MS = 120000;
