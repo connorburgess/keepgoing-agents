@@ -250,10 +250,10 @@
     return b;
   }
 
-  // A hold's note is shown only with identifiers and notes; the card says one
-  // exists and offers to show it.
+  // A hold's note is always shown. Without identifiers, parts shaped like an
+  // identifier read "[hidden]" and the card offers to show them.
   function showNotesButton() {
-    var b = el("button", "linkish", "Show identifiers and notes");
+    var b = el("button", "linkish", "Show identifiers");
     b.setAttribute("data-focus", "show-notes");
     b.type = "button";
     b.addEventListener("click", function () { if (!state.identifiers) $("identifiers").click(); });
@@ -270,15 +270,19 @@
     head.appendChild(el("span", "waited", n.waited || "Waiting time unknown"));
     li.appendChild(head);
     li.appendChild(el("p", "reason", n.reason));
-    if (n.note && state.identifiers) {
+    // Data read with identifiers carries the masked note too, so turning
+    // identifiers off hides them at once.
+    var text = !state.identifiers && n.maskedNote ? n.maskedNote : n.note;
+    if (text) {
       var note = el("div", "note");
       note.appendChild(el("span", "note-label", "Note left with the hold"));
-      note.appendChild(document.createTextNode("“" + n.note + "”"));
+      note.appendChild(document.createTextNode("“" + text + "”"));
       li.appendChild(note);
-    } else if (n.noteWithheld || n.note) {
-      var p = el("p", "sub", "A note was left with the hold. ");
-      p.appendChild(showNotesButton());
-      li.appendChild(p);
+      if (n.noteMasked && !state.identifiers) {
+        var p = el("p", "sub", "Parts that look like an ID, path, web address, email address, network address or long code are hidden. ");
+        p.appendChild(showNotesButton());
+        li.appendChild(p);
+      }
     }
     var todo = el("p", "todo");
     todo.appendChild(el("span", "todo-label", "What to do"));
@@ -615,7 +619,7 @@
     }
     if (overview) {
       if (lanes.omitted) b.appendChild(el("p", "more", lanes.omitted + " more lanes are not listed."));
-      b.appendChild(el("p", "more", "Lane titles appear only with identifiers and notes. Routes for individual lanes are not recorded."));
+      b.appendChild(el("p", "more", "Lane titles appear only with identifiers. Routes for individual lanes are not recorded."));
     } else if (lanes && lanes.footer) b.appendChild(el("p", "more", lanes.footer));
     return b;
   }
@@ -730,10 +734,43 @@
       if (l.identifiers.thread) {
         ids.appendChild(el("dt", null, "Configured BB thread"));
         ids.appendChild(el("dd", null, l.identifiers.thread));
+        var open = threadCommand(l.identifiers.thread);
+        if (open) {
+          ids.appendChild(el("dt", null, "Open it in BB"));
+          ids.appendChild(open);
+        }
       }
       checks.appendChild(ids);
     }
     pane.appendChild(checks);
+  }
+
+  // The command that opens a loop's BB thread, to copy and run yourself.
+  // Nothing is sent or run from the page; BB documents no link format, so
+  // there is no link. The command stays visible and selectable, and the
+  // button appears only where the browser can copy.
+  var THREAD_ID = /^thr_[A-Za-z0-9_]+$/;
+  function threadCommand(id) {
+    if (typeof id !== "string" || !THREAD_ID.test(id)) return null;
+    var text = "bb thread open " + id, dd = el("dd", "copy");
+    dd.appendChild(el("code", "command", text));
+    if (navigator.clipboard && navigator.clipboard.writeText) {
+      var b = el("button", "btn", "Copy the command");
+      b.type = "button";
+      b.dataset.focus = "copy-thread-command";
+      b.addEventListener("click", function () {
+        // Cleared first, so a second press is announced again.
+        state.said = "";
+        $("live").textContent = "";
+        navigator.clipboard.writeText(text).then(function () {
+          announce("Copied. Paste it in a terminal.");
+        }, function () {
+          announce("Could not copy. Select the command instead.");
+        });
+      });
+      dd.appendChild(b);
+    }
+    return dd;
   }
 
   // ---- Changes: pause, stop and resume, on a panel started with --allow-changes ----
@@ -1304,7 +1341,7 @@
       state.identifiers = !state.identifiers;
       this.setAttribute("aria-pressed", String(state.identifiers));
       // Hide (or keep hidden) at once from the data in hand: identifiers and
-      // notes never stay on screen waiting for a read that is slow or failing.
+      // unmasked notes never stay on screen waiting for a read that is slow or failing.
       render(false, true);
       clearTimeout(state.timer);
       load(true);
