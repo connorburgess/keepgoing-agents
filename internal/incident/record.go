@@ -67,6 +67,10 @@ type Record struct {
 	Nudges               int            `json:"nudges"`
 	Reprompts            int            `json:"reprompts"`
 	LastActiveRecoveryAt *time.Time     `json:"lastActiveRecoveryAt"`
+	// ContextBytes is the length of the supervision context blocks
+	// (loop.prompt_context) this check's sends carried, counting only sends
+	// the adapter did not refuse to start. Zero when there were none.
+	ContextBytes int `json:"contextBytes,omitempty"`
 }
 
 // ControlChange describes a successful save, not report delivery or an agent
@@ -587,8 +591,10 @@ func clean(r Record) Record {
 	r.TurnRetry = oneOf(r.TurnRetry, "none", "retried", "queued", "nothing_to_retry", "not_in_error", "already_queued", "queue_unconfirmed", "refused", "unsupported")
 	r.Lanes = LaneWork{Retried: max(0, r.Lanes.Retried), GivenUp: max(0, r.Lanes.GivenUp), Deferred: max(0, r.Lanes.Deferred)}
 	r.Refusal = oneOf(r.Refusal, "", "refused", "recovered")
+	r.ContextBytes = max(0, r.ContextBytes)
 	if r.Kind != "tick" {
 		r.LimitWaitReport, r.TurnRetry, r.Lanes, r.RouteListChanged, r.Refusal, r.ModelFallback, r.Returned = "none", "none", LaneWork{}, false, "", false, nil
+		r.ContextBytes = 0
 	}
 	if r.Returned != nil {
 		ret := Return{FromKey: r.Returned.FromKey, Reason: oneOf(r.Returned.Reason, "unavailable", ReturnRemoved, ReturnDisabled, ReturnNoCreatedThread)}

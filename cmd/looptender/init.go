@@ -18,6 +18,7 @@ import (
 	"github.com/looptender/looptender/internal/config"
 	"github.com/looptender/looptender/internal/control"
 	"github.com/looptender/looptender/internal/lock"
+	"github.com/looptender/looptender/internal/loopcontext"
 	"github.com/looptender/looptender/internal/snapshot"
 	"github.com/looptender/looptender/internal/state"
 	"github.com/looptender/looptender/internal/userdir"
@@ -831,12 +832,7 @@ func keepgoingExecutable() string {
 
 // Single quoting avoids shell expansion of task-controlled paths. Windows
 // instructions use PowerShell's literal-string syntax.
-func commandQuote(s string) string {
-	if runtime.GOOS == "windows" {
-		return "'" + strings.ReplaceAll(s, "'", "''") + "'"
-	}
-	return "'" + strings.ReplaceAll(s, "'", "'\\''") + "'"
-}
+func commandQuote(s string) string { return loopcontext.Quote(s) }
 
 func initCommandPrefix() string {
 	prefix := commandQuote(keepgoingExecutable())
