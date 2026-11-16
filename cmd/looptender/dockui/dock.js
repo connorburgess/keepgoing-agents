@@ -333,7 +333,7 @@
     var rs = d.routesSummary || {};
     fixed.appendChild(pickRow("#/routes", rs.trouble ? "dot-limit" : "dot-calm", "Routes", rs.picker || "", r.view === "routes"));
     var ac = d.accounts || {};
-    fixed.appendChild(pickRow("#/accounts", "dot-calm", "Accounts", ac.complete ? list(ac.cards).length + " selected" : "Unavailable", r.view === "accounts"));
+    fixed.appendChild(pickRow("#/accounts", "dot-calm", "Accounts", ac.complete ? list(ac.cards).length + " selected" + (unnamedCount(d) ? " · " + unnamedCount(d) + " not named yet" : "") : "Unavailable", r.view === "accounts"));
     var vs = d.versions || {};
     fixed.appendChild(pickRow("#/versions", vs.behind ? "dot-limit" : "dot-calm", "Versions", vs.summary || "", r.view === "versions"));
     nav.appendChild(fixed);
@@ -687,9 +687,11 @@
     routing.appendChild(el("p", "sub chain-how", c.how || "Unknown."));
     var ol = el("ol", "route-list is-ordered");
     entries.forEach(function (e) {
+      var bound = boundAccount(e.catalogAccount);
       var item = routeItem({
-        route: e.route, position: e.position, badge: String(e.position + 1), title: e.title, titleAccount: e.titleAccount, active: e.inUse, use: e.use, off: e.disabled,
-        readiness: e.position > 0 && e.readiness !== "current" ? e.readiness : "", phrase: e.phrase, notes: notesOf(e.notes), after: e.after,
+        route: e.route, position: e.position, badge: String(e.position + 1), title: e.title, titleAccount: bound || e.titleAccount, active: e.inUse, use: e.use, off: e.disabled,
+        readiness: e.position > 0 && e.readiness !== "current" ? e.readiness : "", phrase: e.phrase, notes: notesOf(e.notes),
+        after: list(e.after).concat(e.catalogAccount && e.catalogAccount.assigned === "none" ? ["Not assigned to an account."] : []),
         meta: e.meta, named: e.named, usage: e.usage, boxes: e.current ? [laneBox(l)] : []
       });
       item.setAttribute("aria-label", "Choice " + (e.position + 1) + ": " + e.title + (e.use ? ", " + e.use : ""));
@@ -754,12 +756,19 @@
   var THREAD_ID = /^thr_[A-Za-z0-9_]+$/;
   function threadCommand(id) {
     if (typeof id !== "string" || !THREAD_ID.test(id)) return null;
-    var text = "bb thread open " + id, dd = el("dd", "copy");
+    return copyCommand("dd", "bb thread open " + id, "copy-thread-command");
+  }
+  // A command to copy and run yourself, with a copy button where the
+  // browser can copy. The page runs nothing.
+  // describedBy names what the command is for when a page has several.
+  function copyCommand(tagName, text, focus, describedBy) {
+    var dd = el(tagName, "copy");
     dd.appendChild(el("code", "command", text));
     if (navigator.clipboard && navigator.clipboard.writeText) {
       var b = el("button", "btn", "Copy the command");
       b.type = "button";
-      b.dataset.focus = "copy-thread-command";
+      b.dataset.focus = focus;
+      if (describedBy) b.setAttribute("aria-describedby", describedBy);
       b.addEventListener("click", function () {
         // Cleared first, so a second press is announced again.
         state.said = "";
@@ -1005,6 +1014,102 @@
     f.appendChild(document.createTextNode(" to a route to link it (see docs/accounts.md)."));
     return f;
   }
+  // A route bound to a catalog entry, as the loop page names it: the
+  // person's label and that the binding is theirs, never a verified identity.
+  var ASSIGNED = "assigned by you · identity not verified";
+  var ASSIGNED_BB = "assigned by you · not verified for BB threads (account set per project)";
+  function boundAccount(a) {
+    if (!a || a.assigned !== "by_you" || !a.label || (a.check !== "consistent" && a.check !== "not_verified")) return "";
+    return a.label + " · " + (a.check === "not_verified" ? ASSIGNED_BB : ASSIGNED);
+  }
+  var SELECTIONS = { inherited: "Inherited context", explicit_directory: "Selected directory", bb_thread: "BB thread (account set per project)", externally_managed: "External context" };
+  // The reading of a route by its key: the routes view's, else the first
+  // loop's chain entry on it (a route past the routes view's cap).
+  function routeUsage(d, key) {
+    var r = list(d.routes).filter(function (x) { return x.key === key; })[0];
+    if (r) return r.usage;
+    var u = null;
+    list(d.loops).some(function (l) {
+      return list(l.chain && l.chain.entries).some(function (e) { if (e.route === key) { u = e.usage; return true; } return false; });
+    });
+    return u;
+  }
+  // The routes that use an account, each with the loops that use it and its
+  // own reading. Readings are never merged.
+  function accountRouteList(d, use, named) {
+    var names = Object.create(null);
+    list(d.loops).forEach(function (l) { names[l.key] = l.name; });
+    var wrap = frag();
+    if (list(use.routes).some(function (r) { return !r.bbThread; }) && named) wrap.appendChild(el("p", "sub", ASSIGNED));
+    var ul = el("ul", "account-routes");
+    list(use.routes).forEach(function (r) {
+      var li = el("li", "account-route");
+      var head = el("p", "account-route-name");
+      head.appendChild(link("#/routes/" + r.route, r.title));
+      li.appendChild(head);
+      if (r.bbThread && named) li.appendChild(el("p", "sub", ASSIGNED_BB));
+      var used = el("p", "sub");
+      used.appendChild(document.createTextNode(list(r.loops).length === 1 && !r.omitted ? "Used by the loop " : "Used by the loops "));
+      list(r.loops).forEach(function (k, i) {
+        if (i) used.appendChild(document.createTextNode(", "));
+        used.appendChild(link("#/loop/" + k, names[k] || "a loop"));
+      });
+      if (r.omitted) used.appendChild(document.createTextNode(" and " + r.omitted + " more"));
+      li.appendChild(used);
+      li.appendChild(usageBlock(routeUsage(d, r.route)));
+      ul.appendChild(li);
+    });
+    wrap.appendChild(ul);
+    if (use.omitted) wrap.appendChild(el("p", "more", use.omitted + (use.omitted === 1 ? " more route is" : " more routes are") + " not shown."));
+    return wrap;
+  }
+  // The newest reading among an account's routes, in the summary. Being out
+  // is information here, not a warning.
+  function accountReading(use) {
+    return list(use && use.reading).length ? el("span", "sub account-reading", say(use.reading)) : null;
+  }
+  // An account context routes use with no catalog entry: neutral, with one
+  // quiet "not named yet" tag and the command that would name it.
+  function unnamedCard(d, u, cards) {
+    var li = el("li", "account-card is-unnamed"), details = el("details");
+    var k = "context-" + u.context;
+    details.open = !!state.accountOpen[k];
+    var summary = el("summary", "account-summary");
+    summary.setAttribute("data-focus", "account-" + k);
+    var identity = el("span", "account-title");
+    var name = el("span", "account-name", u.title);
+    name.id = "account-name-" + u.context;
+    name.appendChild(tag("calm", "not named yet"));
+    identity.appendChild(name);
+    identity.appendChild(el("span", "sub", SELECTIONS[u.selection] || "Context as configured"));
+    if (u.group && u.group !== u.provider) identity.appendChild(el("span", "sub", "Group " + u.group));
+    // Several unnamed accounts can share a heading; their first route tells
+    // them apart at a glance.
+    var rs = list(u.routes), more = rs.length - 1 + (u.omitted || 0);
+    if (rs.length) identity.appendChild(el("span", "sub", "Routes: " + rs[0].title + (more ? " and " + more + " more" : "")));
+    summary.appendChild(identity);
+    var status = el("span", "account-status");
+    status.appendChild(el("span", null, "Named by no catalog entry"));
+    var reading = accountReading(u);
+    if (reading) status.appendChild(reading);
+    summary.appendChild(status);
+    details.appendChild(summary);
+    var body = el("div", "account-body"), facts = el("dl", "work-facts");
+    if (u.directory) facts.appendChild(fact("Directory", u.directory));
+    var same = list(u.mayBeSame).map(function (id) { return list(cards).filter(function (c) { return c.id === id; })[0]; }).filter(Boolean);
+    if (same.length) facts.appendChild(fact("May be the same account as", same.map(function (c) { return c.label; }).join(", ") + " (same provider and selection; not verified)"));
+    facts.appendChild(fact("Routes", accountRouteList(d, u, false)));
+    body.appendChild(facts);
+    var nameIt = el("div", "account-name-it");
+    nameIt.appendChild(el("p", "sub", "To name it, run this with your own label" + (u.selection === "explicit_directory" && !u.directory ? " and its directory (Show identifiers to fill it in)" : "") + ". Naming it changes no route."));
+    nameIt.appendChild(copyCommand("div", u.add, "copy-add-" + u.context, "account-name-" + u.context));
+    body.appendChild(nameIt);
+    details.appendChild(body);
+    details.addEventListener("toggle", function () { if (details.isConnected) state.accountOpen[k] = details.open; });
+    li.appendChild(details);
+    return { li: li, key: k, open: details.open };
+  }
+  function unnamedCount(d) { return list(d.accountUses).filter(function (u) { return u.context; }).length; }
   function renderAccounts(d, pane) {
     var a = d.accounts || {};
     pane.appendChild(back());
@@ -1013,18 +1118,21 @@
     pane.appendChild(el("p", "sub", "Read-only. Reading this page never checks a login or calls a model."));
     var usage = el("p", "account-usage-link");
     usage.appendChild(link("#/routes", "View recorded usage", "work-inspect"));
-    usage.appendChild(el("span", "sub", ". Readings come from configured routes, are not live, and are not linked to these account cards."));
+    usage.appendChild(el("span", "sub", ". Readings come from configured routes and are not live. Each account shows the readings of the routes that use it."));
     pane.appendChild(usage);
     if (!a.complete || a.state !== "available") {
       pane.appendChild(emptyBox("Accounts unavailable", "The private account catalog could not be read completely. This does not mean no accounts are selected."));
       return;
     }
-    var cards = list(a.cards);
-    if (!cards.length) {
+    var cards = list(a.cards), uses = list(d.accountUses), byCard = Object.create(null);
+    uses.forEach(function (u) { if (u.card) byCard[u.card] = u; });
+    var unnamed = uses.filter(function (u) { return u.context; });
+    if (!cards.length && !unnamed.length) {
       pane.appendChild(emptyBox("No accounts selected here yet", "Select an existing account context with the accounts add command, then explicitly check it with accounts check. Provider sign-in stays in the official provider tool."));
       return;
     }
-    pane.appendChild(el("p", "account-count", cards.length + (cards.length === 1 ? " selected account" : " selected accounts")));
+    pane.appendChild(el("p", "account-count", cards.length + (cards.length === 1 ? " selected account" : " selected accounts") + (unnamed.length ? " · " + unnamed.length + " not named yet" : "")));
+    if (!d.complete || (d.registry || {}).availability !== "available") pane.appendChild(el("p", "sub", "Not every loop could be read, so an account its routes use may be missing here."));
     var ul = el("ul", "accounts-list"), retained = Object.create(null);
     cards.forEach(function (c) {
       var li = el("li", "account-card" + (c.needsPerson ? " is-attention" : "")), details = el("details");
@@ -1046,6 +1154,8 @@
         need.appendChild(el("span", null, failed ? failedCheckLine(c) : ACCOUNT_ATTENTION[c.attention] || "Something on this account needs a look."));
         status.appendChild(need);
       } else if (failed) status.appendChild(el("span", "sub", failedCheckLine(c)));
+      var reading = accountReading(byCard[c.id]);
+      if (reading) status.appendChild(reading);
       summary.appendChild(status);
       var plan = el("span", "account-plan");
       plan.appendChild(el("span", "sub", "Reported plan"));
@@ -1056,7 +1166,8 @@
       var facts = el("dl", "work-facts");
       if (state.identifiers) facts.appendChild(fact("Connection ID", c.id));
       facts.appendChild(fact("Account identity", "Not verified. The name is your selected label."));
-      facts.appendChild(fact("Routes", accountRoutes(c)));
+      var use = byCard[c.id];
+      facts.appendChild(fact("Routes", use && list(use.routes).length ? accountRouteList(d, use, true) : accountRoutes(c)));
       body.appendChild(facts);
       // The catalog records no model: a route chooses it, and a check never
       // calls one. Said once, quietly, in place of two empty rows.
@@ -1081,12 +1192,19 @@
       if (c.attention !== "context_changed" && (c.needsPerson || (c.auth && c.auth.checkAgain) || (c.plan && c.plan.checkAgain))) li.appendChild(accountCheckHint(c));
       ul.appendChild(li);
     });
+    unnamed.forEach(function (u) {
+      var x = unnamedCard(d, u, cards);
+      retained[x.key] = x.open;
+      ul.appendChild(x.li);
+    });
     state.accountOpen = retained;
     pane.appendChild(ul);
+    if (d.accountUsesOmitted) pane.appendChild(el("p", "more", d.accountUsesOmitted + (d.accountUsesOmitted === 1 ? " more account is" : " more accounts are") + " not shown."));
     // One footnote for the page, naming the command. With one card its ID
     // fills in as on the card's own hint.
     var note = el("p", "sub account-footnote");
     note.appendChild(document.createTextNode("Login and plan reports do not verify quota, model access or continuing availability. Nothing checks again on its own: the age shown is when the last explicit check ran, and after a day the card suggests checking again. To record another observation, run "));
+    if (!cards.length) return;
     note.appendChild(accountCheckCommand(cards.length === 1 ? cards[0] : null));
     note.appendChild(document.createTextNode(cards.length === 1 && state.identifiers ? "." : state.identifiers ? " with the card's connection ID." : " with the card's connection ID (Show identifiers to see it)."));
     pane.appendChild(note);
