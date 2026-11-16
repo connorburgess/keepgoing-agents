@@ -93,6 +93,7 @@ Fallbacks:
   fallbacks move ID --to N Change a fallback's place in the handoff order
   fallbacks check          Probe candidates now (--dry-run previews; --id ID, --exact)
   fallbacks list           Show recorded health and the redundancy picture
+                           Every fallbacks command takes --loop NAME in place of -c
   routes list              Show the standard route list and each registered loop's routes
   routes add|move|remove|off|on
                            Change the standard route list (a person only), or with
@@ -207,12 +208,17 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 			return exitUsage
 		}
 		if cmd == "fallbacks" {
+			args, code, ok := fallbacksByLoop(e, rest[0], rest[1:])
+			if !ok {
+				return code
+			}
 			switch rest[0] {
 			case "add":
-				return fallbacksAddCommand(e, rest[1:])
+				return fallbacksAddCommand(e, args)
 			case "handoff", "remove", "move":
-				return fallbacksManageCommand(e, rest[0], rest[1:])
+				return fallbacksManageCommand(e, rest[0], args)
 			}
+			rest = append([]string{rest[0]}, args...)
 		}
 		cmd, rest = cmd+" "+rest[0], rest[1:]
 	}
