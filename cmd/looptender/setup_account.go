@@ -37,11 +37,12 @@ func setupProviderOf(kind, bbProvider string) string {
 	return kind
 }
 
-// setupAccountChoices are the catalog entries a setup question offers for a
-// route of this kind. A headless route offers the entries for its provider
-// that select a directory or the normal login; a BB thread route, whose
-// account BB chooses per project, offers the entries for the thread's
-// provider and for BB. The person picks; nothing is matched or guessed.
+// setupAccountChoices are the catalog entries a setup question offers, and a
+// refusal names, for a route of this kind. A headless route takes the
+// entries for its provider that select a directory or the normal login; a
+// BB thread route, whose account BB chooses per project, the entries for the
+// thread's provider and for BB; a Cursor route, the Cursor entries. The
+// person picks; nothing is matched or guessed.
 func setupAccountChoices(f *accounts.File, kind, bbProvider string) []accounts.Entry {
 	if f == nil {
 		return nil
@@ -55,6 +56,11 @@ func setupAccountChoices(f *accounts.File, kind, bbProvider string) []accounts.E
 			}
 		case "bb":
 			if e.Provider == "bb" || (bbProvider != "" && e.Provider == bbProvider) {
+				out = append(out, e)
+			}
+		case "cursor":
+			// Cursor keeps its own login; any Cursor entry fits.
+			if e.Provider == "cursor" {
 				out = append(out, e)
 			}
 		}

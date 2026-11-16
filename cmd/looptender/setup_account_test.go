@@ -434,3 +434,31 @@ func TestSetupPickListBoundsAndAlignsNames(t *testing.T) {
 		t.Errorf("columns differ: %q / %q", lines[1], lines[2])
 	}
 }
+
+// A Cursor route fits a Cursor entry, and a refusal names the Cursor
+// entries rather than saying none fits.
+func TestSetupNamesCursorEntriesForACursorRoute(t *testing.T) {
+	ids := setupCatalogFixture(t,
+		accounts.Entry{Label: "example-cursor", Provider: "cursor", Mode: "externally_managed"},
+		accounts.Entry{Label: "studio", Provider: "claude-code", Mode: "inherited"},
+	)
+	cursorArgs := func(f setupFixture, id string) []string {
+		return []string{"--non-interactive", "--name", "example-cursor-loop", "--agent", "cursor", "--project", f.project, "--directory", f.destination, "--task", "Complete and verify the fictional example task.", "--account", id}
+	}
+	f := newSetupFixture(t)
+	code, _, errOut := f.run(t, cursorArgs(f, ids[1]), "")
+	if code == exitOK || !strings.Contains(errOut, "another provider") || !strings.Contains(errOut, `Named accounts that fit it: "example-cursor".`) {
+		t.Fatalf("claude entry on a cursor route: %d %s", code, errOut)
+	}
+	g := newSetupFixture(t)
+	if code, out, errOut := g.run(t, cursorArgs(g, ids[0]), ""); code != exitOK {
+		t.Fatalf("cursor entry: %d %s %s", code, out, errOut)
+	}
+	cfg, err := config.Load(filepath.Join(g.destination, config.FileName))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.Loop.Account != ids[0] {
+		t.Fatalf("loop account %q", cfg.Loop.Account)
+	}
+}
