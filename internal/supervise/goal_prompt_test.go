@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -11,8 +12,10 @@ import (
 	"time"
 
 	"github.com/looptender/looptender/internal/adapter"
+	"github.com/looptender/looptender/internal/config"
 	"github.com/looptender/looptender/internal/control"
 	"github.com/looptender/looptender/internal/decide"
+	"github.com/looptender/looptender/internal/prompt"
 	"github.com/looptender/looptender/internal/state"
 )
 
@@ -258,5 +261,103 @@ func TestGoalOnChangeUnsetSendsTheSameBytes(t *testing.T) {
 	}
 	if len(p.sent) != 3 || p.sent[1] != p.sent[0] || p.sent[2] != p.sent[0] || !strings.Contains(p.sent[0], "fictional-title") {
 		t.Fatalf("sent: %q", p.sent)
+	}
+}
+
+// prompt_goal, prompt_goal_on_change and prompt_context compose in every
+// combination, in one fixed order: the BB wake header, the person's prompt,
+// the goal (in full or as the short line), and the supervision context block
+// last. A first tick with prompt_context off leaves a full goal copy, so the
+// measured tick carries the short line and the context together.
+func TestGoalAndContextPartsKeepTheirOrderInEveryCombination(t *testing.T) {
+	const (
+		fullGoal  = "Current keepgoing goal context (explicitly shared by this loop):"
+		shortGoal = "Current keepgoing goal: goal_"
+	)
+	for _, c := range []struct{ goal, onChange, context bool }{
+		{false, false, false}, {false, false, true},
+		{true, false, false}, {true, false, true},
+		{true, true, false}, {true, true, true},
+	} {
+		t.Run(fmt.Sprintf("goal=%v,on_change=%v,context=%v", c.goal, c.onChange, c.context), func(t *testing.T) {
+			w := newWorld(t, true, false)
+			w.cfg.Loop.PromptGoal, w.cfg.Loop.PromptGoalOnChange = c.goal, c.onChange
+			p := w.primary(decide.Observation{State: decide.Idle})
+			p.convKey, p.convKnown = "example-session-1", true
+			if _, err := control.WriteGoal(w.dir, w.cfg.Loop.Name, "", control.GoalSpec{Title: "fictional-title", ObjectiveRefs: []string{"o"}, AcceptanceRefs: []string{"a"}}, "", 0); err != nil {
+				t.Fatal(err)
+			}
+			tick := func(at time.Duration) string {
+				t.Helper()
+				o := w.opts(t0.Add(at))
+				o.NewAdapter = func(config.Agent, string, string) (adapter.Adapter, error) { return bbNamedAdapter{p}, nil }
+				n := len(p.sent)
+				if res, err := Tick(context.Background(), w.cfg, o); err != nil || len(p.sent) != n+1 {
+					t.Fatalf("at %v: %+v %v", at, res, err)
+				}
+				return p.sent[n]
+			}
+			tick(time.Minute) // context off: leaves the full goal copy
+			w.cfg.Loop.PromptContext = c.context
+			text := tick(2 * time.Minute)
+
+			parts := []string{prompt.WakeHeader(w.cfg.Loop.Name), w.cfg.Loop.Prompt}
+			switch {
+			case c.onChange:
+				parts = append(parts, shortGoal)
+			case c.goal:
+				parts = append(parts, fullGoal)
+			}
+			if c.context {
+				parts = append(parts, contextTag)
+			}
+			if !strings.HasPrefix(text, parts[0]) {
+				t.Fatalf("wake header not first: %q", text)
+			}
+			at := 0
+			for _, part := range parts {
+				i := strings.Index(text[at:], part)
+				if i < 0 {
+					t.Fatalf("%q missing or out of order in %q", part, text)
+				}
+				at += i + len(part)
+			}
+			for marker, want := range map[string]bool{fullGoal: c.goal && !c.onChange, shortGoal: c.onChange, contextTag: c.context} {
+				if got := strings.Count(text, marker); got != map[bool]int{true: 1, false: 0}[want] {
+					t.Fatalf("%q appears %d times in %q", marker, got, text)
+				}
+			}
+			if c.context && strings.Contains(text[strings.Index(text, contextTag):], "Current keepgoing goal") {
+				t.Fatalf("goal after the context block: %q", text)
+			}
+			st, err := state.Load(w.dir)
+			if err != nil || st.LastPromptSend == nil || st.LastPromptSend.Bytes != len(text) || (st.LastPromptSend.ContextBytes > 0) != c.context {
+				t.Fatalf("record %+v for %d bytes: %v", st.LastPromptSend, len(text), err)
+			}
+		})
+	}
+}
+
+// A handoff brief carries the goal in full even with prompt_goal_on_change,
+// and the supervision context block still comes after it, last. The recorded
+// size is the whole message, context block included.
+func TestHandoffBriefCarriesTheFullGoalBeforeTheContext(t *testing.T) {
+	w, _, f := newThreadWorld(t)
+	w.cfg.Loop.PromptGoal, w.cfg.Loop.PromptGoalOnChange, w.cfg.Loop.PromptContext = true, true, true
+	if _, err := control.WriteGoal(w.dir, w.cfg.Loop.Name, "", control.GoalSpec{Title: "fictional-title", ObjectiveRefs: []string{"o"}, AcceptanceRefs: []string{"a"}}, "", 0); err != nil {
+		t.Fatal(err)
+	}
+	res, err := threadTick(t, w, f, t0, map[string]string{})
+	if err != nil || res.Action != "handoff" || len(f.spawned) != 1 {
+		t.Fatalf("%+v %v", res, err)
+	}
+	first := f.spawned[0].Prompt
+	g, c := strings.Index(first, "Current keepgoing goal context (explicitly shared by this loop):"), strings.Index(first, "\n\n"+contextTag+"\n")
+	if g < 0 || c < g || strings.Contains(first, "Current keepgoing goal: goal_") || strings.Contains(first[c:], "Current keepgoing goal") {
+		t.Fatalf("brief: %q", first)
+	}
+	st, _ := state.Load(w.dir)
+	if p := st.LastPromptSend; p == nil || p.GoalForm != "full" || p.Bytes != len(first) || p.ContextBytes != len(first)-c {
+		t.Fatalf("send=%+v", st.LastPromptSend)
 	}
 }
