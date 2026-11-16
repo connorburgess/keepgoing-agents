@@ -407,6 +407,8 @@ html:not(.has-script) .needs-script { visibility: hidden; }
   .dot-unknown { background: Canvas; border: 1px solid CanvasText; }
   .pick[aria-current="page"] { outline: 2px solid Highlight; outline-offset: -2px; }
   .tools .btn[aria-pressed="true"] { background: Highlight; color: HighlightText; border-color: Highlight; }
+  /* The route in use keeps its filled position badge. */
+  .route.is-active .pos { background: Highlight; color: HighlightText; border-color: Highlight; }
 }
 
 /* The page shown for a used or expired link. It has no session and no script. */

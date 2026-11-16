@@ -425,7 +425,7 @@ The page itself was checked in Chromium against those fixtures (script and resul
 | No loops; a hundred loops; a loop with every optional field missing; unparseable dates; a reply without a refresh interval | Checked by altering the reply in the browser: no error, no malformed text |
 | Text size: follows the browser's root size (200%), no sideways scroll | Checked |
 | Reduced motion: nothing moves except **Read now**'s icon, which turns slowly while a read runs; colour changes stay | Checked |
-| Forced colours: status dots and the current row remain visible | Checked |
+| Forced colours: status dots, the current row, pressed header toggles and the badge of the route in use remain visible | Checked |
 | The picker in a 600 px tall window: needs-you line, Routes row and the current loop visible; scroll kept across a re-read | Checked |
 | Pause updates: no read while paused | Checked |
 | Safari and Firefox; touch hardware; a hidden tab not polling | Not checked |

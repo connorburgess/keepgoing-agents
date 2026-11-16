@@ -109,3 +109,35 @@ func TestDockWithoutScriptSaysSoG6(t *testing.T) {
 		t.Error("index.html must carry no inline script or style")
 	}
 }
+
+// G7 (hand check, color guide on Forced Colors Mode): a pressed or chosen
+// state shown only by background or border colour disappears in forced
+// colours. The header toggles were fixed with the header buttons (H1); what
+// was left is the filled position badge of the route in use, which forced
+// colours drew like every other badge. The current picker row keeps its
+// outline. Emulated forced colours are checked in a headless browser
+// outside the suite.
+func TestDockChosenStatesSurviveForcedColoursG7(t *testing.T) {
+	css := dockUIText(t, "dock.css")
+	start := strings.Index(css, "@media (forced-colors: active) {\n  .state,")
+	if start < 0 {
+		t.Fatal("dock.css lacks its main forced-colours block")
+	}
+	block := css[start : start+strings.Index(css[start:], "\n}\n")]
+	for _, want := range []string{
+		`.tools .btn[aria-pressed="true"] { background: Highlight; color: HighlightText; border-color: Highlight; }`,
+		`.route.is-active .pos { background: Highlight; color: HighlightText; border-color: Highlight; }`,
+		`.pick[aria-current="page"] { outline: 2px solid Highlight; outline-offset: -2px; }`,
+	} {
+		if !strings.Contains(block, want) {
+			t.Errorf("forced colours must keep %s", want)
+		}
+	}
+	// Every pressed or current state the page sets has a forced-colours rule.
+	js := dockUIText(t, "dock.js")
+	for _, attr := range []string{"aria-selected", "aria-checked"} {
+		if strings.Contains(js, attr) {
+			t.Errorf("dock.js sets %s; give it a forced-colours rule and add it here", attr)
+		}
+	}
+}
