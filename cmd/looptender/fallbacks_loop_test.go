@@ -58,22 +58,46 @@ func TestFallbacksByLoopName(t *testing.T) {
 	}
 
 	before := f.files(t)
-	for name, args := range map[string][]string{
-		"unknown loop":        {"fallbacks", "move", "third", "--to", "1", "--loop", "absent-loop", "--directory", reg, "--yes"},
-		"both -c and --loop":  {"fallbacks", "move", "third", "--to", "1", "--loop", "example-loop", "--directory", reg, "-c", f.cfg, "--yes"},
-		"directory alone":     {"fallbacks", "move", "third", "--to", "1", "--directory", reg, "-c", f.cfg, "--yes"},
-		"loop without a name": {"fallbacks", "list", "--loop"},
-		"loop twice":          {"fallbacks", "list", "--loop", "example-loop", "--loop", "example-loop", "--directory", reg},
+	for name, tc := range map[string]struct {
+		args []string
+		want string
+	}{
+		"unknown loop":        {[]string{"fallbacks", "move", "third", "--to", "1", "--loop", "absent-loop", "--directory", reg, "--yes"}, `no registered loop named "absent-loop"`},
+		"both -c and --loop":  {[]string{"fallbacks", "move", "third", "--to", "1", "--loop", "example-loop", "--directory", reg, "-c", f.cfg, "--yes"}, "pass either --loop NAME or -c FILE, not both"},
+		"directory alone":     {[]string{"fallbacks", "move", "third", "--to", "1", "--directory", reg, "-c", f.cfg, "--yes"}, "--directory applies only with --loop NAME"},
+		"loop without a name": {[]string{"fallbacks", "list", "--loop"}, "--loop takes one registered loop name"},
+		"loop twice":          {[]string{"fallbacks", "list", "--loop", "example-loop", "--loop", "example-loop", "--directory", reg}, "--loop takes one registered loop name"},
 	} {
-		if code, out, errOut := call(args...); code != exitUsage || out != "" || errOut == "" {
+		if code, out, errOut := call(tc.args...); code != exitUsage || out != "" || !strings.Contains(errOut, tc.want) {
 			t.Errorf("%s: %d %q %q", name, code, out, errOut)
 		}
 	}
 	if f.files(t) != before {
 		t.Fatal("a refused --loop request changed the loop's files")
 	}
-	if _, _, errOut := call("fallbacks", "list", "--loop", "absent-loop", "--directory", reg); !strings.Contains(errOut, `no registered loop named "absent-loop"`) {
-		t.Errorf("unknown loop message: %s", errOut)
+
+	// A registry that cannot be read is said to be so, without a path.
+	bad := filepath.Join(t.TempDir(), "registry")
+	if err := os.Mkdir(bad, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	write(t, filepath.Join(bad, registry.FileName), "not a registry", 0o600)
+	if code, out, errOut := call("fallbacks", "list", "--loop", "example-loop", "--directory", bad); code != exitFailed || out != "" || !strings.Contains(errOut, "The loop registry cannot be read.") || strings.Contains(errOut, bad) {
+		t.Errorf("unreadable registry: %d %q %q", code, out, errOut)
+	}
+
+	// A configuration moved since it was registered is refused as routes
+	// --loop refuses it: by name, never by its path.
+	moved := f.cfg + ".moved"
+	if err := os.Rename(f.cfg, moved); err != nil {
+		t.Fatal(err)
+	}
+	for _, sub := range [][]string{{"list"}, {"move", "third", "--to", "1", "--yes"}, {"add", "--non-interactive", "--agent", "claude", "--dry-run"}} {
+		args := append(append([]string{"fallbacks"}, sub...), "--loop", "example-loop", "--directory", reg)
+		code, out, errOut := call(args...)
+		if code != exitUsage || out != "" || !strings.Contains(errOut, "Loop example-loop's configuration cannot be loaded; inspect it with keepgoing validate.") || strings.Contains(errOut, f.destination) {
+			t.Errorf("%v with a moved configuration: %d %q %q", sub, code, out, errOut)
+		}
 	}
 }
 

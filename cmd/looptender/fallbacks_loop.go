@@ -4,6 +4,7 @@ import (
 	"errors"
 	"strings"
 
+	"github.com/looptender/looptender/internal/config"
 	"github.com/looptender/looptender/internal/registry"
 )
 
@@ -75,14 +76,14 @@ func fallbacksByLoop(e env, sub string, args []string) ([]string, int, bool) {
 		e.errf("fallbacks %s: pass either --loop NAME or -c FILE, not both", sub)
 		return nil, exitUsage, false
 	}
+	// Messages name no path: the person named the loop, not its files.
 	path, err := registryDirectory(dir)
-	if err != nil {
-		e.errf("fallbacks %s: %v", sub, err)
-		return nil, exitFailed, false
+	var f registry.File
+	if err == nil {
+		f, err = registry.Load(path)
 	}
-	f, err := registry.Load(path)
 	if err != nil {
-		e.errf("fallbacks %s: the loop registry cannot be read: %v", sub, err)
+		e.errf("fallbacks %s: refused, nothing written.\n  The loop registry cannot be read.", sub)
 		return nil, exitFailed, false
 	}
 	var found []registry.Entry
@@ -96,6 +97,12 @@ func fallbacksByLoop(e env, sub string, args []string) ([]string, int, bool) {
 		e.errf("fallbacks %s: no registered loop named %q (keepgoing registry list)", sub, bbLabel(name, 40))
 		return nil, exitUsage, false
 	case 1:
+		// A configuration moved or deleted since it was registered is
+		// refused as routes --loop refuses it, without the path.
+		if _, err := config.Load(found[0].ConfigPath); err != nil {
+			e.errf("fallbacks %s: refused, nothing written.\n  Loop %s's configuration cannot be loaded; inspect it with keepgoing validate.", sub, bbLabel(name, 40))
+			return nil, exitUsage, false
+		}
 		// After the leading positional arguments (move ID, handoff on), which
 		// the commands read before their flags.
 		pos, rest := splitPositional(out)
