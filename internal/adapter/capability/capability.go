@@ -283,7 +283,7 @@ var Matrix = []Behaviour{
 	{ID: "context", Title: "Context window reading", What: "Record how much of the model's context window the supervised conversation uses, for status only. No decision, send, allowance or hold reads it.",
 		Cells: merge(map[string]Cell{
 			"bb":    {Yes, Fixture, "`bb thread context <thread> --json` for the supervised thread only, never a lane: used tokens, the window and BB's estimated flag. Read after a check's wake, re-prompt or nudge, or when it first sees a turn ended, within what is left of the check's budget; anything malformed, slow or missing (older bb) is unavailable. The shape was seen on one bb build; the parser runs against fixtures only.", []Ref{t("internal/adapter/bb/context_test.go", "TestReadContextAcceptsOnlyTheKnownShape"), t("internal/supervise/context_test.go", "TestContextReadingChangesNoDecision"), d("docs/operations.md#context-window-reading")}},
-			"codex": {Missing, None, "Unavailable. Per-turn usage appears in the event stream but is not read.", nil},
+			"codex": {Missing, None, "Unavailable. The per-turn token counts in the event stream are recorded as turn usage, which is not a context window size.", nil},
 		}, same(Cell{Missing, None, "Unavailable: no reading is taken.", nil}, "claude", "cursor", "process"))},
 	{ID: "prompt_context", Title: "Supervision context in sends", What: "With `loop.prompt_context` (off by default), append the loop's supervision context, as `context` shows it, to wakes, nudges, re-prompts and handoff briefs: on the first send after the key is turned on, after a control save (enable, resume, a change of owner), with every handoff and switch-back brief, and when its content changes. Never to the notice-only lane-error wake. With the key off every sent byte is unchanged.",
 		Cells: merge(map[string]Cell{
@@ -298,6 +298,11 @@ var Matrix = []Behaviour{
 			"process": {Yes, Fixture, "Last on the resume command's standard input, after the prompt. The status, stop and probe commands never receive it. looptender cannot see which conversation the command reaches, so a new one there does not send it again; a pause and resume does.",
 				[]Ref{t("internal/supervise/promptcontext_process_unix_test.go", "TestPromptContextOnAProcessStandIn"), d(contextDoc)}},
 		})},
+	{ID: "turn_usage", Title: "Turn usage reading", What: "Record the token counts the agent reports for each finished turn, for status only. No decision, send, allowance or hold reads it, and no figure the agent did not report is estimated.",
+		Cells: merge(map[string]Cell{
+			"codex":  {Yes, Fixture, "The typed usage object of `turn.completed` in `codex exec --json`: input, cached input, cache write input, output and reasoning output tokens. Only plain integers up to ten billion are kept; anything else is absent. Each turn is counted once, by its run record. Unreleased; the parser runs against fixtures only.", []Ref{t("internal/adapter/runner/turnusage_test.go", "TestCodexTurnUsageReadsOnlyTypedCounts"), t("internal/supervise/turnusage_test.go", "TestTurnUsageChangesNoDecision"), d("docs/operations.md#turn-usage-reading")}},
+			"claude": {Missing, None, "Not captured: no Claude Code result object with usage fields has been recorded, so none is read.", []Ref{t("internal/adapter/runner/turnusage_test.go", "TestClaudeReportsNoTurnUsage")}},
+		}, same(Cell{Missing, None, "Unavailable: the agent reports no per-turn token counts that are read.", nil}, "bb", "cursor", "process"))},
 	{ID: "new_conversation", Title: "Handoff into a new conversation", What: "Take the work over in a conversation that did not exist before the handoff.",
 		Cells: merge(map[string]Cell{
 			"bb":      {Yes, Fixture, "Opt-in: a candidate with bb.new_thread has looptender create the thread, within loop.limits.max_new_threads.", []Ref{t("internal/supervise/newthread_test.go", "TestHandoffToANewThreadCreatesItOnce"), d("docs/fallbacks.md")}},
@@ -361,6 +366,7 @@ var customCells = map[string]Cell{
 	"switch_back":      {Yes, Fixture, fakeDecision, []Ref{t(superTest, "TestSwitchBackAfterThePrimaryResets")}},
 	"probes":           {Partial, Fixture, "With a probe in the definition: one small request with the prompt passed as a turn's is, judged by the finished and error rules.", []Ref{t("internal/probe/custom_test.go", "TestCustomProbe")}},
 	"context":          {Missing, None, "Unavailable: a definition declares no context window reading.", nil},
+	"turn_usage":       {Missing, None, "Unavailable: a definition declares no per-turn token counts.", nil},
 	"quota":            {Missing, None, "No usage reading is taken. A limit lookup, when defined, only says whether an unclassified failure is a usage limit and when it resets.", []Ref{t(definedTest, "TestDefinedAgentLimitLookup")}},
 	"new_conversation": {Yes, Fixture, "A candidate has no saved session, so the handoff brief starts one.", []Ref{t(definedTest, "TestDefinedAgentTurnLifecycle")}},
 	"prompt_context":   {Yes, Fixture, "Last in the prompt, passed as the definition declares, with no wake header. With exact_resume, the turn a `session reset` starts carries it again; without it every turn starts a new session, so every turn carries it. " + fakeDecision, []Ref{t("internal/supervise/promptcontext_test.go", "TestPromptContextAfterASessionReset"), d(contextDoc)}},

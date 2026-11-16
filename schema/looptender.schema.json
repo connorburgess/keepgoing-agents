@@ -39,6 +39,11 @@
           "type": "string",
           "description": "account or quota pool; defaults to provider"
         },
+        "account": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{32}$",
+          "description": "accounts catalog ID (32 lowercase hexadecimal characters, as accounts add prints) of the account a person states this route uses; never derived, and optional"
+        },
         "bb": {
           "$ref": "#/$defs/bb"
         },
@@ -428,6 +433,20 @@
             }
           },
           "description": "usage-aware timing, off by default; collects readings and, with same-thread BB steps, applies decisions at idle turn boundaries; status previews recorded evidence"
+        },
+        "context_window": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["reset_at"],
+          "properties": {
+            "reset_at": {
+              "type": "number",
+              "minimum": 0.5,
+              "maximum": 0.95,
+              "description": "share of the conversation's context window at or above which a reset would be due; no default; BB loops only; this build previews it in status and never resets"
+            }
+          },
+          "description": "context-threshold reset, previewed only: status says what it would do at the next turn boundary; nothing resets, compacts or sends"
         },
         "probe": {
           "type": "object",

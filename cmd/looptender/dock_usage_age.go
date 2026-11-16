@@ -2,23 +2,48 @@ package main
 
 import "time"
 
+// dockNearLimitPercent is the share of a window at which a reading counts as
+// near its limit, the same level the page draws a meter in warning colour.
+const dockNearLimitPercent = 70
+
 // dockMarkOldUsage marks each usage reading in the report as old when its age
 // is over staleAfter, the same threshold a check is called stale at. This is
 // separate from availability "stale", which says every window of the reading
 // has reset since it was taken: an old reading can still describe current
 // windows, and a recent one can describe windows that have all ended.
 //
+// Age alone is information, not something for a person to act on. An old
+// reading needs a person only when it leaves a real question open: a window
+// that had not ended was near its limit (dockNearLimitPercent to 99%) when
+// read, no window that had not ended was used up, and the route or account it
+// is shown on is not already marked at a usage limit. Then it carries
+// NeedsPerson and AgeNote, as what it said may since have changed. A used-up
+// window cannot have improved before its reset, and the page already says
+// when it was used up and when it resets; a place at a limit already says so.
+// Those readings keep their age in neutral words only.
+//
 // It also records the age of the oldest old reading the report shows, so the
 // page can say how old its data is and not only when it read its records.
 // It runs after usage is shared across loops, routes and accounts, so each
-// copy of a reading is marked the same way.
+// copy of a reading is marked the same way, with the limit taken from where
+// that copy is shown.
 func dockMarkOldUsage(r *dockReport, staleAfter time.Duration) {
 	limit := int64(staleAfter / time.Second)
-	mark := func(u *dockUsageTarget) {
+	atLimit := map[string]bool{}
+	for _, x := range r.Routes {
+		if x.Attention == "limit" || dockNotesAtLimit(x.Notes) {
+			atLimit[x.Key] = true
+		}
+	}
+	mark := func(u *dockUsageTarget, limited bool) {
 		if u.Availability == "unavailable" || u.AgeSeconds == nil || *u.AgeSeconds <= limit {
 			return
 		}
 		u.Old = true
+		if !limited && dockUsageNearLimit(*u) {
+			u.NeedsPerson = true
+			u.AgeNote = "This reading is " + dockSpan(time.Duration(*u.AgeSeconds)*time.Second) + " old and was near its limit; it may have changed."
+		}
 		if r.OldestUsageAgeSeconds == nil || *u.AgeSeconds > *r.OldestUsageAgeSeconds {
 			age := *u.AgeSeconds
 			r.OldestUsageAgeSeconds = &age
@@ -26,13 +51,43 @@ func dockMarkOldUsage(r *dockReport, staleAfter time.Duration) {
 	}
 	for i := range r.Loops {
 		for j := range r.Loops[i].Chain.Entries {
-			mark(&r.Loops[i].Chain.Entries[j].Usage)
+			e := &r.Loops[i].Chain.Entries[j]
+			mark(&e.Usage, atLimit[e.Route] || dockNotesAtLimit(e.Notes))
 		}
 	}
 	for i := range r.Routes {
-		mark(&r.Routes[i].Usage)
+		mark(&r.Routes[i].Usage, atLimit[r.Routes[i].Key])
 	}
 	for i := range r.Allowances {
-		mark(&r.Allowances[i].Usage)
+		mark(&r.Allowances[i].Usage, dockNotesAtLimit(r.Allowances[i].Notes))
 	}
+}
+
+// dockUsageNearLimit: a window of the reading that had not ended was at
+// dockNearLimitPercent or more, but under 100%, when it was read, and no
+// window that had not ended was used up. A window that has ended since is
+// left to the ended-window handling.
+func dockUsageNearLimit(u dockUsageTarget) bool {
+	near := false
+	for _, w := range u.Windows {
+		if w.Stale {
+			continue
+		}
+		if w.UsedPercent >= 100 {
+			return false
+		}
+		if w.UsedPercent >= dockNearLimitPercent {
+			near = true
+		}
+	}
+	return near
+}
+
+func dockNotesAtLimit(notes []dockNote) bool {
+	for _, n := range notes {
+		if n.Tone == "limit" {
+			return true
+		}
+	}
+	return false
 }

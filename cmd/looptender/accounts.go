@@ -224,11 +224,15 @@ func accountCheck(ctx context.Context, dir, id, caller string, run accountRun, n
 	}
 	effective := os.Environ()
 	o := accounts.Observation{Revision: selected.Revision, Context: selected.Context, At: now, Auth: "unavailable", Caller: caller}
-	if !accountContextExists(selected) || accounts.Context(f, selected, effective) != selected.Context {
+	bound, accepted := accounts.Bound(f, selected, effective)
+	if !accountContextExists(selected) || !accepted {
 		o.Reason = "context_changed"
 	} else if selected.Provider != "claude-code" && selected.Provider != "codex" {
 		o.Reason = "unsupported"
 	} else {
+		// Recorded under the current definition; this replaces a binding
+		// recorded by an earlier build (accounts.Bound).
+		o.Context = bound
 		effective = accounts.ExecutionEnvironment(selected, effective)
 		call := func(args ...string) ([]byte, error) {
 			c, cancel := context.WithTimeout(ctx, 5*time.Second)
@@ -264,8 +268,20 @@ func accountCheck(ctx context.Context, dir, id, caller string, run accountRun, n
 		if e == nil || e.Revision != selected.Revision || e.Context != selected.Context {
 			return accounts.ErrChanged
 		}
-		if (!accountContextExists(*e) || accounts.Context(*latest, *e, os.Environ()) != selected.Context) && o.Reason != "context_changed" {
-			return accounts.ErrChanged
+		if o.Reason != "context_changed" {
+			if now, ok := accounts.Bound(*latest, *e, os.Environ()); !accountContextExists(*e) || !ok || now != o.Context {
+				return accounts.ErrChanged
+			}
+		}
+		if o.Context != e.Context {
+			// One-time rebinding of an earlier build's digest. The previous
+			// observation belongs to the same accepted context.
+			e.Context = o.Context
+			if e.Last != nil {
+				last := *e.Last
+				last.Context = o.Context
+				e.Last = &last
+			}
 		}
 		e.Attempt = &o
 		if o.Auth == "reported_present" || o.Auth == "reported_absent" {

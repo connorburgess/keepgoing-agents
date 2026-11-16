@@ -1259,6 +1259,7 @@ func (t *tick) run() error {
 	// After the decision and the action, so it can change neither; within
 	// what is left of the budget, and never for a lane.
 	t.readContext(a, target, d, obs, t.st.LastState)
+	t.readTurnUsage(a, target, d, obs)
 	if res.Action == string(d.Action) {
 		t.noteIdleSpacing(t.decisionInput, d)
 	}

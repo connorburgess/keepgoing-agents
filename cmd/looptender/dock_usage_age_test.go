@@ -110,3 +110,65 @@ func TestDockMarksOldUsageReadingsApartFromEndedWindows(t *testing.T) {
 		t.Errorf("old reading not in the data")
 	}
 }
+
+// An old reading needs a person only when it leaves a question open: a
+// current window at 70% to 99% when read, no current window used up, and the
+// route or account it is shown on not already at a usage limit. Age alone, an
+// ended window, a used-up window or a place at a limit never does.
+func TestDockOldUsageNeedsPersonOnlyNearLimit(t *testing.T) {
+	age := func(d time.Duration) *int64 { s := int64(d / time.Second); return &s }
+	win := func(pct int, ended bool) dockUsageWindow {
+		return dockUsageWindow{Name: "7 days", UsedPercent: pct, Stale: ended}
+	}
+	cases := []struct {
+		name    string
+		age     time.Duration
+		windows []dockUsageWindow
+		limit   bool // the route carries attention "limit"
+		old     bool
+		needs   bool
+		ageNote string
+		availab string
+	}{
+		{name: "recent and high is not old", age: 10 * time.Minute, windows: []dockUsageWindow{win(95, false)}, availab: "available"},
+		{name: "old and low is age only", age: 32 * time.Hour, windows: []dockUsageWindow{win(40, false)}, old: true, availab: "available"},
+		{name: "old just under 70", age: 32 * time.Hour, windows: []dockUsageWindow{win(69, false)}, old: true, availab: "available"},
+		{name: "old at 70", age: 32 * time.Hour, windows: []dockUsageWindow{win(10, false), win(70, false)}, old: true, needs: true, availab: "available",
+			ageNote: "This reading is 32 h old and was near its limit; it may have changed."},
+		{name: "old at 99", age: 32 * time.Hour, windows: []dockUsageWindow{win(99, false)}, old: true, needs: true, availab: "available",
+			ageNote: "This reading is 32 h old and was near its limit; it may have changed."},
+		{name: "old and used up is age only", age: 3 * time.Hour, windows: []dockUsageWindow{win(100, false)}, old: true, availab: "available"},
+		{name: "old over 100 is age only", age: 3 * time.Hour, windows: []dockUsageWindow{win(104, false)}, old: true, availab: "available"},
+		{name: "old with one window used up and one at 80 is age only", age: 32 * time.Hour, windows: []dockUsageWindow{win(100, false), win(80, false)}, old: true, availab: "available"},
+		{name: "old with a used-up window that has ended and one at 80", age: 32 * time.Hour, windows: []dockUsageWindow{win(100, true), win(80, false)}, old: true, needs: true, availab: "available",
+			ageNote: "This reading is 32 h old and was near its limit; it may have changed."},
+		{name: "old with a high window that has ended", age: 32 * time.Hour, windows: []dockUsageWindow{win(90, true), win(20, false)}, old: true, availab: "available"},
+		{name: "windows ended stays neutral", age: 32 * time.Hour, windows: []dockUsageWindow{win(90, true)}, old: true, availab: "stale"},
+		{name: "old at 50 on a route at a limit is age only", age: 50 * time.Hour, windows: []dockUsageWindow{win(50, false)}, limit: true, old: true, availab: "available"},
+		{name: "old at 80 on a route at a limit is age only", age: 50 * time.Hour, windows: []dockUsageWindow{win(80, false)}, limit: true, old: true, availab: "available"},
+		{name: "recent on a route at a limit is not about age", age: 5 * time.Minute, windows: []dockUsageWindow{win(5, false)}, limit: true, availab: "available"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			u := dockUsageTarget{Availability: tc.availab, AgeSeconds: age(tc.age), Windows: tc.windows}
+			route := dockRoute{Key: "route-example", Usage: u}
+			if tc.limit {
+				route.Attention = "limit"
+			}
+			r := dockReport{
+				Loops:      []dockLoop{{Chain: dockChain{Entries: []dockChainEntry{{Route: "route-example", Usage: u}}}}},
+				Routes:     []dockRoute{route},
+				Allowances: []dockAllowance{{Title: "example", Usage: u}},
+			}
+			if tc.limit {
+				r.Allowances[0].Notes = []dockNote{{Tone: "limit"}}
+			}
+			dockMarkOldUsage(&r, defaultStaleAfter)
+			for where, got := range map[string]dockUsageTarget{"chain": r.Loops[0].Chain.Entries[0].Usage, "route": r.Routes[0].Usage, "allowance": r.Allowances[0].Usage} {
+				if got.Old != tc.old || got.NeedsPerson != tc.needs || got.AgeNote != tc.ageNote {
+					t.Errorf("%s: old %v needsPerson %v note %q, want %v %v %q", where, got.Old, got.NeedsPerson, got.AgeNote, tc.old, tc.needs, tc.ageNote)
+				}
+			}
+		})
+	}
+}
