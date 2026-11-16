@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/looptender/looptender/internal/accounts"
+	"github.com/looptender/looptender/internal/envvar"
 )
 
 func accountFixture(t *testing.T, provider string) (string, accounts.Entry) {
@@ -44,8 +45,8 @@ func TestAccountsFixedCommandsContextAndCaller(t *testing.T) {
 			dir, e := accountFixture(t, provider)
 			calls := [][]string{}
 			run := func(ctx context.Context, cli string, args, environment []string, cwd string) ([]byte, error) {
-				if cli != e.CLI || cwd != e.Workdir || !slices.Contains(environment, "BB_THREAD_ID=thr_example_actual") {
-					t.Fatal("execution context or caller changed")
+				if cli != e.CLI || cwd != e.Workdir || slices.Contains(environment, "BB_THREAD_ID=thr_example_actual") {
+					t.Fatal("execution context changed or caller session passed on")
 				}
 				if _, ok := ctx.Deadline(); !ok {
 					t.Fatal("unbounded call")
@@ -339,7 +340,7 @@ func TestAccountsAddCheckAcrossToolInvocations(t *testing.T) {
 	calls := 0
 	run := func(_ context.Context, _ string, args, environment []string, _ string) ([]byte, error) {
 		calls++
-		if !slices.Contains(environment, "BB_THREAD_ID=thr_example_actual") || !slices.Contains(environment, "CODEX_TOOL_CALL_ID=example-check") {
+		if slices.Contains(environment, "BB_THREAD_ID=thr_example_actual") || !slices.Contains(environment, "CODEX_TOOL_CALL_ID=example-check") {
 			t.Fatal("execution environment changed")
 		}
 		if args[0] == "--version" {
@@ -360,5 +361,96 @@ func TestAccountsAddCheckAcrossToolInvocations(t *testing.T) {
 	got := f.Entries[0]
 	if calls != 2 || got.Attempt == nil || got.Attempt.Auth != "reported_present" || got.UpdatedBy != "thr_example_actual" || got.Attempt.Caller != "thr_example_actual" || got.Revision != selected.Revision {
 		t.Fatal("tool metadata invalidated selection or caller changed")
+	}
+}
+
+// setSession sets every caller-session variable to a fictional per-session value.
+func setSession(t *testing.T, session string) {
+	t.Helper()
+	for _, name := range envvar.SupervisorSession {
+		t.Setenv(name, "example-"+session)
+	}
+}
+
+func TestAccountsCheckAcrossAgentSessionsKeepsTheObservation(t *testing.T) {
+	setSession(t, "add")
+	dir, e := accountFixture(t, "claude-code")
+	setSession(t, "check")
+	first := time.Now().UTC().Add(-time.Hour)
+	run := func(_ context.Context, _ string, args, environment []string, _ string) ([]byte, error) {
+		for _, kv := range environment {
+			name, _, _ := strings.Cut(kv, "=")
+			if envvar.IsSupervisorSession(name) {
+				t.Fatalf("%s reached the status command", name)
+			}
+		}
+		if args[0] == "--version" {
+			return []byte("2.1.318 (Claude Code)"), nil
+		}
+		return []byte(`{"loggedIn":true,"subscriptionType":"max"}`), nil
+	}
+	if err := accountCheck(context.Background(), dir, e.ID, "thr_example_actual", run, first); err != nil {
+		t.Fatal(err)
+	}
+	f, _ := accounts.Load(dir)
+	if a := f.Entries[0].Attempt; a == nil || a.Reason != "" || a.Auth != "reported_present" {
+		t.Fatal("another agent session read as a changed context")
+	}
+	// A real change still refuses to run, and the card keeps the last good check.
+	t.Setenv("ANTHROPIC_API_KEY", "other-fictional-key")
+	later := time.Now().UTC()
+	if err := accountCheck(context.Background(), dir, e.ID, "thr_example_actual", func(context.Context, string, []string, []string, string) ([]byte, error) {
+		t.Fatal("changed context invoked")
+		return nil, nil
+	}, later); err != nil {
+		t.Fatal(err)
+	}
+	f, _ = accounts.Load(dir)
+	entry := f.Entries[0]
+	if entry.Attempt.Reason != "context_changed" || entry.Last == nil || !entry.Last.At.Equal(first) || entry.Last.Plan != "max" {
+		t.Fatal("stored observation not kept")
+	}
+	c := accounts.Project(f, later).Cards[0]
+	if c.Auth.Text != "Selected CLI reports login" || !c.Auth.ObservedAt.Equal(first) || c.Plan.Text != "Max" || c.FailedCheckAt == nil || !c.FailedCheckAt.Equal(later) || c.Reason != "context_changed" {
+		t.Fatalf("card replaced the previous observation: %+v", c)
+	}
+}
+
+func TestAccountsCheckRebindsAnEarlierBuildsContext(t *testing.T) {
+	dir, e := accountFixture(t, "claude-code")
+	first := time.Now().UTC().Add(-time.Hour)
+	// An earlier build's binding: a plain 32-byte digest that this build
+	// cannot recompute, with a good check recorded under it.
+	if err := accounts.Update(dir, func(f *accounts.File) error {
+		x := &f.Entries[0]
+		x.Context = strings.Repeat("5a", 32)
+		o := accounts.Observation{Revision: x.Revision, Context: x.Context, At: first, Auth: "reported_present", Plan: "pro", Version: "2.1.318"}
+		x.Last, x.Attempt = &o, &o
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	timeout := func(context.Context, string, []string, []string, string) ([]byte, error) {
+		return nil, context.DeadlineExceeded
+	}
+	if err := accountCheck(context.Background(), dir, e.ID, "thr_example_actual", timeout, time.Now().UTC()); err != nil {
+		t.Fatal(err)
+	}
+	f, _ := accounts.Load(dir)
+	entry := f.Entries[0]
+	if entry.Attempt.Reason != "timeout" || entry.Context != e.Context || entry.Revision != e.Revision {
+		t.Fatalf("earlier binding not replaced by the current one: reason %q", entry.Attempt.Reason)
+	}
+	if entry.Last == nil || !entry.Last.At.Equal(first) || entry.Last.Plan != "pro" || entry.Last.Context != entry.Context {
+		t.Fatal("previous observation lost while rebinding")
+	}
+	// From now on the binding compares exactly.
+	t.Setenv("ANTHROPIC_API_KEY", "other-fictional-key")
+	if err := accountCheck(context.Background(), dir, e.ID, "thr_example_actual", timeout, time.Now().UTC()); err != nil {
+		t.Fatal(err)
+	}
+	f, _ = accounts.Load(dir)
+	if f.Entries[0].Attempt.Reason != "context_changed" {
+		t.Fatal("a rebound entry accepted a real change")
 	}
 }

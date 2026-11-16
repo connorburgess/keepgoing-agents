@@ -28,6 +28,7 @@ func TestProjectionAttentionIsNotAge(t *testing.T) {
 		authAge       int64 // -1 when the login evidence has no age
 		authAgain     bool
 		planAgain     bool
+		failedAt      bool // the card carries failedCheckAt
 	}{
 		{name: "never checked", needs: false, authAge: -1},
 		{name: "login reported a minute ago", last: obs(time.Minute, "reported_present", "", "max"), attempt: obs(time.Minute, "reported_present", "", "max"), authAge: 60},
@@ -36,10 +37,10 @@ func TestProjectionAttentionIsNotAge(t *testing.T) {
 		{name: "login and plan older than 24 hours ask to confirm", last: obs(30*time.Hour, "reported_present", "", "pro"), attempt: obs(30*time.Hour, "reported_present", "", "pro"), authAge: 30 * 3600, authAgain: true, planAgain: true},
 		{name: "no login reported", last: obs(time.Minute, "reported_absent", "", ""), attempt: obs(time.Minute, "reported_absent", "", ""), needs: true, attention: "no_login", authAge: 60},
 		{name: "old no login still needs a person", last: obs(50*time.Hour, "reported_absent", "", ""), attempt: obs(50*time.Hour, "reported_absent", "", ""), needs: true, attention: "no_login", authAge: 50 * 3600, authAgain: true},
-		{name: "last check failed", last: obs(2*time.Hour, "reported_present", "", "max"), attempt: obs(time.Minute, "unavailable", "timeout", ""), needs: true, attention: "check_failed", authAge: 60, planAgain: false},
+		{name: "last check failed", last: obs(2*time.Hour, "reported_present", "", "max"), attempt: obs(time.Minute, "unavailable", "timeout", ""), needs: true, attention: "check_failed", authAge: 2 * 3600, failedAt: true},
 		{name: "last check cancelled", attempt: obs(time.Minute, "unavailable", "cancelled", ""), needs: true, attention: "check_failed", authAge: 60},
-		{name: "failed check over an old login hints on the old plan", last: obs(40*time.Hour, "reported_present", "", "max"), attempt: obs(time.Minute, "unavailable", "status_unavailable", ""), needs: true, attention: "check_failed", authAge: 60, planAgain: true},
-		{name: "context changed", last: obs(2*time.Hour, "reported_present", "", "max"), attempt: obs(time.Minute, "unavailable", "context_changed", ""), needs: true, attention: "context_changed", authAge: 60},
+		{name: "failed check over an old login hints on the old plan", last: obs(40*time.Hour, "reported_present", "", "max"), attempt: obs(time.Minute, "unavailable", "status_unavailable", ""), needs: true, attention: "check_failed", authAge: 40 * 3600, authAgain: true, planAgain: true, failedAt: true},
+		{name: "context changed", last: obs(2*time.Hour, "reported_present", "", "max"), attempt: obs(time.Minute, "unavailable", "context_changed", ""), needs: true, attention: "context_changed", authAge: 2 * 3600, failedAt: true},
 		{name: "externally managed is not a person's to fix here", attempt: obs(time.Minute, "unavailable", "unsupported", ""), authAge: 60},
 		{name: "observation dated in the future has no age", last: obs(-time.Hour, "reported_present", "", "max"), attempt: obs(-time.Hour, "reported_present", "", "max"), authAge: -1},
 	}
@@ -61,6 +62,9 @@ func TestProjectionAttentionIsNotAge(t *testing.T) {
 			}
 			if c.Auth.CheckAgain != tc.authAgain || c.Plan.CheckAgain != tc.planAgain {
 				t.Errorf("check again: login %v plan %v, want %v %v", c.Auth.CheckAgain, c.Plan.CheckAgain, tc.authAgain, tc.planAgain)
+			}
+			if (c.FailedCheckAt != nil) != tc.failedAt {
+				t.Errorf("failedCheckAt %v, want %v", c.FailedCheckAt, tc.failedAt)
 			}
 			// The existing field keeps its meaning for consumers.
 			if c.Auth.ObservedAt != nil && tc.attempt != nil && tc.attempt.Auth != "unavailable" {

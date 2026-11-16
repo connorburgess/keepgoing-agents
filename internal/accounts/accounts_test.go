@@ -147,7 +147,7 @@ func TestContextFingerprintAndProjection(t *testing.T) {
 	failure.Reason = "timeout"
 	f.Entries[0].Attempt = &failure
 	v = Project(f, now)
-	if v.Cards[0].Auth.State != "unavailable" || v.Cards[0].PreviousAuth == nil || v.Cards[0].PreviousAuth.Freshness != "stale" || v.Cards[0].Plan.Freshness != "stale" {
+	if c := v.Cards[0]; c.Auth.State != "reported_present" || !c.Auth.ObservedAt.Equal(o.At) || c.Auth.Freshness != "stale" || c.Plan.Text != "Max" || c.Plan.Freshness != "stale" || c.FailedCheckAt == nil || !c.FailedCheckAt.Equal(now) || c.Reason != "timeout" {
 		t.Fatal("failure hid or refreshed prior observation")
 	}
 	raw, _ := json.Marshal(v)
@@ -244,8 +244,9 @@ func TestContextEffectiveEnvironmentSemantics(t *testing.T) {
 			if equivalent != 1 {
 				t.Fatal("duplicate override names")
 			}
-			if !strings.Contains(strings.Join(executed, "\n"), "BB_THREAD_ID=thr_example_actual") {
-				t.Fatal("actual caller changed")
+			// The caller is recorded privately, not passed to the provider.
+			if strings.Contains(strings.Join(executed, "\n"), "BB_THREAD_ID") {
+				t.Fatal("caller session passed to the status command")
 			}
 		}
 	}
