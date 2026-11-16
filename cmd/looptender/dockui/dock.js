@@ -846,10 +846,15 @@
   function wantsUsage(r) { return r.view === "usage" || r.view === "loop"; }
   // Read on its own after the report, at low priority on a loop's page
   // where it is not the main content. A failure leaves the last answer.
+  // A read that does not answer within usageTimeout() is abandoned and
+  // counts as failed, so a stalled request never stops later reads.
+  function usageTimeout() { return Math.min(20000, Math.max(3000, refreshSeconds() * 1000 - 2000)); }
   function loadUsage() {
     if (state.usageBusy) return;
     state.usageBusy = true;
-    fetch(USAGE, { cache: "no-store", credentials: "same-origin", headers: { Accept: "application/json" }, priority: route().view === "usage" ? "auto" : "low" })
+    var abort = new AbortController();
+    var timer = setTimeout(function () { abort.abort(); }, usageTimeout());
+    fetch(USAGE, { cache: "no-store", credentials: "same-origin", headers: { Accept: "application/json" }, priority: route().view === "usage" ? "auto" : "low", signal: abort.signal })
       .then(function (r) { if (!r.ok) throw new Error("status " + r.status); return r.json(); })
       .then(function (u) {
         if (!u || u.schemaVersion !== SCHEMA || !Array.isArray(u.loops)) throw new Error("schema");
@@ -857,6 +862,7 @@
       })
       .catch(function () { state.usageFailed = true; })
       .then(function () {
+        clearTimeout(timer);
         state.usageBusy = false;
         if (state.data && wantsUsage(route())) render(false);
       });

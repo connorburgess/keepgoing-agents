@@ -545,3 +545,25 @@ func TestDockUsagePageScript(t *testing.T) {
 		}
 	}
 }
+
+// A Usage read that never answers is abandoned within the refresh
+// interval and takes the failure path, so later reads are not blocked.
+func TestDockUsageReadHasATimeout(t *testing.T) {
+	js := dockUIText(t, "dock.js")
+	load := js[strings.Index(js, "function loadUsage()"):]
+	load = load[:strings.Index(load, "\n  }\n")]
+	for _, want := range []string{
+		"var abort = new AbortController();",
+		"setTimeout(function () { abort.abort(); }, usageTimeout());",
+		"signal: abort.signal",
+		".catch(function () { state.usageFailed = true; })",
+		"clearTimeout(timer);\n        state.usageBusy = false;",
+	} {
+		if !strings.Contains(load, want) {
+			t.Errorf("loadUsage lacks %q", want)
+		}
+	}
+	if !strings.Contains(js, "function usageTimeout() { return Math.min(20000, Math.max(3000, refreshSeconds() * 1000 - 2000)); }") {
+		t.Error("the timeout is not bounded under the refresh interval")
+	}
+}
