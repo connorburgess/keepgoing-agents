@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- `accounts add` and `accounts update` warn, and `doctor` adds an `accounts.<id>.directory` warning, when a Claude Code entry selects `explicit_directory` with Claude Code's default config directory (`~/.claude`). Claude Code treats CLAUDE_CONFIG_DIR set to that directory as a different login context from the default login, so such an entry can report no login while you are signed in; the fix is `--selection inherited`. The command still saves the entry, and the doctor check is never an error. Codex entries are not flagged: the same behaviour is not established for CODEX_HOME. Nothing is run and no credential is read. See [Select an existing context](docs/accounts.md#select-an-existing-context).
+
 - The Accounts page says why a value is missing when nothing is wrong, instead of a bare "Unavailable": "Codex does not report a plan.", why a Claude card has no plan, one line saying models are not recorded (in place of two empty model rows), and whether a route names the account, with the `account:` line to add when none does. Each card says its source, age and context once, and one footnote names `looptender accounts check --id CONNECTION_ID --json`. Account cards gain `plan.missing`, `configuredModel.missing`, `observedModel.missing` and, in the panel data, `routes`; no field is removed. See [Accounts](docs/accounts.md#explicit-status-check).
 
 - `doctor` (`agent.<id>.workspace`) and `transfer preview` (`workspace.from`, `workspace.to`) warn when BB reports a thread's working directory outside every configured progress repository and its registered worktrees. The comparison runs only a read-only `git worktree list`, withholds paths, and never changes doctor's exit status or the preview's compatibility.
