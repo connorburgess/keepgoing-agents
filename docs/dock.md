@@ -24,7 +24,7 @@ Open the printed address in a browser on the same computer. Nothing is hosted, t
 | Flag | Default | Meaning |
 | --- | --- | --- |
 | `--port N` | `0` (a free port) | Loopback port to listen on. |
-| `--refresh 15s` | `15s` | How often the page reads again (`5s` to `10m`). The page states the interval and the time of the last read. A hidden tab does not poll; it reads again when shown. |
+| `--refresh 15s` | `15s` | How often the page reads again (`5s` to `10m`). The page states the interval and the time of the last read. A hidden tab makes no request, so it never keeps a panel running; it reads once when shown. A read with no answer after a little under the interval (4 to 30 seconds) counts as a failed read. |
 | `--stale-after 30m` | `30m` | Age at which a check or lane listing is shown as stale. Set it above your scheduler interval. |
 | `--directory DIR` | the default registry | A non-default private registry, as for `registry` commands. |
 | `--offline` | off | Do not ask each loop's local daemon for its next check. |
@@ -430,7 +430,8 @@ The page itself was checked in Chromium against those fixtures (script and resul
 | Forced colours: status dots and the current row remain visible | Checked |
 | The picker in a 600 px tall window: needs-you line, Routes row and the current loop visible; scroll kept across a re-read | Checked |
 | Pause updates: no read while paused | Checked |
-| Safari and Firefox; touch hardware; a hidden tab not polling | Not checked |
+| A hidden tab makes no request over four refresh intervals and reads once when shown; a read that is accepted and never answered fails after its timeout, shows the failed-read notice, and the next read recovers | Checked headless in Chromium against fixture loops, with `document.hidden` set by script; the same check against the previous page found requests from the hidden tab and a read stuck for good |
+| Safari and Firefox; touch hardware; a tab hidden by the browser itself | Not checked |
 
 An independent review of an earlier commit of the read-only page ran its request suite against a 238-entry tree that stayed byte-identical, and the project coordinator served it read-only against two live loops with their files unchanged. Not verified for this page's newer parts: a loop under live supervision, a responsive looptender scheduler's next-check time, and the command executing on Windows (the tests are compiled and vetted there, not run).
 

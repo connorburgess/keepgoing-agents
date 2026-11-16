@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- A hidden panel tab no longer keeps `keepgoing panel` running past its idle limit: it makes no request while hidden, not even for the footer, and reads once when shown. Each read now times out a little under the refresh interval (4 to 30 seconds) and fails into the existing failed-read notice, so one read that never answers cannot stop the updates, and a reply read before identifiers were turned on or off is dropped.
+
 - A "Needs you" card for a held loop on a read-only panel no longer ends in an action the page cannot take. It gives the command that resumes the loop, `keepgoing resume -c CONFIG`, to copy, and says that `keepgoing registry list --private` lists the configuration path. A panel started with `--allow-changes` keeps its own resume control.
 
 - The panel no longer shows a loop with a failed lane as all well. A lane its last check found in error is said in words on the loop's picker row ("1 lane failed"), its "Loops and lanes" row and its page, and the loop is listed under "Worth knowing" (not "Needs you": a failed lane does not hold the loop). Only the lanes' recorded status is read.
