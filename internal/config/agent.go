@@ -13,6 +13,7 @@ type Agent struct {
 	Adapter  string   `yaml:"adapter"`
 	Provider string   `yaml:"provider,omitempty"` // claude-code, codex, or any label
 	Group    string   `yaml:"group,omitempty"`    // account or quota pool; defaults to provider
+	Account  string   `yaml:"account,omitempty"`  // accounts catalog ID a person states this route uses; never derived
 	BB       *BB      `yaml:"bb,omitempty"`
 	Process  *Process `yaml:"process,omitempty"`
 	Claude   *Claude  `yaml:"claude,omitempty"`
@@ -197,6 +198,12 @@ func (a *Agent) applyDefaults() {
 	}
 }
 
+var accountIDRE = regexp.MustCompile(`^[0-9a-f]{32}$`)
+
+// ValidAccountID reports whether s has the form of an accounts catalog ID.
+// It says nothing about whether the catalog holds that entry.
+func ValidAccountID(s string) bool { return accountIDRE.MatchString(s) }
+
 // validate reports problems with field names prefixed by where.
 func (a Agent) validate(where string) []error {
 	var errs []error
@@ -213,6 +220,9 @@ func (a Agent) validate(where string) []error {
 	if !known {
 		add("adapter must be one of %s", strings.Join(Adapters, ", "))
 		return errs
+	}
+	if a.Account != "" && !ValidAccountID(a.Account) {
+		add("account must be an accounts catalog ID: the 32 lowercase hexadecimal characters accounts add prints")
 	}
 	if !set[a.Adapter] {
 		add("%s is required for the %s adapter", a.Adapter, a.Adapter)

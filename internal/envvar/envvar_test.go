@@ -133,3 +133,16 @@ func TestLocationsAreSet(t *testing.T) {
 		}
 	}
 }
+
+func TestWithoutSupervisorSession(t *testing.T) {
+	in := []string{"PATH=/example/bin", "BB_THREAD_ID=x", "bb_thread_id=x", "BB_THREAD_STORAGE=x", "BB_PROJECT_ID=x", "BB_ENVIRONMENT_ID=x",
+		"CLAUDE_CODE_SESSION_ID=x", "CLAUDE_CODE_MESSAGING_SOCKET=x", "CLAUDE_CODE_MESSAGING_TOKEN=x", "CLAUDE_PID=x", "CLAUDECODE=x", "CLAUDE_CODE_ENTRYPOINT=x",
+		"BB_CLI=x", "BB_SERVER_URL=x", "BB_HOST_DAEMON_PORT=x", "CLAUDE_CONFIG_DIR=x", "BB_THREAD_IDX=x", "CODEX_HOME=x", "NOEQUALS"}
+	want := []string{"PATH=/example/bin", "BB_CLI=x", "BB_SERVER_URL=x", "BB_HOST_DAEMON_PORT=x", "CLAUDE_CONFIG_DIR=x", "BB_THREAD_IDX=x", "CODEX_HOME=x", "NOEQUALS"}
+	if got := WithoutSupervisorSession(in); strings.Join(got, "|") != strings.Join(want, "|") {
+		t.Fatalf("got %q", got)
+	}
+	if got := WithoutSupervisorSession(nil); len(got) != 0 {
+		t.Fatalf("got %q", got)
+	}
+}

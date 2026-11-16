@@ -15,6 +15,7 @@ import (
 	"os"
 	"path/filepath"
 	"slices"
+	"sort"
 	"strings"
 	"time"
 
@@ -35,7 +36,9 @@ const Primary = "primary"
 // File is what one tick leaves for the next.
 type File struct {
 	LastPromptSend *PromptSend `json:"lastPromptSend,omitempty"`
-	StallRetry     *StallRetry `json:"stallRetry,omitempty"`
+	// GoalCopy is the latest full goal copy sent; see GoalCopy.
+	GoalCopy   *GoalCopy   `json:"goalCopy,omitempty"`
+	StallRetry *StallRetry `json:"stallRetry,omitempty"`
 	// SilentRetry records when the active target was first observed with an
 	// expired retry notice, so its continued silence can be bounded.
 	SilentRetry *SilentRetry `json:"silentRetry,omitempty"`
@@ -119,6 +122,16 @@ type File struct {
 	// lane count run with a shorter PATH (the panel, the menu) uses it when
 	// the configured command is a bare name it cannot find.
 	BBPath string `json:"bbPath,omitempty"`
+	// Context is the latest context-size reading of the active target's
+	// conversation, with a bounded history. Diagnostic only: no decision,
+	// send, allowance or hold reads it. It is cleared with the other
+	// observations of a thread when the target changes.
+	Context *ContextRecord `json:"context,omitempty"`
+	// TurnUsage is the token counts the active target's agent reported for
+	// its finished turns: the latest and per-UTC-day sums. Diagnostic only:
+	// no decision, send, allowance or hold reads it. It is cleared with the
+	// other observations of a target when the target changes.
+	TurnUsage *TurnUsageRecord `json:"turnUsage,omitempty"`
 	// LaneStop is the latest stop that covered the lanes: what it found and
 	// did, by count. It is about the request in control.json's stopLanesAt.
 	LaneStop *LaneStop `json:"laneStop,omitempty"`
@@ -243,6 +256,84 @@ type File struct {
 	// ChildErrorReport is set while any child of the supervised thread is in
 	// error, so its report is not repeated by later checks or after a restart.
 	ChildErrorReport *ChildErrorReport `json:"childErrorReport,omitempty"`
+	// IdleSpacing is the record of loop.progress.idle_spacing. Nil while the
+	// key is off, after a check that saw the session in error, and before the
+	// first idle wake.
+	IdleSpacing *IdleSpacing `json:"idleSpacing,omitempty"`
+	// IdleSpacedDays counts the checks that spaced an idle wake, per UTC day
+	// and fixed reason code, newest last and at most IdleSpacedDaysKept days.
+	// It is diagnostic history only: no decision reads it.
+	IdleSpacedDays []IdleSpacedDay `json:"idleSpacedDays,omitempty"`
+	// ContextSent is the record of loop.prompt_context: digests of the
+	// supervision context last sent, never its text. Nil while the key is off
+	// and before the first send that carried the context.
+	ContextSent *ContextSent `json:"contextSent,omitempty"`
+}
+
+// ContextSent records the supervision context block last sent with an
+// adapter call that returned without error. Digest covers the block's
+// content, leaving out the figures that change with every send or with the
+// clock (counts used and remaining, time remaining, whether inside the
+// window now), and the time of the last saved control change. It holds no
+// identifier and no text.
+type ContextSent struct {
+	Digest string    `json:"digest"`
+	At     time.Time `json:"at"`
+	Bytes  int       `json:"bytes"`
+}
+
+// IdleSpacedDay is one UTC day of IdleSpacedDays. Day is YYYY-MM-DD.
+type IdleSpacedDay struct {
+	Day    string         `json:"day"`
+	Counts map[string]int `json:"counts"`
+}
+
+// IdleSpacedDaysKept bounds IdleSpacedDays.
+const IdleSpacedDaysKept = 31
+
+// CountIdleSpaced adds one spaced idle wake under a fixed reason code to the
+// day of at, dropping the oldest days past the bound. A clock that moved back
+// counts into the newest day on record rather than reordering the history.
+func (f *File) CountIdleSpaced(code string, at time.Time) {
+	day := at.UTC().Format(time.DateOnly)
+	n := len(f.IdleSpacedDays)
+	if n == 0 || f.IdleSpacedDays[n-1].Day < day {
+		f.IdleSpacedDays = append(f.IdleSpacedDays, IdleSpacedDay{Day: day, Counts: map[string]int{}})
+		n++
+	}
+	last := &f.IdleSpacedDays[n-1]
+	if last.Counts == nil {
+		last.Counts = map[string]int{}
+	}
+	last.Counts[code]++
+	if n > IdleSpacedDaysKept {
+		f.IdleSpacedDays = slices.Clone(f.IdleSpacedDays[n-IdleSpacedDaysKept:])
+	}
+}
+
+// IdleSpacedTotal is the number of spaced idle wakes on record.
+func (f File) IdleSpacedTotal() int {
+	total := 0
+	for _, d := range f.IdleSpacedDays {
+		for _, c := range d.Counts {
+			total += c
+		}
+	}
+	return total
+}
+
+// IdleSpacing records the last idle wake for the idle spacing rule. Facts is
+// a digest of the structured facts the rule watches, taken at that wake; it
+// holds no identifier or text. Unchanged counts consecutive idle wakes, up to
+// and including that one, sent with no change to those facts since the one
+// before. WaitUntil and Wait are set by a check that spaced the next idle
+// wake: when it is due and the fixed code of why it waits.
+type IdleSpacing struct {
+	LastWakeAt time.Time `json:"lastWakeAt"`
+	Facts      string    `json:"facts"`
+	Unchanged  int       `json:"unchanged"`
+	WaitUntil  time.Time `json:"waitUntil,omitzero"`
+	Wait       string    `json:"wait,omitempty"`
 }
 
 // ChildErrorReport outcomes; the first three mean what the limit-wait ones do.
@@ -444,8 +535,188 @@ type BriefRecord struct {
 func (f *File) ClearChildErrors() {
 	f.ChildErrorsAnnounced, f.ChildErrorsAnnouncedV1, f.ChildErrorNoticeFor, f.ChildErrorNoticeAttempts = nil, nil, "", 0
 	f.ChildErrorReport = nil
-	// The lanes belong to the conversation that was left.
+	// The lanes belong to the conversation that was left, and so does its
+	// context reading.
 	f.Lanes = nil
+	f.Context = nil
+	f.TurnUsage = nil
+}
+
+// ContextRecord is the context-size readings of one target's conversation,
+// as its provider reported them: the latest, one summary per UTC day and the
+// last few readings. It is bounded: at most ContextDaysKept days and
+// ContextRecentKept readings, oldest dropped first. Diagnostic only.
+type ContextRecord struct {
+	// Version is the record's layout, ContextVersion.
+	Version int              `json:"version"`
+	Target  string           `json:"target"`
+	Latest  ContextReading   `json:"latest"`
+	Days    []ContextDay     `json:"days,omitempty"`   // oldest first
+	Recent  []ContextReading `json:"recent,omitempty"` // oldest first
+	// TurnEndsTracked says the build that wrote the latest reading also
+	// keeps TurnEndSeenAt. TurnEndSeenAt is the last check that saw this
+	// target's turn end, the check of a turn-end reading included; zero
+	// when none has since the record began. Together with lastSentAt they
+	// show whether a turn has run since the latest reading.
+	TurnEndsTracked bool      `json:"turnEndsTracked,omitempty"`
+	TurnEndSeenAt   time.Time `json:"turnEndSeenAt,omitzero"`
+}
+
+// ContextReading is one reading. Estimated says the provider marked the
+// figures as an estimate. At is when the check read it.
+type ContextReading struct {
+	UsedTokens   int64     `json:"usedTokens"`
+	WindowTokens int64     `json:"windowTokens"`
+	Estimated    bool      `json:"estimated"`
+	At           time.Time `json:"at"`
+}
+
+// ContextDay summarizes the readings of one UTC day: the lowest, highest and
+// last used tokens, the last window, how many readings, and whether any of
+// them was marked as an estimate.
+type ContextDay struct {
+	Day          string `json:"day"` // 2006-01-02, UTC
+	Lowest       int64  `json:"lowest"`
+	Highest      int64  `json:"highest"`
+	Last         int64  `json:"last"`
+	WindowTokens int64  `json:"windowTokens"`
+	Count        int    `json:"count"`
+	Estimated    bool   `json:"estimated"`
+}
+
+// Bounds and layout of ContextRecord.
+const (
+	ContextVersion    = 1
+	ContextDaysKept   = 31
+	ContextRecentKept = 8
+)
+
+// NoteTurnEnd records that a check saw target's turn end, on the context
+// record of that target. With no record there is no reading it could make
+// out of date.
+func (f *File) NoteTurnEnd(target string, at time.Time) {
+	if f.Context != nil && f.Context.Target == target {
+		f.Context.TurnEndSeenAt = at
+	}
+}
+
+// NoteContext adds a reading of target's conversation. A record of another
+// target is replaced, not merged: readings belong to one conversation.
+func (f *File) NoteContext(target string, r ContextReading) {
+	if f.Context == nil || f.Context.Target != target {
+		f.Context = &ContextRecord{Target: target}
+	}
+	c := f.Context
+	c.Version, c.Latest, c.TurnEndsTracked = ContextVersion, r, true
+	c.Recent = append(c.Recent, r)
+	if n := len(c.Recent) - ContextRecentKept; n > 0 {
+		c.Recent = append([]ContextReading(nil), c.Recent[n:]...)
+	}
+	day := r.At.UTC().Format("2006-01-02")
+	i := sort.Search(len(c.Days), func(i int) bool { return c.Days[i].Day >= day })
+	if i == len(c.Days) || c.Days[i].Day != day {
+		c.Days = append(c.Days, ContextDay{})
+		copy(c.Days[i+1:], c.Days[i:])
+		c.Days[i] = ContextDay{Day: day, Lowest: r.UsedTokens, Highest: r.UsedTokens}
+	}
+	d := &c.Days[i]
+	d.Lowest, d.Highest = min(d.Lowest, r.UsedTokens), max(d.Highest, r.UsedTokens)
+	d.Last, d.WindowTokens, d.Count = r.UsedTokens, r.WindowTokens, d.Count+1
+	d.Estimated = d.Estimated || r.Estimated
+	if n := len(c.Days) - ContextDaysKept; n > 0 {
+		c.Days = append([]ContextDay(nil), c.Days[n:]...)
+	}
+}
+
+// TurnUsageRecord is the token counts one target's agent reported for its
+// finished turns: the latest turn and one sum per UTC day of the checks that
+// recorded them. It is bounded: at most TurnUsageDaysKept days, oldest
+// dropped first. Each turn is counted once, by its identity. Diagnostic only.
+type TurnUsageRecord struct {
+	// Version is the record's layout, TurnUsageVersion.
+	Version int              `json:"version"`
+	Target  string           `json:"target"`
+	Latest  TurnUsageReading `json:"latest"`
+	Days    []TurnUsageDay   `json:"days,omitempty"` // oldest first
+}
+
+// TurnUsageReading is one turn's counts. Turn is the runner's opaque identity
+// of the turn; At is when a check recorded it. A nil count was not reported.
+type TurnUsageReading struct {
+	Turn            string    `json:"turn"`
+	At              time.Time `json:"at"`
+	Input           *int64    `json:"inputTokens,omitempty"`
+	CachedInput     *int64    `json:"cachedInputTokens,omitempty"`
+	CacheWriteInput *int64    `json:"cacheWriteInputTokens,omitempty"`
+	Output          *int64    `json:"outputTokens,omitempty"`
+	ReasoningOutput *int64    `json:"reasoningOutputTokens,omitempty"`
+}
+
+// TurnUsageDay sums the turns recorded on one UTC day. Turns is how many;
+// each count says how many of those turns reported it, so a count some
+// turns left out is never read as their total.
+type TurnUsageDay struct {
+	Day             string       `json:"day"` // 2006-01-02, UTC
+	Turns           int          `json:"turns"`
+	Input           TurnUsageSum `json:"inputTokens"`
+	CachedInput     TurnUsageSum `json:"cachedInputTokens"`
+	CacheWriteInput TurnUsageSum `json:"cacheWriteInputTokens"`
+	Output          TurnUsageSum `json:"outputTokens"`
+	ReasoningOutput TurnUsageSum `json:"reasoningOutputTokens"`
+}
+
+// TurnUsageSum is the total of one count over the turns that reported it.
+type TurnUsageSum struct {
+	Tokens int64 `json:"tokens"`
+	Turns  int   `json:"turns"`
+}
+
+func (s *TurnUsageSum) add(n *int64) {
+	if n != nil {
+		s.Tokens += *n
+		s.Turns++
+	}
+}
+
+// Bounds and layout of TurnUsageRecord.
+const (
+	TurnUsageVersion  = 1
+	TurnUsageDaysKept = 31
+)
+
+// NoteTurnUsage adds a finished turn of target. A turn already recorded as
+// the latest is not counted again, and a record of another target is
+// replaced, not merged. It reports whether the record changed.
+func (f *File) NoteTurnUsage(target string, r TurnUsageReading) bool {
+	if r.Turn == "" {
+		return false
+	}
+	if f.TurnUsage == nil || f.TurnUsage.Target != target {
+		f.TurnUsage = &TurnUsageRecord{Target: target}
+	}
+	u := f.TurnUsage
+	if u.Latest.Turn == r.Turn {
+		return false
+	}
+	u.Version, u.Latest = TurnUsageVersion, r
+	day := r.At.UTC().Format("2006-01-02")
+	i := sort.Search(len(u.Days), func(i int) bool { return u.Days[i].Day >= day })
+	if i == len(u.Days) || u.Days[i].Day != day {
+		u.Days = append(u.Days, TurnUsageDay{})
+		copy(u.Days[i+1:], u.Days[i:])
+		u.Days[i] = TurnUsageDay{Day: day}
+	}
+	d := &u.Days[i]
+	d.Turns++
+	d.Input.add(r.Input)
+	d.CachedInput.add(r.CachedInput)
+	d.CacheWriteInput.add(r.CacheWriteInput)
+	d.Output.add(r.Output)
+	d.ReasoningOutput.add(r.ReasoningOutput)
+	if n := len(u.Days) - TurnUsageDaysKept; n > 0 {
+		u.Days = append([]TurnUsageDay(nil), u.Days[n:]...)
+	}
+	return true
 }
 
 // ClearBriefs starts a new episode for handoff and switch-back briefs.
@@ -564,6 +835,9 @@ func Load(stateDir string) (File, error) {
 	}
 	if f.LastPromptSend != nil && !f.LastPromptSend.Valid() {
 		f.LastPromptSend = nil
+	}
+	if f.GoalCopy != nil && !f.GoalCopy.Valid() {
+		f.GoalCopy = nil
 	}
 	return f, nil
 }

@@ -17,6 +17,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/looptender/looptender/internal/accounts"
 	"github.com/looptender/looptender/internal/adapter/runner"
 	"github.com/looptender/looptender/internal/config"
 	"github.com/looptender/looptender/internal/control"
@@ -259,6 +260,10 @@ func doctor(e env, args []string, run doctorRun) int {
 			}
 			checkAgent(c.ID, c.Agent)
 		}
+	}
+	doctorRouteAccounts(&r, cfg, "")
+	if home, err := os.UserHomeDir(); err == nil {
+		doctorAccountDefaultDirectories(&r, doctorAccountsCatalog, home)
 	}
 	queryCtx, cancel := context.WithTimeout(e.ctx, *timeout)
 	d := inspectDaemon(queryCtx, cfg.Loop.StateDir, version, *offline)
@@ -730,6 +735,18 @@ func doctorBB(r *doctorReport, id, expected string, raw []byte, cmdErr error) st
 // These are version/show/auth-status calls only; custom commands and probes are
 // deliberately outside this function's callers.
 func doctorExec(ctx context.Context, cli string, args []string, overrides map[string]string, workdir string) ([]byte, error) {
+	return doctorExecLimit(64*1024)(ctx, cli, args, overrides, workdir)
+}
+
+// doctorExecLimit is doctorExec with another stdout limit, for the few
+// read-only listings whose structured output is legitimately larger.
+func doctorExecLimit(limit int) doctorRun {
+	return func(ctx context.Context, cli string, args []string, overrides map[string]string, workdir string) ([]byte, error) {
+		return doctorExecBounded(ctx, cli, args, overrides, workdir, limit)
+	}
+}
+
+func doctorExecBounded(ctx context.Context, cli string, args []string, overrides map[string]string, workdir string, limit int) ([]byte, error) {
 	cmd := exec.CommandContext(ctx, cli, args...)
 	cmd.Dir = workdir
 	cmd.WaitDelay = time.Second
@@ -742,7 +759,7 @@ func doctorExec(ctx context.Context, cli string, args []string, overrides map[st
 	for _, k := range keys {
 		cmd.Env = append(cmd.Env, k+"="+overrides[k])
 	}
-	buf := &doctorBuffer{remaining: 64 * 1024}
+	buf := &doctorBuffer{remaining: limit}
 	cmd.Stdout = buf
 	cmd.Stderr = io.Discard
 	err := cmd.Run()
@@ -853,4 +870,31 @@ func doctorUsed(f userdir.Found) string {
 		return strings.Join(f.Unknown, ", ") + " could not be inspected, which counts as the earlier name"
 	}
 	return "an entry of that name was found"
+}
+
+// doctorRouteAccounts compares the account each route names with the
+// accounts catalog. It reads no credential and runs nothing. A route other
+// than a BB thread whose entry does not match is an error; a BB thread route
+// is assigned by you and not verified; an unreadable catalog is a warning
+// and never stops supervision.
+func doctorRouteAccounts(r *doctorReport, cfg *config.Config, catalogDir string) {
+	results, readable := routeAccountChecks(cfg, catalogDir)
+	if !readable {
+		r.add("accounts.catalog", "warning", "The accounts catalog could not be read, so the accounts routes name were not compared with it. Supervision is not affected.", "Run keepgoing accounts list to see why.")
+	}
+	for _, x := range results {
+		id := "agent." + x.ID + ".account"
+		text := accounts.RouteCheckText(x.Check)
+		switch {
+		case x.Refused:
+			r.add(id, "error", "Account "+x.Account+": "+text+".", "Set this route's account to the ID of a catalog entry for the same provider and directory (keepgoing accounts list), or remove it.")
+		case x.Check == accounts.RouteCatalogUnavailable:
+		case x.Check == accounts.RouteNotInCatalog:
+			r.add(id, "warning", "Account "+x.Account+": "+text+". This BB thread route's account is assigned by you; not verified.", "Check the ID with keepgoing accounts list.")
+		case x.Check == accounts.RouteNotVerified:
+			r.add(id, "ok", "Account "+x.Label+": "+text+". BB has no account per thread.", "")
+		default:
+			r.add(id, "ok", "Account "+x.Label+": "+text+".", "")
+		}
+	}
 }

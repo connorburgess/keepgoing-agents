@@ -360,3 +360,13 @@ func TestReportVariableNameDefaults(t *testing.T) {
 		t.Fatalf("configured: %q %q", r.URLEnv, r.SecretEnv)
 	}
 }
+
+func TestPromptGoalOnChangeNeedsPromptGoal(t *testing.T) {
+	if _, err := Parse([]byte(valid + "  prompt_goal_on_change: true\n")); err == nil || !strings.Contains(err.Error(), "prompt_goal_on_change needs loop.prompt_goal") {
+		t.Fatalf("without prompt_goal: %v", err)
+	}
+	cfg, err := Parse([]byte(valid + "  prompt_goal: true\n  prompt_goal_on_change: true\n"))
+	if err != nil || !cfg.Loop.PromptGoal || !cfg.Loop.PromptGoalOnChange {
+		t.Fatalf("with prompt_goal: %+v %v", cfg, err)
+	}
+}

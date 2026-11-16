@@ -63,10 +63,18 @@ type Loop struct {
 	StateDir string `yaml:"state_dir"`
 	Agent    `yaml:",inline"`
 
-	Prompt      string `yaml:"prompt,omitempty"`
-	PromptFile  string `yaml:"prompt_file,omitempty"`
-	PromptGoal  bool   `yaml:"prompt_goal,omitempty"`
-	HandoffFile string `yaml:"handoff_file,omitempty"`
+	Prompt     string `yaml:"prompt,omitempty"`
+	PromptFile string `yaml:"prompt_file,omitempty"`
+	PromptGoal bool   `yaml:"prompt_goal,omitempty"`
+	// PromptGoalOnChange sends the goal in full only when it may be new to
+	// the conversation, and otherwise one line naming its ID and revision.
+	// It requires PromptGoal.
+	PromptGoalOnChange bool `yaml:"prompt_goal_on_change,omitempty"`
+	// PromptContext appends the loop's supervision context (see
+	// internal/loopcontext) to wakes, re-prompts and handoff briefs, when it
+	// is new to the conversation or has changed. Off by default.
+	PromptContext bool   `yaml:"prompt_context,omitempty"`
+	HandoffFile   string `yaml:"handoff_file,omitempty"`
 
 	Progress Progress   `yaml:"progress"`
 	Window   *Window    `yaml:"window,omitempty"`
@@ -102,6 +110,9 @@ type Loop struct {
 	// default. It collects usage readings of the first route's allowance and,
 	// with steps, moves the loop between them at turn boundaries.
 	Timing *Timing `yaml:"timing,omitempty"`
+	// ContextWindow is the context-threshold reset, previewed only. Off
+	// unless reset_at is set.
+	ContextWindow *ContextWindow `yaml:"context_window,omitempty"`
 }
 
 // Timing collects usage readings of the first route's allowance by probing
@@ -262,6 +273,32 @@ type Progress struct {
 	// default; 0 turns that fact's flag off. The flag only informs a person.
 	FlagAfterSends  *FlagCount `yaml:"flag_after_sends,omitempty"`
 	FlagAfterErrors *FlagCount `yaml:"flag_after_errors,omitempty"`
+	// IdleSpacing spaces idle wakes after which no structured fact changed.
+	// Nil, the default, is off: an idle session is woken at every check.
+	IdleSpacing *IdleSpacing `yaml:"idle_spacing,omitempty"`
+}
+
+// IdleSpacing is loop.progress.idle_spacing. After one idle wake that
+// changed nothing the next waits First; each further one doubles the wait,
+// up to Max. Unset fields take the defaults below.
+type IdleSpacing struct {
+	First Duration `yaml:"first,omitempty"`
+	Max   Duration `yaml:"max,omitempty"`
+}
+
+// Defaults and bounds of loop.progress.idle_spacing.
+const (
+	DefaultIdleSpacingFirst = 10 * time.Minute
+	DefaultIdleSpacingMax   = 2 * time.Hour
+	maxIdleSpacing          = 24 * time.Hour
+)
+
+// IdleSpacingWaits returns the first wait and the cap; both zero when off.
+func (p Progress) IdleSpacingWaits() (first, max time.Duration) {
+	if p.IdleSpacing == nil {
+		return 0, 0
+	}
+	return p.IdleSpacing.First.Duration, p.IdleSpacing.Max.Duration
 }
 
 // FlagCount is a whole number of events. YAML would otherwise read 2.5 as 2
@@ -595,6 +632,10 @@ func (c *Config) applyDefaults() {
 	if l.Progress.MaxNudges == 0 {
 		l.Progress.MaxNudges = DefaultMaxNudges
 	}
+	if s := l.Progress.IdleSpacing; s != nil {
+		setDur(&s.First, DefaultIdleSpacingFirst)
+		setDur(&s.Max, max(DefaultIdleSpacingMax, s.First.Duration))
+	}
 	if l.Errors.MaxReprompts == 0 {
 		l.Errors.MaxReprompts = DefaultMaxReprompts
 	}
@@ -726,6 +767,9 @@ func (c *Config) Validate() error {
 	if l.Prompt != "" && l.PromptFile != "" {
 		add("set only one of loop.prompt and loop.prompt_file")
 	}
+	if l.PromptGoalOnChange && !l.PromptGoal {
+		add("loop.prompt_goal_on_change needs loop.prompt_goal: true")
+	}
 	if l.Progress.StallAfter.Duration < time.Minute {
 		add("loop.progress.stall_after must be at least 1m")
 	}
@@ -734,6 +778,14 @@ func (c *Config) Validate() error {
 	}
 	if l.Progress.MaxNudges < 1 {
 		add("loop.progress.max_nudges must be at least 1")
+	}
+	if s := l.Progress.IdleSpacing; s != nil {
+		if s.First.Duration < time.Minute {
+			add("loop.progress.idle_spacing.first must be at least 1m")
+		}
+		if s.Max.Duration < s.First.Duration || s.Max.Duration > maxIdleSpacing {
+			add("loop.progress.idle_spacing.max must be at least idle_spacing.first and at most 24h")
+		}
 	}
 	for _, f := range []struct {
 		name string
@@ -904,6 +956,7 @@ func (c *Config) Validate() error {
 			add("loop.timing.ceiling needs loop.timing.steps")
 		}
 	}
+	errs = append(errs, l.contextWindowErrors()...)
 	switch l.Network.Check {
 	case "on", "off":
 	default:

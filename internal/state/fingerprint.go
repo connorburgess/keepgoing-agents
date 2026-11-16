@@ -6,6 +6,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"github.com/looptender/looptender/internal/envvar"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -314,7 +315,9 @@ func git(ctx context.Context, dir string, args ...string) (string, error) {
 	defer cancel()
 	cmd := exec.CommandContext(ctx, "git", args...)
 	cmd.Dir = dir
-	cmd.Env = append(os.Environ(), "GIT_OPTIONAL_LOCKS=0")
+	// A repository's configuration can name programs git runs: not the
+	// session the supervisor was started from.
+	cmd.Env = append(envvar.WithoutSupervisorSession(os.Environ()), "GIT_OPTIONAL_LOCKS=0")
 	cmd.WaitDelay = gitWaitDelay
 	out, err := cmd.Output()
 	if err != nil {

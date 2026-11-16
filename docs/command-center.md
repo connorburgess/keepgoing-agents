@@ -8,7 +8,7 @@ looptender runs on one device, the **command center**: the machine where the age
 
 ## The model
 
-Words used here. "Command center" names the idea of supervising on the device; it is a design term, not a product label, and a machine running looptender is otherwise shown by its own name among a user's devices. "Dock" is a working name for the local page plus a small native presence item; user-facing text says "keepgoing panel" until a name is settled, since the word collides with the macOS Dock. A **route** is a model on an account at an effort level; configuration and code still say target, candidate and fallback, and nothing is renamed here. The [glossary](glossary.md) defines loop, lane, route and device.
+Words used here. "Command center" names the idea of supervising on the device; it is a design term, not a product label, and a machine running looptender is otherwise shown by its own name among a user's devices. "Dock" is a working name for the local page plus a small native presence item; user-facing text says "looptender panel" (earlier builds said "keepgoing panel"), since the word collides with the macOS Dock; the name is not settled. A **route** is a model on an account at an effort level; configuration and code still say target, candidate and fallback, and nothing is renamed here. The [glossary](glossary.md) defines loop, lane, route and device.
 
 ```mermaid
 flowchart LR

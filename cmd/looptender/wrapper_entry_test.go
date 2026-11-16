@@ -19,6 +19,7 @@ import (
 func TestMain(m *testing.M) {
 	runner.MaybeRunTurn()
 	adapterCheckHelper()
+	contextHereAgentHelper()
 	cursorJourneyHelper()
 	initCursorInvocationTrap()
 	// Loaded configurations check connectivity before an error re-prompt or
@@ -40,6 +41,8 @@ func TestMain(m *testing.M) {
 	// Nor the person's standard route list: a test that needs one writes it
 	// here or names its own.
 	os.Setenv(config.RoutesFileEnv, filepath.Join(private, config.RoutesFileName))
+	// Nor the person's accounts catalog, which doctor reads.
+	doctorAccountsCatalog = filepath.Join(private, "accounts")
 	// Nor the panel's directory, where --client reports are kept, in this
 	// process: panelStateBase, a package variable, points at a private
 	// directory. A test that moves HOME to a home of its own gets the real
