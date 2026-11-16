@@ -567,3 +567,25 @@ func TestDockUsageReadHasATimeout(t *testing.T) {
 		t.Error("the timeout is not bounded under the refresh interval")
 	}
 }
+
+// An unchanged Usage answer does not draw the page again: only a changed
+// answer (its readAt aside) or a change in the failed state does.
+func TestDockUsageRedrawsOnlyOnChange(t *testing.T) {
+	js := dockUIText(t, "dock.js")
+	load := js[strings.Index(js, "function loadUsage()"):]
+	load = load[:strings.Index(load, "\n  }\n")]
+	for _, want := range []string{
+		"var wasText = state.usageText, wasFailed = state.usageFailed;",
+		"var same = JSON.stringify(Object.assign({}, u, { readAt: null }));",
+		"if (same !== state.usageText) { state.usage = u; state.usageText = same; }",
+		"var changed = state.usageText !== wasText || state.usageFailed !== wasFailed;",
+		"if (changed && state.data && wantsUsage(route())) render(false);",
+	} {
+		if !strings.Contains(load, want) {
+			t.Errorf("loadUsage lacks %q", want)
+		}
+	}
+	if strings.Count(load, "render(") != 1 {
+		t.Error("loadUsage draws the page other than once, on a change")
+	}
+}

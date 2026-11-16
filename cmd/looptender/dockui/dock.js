@@ -14,7 +14,7 @@
   // What looptender did: worded by the same read as API, served on its own
   // for its size, and read only for the Usage page and a loop's page.
   var USAGE = "api/v1/usage";
-  var state = { data: null, identifiers: false, paused: false, timer: 0, busy: false, again: false, lastOk: null, failed: false, failedSince: 0, failedLong: false, notice: "", pending: false, said: "", server: null, treeOpen: Object.create(null), accountOpen: Object.create(null), usage: null, usageFailed: false, usageBusy: false };
+  var state = { data: null, identifiers: false, paused: false, timer: 0, busy: false, again: false, lastOk: null, failed: false, failedSince: 0, failedLong: false, notice: "", pending: false, said: "", server: null, treeOpen: Object.create(null), accountOpen: Object.create(null), usage: null, usageText: "", usageFailed: false, usageBusy: false };
 
   var TONES = {
     supervising: "good", waiting_for_you: "attn", waiting_on_limit: "limit", waiting_on_network: "limit", checks_failing: "warn",
@@ -847,24 +847,34 @@
   // Read on its own after the report, at low priority on a loop's page
   // where it is not the main content. A failure leaves the last answer.
   // A read that does not answer within usageTimeout() is abandoned and
-  // counts as failed, so a stalled request never stops later reads.
+  // counts as failed, so a stalled request never stops later reads. The
+  // page is drawn again only when the answer (apart from its readAt) or
+  // the failed state changed, so an unchanged answer does not redraw a
+  // loop's page a second time after each read.
   function usageTimeout() { return Math.min(20000, Math.max(3000, refreshSeconds() * 1000 - 2000)); }
   function loadUsage() {
     if (state.usageBusy) return;
     state.usageBusy = true;
     var abort = new AbortController();
     var timer = setTimeout(function () { abort.abort(); }, usageTimeout());
+    var wasText = state.usageText, wasFailed = state.usageFailed;
     fetch(USAGE, { cache: "no-store", credentials: "same-origin", headers: { Accept: "application/json" }, priority: route().view === "usage" ? "auto" : "low", signal: abort.signal })
-      .then(function (r) { if (!r.ok) throw new Error("status " + r.status); return r.json(); })
-      .then(function (u) {
+      .then(function (r) { if (!r.ok) throw new Error("status " + r.status); return r.text(); })
+      .then(function (text) {
+        var u = JSON.parse(text);
         if (!u || u.schemaVersion !== SCHEMA || !Array.isArray(u.loops)) throw new Error("schema");
-        state.usage = u; state.usageFailed = false;
+        // Every read has its own readAt, which the page does not show; the
+        // rest of the answer is what is compared.
+        var same = JSON.stringify(Object.assign({}, u, { readAt: null }));
+        if (same !== state.usageText) { state.usage = u; state.usageText = same; }
+        state.usageFailed = false;
       })
       .catch(function () { state.usageFailed = true; })
       .then(function () {
         clearTimeout(timer);
         state.usageBusy = false;
-        if (state.data && wantsUsage(route())) render(false);
+        var changed = state.usageText !== wasText || state.usageFailed !== wasFailed;
+        if (changed && state.data && wantsUsage(route())) render(false);
       });
   }
 
