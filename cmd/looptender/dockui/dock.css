@@ -196,6 +196,8 @@ body.has-banner { padding-bottom: 8rem; }
 .back svg { transform: rotate(180deg); }
 .back:hover { color: var(--ink); background: var(--sunk); }
 .pane-head { display: flex; flex-wrap: wrap; align-items: flex-start; justify-content: space-between; gap: 0.5rem 1rem; }
+.pane-pills { display: inline-flex; flex-wrap: wrap; align-items: center; gap: 0.4rem; }
+.pane-pills .tag { margin-left: 0; }
 .panel { margin-top: 1.25rem; background: var(--surface); border: 1px solid var(--line); border-radius: 14px; box-shadow: var(--shadow); padding: 1.1rem 1.25rem 1.2rem; }
 .panel > h2 { display: flex; flex-wrap: wrap; align-items: baseline; gap: 0.2rem 0.75rem; }
 .panel > h2 .sub, .panel > h2 .unknown { font-size: 0.8125rem; font-weight: 400; }

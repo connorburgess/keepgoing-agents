@@ -436,7 +436,11 @@
       var ul = el("ul", "worth");
       worth.forEach(function (w) {
         var li = el("li");
-        li.appendChild(el("span", "dot dot-" + (TONES[w.state] || "unknown")));
+        // A failed lane is said in words; its dot is not the green of a
+        // loop with nothing to say.
+        var wl = loopByKey(w.key), tone = TONES[w.state] || "unknown";
+        if (wl && wl.lanesFailed && tone === "good") tone = "warn";
+        li.appendChild(el("span", "dot dot-" + tone));
         var t = el("div");
         t.appendChild(link("#/loop/" + w.key, w.loop));
         t.appendChild(el("span", "sub", say(w.text)));
@@ -474,6 +478,7 @@
       status.appendChild(el("span", "dot dot-" + (TONES[l.state] || "unknown")));
       status.appendChild(el("span", null, "Supervision: " + l.phrase));
       if (l.state === "finished") status.appendChild(tag("stale", "Unverified declaration"));
+      if (l.lanesFailed) status.appendChild(tag("needs", l.lanesFailed));
       summary.appendChild(status);
       summary.appendChild(el("span", "sub work-observation", l.lanes && l.lanes.summary ? "Lanes: " + l.lanes.summary : "Lane evidence: " + ((l.children && l.children.phrase) || "Unknown")));
       var age = el("span", "sub work-age", (l.lastCheck && l.lastCheck.text) || "Last check unknown");
@@ -667,7 +672,14 @@
     var st = el("span", "state tone-" + (TONES[l.state] || "unknown"));
     st.appendChild(icon(STATE_ICON[l.state] || "unknown"));
     st.appendChild(document.createTextNode(l.phrase));
-    pane.appendChild(paneHead(l.name, st));
+    var pills = st;
+    // A failed lane is said beside the supervision state, in words.
+    if (l.lanesFailed) {
+      pills = el("span", "pane-pills");
+      pills.appendChild(st);
+      pills.appendChild(tag("needs", l.lanesFailed));
+    }
+    pane.appendChild(paneHead(l.name, pills));
     var need = needFor(key);
     if (!need) pane.appendChild(el("p", "detail", l.detail));
     if (need) {
