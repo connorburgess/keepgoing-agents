@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"strings"
 	"testing"
 )
 
@@ -193,6 +194,71 @@ func TestTransferPlanWithholdsMalformedLabels(t *testing.T) {
 	transferCommand(env{ctx: context.Background(), stdout: &out, stderr: &out}, args, planRunner(t, outside, linked, nil))
 	if bytes.Contains(out.Bytes(), []byte("PRIVATE-")) || !bytes.Contains(out.Bytes(), []byte(`model: (withheld: unsupported shape) -> "example-model"`)) {
 		t.Fatalf("text output:\n%s", out.String())
+	}
+}
+
+// Each label a provider change needs is required on its own, and a timing
+// section is refused like a probe section.
+func TestTransferPlanProviderGuards(t *testing.T) {
+	path, linked, outside := planFixture(t, true, "")
+	claude := func(th map[string]any, _ map[string]any) { th["providerId"] = "claude-code" }
+	base := []string{"--across-environment", "--provider", "claude-code"}
+	for _, tc := range []struct {
+		name  string
+		flags []string
+	}{
+		{"no quota group", []string{"--model", "example-model", "--no-reasoning"}},
+		{"no model", []string{"--quota-group", "example-group", "--no-reasoning"}},
+		{"no reasoning", []string{"--quota-group", "example-group", "--model", "example-model"}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			code, r, _ := runTransfer(t, path, planRunner(t, outside, linked, claude), append(append([]string{}, base...), tc.flags...)...)
+			if code != exitFailed || planCheck(r, "labels_required") != "error" {
+				t.Fatalf("%d labels_required=%s", code, planCheck(r, "labels_required"))
+			}
+		})
+	}
+	full := append(append([]string{}, base...), "--quota-group", "example-group", "--model", "example-model", "--no-reasoning")
+	p, l, o := planFixture(t, true, "  timing:\n    enabled: false\n")
+	code, r, _ := runTransfer(t, p, planRunner(t, o, l, claude), full...)
+	if code != exitFailed || planCheck(r, "provider_settings") != "error" {
+		t.Fatalf("timing section not refused: %d %s", code, planCheck(r, "provider_settings"))
+	}
+}
+
+// Only the source thread's provider differs from the configured label.
+func TestTransferPlanSourceProviderMismatch(t *testing.T) {
+	path, _ := transferFixture(t)
+	runner := transferRunner(t, func(id string, v map[string]any) {
+		if id == "thr_source" {
+			v["thread"].(map[string]any)["providerId"] = "claude-code"
+		}
+	})
+	code, r, _ := runTransfer(t, path, runner)
+	if code != exitFailed || r.Compatibility != "blocked" || planCheck(r, "provider") != "error" {
+		t.Fatalf("%d %s provider=%s", code, r.Compatibility, planCheck(r, "provider"))
+	}
+}
+
+// A preview with a plan says this CLI cannot apply it; one without points to
+// transfer apply.
+func TestTransferPlanApplyMessage(t *testing.T) {
+	path, linked, outside := planFixture(t, true, "")
+	message := func(r transferPreview) string {
+		for _, c := range r.Checks {
+			if c.ID == "apply" {
+				return c.Message
+			}
+		}
+		return ""
+	}
+	_, r, _ := runTransfer(t, path, planRunner(t, outside, linked, nil), "--across-environment")
+	if m := message(r); !strings.Contains(m, "cannot yet apply a move across environments") || strings.Contains(m, "transfer apply") {
+		t.Fatalf("plan apply message: %q", m)
+	}
+	_, r, _ = runTransfer(t, path, transferRunner(t, nil))
+	if m := message(r); !strings.Contains(m, "explicit transfer apply") {
+		t.Fatalf("plain apply message: %q", m)
 	}
 }
 
