@@ -102,23 +102,27 @@ func (d Dir) requestStop(key string) error {
 	}
 }
 
-// startStopWatcher returns an idempotent cancellation-and-join operation.
+// startStopWatcher returns an idempotent cancellation-and-join operation,
+// which reports whether the watcher accepted a stop and terminated the turn.
 // The watcher never acquires turn.lock or waits for exit publication. Joining
 // it under that lock therefore cannot create a lock/publication dependency.
-func startStopWatcher(d Dir, key string, terminate func() error) func() {
+func startStopWatcher(d Dir, key string, terminate func() error) func() bool {
 	done, exited := make(chan struct{}), make(chan struct{})
-	go func() { defer close(exited); watchStop(d, key, terminate, done) }()
+	var stopped bool
+	go func() { defer close(exited); stopped = watchStop(d, key, terminate, done) }()
 	var once sync.Once
-	return func() { once.Do(func() { close(done) }); <-exited }
+	return func() bool { once.Do(func() { close(done) }); <-exited; return stopped }
 }
 
-func watchStop(d Dir, key string, terminate func() error, done <-chan struct{}) {
+// watchStop reports true once it has acknowledged a stop and terminated the
+// turn's process group or job, and false when it was cancelled first.
+func watchStop(d Dir, key string, terminate func() error, done <-chan struct{}) bool {
 	tick := time.NewTicker(100 * time.Millisecond)
 	defer tick.Stop()
 	for {
 		select {
 		case <-done:
-			return
+			return false
 		default:
 		}
 		if m, err := readStopMessage(d.path("stop-request.json")); err == nil && m.Key == key {
@@ -126,7 +130,7 @@ func watchStop(d Dir, key string, terminate func() error, done <-chan struct{}) 
 			// Persist it before the wrapper terminates its own group/job.
 			if writeStopMessage(d.path("stop-ack.json"), m) == nil {
 				if terminate() == nil {
-					return
+					return true
 				}
 				// A failed termination must not remain positively acknowledged.
 				_ = os.Remove(d.path("stop-ack.json"))
@@ -134,7 +138,7 @@ func watchStop(d Dir, key string, terminate func() error, done <-chan struct{}) 
 		}
 		select {
 		case <-done:
-			return
+			return false
 		case <-tick.C:
 		}
 	}
