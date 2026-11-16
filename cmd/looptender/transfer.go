@@ -10,6 +10,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"strconv"
 	"time"
 
 	"github.com/looptender/looptender/internal/config"
@@ -56,9 +57,11 @@ type transferPreview struct {
 }
 
 // transferChange is one configured label before and after a planned move.
+// From is left out when the configured label failed the label shape check, so
+// a malformed value is never printed.
 type transferChange struct {
-	From string `json:"from"`
-	To   string `json:"to"`
+	From *string `json:"from,omitempty"`
+	To   string  `json:"to"`
 }
 
 // transferPlan is what an explicit move across environments or with new
@@ -160,24 +163,29 @@ func transferCommand(e env, args []string, run doctorRun) int {
 	// The planned labels: unchanged unless a flag names a new value.
 	plan := &transferPlan{AcrossEnvironment: *across, AcceptWorkspaceOutside: *acceptOutside, LabelVerification: "unavailable"}
 	afterProvider := a.Provider
-	change := func(from, to string) *transferChange {
+	// optional says whether an empty label is allowed (model and reasoning).
+	change := func(from, to string, optional bool) *transferChange {
 		if from == to {
 			return nil
 		}
-		return &transferChange{From: from, To: to}
+		c := &transferChange{To: to}
+		if transferLabel.MatchString(from) || (optional && from == "") {
+			c.From = &from
+		}
+		return c
 	}
 	if *newProvider != "" {
 		afterProvider = *newProvider
-		plan.Provider = change(a.Provider, *newProvider)
+		plan.Provider = change(a.Provider, *newProvider, false)
 	}
 	if *newGroup != "" {
-		plan.QuotaGroup = change(a.Group, *newGroup)
+		plan.QuotaGroup = change(a.Group, *newGroup, false)
 	}
 	if *newModel != "" || *noModel {
-		plan.Model = change(a.BB.Model, *newModel)
+		plan.Model = change(a.BB.Model, *newModel, true)
 	}
 	if *newReasoning != "" || *noReasoning {
-		plan.Reasoning = change(a.BB.Reasoning, *newReasoning)
+		plan.Reasoning = change(a.BB.Reasoning, *newReasoning, true)
 	}
 	if *across || plan.Provider != nil || plan.QuotaGroup != nil || plan.Model != nil || plan.Reasoning != nil {
 		r.Plan = plan
@@ -323,7 +331,11 @@ func transferCommand(e env, args []string, run doctorRun) int {
 				c    *transferChange
 			}{{"provider", p.Provider}, {"quota group", p.QuotaGroup}, {"model", p.Model}, {"reasoning", p.Reasoning}} {
 				if c.c != nil {
-					fmt.Fprintf(e.stdout, "  %s: %q -> %q\n", c.name, c.c.From, c.c.To)
+					from := "(withheld: unsupported shape)"
+					if c.c.From != nil {
+						from = strconv.Quote(*c.c.From)
+					}
+					fmt.Fprintf(e.stdout, "  %s: %s -> %q\n", c.name, from, c.c.To)
 				}
 			}
 		}

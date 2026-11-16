@@ -44,7 +44,7 @@ keepgoing transfer preview -c loop.yaml --thread thr_destination --across-enviro
 - Labels change only by flag: `--provider`, `--quota-group`, `--model` or `--no-model`, `--reasoning` or `--no-reasoning`. Nothing is inferred from BB's provider ID. A provider change is an error unless the quota group, model and reasoning are all given (a value or the `--no-` form), so no label of the old provider is carried over by default. The source thread must match the configured provider and the destination the `--provider` label.
 - A provider change is refused while the configuration has a `probe` or `timing` section, because those name the old provider's models or accounts. Fallback configurations stay outside transfer.
 
-The report then has a `plan` with `acrossEnvironment`, `acceptWorkspaceOutside`, a `from`/`to` pair for each label that would change, and `labelVerification: "unavailable"`. New labels are not verified. `applySupported` is `false` for such a plan, because this CLI cannot apply it yet. A preview without these flags behaves as before.
+The report then has a `plan` with `acrossEnvironment`, `acceptWorkspaceOutside`, a `from`/`to` pair for each label that would change (`from` is left out when the configured label does not have a supported shape, so a malformed value is never printed), and `labelVerification: "unavailable"`. New labels are not verified. `applySupported` is `false` for such a plan, because this CLI cannot apply it yet. A preview without these flags behaves as before.
 
 ## Reading the result
 

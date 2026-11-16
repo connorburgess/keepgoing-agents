@@ -114,9 +114,9 @@ func TestTransferPlanProviderChange(t *testing.T) {
 		t.Fatalf("%d %s %+v", code, r.Compatibility, r.Checks)
 	}
 	want := &transferPlan{AcrossEnvironment: true, LabelVerification: "unavailable",
-		Provider:   &transferChange{"codex", "claude-code"},
-		QuotaGroup: &transferChange{"fixture-account-label", "example-group"},
-		Model:      &transferChange{"fixture-model", "example-model"},
+		Provider:   &transferChange{strPtr("codex"), "claude-code"},
+		QuotaGroup: &transferChange{strPtr("fixture-account-label"), "example-group"},
+		Model:      &transferChange{strPtr("fixture-model"), "example-model"},
 	}
 	if !reflect.DeepEqual(r.Plan, want) {
 		t.Fatalf("plan %+v", r.Plan)
@@ -138,7 +138,7 @@ func TestTransferPlanProviderChange(t *testing.T) {
 		}
 	}
 	// Relabeling without a provider change needs no other flags.
-	if code, r, _ = runTransfer(t, path, planRunner(t, outside, linked, nil), "--across-environment", "--no-model"); code != exitOK || r.Plan.Model == nil || r.Plan.Model.To != "" || r.Plan.Provider != nil {
+	if code, r, _ = runTransfer(t, path, planRunner(t, outside, linked, nil), "--across-environment", "--no-model"); code != exitOK || r.Plan.Model == nil || r.Plan.Model.From == nil || *r.Plan.Model.From != "fixture-model" || r.Plan.Model.To != "" || r.Plan.Provider != nil {
 		t.Fatalf("%d %+v", code, r.Plan)
 	}
 }
@@ -167,3 +167,33 @@ func TestTransferPlanArguments(t *testing.T) {
 		t.Fatalf("%d %+v", code, r.Plan)
 	}
 }
+
+// A configured label that fails the shape check is never printed in a plan:
+// its from value is left out of the JSON and withheld in the text.
+func TestTransferPlanWithholdsMalformedLabels(t *testing.T) {
+	path, linked, outside := planFixture(t, true, "")
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	raw = bytes.Replace(raw, []byte("model: fixture-model\n"), []byte("model: \"PRIVATE-MODEL with space\"\n    reasoning: \"PRIVATE-REASONING!\"\n"), 1)
+	if err := os.WriteFile(path, raw, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	flags := []string{"--across-environment", "--model", "example-model", "--reasoning", "high"}
+	_, r, _ := runTransfer(t, path, planRunner(t, outside, linked, nil), flags...)
+	if planCheck(r, "labels") != "error" || r.Plan == nil || r.Plan.Model == nil || r.Plan.Reasoning == nil {
+		t.Fatalf("labels=%s plan %+v", planCheck(r, "labels"), r.Plan)
+	}
+	if r.Plan.Model.From != nil || r.Plan.Model.To != "example-model" || r.Plan.Reasoning.From != nil || r.Plan.Reasoning.To != "high" {
+		t.Fatalf("model %+v reasoning %+v", r.Plan.Model, r.Plan.Reasoning)
+	}
+	var out bytes.Buffer
+	args := append([]string{"preview", "-c", path, "--thread", "thr_destination"}, flags...)
+	transferCommand(env{ctx: context.Background(), stdout: &out, stderr: &out}, args, planRunner(t, outside, linked, nil))
+	if bytes.Contains(out.Bytes(), []byte("PRIVATE-")) || !bytes.Contains(out.Bytes(), []byte(`model: (withheld: unsupported shape) -> "example-model"`)) {
+		t.Fatalf("text output:\n%s", out.String())
+	}
+}
+
+func strPtr(s string) *string { return &s }
