@@ -7,9 +7,11 @@
 // page only shows its times in this browser's time zone.
 (function () {
   var SCHEMA = 1;
+  // How long reads may fail before the page asks a person to look (G4).
+  var FAIL_LONG_MS = 120000;
   var API = "api/v1/dock";
   var SERVER = "api/v1/server";
-  var state = { data: null, identifiers: false, paused: false, timer: 0, busy: false, again: false, lastOk: null, failed: false, pending: false, said: "", server: null, treeOpen: Object.create(null), accountOpen: Object.create(null) };
+  var state = { data: null, identifiers: false, paused: false, timer: 0, busy: false, again: false, lastOk: null, failed: false, failedSince: 0, failedLong: false, notice: "", pending: false, said: "", server: null, treeOpen: Object.create(null), accountOpen: Object.create(null) };
 
   var TONES = {
     supervising: "good", waiting_for_you: "attn", waiting_on_limit: "limit", waiting_on_network: "limit", checks_failing: "warn",
@@ -1213,7 +1215,7 @@
     r.textContent = "Records read at " + fmt(secFmt, state.data.readAt) + (state.paused ? " · updates paused" : " · read again every " + (every >= 60 ? span(every) : every + " s")) +
       (old != null ? " · oldest usage reading " + span(old) + " old" : "") +
       (state.failed ? " · the last read failed" : "");
-    r.classList.toggle("is-stale", state.failed);
+    r.classList.toggle("is-stale", state.failedLong);
     // The line keeps a fixed box; when it is cut there, its tooltip has it whole.
     if (r.scrollHeight > r.clientHeight + 1) r.title = r.textContent; else r.removeAttribute("title");
   }
@@ -1272,7 +1274,9 @@
       else renderHome(d, pane);
     } catch (err) {
       pane.replaceChildren(emptyBox("This page could not show the reply it was sent.", "Reload the page, or restart keepgoing " + served() + "."));
-      banner("This page could not show the reply it was sent. Reload the page, or restart keepgoing " + served() + ".");
+      notice("render", "This page could not show the reply it was sent. Reload the page, or restart keepgoing " + served() + ".", true);
+      renderReadline();
+      return false;
     }
     renderReadline();
     var needs = list(d.needsYou).length;
@@ -1296,10 +1300,22 @@
     }
   }
 
-  function banner(text) {
+  // The banner sits over the foot of the window, so it never moves what is
+  // being read. It is neutral while the page recovers on its own and turns
+  // to a warning only once a person is needed (alarm). It has no live role:
+  // the polite region says each episode once, when it starts and when it
+  // turns into an alarm, not on every read that fails again.
+  function notice(key, text, alarm) {
     var b = $("banner");
     b.hidden = !text;
     b.textContent = text || "";
+    b.classList.toggle("is-alarm", !!alarm);
+    document.body.classList.toggle("has-banner", !!text);
+    var said = text ? key + (alarm ? "!" : "") : "";
+    if (said !== state.notice) {
+      state.notice = said;
+      if (text) { state.said = ""; announce(text); }
+    }
   }
   function refreshSeconds() {
     var n = Number(state.data && state.data.refreshSeconds);
@@ -1372,20 +1388,23 @@
       .then(function (r) { if (!r.ok) throw new Error("status " + r.status); return r.json(); })
       .then(function (d) {
         if (!d || d.schemaVersion !== SCHEMA || !d.registry || !Array.isArray(d.loops)) throw new Error("schema");
-        state.data = d; state.lastOk = Date.now(); state.failed = false;
-        banner(d.complete === false ? "This read was cut off before every loop was read. Loops that were not read are listed as could not be read; it reads again shortly." : "");
-        render(false);
+        state.data = d; state.lastOk = Date.now(); state.failed = false; state.failedSince = 0; state.failedLong = false;
+        if (render(false) !== false) notice("cut", d.complete === false ? "This read was cut off before every loop was read. Loops that were not read are listed as could not be read; it reads again shortly." : "");
       })
       .catch(function (err) {
         state.failed = true;
+        if (!state.failedSince) state.failedSince = Date.now();
+        // A read can fail for a moment and recover by itself; only reads
+        // failing for FAIL_LONG_MS need a person.
+        state.failedLong = Date.now() - state.failedSince >= FAIL_LONG_MS;
         var schema = err && err.message === "schema";
         var cmd = "keepgoing " + served();
         var again = served() === "panel" ? "run keepgoing panel again." : "start it again and open the new address it prints.";
         var text = schema ? "This page does not understand the reply it was sent. Reload the page, or restart " + cmd + "." :
-          state.data ? "The last read failed, so what you see may be out of date. " + cmd + " may have stopped; it tries again shortly." :
-          "Could not read from " + cmd + ". It may have stopped; " + again;
-        banner(text);
-        announce(text);
+          !state.data ? "Could not read from " + cmd + ". It may have stopped; " + again :
+          state.failedLong ? "Reads have failed since " + secFmt.format(new Date(state.failedSince)) + ", so what you see is out of date. " + cmd + " may have stopped; if so, " + again :
+          "The last read failed, so what you see may be out of date. " + cmd + " may have stopped; it tries again shortly.";
+        notice(schema ? "schema" : "failed", text, schema || state.failedLong);
         if (!state.data) {
           $("picker").replaceChildren(el("p", "placeholder", "Nothing could be read."));
           $("pane").replaceChildren(paneHead("Could not read"), emptyBox("Nothing could be read from " + cmd + ".", "It may have stopped; " + again));
