@@ -1384,10 +1384,58 @@ func TestRunsKeepsTheStuckChildVisibleDuringItsHold(t *testing.T) {
 	if _, r, _ = runsExec(t, "--state-dir", dir); r.Loops[0].Blocker.Availability != blockerUnknown || r.Loops[0].Blocker.Reason != "not_refreshed_by_the_last_check" {
 		t.Fatalf("%+v", r.Loops[0].Blocker)
 	}
+	// A hold with no stuck child keeps the listing too, but as the last
+	// listing before the hold: no child is said to hold the run.
 	runsWait(t, dir, rungraph.ListingComplete, rungraph.Child{Key: working, Status: rungraph.ChildActive})
 	held()
-	if _, r, _ = runsExec(t, "--state-dir", dir); r.Loops[0].Blocker.Availability != blockerUnknown {
-		t.Fatalf("an awaiting-user hold with no stuck child kept the listing: %+v", r.Loops[0].Blocker)
+	if _, r, _ = runsExec(t, "--state-dir", dir); r.Loops[0].Blocker.Availability != blockerBeforeHold || len(r.Loops[0].Blocker.Children) != 1 || r.Loops[0].Blocker.Children[0].Holds {
+		t.Fatalf("an awaiting-user hold with no stuck child: %+v", r.Loops[0].Blocker)
+	}
+}
+
+// A loop held or paused for another reason, such as a command, keeps the last
+// complete listing of the same run, marked as from before the hold. Without a
+// complete listing, or once the hold is lifted, nothing is listed.
+func TestRunsKeepsTheLastListingBeforeAHoldOrPause(t *testing.T) {
+	working := childKey("thr_child_working")
+	for name, c := range map[string]struct {
+		listing      string
+		ctl          control.File
+		reason       string
+		availability string
+		why          string
+	}{
+		"paused":                     {rungraph.ListingComplete, control.File{Enabled: true, Paused: true}, "paused", blockerBeforeHold, "paused; children last verified before it"},
+		"held by a command":          {rungraph.ListingComplete, control.File{Enabled: true, AwaitingUser: true}, "awaiting user", blockerBeforeHold, "awaiting_user; children last verified before it"},
+		"paused, incomplete listing": {rungraph.ListingIncomplete, control.File{Enabled: true, Paused: true}, "paused", blockerUnknown, "not_refreshed_by_the_last_check"},
+		"pause lifted since":         {rungraph.ListingComplete, control.File{Enabled: true}, "paused", blockerUnknown, "not_refreshed_by_the_last_check"},
+		"disabled":                   {rungraph.ListingComplete, control.File{}, "disabled", blockerUnknown, "not_refreshed_by_the_last_check"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			dir := runsFixture(t)
+			runsWait(t, dir, c.listing, rungraph.Child{Key: working, Status: rungraph.ChildActive})
+			if err := control.Save(dir, c.ctl); err != nil {
+				t.Fatal(err)
+			}
+			if err := state.Save(dir, state.File{LastCheck: &state.Check{At: runsAt.Add(20 * time.Minute), Reason: c.reason}}); err != nil {
+				t.Fatal(err)
+			}
+			runsClock(t, runsAt.Add(3*time.Hour))
+			_, r, _ := runsExec(t, "--state-dir", dir)
+			b := r.Loops[0].Blocker
+			listed := c.availability == blockerBeforeHold
+			if b.Availability != c.availability || b.Reason != c.why || (len(b.Children) == 1) != listed || b.AgeSeconds == nil || *b.AgeSeconds != 3*3600 {
+				t.Fatalf("%+v", b)
+			}
+			if listed && b.Children[0].Holds {
+				t.Fatalf("a child was said to hold the run: %+v", b)
+			}
+			var text, errs bytes.Buffer
+			run(context.Background(), []string{"runs", "--state-dir", dir, "--id", "child:" + working}, &text, &errs)
+			if strings.Contains(text.String(), "blocked_by") || strings.Contains(text.String(), "blocks ->") {
+				t.Fatal(text.String())
+			}
+		})
 	}
 }
 

@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"github.com/looptender/looptender/internal/envvar"
 	"os"
 	"os/exec"
 	"time"
@@ -47,7 +48,9 @@ func readCodexLimits(ctx context.Context, cli string, env []string) (CodexLimits
 	ctx, cancel := context.WithTimeout(ctx, 20*time.Second)
 	defer cancel()
 	cmd := exec.CommandContext(ctx, cli, "app-server")
-	cmd.Env = append(os.Environ(), env...)
+	// The provider's program: not the session the supervisor was started
+	// from; the loop's own entries come after, so they win.
+	cmd.Env = append(envvar.WithoutSupervisorSession(os.Environ()), env...)
 	stdin, err := cmd.StdinPipe()
 	if err != nil {
 		return CodexLimits{}, err

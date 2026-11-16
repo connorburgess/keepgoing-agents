@@ -157,6 +157,7 @@
       row.appendChild(l.unknown ? unknown(say(l.text)) : document.createTextNode(say(l.text)));
       if (l.reached) row.appendChild(tag("reached", "Reached"));
       f.appendChild(row);
+      if (l.reached && l.effect) f.appendChild(el("div", "sub", "Reached: " + l.effect));
     });
     if (!wait && !list(items).length) f.appendChild(unknown());
     return f;
@@ -171,7 +172,7 @@
       row.appendChild(el("span", "w", w.name));
       var m = el("div", "meter" + (w.stale ? " is-stale" : w.usedPercent >= 100 ? " full" : w.usedPercent >= 70 ? " hi" : ""));
       m.setAttribute("role", "img");
-      m.setAttribute("aria-label", w.name + " window " + (w.stale ? "reading is stale" : w.usedPercent + " percent used"));
+      m.setAttribute("aria-label", w.name + " window " + (w.stale ? "has ended since this reading" : w.usedPercent + " percent used"));
       var bar = el("i");
       bar.style.width = (w.stale ? 0 : Math.max(2, w.usedPercent)) + "%";
       m.appendChild(bar);
@@ -192,8 +193,14 @@
       return box;
     }
     var uh = el("div", "sub usage-read", u.readLine || "Usage reading");
-    if (u.availability === "stale") uh.appendChild(tag("stale", "Stale"));
+    // Age is said in the read line and is not a warning. Availability
+    // "stale" is that every window it describes has ended since it was
+    // taken: a neutral label. Only an old reading that was near its limit
+    // (needsPerson) gets one amber line, as only then may its age change a
+    // decision.
+    if (u.availability === "stale") uh.appendChild(tag("calm", "Windows ended"));
     box.appendChild(uh);
+    if (u.needsPerson && u.ageNote) box.appendChild(el("p", "route-note is-attn usage-age", u.ageNote));
     box.appendChild(meters(u));
     if (u.readingsNote) box.appendChild(el("p", "sub usage-note", u.readingsNote));
     return box;
@@ -245,10 +252,10 @@
     return b;
   }
 
-  // A hold's note is shown only with identifiers and notes; the card says one
-  // exists and offers to show it.
+  // A hold's note is always shown. Without identifiers, parts shaped like an
+  // identifier read "[hidden]" and the card offers to show them.
   function showNotesButton() {
-    var b = el("button", "linkish", "Show identifiers and notes");
+    var b = el("button", "linkish", "Show identifiers");
     b.setAttribute("data-focus", "show-notes");
     b.type = "button";
     b.addEventListener("click", function () { if (!state.identifiers) $("identifiers").click(); });
@@ -265,15 +272,19 @@
     head.appendChild(el("span", "waited", n.waited || "Waiting time unknown"));
     li.appendChild(head);
     li.appendChild(el("p", "reason", n.reason));
-    if (n.note && state.identifiers) {
+    // Data read with identifiers carries the masked note too, so turning
+    // identifiers off hides them at once.
+    var text = !state.identifiers && n.maskedNote ? n.maskedNote : n.note;
+    if (text) {
       var note = el("div", "note");
       note.appendChild(el("span", "note-label", "Note left with the hold"));
-      note.appendChild(document.createTextNode("“" + n.note + "”"));
+      note.appendChild(document.createTextNode("“" + text + "”"));
       li.appendChild(note);
-    } else if (n.noteWithheld || n.note) {
-      var p = el("p", "sub", "A note was left with the hold. ");
-      p.appendChild(showNotesButton());
-      li.appendChild(p);
+      if (n.noteMasked && !state.identifiers) {
+        var p = el("p", "sub", "Parts that look like an ID, path, web address, email address, network address or long code are hidden. ");
+        p.appendChild(showNotesButton());
+        li.appendChild(p);
+      }
     }
     var todo = el("p", "todo");
     todo.appendChild(el("span", "todo-label", "What to do"));
@@ -441,6 +452,7 @@
   // parent's observation. No relationship is inferred from names or order.
   function workTree(d) {
     var p = panel("Loops and lanes");
+    p.appendChild(el("p", "sub", "Only conversations that looptender supervises are shown here, with their lanes. To see another coordinator here, create a loop for it."));
     p.appendChild(el("p", "sub", "Supervision and agent observations are separate. Expand a loop to see its recorded direct lanes."));
     p.appendChild(el("p", "sub work-evidence", "Active does not prove progress or connectivity. Only direct lanes are listed; absent lanes do not establish completion. Finished means declared, not verified."));
     var ul = el("ul", "work-tree");
@@ -453,13 +465,15 @@
       var summary = el("summary", "work-summary");
       summary.setAttribute("data-focus", "tree-" + l.key);
       var name = el("span", "work-name", l.name);
+      // The glossary's role: its last verified listing has lanes.
+      if (l.lanes && l.lanes.role === "coordinator") name.appendChild(el("span", "work-role", "coordinator"));
       summary.appendChild(name);
       var status = el("span", "work-status");
       status.appendChild(el("span", "dot dot-" + (TONES[l.state] || "unknown")));
       status.appendChild(el("span", null, "Supervision: " + l.phrase));
       if (l.state === "finished") status.appendChild(tag("stale", "Unverified declaration"));
       summary.appendChild(status);
-      summary.appendChild(el("span", "sub work-observation", "Lane evidence: " + ((l.children && l.children.phrase) || "Unknown")));
+      summary.appendChild(el("span", "sub work-observation", l.lanes && l.lanes.summary ? "Lanes: " + l.lanes.summary : "Lane evidence: " + ((l.children && l.children.phrase) || "Unknown")));
       var age = el("span", "sub work-age", (l.lastCheck && l.lastCheck.text) || "Last check unknown");
       if (l.lastCheck && l.lastCheck.availability === "stale") age.appendChild(tag("stale", "Stale"));
       summary.appendChild(age);
@@ -471,6 +485,14 @@
       facts.appendChild(fact("Next check", nextCheck(l.nextCheck || { availability: "unknown" })));
       body.appendChild(facts);
       body.appendChild(laneBox(l, true));
+      var more = body.querySelector("details.lane-more"), moreKey = l.key + "/lanes";
+      if (more) {
+        more.open = !!state.treeOpen[moreKey];
+        retainedOpen[moreKey] = more.open;
+        more.addEventListener("toggle", function () {
+          if (more.isConnected) state.treeOpen[moreKey] = more.open;
+        });
+      }
       body.appendChild(link("#/loop/" + l.key, "Inspect " + l.name, "work-inspect"));
       details.appendChild(body);
       details.addEventListener("toggle", function () {
@@ -555,11 +577,11 @@
     var b = el("div", "lanes is-wide");
     b.appendChild(el("span", "lanes-label", (lanes && lanes.heading) || "This loop's lanes"));
     if (!rows.length) {
-      b.appendChild(!c || c.availability === "unknown" || !c.phrase ? unknown() : el("span", "sub", c.phrase));
+      // An unknown answer carries its reason in the phrase: "Unknown: …".
+      b.appendChild(!c || !c.phrase ? unknown() : c.availability === "unknown" ? unknown(c.phrase) : el("span", "sub", c.phrase));
       return b;
     }
-    var ul = el("ul", "lane-list");
-    rows.forEach(function (x) {
+    function row(x) {
       var li = el("li", "lane");
       li.appendChild(el("span", "dot " + (x.state === "working" ? "dot-good" : x.state === "waiting" ? "dot-attn" : x.state === "failed" ? "dot-warn" : "dot-unknown")));
       li.appendChild(el("span", "lane-state", x.phrase));
@@ -576,12 +598,30 @@
         what.appendChild(el("code", null, x.key));
       }
       li.appendChild(what);
-      ul.appendChild(li);
-    });
-    b.appendChild(ul);
+      return li;
+    }
+    function rowList(xs) {
+      var ul = el("ul", "lane-list");
+      xs.forEach(function (x) { ul.appendChild(row(x)); });
+      return ul;
+    }
+    // On the overview, a long listing shows the lanes waiting for an answer
+    // and folds the rest into one details element.
+    var shown = rows, rest = [];
+    if (overview && rows.length > 8) {
+      shown = rows.filter(function (x) { return x.state === "waiting"; });
+      rest = rows.filter(function (x) { return x.state !== "waiting"; });
+    }
+    if (shown.length) b.appendChild(rowList(shown));
+    if (rest.length) {
+      var fold = el("details", "lane-more");
+      fold.appendChild(el("summary", null, (shown.length ? "Show the other " + rest.length + " of " : "Show all ") + rows.length + (lanes.omitted ? " listed" : "") + " lanes"));
+      fold.appendChild(rowList(rest));
+      b.appendChild(fold);
+    }
     if (overview) {
       if (lanes.omitted) b.appendChild(el("p", "more", lanes.omitted + " more lanes are not listed."));
-      b.appendChild(el("p", "more", "Lane titles appear only with identifiers and notes. Routes for individual lanes are not recorded."));
+      b.appendChild(el("p", "more", "Lane titles appear only with identifiers. Routes for individual lanes are not recorded."));
     } else if (lanes && lanes.footer) b.appendChild(el("p", "more", lanes.footer));
     return b;
   }
@@ -696,10 +736,43 @@
       if (l.identifiers.thread) {
         ids.appendChild(el("dt", null, "Configured BB thread"));
         ids.appendChild(el("dd", null, l.identifiers.thread));
+        var open = threadCommand(l.identifiers.thread);
+        if (open) {
+          ids.appendChild(el("dt", null, "Open it in BB"));
+          ids.appendChild(open);
+        }
       }
       checks.appendChild(ids);
     }
     pane.appendChild(checks);
+  }
+
+  // The command that opens a loop's BB thread, to copy and run yourself.
+  // Nothing is sent or run from the page; BB documents no link format, so
+  // there is no link. The command stays visible and selectable, and the
+  // button appears only where the browser can copy.
+  var THREAD_ID = /^thr_[A-Za-z0-9_]+$/;
+  function threadCommand(id) {
+    if (typeof id !== "string" || !THREAD_ID.test(id)) return null;
+    var text = "bb thread open " + id, dd = el("dd", "copy");
+    dd.appendChild(el("code", "command", text));
+    if (navigator.clipboard && navigator.clipboard.writeText) {
+      var b = el("button", "btn", "Copy the command");
+      b.type = "button";
+      b.dataset.focus = "copy-thread-command";
+      b.addEventListener("click", function () {
+        // Cleared first, so a second press is announced again.
+        state.said = "";
+        $("live").textContent = "";
+        navigator.clipboard.writeText(text).then(function () {
+          announce("Copied. Paste it in a terminal.");
+        }, function () {
+          announce("Could not copy. Select the command instead.");
+        });
+      });
+      dd.appendChild(b);
+    }
+    return dd;
   }
 
   // ---- Changes: pause, stop and resume, on a panel started with --allow-changes ----
@@ -870,14 +943,48 @@
 
   // ---- Versions: where each build runs ----
   var versionDots = { current: "dot-good", same_file: "dot-good", newer: "dot-good", older: "dot-limit", different: "dot-limit", different_file: "dot-limit", stale: "dot-calm" };
+  // Age is information: "Checked 3 h ago" in plain words, never a badge.
+  // An observation older than a day adds a quiet hint to check again.
   function accountEvidence(e) {
     e = e || {};
     var wrap = el("div", "account-evidence");
     wrap.appendChild(el("span", null, e.text || "Unavailable"));
-    if (e.freshness === "stale") wrap.appendChild(tag("stale", "Stale"));
-    if (e.observedAt) wrap.appendChild(el("span", "sub", "Observed " + fmt(secFmt, e.observedAt)));
+    if (e.ageSeconds != null) {
+      var age = el("span", "sub account-age", "Checked " + span(e.ageSeconds) + " ago" + (e.checkAgain ? " · check again to confirm" : ""));
+      if (e.observedAt) age.title = fmt(dayTimeFmt, e.observedAt);
+      wrap.appendChild(age);
+    } else if (e.observedAt) wrap.appendChild(el("span", "sub", "Checked at " + fmt(dayTimeFmt, e.observedAt)));
     if (e.source) wrap.appendChild(el("span", "sub", e.source));
     return wrap;
+  }
+  var failedChecks = {
+    context_changed: "could not be compared: the context differs from the selection",
+    timeout: "timed out",
+    cancelled: "was cancelled",
+    version_unavailable: "could not read the CLI version",
+    command_unavailable: "could not run the selected CLI",
+    status_unavailable: "returned no recognized login result"
+  };
+  // When and why the latest check failed. The login and plan shown are then
+  // the last good check, or unavailable when there was none.
+  function failedCheckLine(c) {
+    return "Last check" + (c.failedCheckAt ? " " + fmt(secFmt, c.failedCheckAt) : "") + " " + (failedChecks[c.reason] || "did not complete") + "." +
+      (c.attention === "context_changed" ? " Review and update the selection before checking again." : "");
+  }
+  // What on a card needs a person, in words; the warning style is kept for
+  // these and never used for age alone. A failed check or a changed context
+  // is said once, by failedCheckLine.
+  var ACCOUNT_ATTENTION = {
+    no_login: "No login reported. Sign in with the provider's own tool, then check again."
+  };
+  // The explicit check command to copy. The connection ID appears only with
+  // identifiers, as other identifiers on the page do.
+  function accountCheckHint(c) {
+    var p = el("p", "sub account-hint");
+    p.appendChild(document.createTextNode("To check again, run "));
+    p.appendChild(el("code", "account-command", "looptender accounts check --id " + (state.identifiers ? c.id : "CONNECTION_ID") + " --json"));
+    p.appendChild(document.createTextNode(state.identifiers ? "" : " (Show identifiers to fill in the ID)"));
+    return p;
   }
   function renderAccounts(d, pane) {
     var a = d.accounts || {};
@@ -901,7 +1008,7 @@
     pane.appendChild(el("p", "account-count", cards.length + (cards.length === 1 ? " selected account" : " selected accounts")));
     var ul = el("ul", "accounts-list"), retained = Object.create(null);
     cards.forEach(function (c) {
-      var li = el("li", "account-card"), details = el("details");
+      var li = el("li", "account-card" + (c.needsPerson ? " is-attention" : "")), details = el("details");
       details.open = !!state.accountOpen[c.id]; retained[c.id] = details.open;
       var summary = el("summary", "account-summary");
       summary.setAttribute("data-focus", "account-" + c.id);
@@ -910,7 +1017,17 @@
       var identity = el("span", "account-title"); identity.appendChild(name); identity.appendChild(provider);
       identity.appendChild(el("span", "sub", c.selection === "inherited" ? "Inherited context" : c.selection === "explicit_directory" ? "Selected context" : "External context"));
       summary.appendChild(identity);
-      var status = el("span", "account-status"); status.appendChild(accountEvidence(c.auth)); summary.appendChild(status);
+      var status = el("span", "account-status"); status.appendChild(accountEvidence(c.auth));
+      // The login and plan shown are the last good check; say when and why the
+      // latest one failed, once, with the warning when it needs a person.
+      var failed = c.attention === "check_failed" || c.attention === "context_changed" || !!c.failedCheckAt;
+      if (c.needsPerson) {
+        var need = el("span", "account-attention");
+        need.appendChild(tag("needs", "Needs you"));
+        need.appendChild(el("span", null, failed ? failedCheckLine(c) : ACCOUNT_ATTENTION[c.attention] || "Something on this account needs a look."));
+        status.appendChild(need);
+      } else if (failed) status.appendChild(el("span", "sub", failedCheckLine(c)));
+      summary.appendChild(status);
       var plan = el("span", "account-plan");
       plan.appendChild(el("span", "sub", "Reported plan"));
       plan.appendChild(accountEvidence(c.plan)); summary.appendChild(plan);
@@ -922,7 +1039,6 @@
       facts.appendChild(fact("Configured model", accountEvidence(c.configuredModel)));
       facts.appendChild(fact("Actual response model", accountEvidence(c.observedModel)));
       facts.appendChild(fact("Route associations", "Unavailable. No route has been enrolled by this selection."));
-      if (c.previousAuth) facts.appendChild(fact("Previous observation", accountEvidence(c.previousAuth)));
       body.appendChild(facts);
       var reasons = {
         context_changed: "The effective context differs from the selection. Review and update it before checking again.",
@@ -933,10 +1049,13 @@
         status_unavailable: "The latest status command did not establish a recognized login result."
       };
       if (c.reason) body.appendChild(el("p", "account-note", reasons[c.reason] || "The latest account check is unavailable."));
-      body.appendChild(el("p", "sub", "Login and plan reports do not verify quota, model access or continuing availability. Status becomes stale after five minutes. Use the explicit accounts check command to record another observation."));
+      body.appendChild(el("p", "sub", "Login and plan reports do not verify quota, model access or continuing availability. Nothing checks again on its own: the age shown is when the last explicit check ran, and after a day the card suggests checking again. Use the explicit accounts check command to record another observation."));
       details.appendChild(body);
       details.addEventListener("toggle", function () { if (details.isConnected) state.accountOpen[c.id] = details.open; });
-      li.appendChild(details); ul.appendChild(li);
+      li.appendChild(details);
+      // A changed context is updated before it is checked again, so it gets no check command.
+      if (c.attention !== "context_changed" && (c.needsPerson || (c.auth && c.auth.checkAgain) || (c.plan && c.plan.checkAgain))) li.appendChild(accountCheckHint(c));
+      ul.appendChild(li);
     });
     state.accountOpen = retained;
     pane.appendChild(ul);
@@ -1000,7 +1119,7 @@
     }
     var sum = el("p", "route-summary");
     sum.appendChild(el("span", null, rs.total || routes.length + " routes"));
-    if (rs.inUseText) sum.appendChild(el("span", "c-good", rs.inUseText));
+    if (rs.inUseText) sum.appendChild(el("span", "", rs.inUseText));
     if (rs.trouble && rs.first) sum.appendChild(link("#/routes/" + rs.first, rs.problem, "c-warn"));
     else if (rs.problem) sum.appendChild(el("span", "sub", rs.problem));
     pane.appendChild(sum);
@@ -1057,7 +1176,11 @@
     var r = $("readline");
     if (!state.lastOk) { r.textContent = state.failed ? "Could not read yet" : "Reading…"; return; }
     var every = refreshSeconds();
-    r.textContent = "Read at " + fmt(secFmt, state.data.readAt) + (state.paused ? " · updates paused" : " · reads again every " + (every >= 60 ? span(every) : every + " s")) +
+    // This is when the panel read its records, not how new they are: the
+    // oldest usage reading shown is named when one is past stale-after.
+    var old = state.data.oldestUsageAgeSeconds;
+    r.textContent = "Records read at " + fmt(secFmt, state.data.readAt) + (state.paused ? " · updates paused" : " · read again every " + (every >= 60 ? span(every) : every + " s")) +
+      (old != null ? " · oldest usage reading " + span(old) + " old" : "") +
       (state.failed ? " · the last read failed" : "");
     r.classList.toggle("is-stale", state.failed);
   }
@@ -1256,7 +1379,7 @@
       state.identifiers = !state.identifiers;
       this.setAttribute("aria-pressed", String(state.identifiers));
       // Hide (or keep hidden) at once from the data in hand: identifiers and
-      // notes never stay on screen waiting for a read that is slow or failing.
+      // unmasked notes never stay on screen waiting for a read that is slow or failing.
       render(false, true);
       clearTimeout(state.timer);
       load(true);

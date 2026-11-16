@@ -4,6 +4,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"fmt"
+	"slices"
 	"sort"
 	"strings"
 	"time"
@@ -49,6 +50,9 @@ type dockReport struct {
 	StaleAfterSeconds int          `json:"staleAfterSeconds"`
 	Identifiers       bool         `json:"identifiers"`
 	Registry          dockRegistry `json:"registry"`
+	// OldestUsageAgeSeconds is the age of the oldest usage reading the
+	// report shows that is older than StaleAfterSeconds; absent when none is.
+	OldestUsageAgeSeconds *int64 `json:"oldestUsageAgeSeconds,omitempty"`
 	// Complete is false when the read was cut off before every loop was read.
 	// AllClear is true only when the registry was read, every loop in it was
 	// read, and none needs a person: a page may say "nothing needs you" only
@@ -89,7 +93,7 @@ type dockRoutesLine struct {
 	First   string `json:"first,omitempty"` // the key of the first route in trouble
 	Picker  string `json:"picker"`          // "9 routes, 4 at a limit or not ready"
 	Total   string `json:"total"`           // "9 routes"
-	InUseT  string `json:"inUseText"`       // "3 in use"
+	InUseT  string `json:"inUseText"`       // "3 running now"
 	Problem string `json:"problem"`         // "4 at a limit or not ready, listed first"
 }
 
@@ -115,6 +119,9 @@ type dockAllowance struct {
 	Notes    []dockNote      `json:"notes"`
 	Next     dockText        `json:"next,omitempty"`
 	identity string
+	// kinds says what each of its routes is, in route order and without
+	// repeats, for telling apart lines that share a name.
+	kinds []string
 }
 
 type dockRegistry struct {
@@ -131,10 +138,16 @@ type dockNeed struct {
 	Key    string `json:"key"`
 	Loop   string `json:"loop"`
 	Reason string `json:"reason"`
-	// Note is the hold's note, in the words of whoever set it. Registered
-	// status withholds notes, so it is included only with identifiers;
-	// NoteWithheld says one exists.
+	// Note is the hold's note, in the words of whoever set it. Without
+	// identifiers every token shaped like an identifier (an ID, a path, a URL,
+	// an email address) is replaced by "[hidden]" and NoteMasked is true when
+	// one was. With identifiers Note is whole, and MaskedNote is the masked
+	// text when it differs, so the page can hide identifiers at once from the
+	// data in hand. NoteWithheld is no longer set; it is kept for readers of
+	// schema 1.
 	Note         string     `json:"note,omitempty"`
+	NoteMasked   bool       `json:"noteMasked,omitempty"`
+	MaskedNote   string     `json:"maskedNote,omitempty"`
 	NoteWithheld bool       `json:"noteWithheld,omitempty"`
 	Since        *time.Time `json:"since,omitempty"`
 	// SinceEvidence is hold_recorded when Since is the time the hold was
@@ -264,6 +277,15 @@ type dockUsageTarget struct {
 	AgeSeconds   *int64            `json:"ageSeconds,omitempty"`
 	Windows      []dockUsageWindow `json:"windows"`
 	Omitted      int               `json:"omitted,omitempty"`
+	// Old is true when the reading is older than the panel's stale-after,
+	// whatever its windows say; availability "stale" is that every window
+	// has reset since.
+	Old bool `json:"old,omitempty"`
+	// NeedsPerson is true only for an old reading that was near its limit
+	// (see dockMarkOldUsage); AgeNote then says so in a sentence. Age alone
+	// sets neither.
+	NeedsPerson bool   `json:"needsPerson,omitempty"`
+	AgeNote     string `json:"ageNote,omitempty"`
 	// Reason says, when a record shows it, why there is no reading.
 	Reason string `json:"reason,omitempty"`
 	// FromAnotherLoop: the reading is another loop's record of the same
@@ -298,6 +320,8 @@ type dockLimit struct {
 	Max     *int64   `json:"max,omitempty"`
 	Reached bool     `json:"reached"`
 	Unknown bool     `json:"unknown,omitempty"`
+	// Effect says what a reached limit does to the loop, when it is reached.
+	Effect string `json:"effect,omitempty"`
 }
 
 type dockLimitWait struct {
@@ -381,8 +405,11 @@ type dockChainEntry struct {
 	ProbedAt *time.Time      `json:"probedAt,omitempty"`
 	ProbeAge *int64          `json:"probeAgeSeconds,omitempty"`
 	Usage    dockUsageTarget `json:"usage"`
-	identity string
-	probeOK  bool
+	// CatalogAccount is the accounts-catalog entry the route names, or its
+	// derived account context (route_account.go).
+	CatalogAccount *accounts.RouteAccount `json:"catalogAccount,omitempty"`
+	identity       string
+	probeOK        bool
 }
 
 // dockRoute is one route across every loop that names it. keepgoing knows it
@@ -655,6 +682,7 @@ func dockRoutes(loops []dockLoop, now time.Time) ([]dockRoute, int) {
 	// never the same group name alone; a route with none claims nothing.
 	for i := range routes {
 		var best *dockDeparture
+		bestRoute := 0
 		for j := range routes {
 			if i == j || routes[i].identity == "" || routes[i].identity != routes[j].identity {
 				continue
@@ -665,7 +693,7 @@ func dockRoutes(loops []dockLoop, now time.Time) ([]dockRoute, int) {
 					continue
 				}
 				if best == nil || (d.ResetsAt != nil && (best.ResetsAt == nil || d.ResetsAt.After(*best.ResetsAt))) {
-					best = d
+					best, bestRoute = d, j
 				}
 			}
 		}
@@ -674,11 +702,11 @@ func dockRoutes(loops []dockLoop, now time.Time) ([]dockRoute, int) {
 			if best.At != nil {
 				s = txt(s, " on ", tm(*best.At, "date"))
 			}
-			if best.ResetsAt != nil {
-				s = txt(s, "; the provider reported a reset for ", tm(*best.ResetsAt, "date"), ".")
-			} else {
-				s = txt(s, "; no reset time was reported.")
+			usage := routes[i].Usage
+			if usage.Availability == "unavailable" {
+				usage = routes[bestRoute].Usage
 			}
+			s = dockLimitReset(s, *best, usage, "date")
 			s = txt(s, " This route's own test result below is separate.")
 			routes[i].Notes = append(routes[i].Notes, dockNote{Tone: "limit", Text: s})
 		}
@@ -717,6 +745,38 @@ func dockRoutes(loops []dockLoop, now time.Time) ([]dockRoute, int) {
 	return routes, omitted
 }
 
+// dockLimitReset ends a sentence about a usage limit with its reset. The
+// reset the provider reported with the limit comes first. Without one, the
+// usage reading shown with the note may still give one: the reset of its
+// window that is used up, said as the reading's. A reading with resets but no
+// window used up is pointed to rather than contradicted. Only when nothing
+// reports a reset is "no reset time was reported" said.
+func dockLimitReset(s dockText, d dockDeparture, u dockUsageTarget, layout string) dockText {
+	switch {
+	case d.ResetsAt != nil:
+		return txt(s, "; the provider reported a reset for ", tm(*d.ResetsAt, layout), ".")
+	case d.ResetFar:
+		return txt(s, "; the provider reported a reset more than a year away; it is not shown.")
+	}
+	if u.Availability == "unavailable" {
+		return txt(s, "; no reset time was reported.")
+	}
+	shown := false
+	for _, w := range u.Windows {
+		if w.Stale || w.ResetsAt == nil {
+			continue
+		}
+		if w.UsedPercent >= 100 {
+			return txt(s, "; no reset was reported with the limit, and the usage reading shows the "+w.Name+" allowance resetting ", tm(*w.ResetsAt, layout), ".")
+		}
+		shown = true
+	}
+	if shown {
+		return txt(s, "; no reset was reported with the limit; the usage reading shows when each window resets.")
+	}
+	return txt(s, "; no reset time was reported.")
+}
+
 func anyAtLimit(ds []dockDeparture) bool {
 	for _, d := range ds {
 		if d.atLimit() {
@@ -732,6 +792,7 @@ func dockAllowances(routes []dockRoute) ([]dockAllowance, int) {
 	index := map[string]int{}
 	out := []dockAllowance{}
 	omitted := 0
+	limits := map[int][]dockDeparture{}
 	for _, r := range routes {
 		// A route with no recorded account identity is a line of its own: it
 		// is not said to share an allowance with anything.
@@ -763,6 +824,9 @@ func dockAllowances(routes []dockRoute) ([]dockAllowance, int) {
 		}
 		a := &out[i]
 		a.Routes++
+		if k := dockAllowanceRouteKind(r); !slices.Contains(a.kinds, k) {
+			a.kinds = append(a.kinds, k)
+		}
 		if u := r.Usage; u.AgeSeconds != nil && (a.Usage.AgeSeconds == nil || *u.AgeSeconds < *a.Usage.AgeSeconds) {
 			a.Usage = u
 			a.Usage.ReadLine = strings.Replace(u.ReadLine, "Usage read", "Read", 1)
@@ -771,9 +835,17 @@ func dockAllowances(routes []dockRoute) ([]dockAllowance, int) {
 			}
 		}
 		for _, d := range r.LeftBy {
-			if !d.atLimit() {
-				continue
+			if d.atLimit() {
+				limits[i] = append(limits[i], d)
 			}
+		}
+	}
+	// The notes are written once every route is in, so a limit without a
+	// reported reset is compared with the account's newest reading, the one
+	// shown under the note.
+	for i, ds := range limits {
+		a := &out[i]
+		for _, d := range ds {
 			where := " hit a usage limit on a route on this account"
 			if a.identity == "" {
 				where = " hit a usage limit on this route"
@@ -782,16 +854,16 @@ func dockAllowances(routes []dockRoute) ([]dockAllowance, int) {
 			if d.At != nil {
 				s = txt(s, " on ", tm(*d.At, "date"))
 			}
-			if d.ResetsAt != nil {
-				s = txt(s, "; the provider reported a reset for ", tm(*d.ResetsAt, "datetime"), ".")
-			} else {
-				s = txt(s, "; no reset time was reported.")
-			}
-			a.Notes = append(a.Notes, dockNote{Tone: "limit", Text: s})
+			a.Notes = append(a.Notes, dockNote{Tone: "limit", Text: dockLimitReset(s, d, a.Usage, "datetime")})
 		}
 	}
+	// Lines that share a provider and title each say what their routes are.
+	// Only identified accounts are numbered: a line whose account is not
+	// identified is not said to be, or not to be, any other line's account.
 	names := map[string]int{}
+	shared := map[string]int{}
 	for _, a := range out {
+		shared[a.Provider+"\x00"+a.Title]++
 		if a.identity != "" {
 			names[a.Provider+"\x00"+a.Title]++
 		}
@@ -803,7 +875,11 @@ func dockAllowances(routes []dockRoute) ([]dockAllowance, int) {
 		if a.Provider != "" && a.Provider != a.Account {
 			parts = append(parts, "provider "+a.Provider)
 		}
-		parts = append(parts, dockPlural(a.Routes, "route", "routes"))
+		count := dockPlural(a.Routes, "route", "routes")
+		if shared[a.Provider+"\x00"+a.Title] > 1 {
+			count = dockAllowanceKinds(count, a.kinds)
+		}
+		parts = append(parts, count)
 		if a.identity == "" {
 			parts = append(parts, "which account is not identified by a test")
 		} else if n := names[a.Provider+"\x00"+a.Title]; n > 1 {
@@ -829,6 +905,39 @@ func dockAllowances(routes []dockRoute) ([]dockAllowance, int) {
 		}
 	}
 	return out, omitted
+}
+
+// dockAllowanceRouteKind says what a route is from its configuration: the
+// kind of route it is, and its model and effort when they are configured.
+func dockAllowanceRouteKind(r dockRoute) string {
+	parts := []string{"tool not recorded"}
+	if r.Tool != "" {
+		parts[0] = r.Tool
+	}
+	if r.Model != "" {
+		parts = append(parts, "model "+r.Model)
+	}
+	if r.Effort != "" {
+		parts = append(parts, "effort "+r.Effort)
+	}
+	return strings.Join(parts, ", ")
+}
+
+// dockAllowanceKinds ends a route count with what those routes are, at most
+// three of them, and how many more there are.
+func dockAllowanceKinds(count string, kinds []string) string {
+	if len(kinds) == 0 {
+		return count
+	}
+	shown := kinds
+	if len(shown) > 3 {
+		shown = shown[:3]
+	}
+	s := count + ": " + strings.Join(shown, "; ")
+	if more := len(kinds) - len(shown); more > 0 {
+		s += fmt.Sprintf("; and %d more", more)
+	}
+	return s
 }
 
 // dockShareAcrossLoops gives each loop's route the newest usage reading and
@@ -880,6 +989,8 @@ type dockChainInput struct {
 	// "daily cap reached", ...), as the scheduler would see it now; nil when
 	// the probe history was not read.
 	Due map[string]string
+	// Catalog is the accounts catalog, read once per report; nil when unread.
+	Catalog *accounts.File
 }
 
 // dockInput is everything one loop's view is built from.
@@ -961,7 +1072,7 @@ func buildDockReport(inputs []dockInput, now time.Time, refresh, staleAfter time
 		StaleAfterSeconds: int(staleAfter / time.Second), Identifiers: identifiers, NeedsYou: []dockNeed{}, Worth: []dockWorth{}, Loops: []dockLoop{},
 		Routes: []dockRoute{}, Allowances: []dockAllowance{}, Registry: dockRegistry{Availability: "unavailable"}, Complete: complete,
 		NeedsLine: "Needs you: unknown"}
-	r.RoutesSummary = dockRoutesLine{Picker: "No routes", Total: "No routes", InUseT: "0 in use", Problem: "none at a limit or failing its test"}
+	r.RoutesSummary = dockRoutesLine{Picker: "No routes", Total: "No routes", InUseT: "0 running now", Problem: "none at a limit or failing its test"}
 	if !registryOK {
 		return r
 	}
@@ -987,6 +1098,7 @@ func buildDockReport(inputs []dockInput, now time.Time, refresh, staleAfter time
 	r.Routes, r.RoutesOmitted = dockRoutes(r.Loops, now)
 	dockShareAcrossLoops(r.Loops, r.Routes, now)
 	r.Allowances, r.AllowancesOmitted = dockAllowances(r.Routes)
+	dockMarkOldUsage(&r, staleAfter)
 	sort.SliceStable(r.NeedsYou, func(i, j int) bool {
 		a, b := r.NeedsYou[i].WaitedSeconds, r.NeedsYou[j].WaitedSeconds
 		if a == nil || b == nil {
@@ -1100,7 +1212,7 @@ func dockRoutesSummary(r dockReport) dockRoutesLine {
 	}
 	s.Total = dockPlural(s.Count, "route", "routes")
 	s.Picker = s.Total
-	s.InUseT = fmt.Sprintf("%d in use", s.InUse)
+	s.InUseT = fmt.Sprintf("%d running now", s.InUse)
 	if s.Trouble > 0 {
 		s.Picker += fmt.Sprintf(", %d at a limit or not ready", s.Trouble)
 		s.Problem = fmt.Sprintf("%d at a limit or not ready, listed first", s.Trouble)
@@ -1223,7 +1335,7 @@ func projectDockLoop(in dockInput, now time.Time, staleAfter time.Duration, iden
 		l.Hold = dockCurrentHold(snap.Controls, updated, in.Timeline, now)
 	}
 	l.LastCheck = dockLastCheck(st, now, staleAfter)
-	l.NextCheck = dockNextCheck(snap, now)
+	l.NextCheck = dockNextCheck(snap, st, now)
 	l.Fallbacks = dockFallbackReadiness(st, in.Chain)
 	if st != nil {
 		l.Limits = dockLimits(st, now)
@@ -1503,11 +1615,18 @@ func dockIssue(code string) string {
 	return "Some evidence is unavailable."
 }
 
+// The advice when no cause says more. A hold's note may name something outside
+// the conversation, so with a note the advice points at it first.
+const (
+	dockHoldAdvice     = "Look at the conversation, then resume the loop when it is ready to continue."
+	dockHoldAdviceNote = "See the note left with the hold, and the conversation. Resume the loop when what it is waiting for is done."
+)
+
 // dockHoldNeed explains an awaiting-user hold from the fixed cause recorded
-// when it started. Nothing is inferred from the note's text, and the note is
-// included only with identifiers, as registered status withholds it.
+// when it started. Nothing is inferred from the note's text. The note is
+// shown with its identifiers masked, or whole with identifiers.
 func dockHoldNeed(st *statusOut, hold *dockHold, identifiers bool) *dockNeed {
-	n := &dockNeed{Kind: "held", Reason: "It is held for a person.", Action: "Look at the conversation, then resume the loop when it is ready to continue."}
+	n := &dockNeed{Kind: "held", Reason: "It is held for a person.", Action: dockHoldAdvice}
 	cause := ""
 	switch {
 	case hold != nil && hold.Marked:
@@ -1555,10 +1674,16 @@ func dockHoldNeed(st *statusOut, hold *dockHold, identifiers bool) *dockNeed {
 		return n
 	}
 	if note := strings.TrimSpace(st.Control.Note); note != "" {
+		if n.Action == dockHoldAdvice {
+			n.Action = dockHoldAdviceNote
+		}
+		masked, hid := dockMaskNote(note)
+		n.Note, n.NoteMasked = clip(masked, dockMaxNote), hid
 		if identifiers {
 			n.Note = clip(note, dockMaxNote)
-		} else {
-			n.NoteWithheld = true
+			if hid {
+				n.MaskedNote = clip(masked, dockMaxNote)
+			}
 		}
 	}
 	if t := st.Control.UpdatedAt; n.Since == nil && !t.IsZero() {
@@ -1576,10 +1701,13 @@ func dockChildWork(r runsLoop, known bool) dockChildren {
 	b := r.Blocker
 	c.CheckedAt, c.AgeSeconds = b.CheckedAt, b.AgeSeconds
 	switch b.Availability {
-	case blockerBlocked, blockerHeld, blockerListed, blockerNone:
+	case blockerBlocked, blockerHeld, blockerListed, blockerNone, blockerBeforeHold:
 		c.Availability, c.Holding = "current", b.Availability == blockerBlocked
-		if b.Availability == blockerHeld {
+		switch b.Availability {
+		case blockerHeld:
 			c.Availability = "held"
+		case blockerBeforeHold:
+			c.Availability = "before_hold"
 		}
 		for _, child := range b.Children {
 			switch child.Status {
@@ -1607,11 +1735,18 @@ func dockChildWork(r runsLoop, known bool) dockChildren {
 		c.Phrase = strings.Join(parts, ", ")
 		if len(parts) == 0 {
 			c.Phrase = "None at the last check"
+			if b.Availability == blockerBeforeHold {
+				c.Phrase = "None"
+			}
 		}
-		if b.Availability == blockerHeld {
+		switch b.Availability {
+		case blockerHeld:
 			c.Phrase += " (as of the check that held it)"
+		case blockerBeforeHold:
+			c.Phrase += " (" + dockBeforeHold(b) + "; not current)"
 		}
 	case blockerUnknown:
+		c.Phrase = "Unknown: " + dockUnknownLanes(b)
 		switch b.Reason {
 		case "no_open_run", "no_child_evidence_recorded":
 			c.Availability, c.Phrase = "none_recorded", "None recorded"
@@ -1620,6 +1755,49 @@ func dockChildWork(r runsLoop, known bool) dockChildren {
 		}
 	}
 	return c
+}
+
+// dockBeforeHold says which check a listing kept across a hold or pause came
+// from, and how long ago: "as of the check before it was paused, 3 h ago".
+func dockBeforeHold(b runsBlocker) string {
+	s := "as of the check before it was held"
+	if b.LastCheckCause == "paused" {
+		s = "as of the check before it was paused"
+	}
+	if b.AgeSeconds == nil {
+		return s + ", at an unknown time"
+	}
+	if *b.AgeSeconds < 45 {
+		return s + ", just now"
+	}
+	return s + ", " + dockSpan(time.Duration(*b.AgeSeconds)*time.Second) + " ago"
+}
+
+// dockUnknownLanes says, in plain words, why the lanes cannot be shown.
+func dockUnknownLanes(b runsBlocker) string {
+	switch b.Reason {
+	case "not_refreshed_by_the_last_check":
+		switch b.LastCheckCause {
+		case "paused":
+			return "the loop is paused, so its checks do not look at its lanes, and no complete listing was recorded before the pause"
+		case "awaiting_user":
+			return "the loop is held for a person, so its checks do not look at its lanes, and no complete listing was recorded before the hold"
+		case "disabled":
+			return "the loop is turned off, so its checks do not look at its lanes"
+		case "completed":
+			return "the loop is marked finished, so its checks do not look at its lanes"
+		}
+		return "the last check did not list the lanes, so the listing on record is from an earlier check and is not shown"
+	case "child_listing_incomplete":
+		return "the last check could not see every lane, and a partial list would read as the whole answer"
+	case "last_check_not_recorded":
+		return "no check is on record for this loop"
+	case "graph_unavailable":
+		return "the loop's run record cannot be read"
+	case "binding_unavailable":
+		return "the loop's configuration cannot be read or did not validate"
+	}
+	return "the records do not say why"
 }
 
 func dockLastCheck(st *statusOut, now time.Time, staleAfter time.Duration) dockCheck {
@@ -1670,7 +1848,7 @@ func dockAction(c *state.Check) string {
 	return verb
 }
 
-func dockNextCheck(snap *clientSnapshot, now time.Time) dockNext {
+func dockNextCheck(snap *clientSnapshot, st *statusOut, now time.Time) dockNext {
 	n := dockNext{Availability: "unknown", Phrase: "Unknown"}
 	if snap == nil {
 		return n
@@ -1680,9 +1858,12 @@ func dockNextCheck(snap *clientSnapshot, now time.Time) dockNext {
 	case d.State == "skipped":
 		n.Detail = "the loop's looptender scheduler was not asked"
 	case d.State == "not_recorded":
-		// The only evidence is the absence of an endpoint record. Whether a
-		// scheduler outside keepgoing runs the loop is not inspected.
-		n.Detail = "no looptender scheduler is on record for this loop, and one outside looptender is not visible"
+		// The only evidence is the absence of an endpoint record: only
+		// `keepgoing start` writes one. Checks started by `keepgoing tick`
+		// from a BB automation or another scheduler leave none, and that
+		// scheduler is not inspected. What the record shows of past checks
+		// is said, never turned into a time for the next.
+		n.Detail = dockUnscheduledDetail(st, now)
 	case d.State != "responsive":
 		n.Detail = "a looptender scheduler is on record for this loop but did not answer"
 	case d.Phase == "waiting" && d.NextCheckAt != nil:
@@ -1696,6 +1877,25 @@ func dockNextCheck(snap *clientSnapshot, now time.Time) dockNext {
 		n.Availability, n.Phrase = "in_progress", "A check is running now"
 	}
 	return n
+}
+
+// dockUnscheduledDetail says what is known of a loop's checks when no
+// looptender scheduler is on record to say when the next is due: when the
+// last ran, what started it when the check recorded that, and how far apart
+// recent checks were. The gap is an observation of the past, not a schedule.
+func dockUnscheduledDetail(st *statusOut, now time.Time) string {
+	const next = "no looptender scheduler is on record to say when the next is due"
+	if st == nil || st.Schedule.LastCheckAt == nil || st.Schedule.LastCheckAt.After(now.Add(time.Minute)) {
+		return "no looptender scheduler is on record for this loop, and one outside looptender is not visible"
+	}
+	last := "the last check ran " + dockAgo(now, *st.Schedule.LastCheckAt)
+	if r := st.Schedule.StartedBy; r != nil && r.Source == state.RoutineBBAutomation {
+		last += ", started by a BB automation"
+	}
+	if g := st.Schedule.sch.Recent; g > 0 {
+		return last + ", and recent checks ran about " + dockSpan(g) + " apart (past checks, not a forecast). " + dockCapital(next) + "."
+	}
+	return last + ". " + dockCapital(next) + "."
 }
 
 func dockFallbackReadiness(st *statusOut, chain *dockChainInput) dockFallbacks {
@@ -1754,6 +1954,9 @@ func dockLimits(st *statusOut, now time.Time) []dockLimit {
 		case p.ChangedAt != nil:
 			l.Phrase = dockDuration(now.Sub(*p.ChangedAt)) + " of " + dockLimitDuration(p.Timeout)
 		}
+		if p.Due {
+			l.Effect = dockNoProgressLimitEffect
+		}
 		out = append(out, l)
 	}
 	if n := st.NewThreads; n.Created > 0 || n.Pending {
@@ -1770,6 +1973,10 @@ func dockLimits(st *statusOut, now time.Time) []dockLimit {
 	}
 	return out
 }
+
+// dockNoProgressLimitEffect is what a reached no_progress_timeout does
+// (docs/operations.md, "No-progress timeout").
+const dockNoProgressLimitEffect = "a check holds the loop for a person and sends nothing. It stays held until a person resumes it, and resuming with no new Git change holds it again."
 
 // dockDuration prints a configured length of time: "45 min", "3 h 12 min",
 // "24 h", "2 days 6 h".
@@ -1919,6 +2126,7 @@ func dockHandoffChain(in *dockChainInput, use dockRouteUse, test dockTesting, f 
 		main.Notes = append(main.Notes, dockNote{Tone: "limit", Text: main.Usage.UsedUp})
 	}
 	main.identity = dockAccountIdentity(in.Primary, main.Usage)
+	main.CatalogAccount = dockCatalogAccount(in, in.Primary.Agent)
 	c.Entries = append(c.Entries, main)
 	if len(in.Candidates) == 0 {
 		c.Availability = "none_configured"
@@ -2006,6 +2214,7 @@ func dockHandoffChain(in *dockChainInput, use dockRouteUse, test dockTesting, f 
 			e.Notes = append(e.Notes, dockNote{Tone: "limit", Text: e.Usage.UsedUp})
 		}
 		e.identity = dockAccountIdentity(cand, e.Usage)
+		e.CatalogAccount = dockCatalogAccount(in, cand.Agent)
 		c.Entries = append(c.Entries, e)
 	}
 	if c.Omitted > 0 {
@@ -2021,7 +2230,13 @@ func dockHandoffChain(in *dockChainInput, use dockRouteUse, test dockTesting, f 
 	case f.Availability != "known":
 		c.Brief = "Readiness of other routes unknown"
 	case f.Ready == 0 && f.Eligible > 0:
-		c.Brief, c.Short = "No other route is ready", true
+		c.Brief, c.Short = "No standby route is ready", true
+		for _, e := range c.Entries {
+			if e.Current && e.Readiness == "current" {
+				c.Brief += "; its current route is unaffected"
+				break
+			}
+		}
 	case f.Ready == 0:
 		c.Brief, c.Short = "No other route is eligible to take over", true
 	default:

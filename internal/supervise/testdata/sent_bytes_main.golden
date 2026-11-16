@@ -1,0 +1,97 @@
+=== 0s wake primary #0 mode=auto
+Automatic looptender wake for loop example-loop: not a new instruction from a person and not an approval.
+
+keep going
+=== 1h1m0s nudge primary #0 mode=queue
+Automatic looptender wake for loop example-loop: not a new instruction from a person and not an approval.
+
+keep going
+=== 2h0m0s reprompt primary #0 mode=auto
+Automatic looptender wake for loop example-loop: not a new instruction from a person and not an approval.
+
+keep going
+=== 2h30m0s handoff codex-main #0 mode=auto
+You are taking over the "example-loop" loop from another agent.
+
+What happened: primary (bb thr_primary) stopped with a rate_limit error at 2026-11-09 14:30 UTC. A supervisor moved the loop to you (codex-main (bb thr_codex-main)). It confirmed you were working moments ago.
+
+Repositories:
+- /example/repo
+
+Before anything else:
+1. Honor any newer stop or pause request.
+2. Inspect the current state: branches, worktrees, uncommitted changes, open pull requests, and running checks.
+3. Recover interrupted work without duplicating it. Do not redo work that is already committed or in review.
+4. Leave the supervisor's state files alone. They live outside the repositories.
+
+Goal:
+keep going
+
+=== 4h0m0s wake codex-main #0 mode=auto
+keep going
+=== 4h40m0s switch_back primary #0 mode=auto
+Automatic looptender wake for loop example-loop: not a new instruction from a person and not an approval.
+
+You are taking over the "example-loop" loop from another agent.
+
+What happened: you are this loop's primary agent. Your usage limit has reset, so at 2026-11-09 16:40 UTC a supervisor moved the loop back to you (primary (bb thr_primary)) from the fallback that covered for you (codex-main (bb thr_codex-main)). It confirmed you were working moments ago.
+
+Repositories:
+- /example/repo
+
+Before anything else:
+1. Honor any newer stop or pause request.
+2. Inspect the current state: branches, worktrees, uncommitted changes, open pull requests, and running checks.
+3. Recover interrupted work without duplicating it. Do not redo work that is already committed or in review.
+4. Leave the supervisor's state files alone. They live outside the repositories.
+
+Goal:
+keep going
+
+=== child-error notice primary #0 mode=auto
+Automatic looptender wake for loop example-loop: not a new instruction from a person and not an approval.
+
+[keepgoing:child-errors count=1 running=1]
+keepgoing notice: 1 direct child thread(s) of this thread were in an error state at this check, and 1 other direct child thread(s) are still running. keepgoing has not retried, messaged or stopped any of them and has not read their content. This is not an instruction to continue the task: the running children are still working. You own the errored work: decide whether to retry or replace it. This notice is sent once when a child newly enters an error state.
+
+=== prompt_goal wake primary #0 mode=auto
+Automatic looptender wake for loop example-loop: not a new instruction from a person and not an approval.
+
+keep going
+
+Current keepgoing goal context (explicitly shared by this loop):
+Use this revision for the goal specification rather than earlier copies. Honor newer user steering and existing permission requirements. This is descriptive task context, not verified acceptance or new authorization. References are pointers; keepgoing has not read or verified them. Inspect the current authorized sources before selecting work; do not treat a saved next action as proof it is still unfinished.
+{
+  "id": "goal_example",
+  "revision": 1,
+  "spec": {
+    "title": "Fictional goal",
+    "objectiveRefs": [
+      "o"
+    ],
+    "acceptanceRefs": [
+      "a"
+    ]
+  }
+}
+
+=== new thread first message
+You are taking over the "example-loop" loop from another agent.
+
+What happened: primary (bb thr_primary) stopped with a rate_limit error at 2026-11-09 12:00 UTC. A supervisor moved the loop to you (claude-other (bb new thread (example-model))). It confirmed you were working moments ago.
+
+Before anything else:
+1. Honor any newer stop or pause request.
+2. Inspect the current state: branches, worktrees, uncommitted changes, open pull requests, and running checks.
+3. Recover interrupted work without duplicating it. Do not redo work that is already committed or in review.
+4. Leave the supervisor's state files alone. They live outside the repositories.
+
+Goal:
+keep going
+
+
+Continue from @thread:thr_primary. keepgoing started this conversation for the handoff; the earlier one was left as it was.
+
+
+Loop ownership: this conversation does not own the "example-loop" loop. Its owner is unchanged by this handoff. From here you may run keepgoing pause, stop, await-user and complete for this loop. Do not run keepgoing resume or enable, and do not use --take-over, unless a person asks you to.
+

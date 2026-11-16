@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"github.com/looptender/looptender/internal/envvar"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -162,7 +163,11 @@ func wrapperCommand(argv []string, workdir, dir string, env []string, acp string
 	cmd := exec.Command(self)
 	configureWrapper(cmd)
 	cmd.Dir = workdir
-	for _, kv := range append(os.Environ(), env...) {
+	// The session a supervisor was started from is not this turn's: a turn
+	// started by a supervisor launched from a BB thread is not that thread
+	// or its agent session. An entry the loop's configuration sets in env
+	// comes after, so it is kept.
+	for _, kv := range append(envvar.WithoutSupervisorSession(os.Environ()), env...) {
 		if name, _, _ := strings.Cut(kv, "="); !strings.EqualFold(name, envTurnACP) {
 			cmd.Env = append(cmd.Env, kv)
 		}

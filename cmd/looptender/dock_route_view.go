@@ -87,13 +87,20 @@ type dockLane struct {
 }
 
 type dockLanes struct {
-	// current, held, stale, none_recorded or unknown, as dockChildren.
+	// current, held, before_hold, stale, none_recorded or unknown, as
+	// dockChildren.
 	Availability string     `json:"availability"`
 	Lanes        []dockLane `json:"lanes"`
 	Omitted      int        `json:"omitted"`
 	// Heading and Footer are the lines above and below the rows.
 	Heading string `json:"heading"`
 	Footer  string `json:"footer,omitempty"`
+	// Role is "coordinator" when the listing shown has lanes: the glossary's
+	// role, not a separate object. Empty otherwise.
+	Role string `json:"role,omitempty"`
+	// Summary is the counts on one line, people first ("3 waiting · 2 failed
+	// · 35 working"), and says when the listing is not from the last check.
+	Summary string `json:"summary,omitempty"`
 }
 
 // dockEvent is one retained history entry in plain words.
@@ -353,7 +360,7 @@ func dockDeviceOf(st *statusOut, hostname string, identifiers bool, now time.Tim
 func dockLaneList(r runsLoop, known bool, identifiers bool, current bool, titles *state.LaneTitles, now time.Time) dockLanes {
 	c := dockChildWork(r, known)
 	out := dockLanes{Availability: c.Availability, Lanes: []dockLane{}, Heading: "This loop's lanes"}
-	if out.Availability != "current" && out.Availability != "held" {
+	if out.Availability != "current" && out.Availability != "held" && out.Availability != "before_hold" {
 		return out
 	}
 	byKey := map[string]string{}
@@ -385,6 +392,10 @@ func dockLaneList(r runsLoop, known bool, identifiers bool, current bool, titles
 			l.State, l.Phrase = "failed", "Failed"
 		default:
 			l.State, l.Phrase = "unknown", "Unknown"
+		}
+		if c.Availability == "before_hold" && l.State != "unknown" {
+			// A listing from before a hold is never drawn as current.
+			l.Phrase = map[string]string{"working": "Was working", "waiting": "Was waiting for an answer", "failed": "Had failed"}[l.State]
 		}
 		if s := child.Supervised; s.Availability == recordRecorded && s.RegistrationID != "" {
 			l.Loop, l.LoopKey = clip(s.Loop, dockMaxText), dockKey(s.RegistrationID)
@@ -423,8 +434,12 @@ func dockLaneList(r runsLoop, known bool, identifiers bool, current bool, titles
 	} else {
 		when += "at an unknown time"
 	}
+	if c.Availability == "before_hold" {
+		when = dockBeforeHold(r.Blocker) + "; not current"
+	}
 	out.Heading = "This loop's lanes \u00B7 " + strings.Join(counts, ", ") + " \u00B7 " + when
-	out.Footer = "looptender records each lane's state and, when BB reports one, its title, which is shown with identifiers and notes; not which route it is on"
+	out.Role, out.Summary = "coordinator", dockLaneSummary(c, r.Blocker.OmittedChildren, when)
+	out.Footer = "looptender records each lane's state and, when BB reports one, its title, which is shown with identifiers; not which route it is on"
 	if identifiers {
 		out.Footer = "looptender records each lane's state and, when BB reports one, its title; not which route it is on"
 	}
@@ -436,6 +451,24 @@ func dockLaneList(r runsLoop, known bool, identifiers bool, current bool, titles
 		out.Footer = dockPlural(out.Omitted, "more lane is", "more lanes are") + " not listed. " + out.Footer
 	}
 	return out
+}
+
+// dockLaneSummary is the tree row's line: the lanes needing a person first,
+// then the rest, and when a listing kept across a hold was made.
+func dockLaneSummary(c dockChildren, omitted int, when string) string {
+	parts := []string{}
+	for _, x := range []struct {
+		n    int
+		word string
+	}{{c.Stuck, "waiting"}, {c.Failed, "failed"}, {c.Working, "working"}, {omitted, "more not itemized"}} {
+		if x.n > 0 {
+			parts = append(parts, fmt.Sprintf("%d %s", x.n, x.word))
+		}
+	}
+	if c.Availability == "held" || c.Availability == "before_hold" {
+		parts = append(parts, when)
+	}
+	return strings.Join(parts, " \u00B7 ")
 }
 
 // dockEffort is the configured effort level of an agent definition.

@@ -57,7 +57,7 @@ The move saves an awaiting-user hold, clears primary-specific observations/curso
 
 Goal identity/history, send accounting, no-progress accounting and report/incident history are retained. The reset clears last observed state/check, retry grace, primary limit/reset observations, pending-input reporting and the stop-sent marker, plus `targets/primary/bb-cursor.json`. It retains the Git fingerprint/progress time, send timing and spent nudge/reprompt/handoff counts. Ordinary subsequent checks still use their existing reset rules. Transfer is not a fresh work budget.
 
-After a successful move, inspect status and diagnostics from the destination or terminal. Only an explicit `resume` clears the holds, using the existing control semantics; `enable` is separately needed if the loop was disabled. Do not resume work that still requires a person or was already complete.
+After a successful move, inspect status and diagnostics from the destination or terminal. Only an explicit `resume` clears the holds, using the existing control semantics. The destination is then the loop's target, so in unreleased source it cannot run that `resume` itself: a person runs it from an ordinary terminal or the panel ([why](operations.md#the-supervised-session-cannot-clear-its-own-hold)); `enable` is separately needed if the loop was disabled. Do not resume work that still requires a person or was already complete.
 
 ## Recover an interrupted move
 

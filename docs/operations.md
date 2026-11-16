@@ -52,6 +52,24 @@ The background daemon disconnects from terminal input/output. Tick decisions and
 
 Background mode survives the launching terminal closing. It does not install a user service, restart after crashes or reboots, or guarantee survival across OS logout/session cleanup. It cannot execute while the host sleeps or is off. After wake, the next available check applies current controls; there is no catch-up queue of missed ticks. Network errors retain the normal structured-error policy; in v0.2.0, recovery [waits while the connectivity check fails](#network-outages). macOS and Linux user-service management are available separately through [`service install|status|remove`](services.md); live service lifecycle verification remains roadmap work. Windows service support is still planned; see the [Task Scheduler investigation](windows-services.md). Offline fixtures exercise detached startup, parent exit, duplicate refusal, status, holds, and stop with a local process adapter; no live model call or multi-account handoff is part of these checks.
 
+### How a wake reads in a BB thread
+
+Unreleased source. Every message looptender sends to an existing BB thread with `bb thread tell` starts with one fixed line:
+
+```text
+Automatic looptender wake for loop example-loop: not a new instruction from a person and not an approval.
+```
+
+This covers wakes, nudges, re-prompts, briefs to an existing thread, and child-error notices. The rest of the message is unchanged; a loop with [`loop.prompt_context`](#supervision-context-in-sends) adds the supervision context at the end, after the line and the whole message. Headless Claude Code, Codex and Cursor prompts do not get the line.
+
+One message is not covered: the first prompt of a [handoff to a new conversation](fallbacks.md#hand-off-to-a-new-conversation). It goes through `bb thread spawn`, so it gets no wake line and keeps the supervisor's `BB_THREAD_ID`. When a BB thread started the supervisor by hand, BB shows that prompt as sent by that thread.
+
+The message is sent with `bb thread tell` and without `BB_THREAD_ID`, whatever the supervisor's environment has. Before this change, a `daemon` or `tick` started by hand inside a BB thread passed that thread's ID on, and BB showed every wake as `[bb message from thread:<that thread>]`. The target could not tell a wake from a peer agent's message. A supervisor started as a service already ran without one. Other `bb` commands, such as reads, retry, stop and thread creation, keep the supervisor's environment.
+
+BB offers no way for a command to declare another origin, so BB shows the message as coming from the person. The fixed line is what says otherwise. It is not a signature: any text can copy it, so a session should treat it as a label and judge the message by what it asks. How BB shows a message sent without a thread identity was read from BB's own interface, not checked in a live thread.
+
+Only a supervisor on this build sends this way. A `daemon` or service already running an older build keeps sending wakes with its thread identity and without the line until it is restarted on this build. Fixtures only.
+
 ## Exit codes
 
 | Code | Meaning |
@@ -181,7 +199,75 @@ How the time is spent:
 
 ## Status for other tools
 
-`keepgoing status --json` prints the control file, state, window, and redundancy summary. Check the exit code, or `unreadable`, before reading them: when `control.json` or `state.json` cannot be read, `status` exits 1 and leaves out what it could not read, rather than printing an empty record as the loop's ([when a record cannot be read](#when-a-record-cannot-be-read)). It also prints `primaryAgent` and `targetAgent`, which describe the loop's own agent and the one it is supervising right now. Each has its `adapter`, `provider`, and `model`, plus `bbThread` for a BB thread or `workdir` for a headless runner. An agent workspace can use these to show looptender's state beside the right thread.
+`keepgoing status --json` prints the control file, state, window, and redundancy summary. Check the exit code, or `unreadable`, before reading them: when `control.json` or `state.json` cannot be read, `status` exits 1 and leaves out what it could not read, rather than printing an empty record as the loop's ([when a record cannot be read](#when-a-record-cannot-be-read)). It also prints `primaryAgent` and `targetAgent`, which describe the loop's own agent and the one it is supervising right now. Each has its `adapter`, `provider`, and `model`, plus `bbThread` for a BB thread or `workdir` for a headless runner, and `account`: the [accounts catalog entry the route states](accounts.md#say-which-account-a-route-uses), or the derived account context of a route that states none. An agent workspace can use these to show looptender's state beside the right thread.
+
+## Supervision context
+
+Unreleased. `keepgoing context -c <config>` prints what a supervised session may know about the loop that supervises it, built only from the loop's configuration, `control.json` and `state.json` (plus `sends.json` and `progress.json` when those limits are set). It writes nothing, takes no lock, and queries neither a provider nor the daemon. `--json` prints the same with `schemaVersion: 1`; fields may be added within a version, and a field's meaning does not change within one.
+
+It shows:
+
+- the loop's name and its adapter kind (`loop.adapter`);
+- the active target: its route, adapter, provider and BB thread or working directory, with `identityEvidence: configuration_only`, because the identity comes from the configuration and is not checked with the provider. When there is no usable target it says why: `state.json` could not be read, the route is missing or switched off in the configuration, or the route starts a new BB thread whose thread has not been recorded yet;
+- the recorded owner claim, a BB thread and its generation, or `none recorded`;
+- that caller identity is taken from `BB_THREAD_ID`, which is checked only for its form and not with BB; a command run without it has no caller identity and is treated as an ordinary terminal;
+- the control state, the holds (transfer pending, stop requested, paused, awaiting a person, completed) and the control note;
+- the bounds: `loop.limits.deadline`, `max_sends` and `no_progress_timeout`, each with what is used and what remains, or `unset`, with the [unbounded warning](#bounds-on-repeated-work) when none is set; `max_new_threads`, `errors.max_reprompts` (this error episode) and `progress.max_nudges` (since progress or the last turn end) with used and remaining; and the operating window;
+- the permission mode and sandbox looptender passes to the active target, only where the configuration sets them (`claude.permission_mode`, `codex.sandbox`, and the permission mode of a BB thread looptender created at a handoff, which is always passed and is labelled as set at creation, since it may have changed since); otherwise `not set by looptender`, because looptender does not know the effective setting and does not guess it. `extra_args` are passed on unchanged and not interpreted, and the context says they may override the settings it lists;
+- the lane policy: lanes are not supervised by implication and looptender does not message or create them; whether lane recovery (`bb.children.retry_errored`) is on, in which case looptender may ask BB to retry a lane's failed turn, and its caps; and that looptender stops a lane only for `stop --lanes`, which is for a person;
+- the commands a session may run, with the loop's configuration path: `context`, `status`, `complete --note` and `await-user --note`;
+- fixed statements of retained authority, each true in every configuration: supervision grants no permission; supervision adds no permission beyond the permission settings the context lists; a session must not clear a hold, resume is for a person, and looptender does not enforce this (`resume` checks only the loop's owner, and a caller without `BB_THREAD_ID` passes that check); looptender never merges or edits a repository, and never reads transcript text to make a decision; lanes are not supervised by implication.
+
+It names no device. When `control.json` or `state.json` cannot be read, it says so under `unavailable`, leaves out what came from that record rather than showing an empty one, and exits 1; an unreadable `sends.json` or `progress.json` leaves that limit's used amount unavailable. Nothing sends the context to a session unless the loop opts in with [`loop.prompt_context`](#supervision-context-in-sends), and `context -c` does not say whether the session running it is the loop's target; `context --here` does. Covered by table tests of the pure builder (`internal/loopcontext`) and command fixtures that check no file changes and no `bb` call is made.
+
+### Which loop supervises this session
+
+Unreleased. `keepgoing context --here [--json]` answers for the session running it, without `-c`:
+
+- **The caller.** With `BB_THREAD_ID` set, the caller is that BB thread. Its form is checked (a value that is not a BB thread ID exits 2) but it is not checked with BB, and the working directory is not used. Without it, the caller is identified only by its working directory: a loop whose active target is a headless agent (Claude Code, Codex, Cursor or a custom adapter) working in that directory is found, whichever conversation in the directory is asking. Only that exact directory matches: an agent that has moved into a subdirectory, or a parent, of its loop's working directory is not found, and is told `no loop targets a session working in <dir>`. A process loop's session is its resume command, which a working directory cannot match, so a process loop is never found this way. The output says which of these applied.
+- **Turns started by looptender.** The headless and process turns that `tick` and `daemon` start do not inherit the `BB_THREAD_ID` the supervisor was started with (see [what a supervised session inherits](#what-a-supervised-session-inherits)), so an agent asking `--here` from such a turn is identified by its working directory and finds its own loop, unless the loop's configuration sets `BB_THREAD_ID` in its `env`. A supervisor still running an older build passes it on until it is restarted; an agent in its turns is then identified as that BB thread, not as its own session, and can be shown that thread's loop or none. The output says so for every BB caller.
+- **The search.** It reads the caller's [session records](#one-loop-per-session), the ones `enable` and each check write, under both directory names, and checks each loop listed there against its current configuration and state: the configuration must still load and name the state directory it was recorded with, and the loop's active target must be the caller's session. A loop on a fallback no longer targets the primary it left. A loop that has never recorded this session, for example one not enabled or checked since it was pointed at it, is not found. It never looks up a parent thread, so a lane is not found through the loop that supervises its parent: a lane asking gets `no loop targets this session`.
+- **The answer.** One loop: `loop <name> targets this session`, then that loop's context as `context -c` prints it. More than one: each is named and each context printed, as `enable` names a second loop on a session. None: `no loop targets this session`, or for a working directory `no loop targets a session working in <dir>`. Recorded loops that do not count are reported under `not counted` as a count and a reason only (for example `1 recorded loop(s): its active route targets another session`): a loop that does not target the caller is never named, so a session does not learn about loops other than its own. A loop that could not be checked is named with its configuration path, since it is what makes the answer unknown. When a record cannot be read, the claim directory cannot be trusted, or a recorded loop cannot be checked (its configuration does not load, its `state.json` cannot be read, or its active route starts a BB thread not recorded yet), the answer is `unknown`, never "no loop", and it exits 1.
+- **`--json`.** `schemaVersion: 1`, `caller` (`source` `bb_thread_id` or `working_directory`, `bbThread` or `workdir`, `text`), `outcome` (`one`, `several`, `none` or `unknown`), `text`, `loops` (`loop`, `config`, `context` as `context --json` prints it), `notCounted` (`count`, `reason`, `verified`; `loop` and `config` only on an entry with `verified` false, which is one loop that could not be checked), `basis` (the fixed sentences above) and `unavailable`.
+
+Like `context -c` it writes nothing, takes no lock and queries neither a provider nor the daemon; it also does not create or tighten the claim directory, as checks do. Exit codes: 0 for a complete answer, 1 when it is `unknown` or a found loop's `control.json` or `state.json` could not be read, 2 for a usage error. Covered by table tests of the outcome wording and command fixtures (a BB caller, a headless turn started by a supervisor inside a BB thread that finds its own loop, a lane, a retargeted loop that is counted but not named, two loops on one session, a working directory and a subdirectory of it, stale and unreadable records, a missing or linked claim directory) that check no file changes and no `bb` call is made. Not verified against a live BB thread.
+
+### Supervision context in sends
+
+Unreleased. With `loop.prompt_context: true` (off by default, the same shape as `prompt_goal`), looptender appends the loop's [supervision context](#supervision-context) to what it sends, so a session learns which loop supervises it without running `context` itself. The text is exactly what `context -c` prints at that moment, built by the same pure builder, after a tag line and one fixed sentence:
+
+```text
+[keepgoing:context schema=1]
+keepgoing notice: the supervision context of this loop, built from its configuration, controls and state when this message was sent. Its figures are not kept current here; the context command it lists shows them now.
+context:   schema version 1
+loop:      example-loop
+...
+```
+
+The tag uses the compatibility name `keepgoing`, as the [child-error notice](#children-in-error) does; `schema=` is the context's `schemaVersion`. It names no device and states no permission beyond what `context` states.
+
+**Where it goes.** Last, after everything else in the message: after the [wake header](#how-a-wake-reads-in-a-bb-thread) and the task prompt or brief, and after the goal context of `prompt_goal` and a child-error notice that rides on a wake. It never replaces or comes before the header.
+
+| Target | Where the block goes | Where it cannot go |
+| --- | --- | --- |
+| BB thread | The text `bb thread tell` sends; for a [new conversation](fallbacks.md#hand-off-to-a-new-conversation), the end of its first message (`bb thread spawn`), after the ownership note. | Lane retries and turn retries: they send no text. |
+| Claude Code, Codex, an agent defined in configuration | The end of the turn's prompt, on standard input or in the private prompt file the runner passes. | A probe's request; a running turn, which cannot be sent to. |
+| Cursor | The end of the prompt its runner sends. | A probe's request. |
+| Generic process | The end of the resume command's standard input. | The status, stop and probe commands, which never receive prompt text. Whether the agent behind the resume command reads it is up to that command. |
+
+**When.** It goes with wakes, nudges, re-prompts, refusal continues, handoff briefs and switch-back briefs, but not with every one:
+
+- every handoff and switch-back brief carries it, including the first message of a new conversation;
+- any other send carries it when no record of a sent context exists (the first send after the key is turned on, once a check has run with it off), when the control file was saved since (`enable`, `resume`, a change of owner, a pause, a hold or a question), or when the context's content changed: the target, the owner, the holds and note, a limit's setting, the permission settings, the lane policy or the commands. Its counts used and remaining, time remaining, whether a limit is reached or its used amount could not be read, and whether the window is open now are left out of that comparison, so they alone never send it again;
+- on a headless target it also goes with the turn that starts a new conversation that looptender knows of: the turn after `session reset` (while the reset waits for that turn), and every turn of an agent defined without `exact_resume`, since each of its turns is a new conversation.
+
+The notice-only wake that [errored lanes](#children-in-error) cause while other lanes still run never carries it: that message is a notice and nothing else. looptender cannot see a new conversation behind a BB thread, a generic process or Cursor; on those, a pause and resume sends the context again.
+
+**What is recorded.** `state.json` keeps `contextSent`: a digest of the content as compared above and the time of the last control save, the time and the length in bytes, never the text. It is saved only when the adapter call returned without error, so a failed send carries the context again next time. Each send's length in bytes, tag line included, is recorded with its provenance: `contextBytes` on `promptSend.last` and on the run graph's attempt, and, for the sends of a check the adapter did not refuse to start, on that check's incident record. The [savings figures](#savings-figures) add them up. With the key off, the record is cleared and every sent byte is what it was before this setting existed.
+
+**Mixed versions.** An older build refuses a configuration that sets `prompt_context`: the configuration loader rejects keys it does not know, so remove the key before running one. An older build that saves `state.json` drops `contextSent`, a field it does not know, so after going back to this build the next send carries the context once more. Key on or off, this build writes incident schema 14 on every check and run graph version 3 whenever it writes the graph. An older build refuses the schema 14 journal as with earlier upgrades (see [diagnostics](diagnostics.md)), and reports the version 3 run graph as unsupported, written by a newer schema, rather than corrupt.
+
+Covered by tests on stand-ins only: a BB stand-in and a headless Claude Code stand-in run with the built binary, a generic process stand-in with the real process adapter, and a fixed journey of sends compared byte for byte with what the previous build sent. Not verified against a live BB thread or provider.
 
 ## Understanding recorded status
 
@@ -204,6 +290,67 @@ New ticks persist `state.lastCheck` with:
 
 Existing `control.note` output is retained for compatibility; status is a private operational report. Doctor continues to withhold control notes, task text, environment values, and raw errors. This feature is implemented on `main`, not in v0.1.1, and is covered by offline fixtures for control precedence, failures, dry runs, handoffs, version comparisons, and legacy state.
 
+### Context window reading
+
+Unreleased source. For a BB thread, a check records how much of the model's context window the supervised conversation uses, as BB reports it with `bb thread context <thread> --json`: the tokens used, the window and BB's `estimated` flag. It is a diagnostic: no decision, send, allowance or hold of a check reads it, and a check decides and acts the same with or without it. Only `status` reads it, for the figures and for the [context window reset preview](#context-window-reset-preview).
+
+- **When.** At most once per check, after the check's action: when it sent a wake, a re-prompt or a nudge to the target it observed; when it is the first check to see that target's turn ended; or when it sends nothing to a target it observed idle whose latest reading is not after looptender's latest send (`lastSentAt`), so the turn that send began came and went between two checks. After that reading the reading is after the send, so the last case does not hold again until the next send. A paused, stopped, held, switched-off or dry-run check, and one that moved the loop to another route, reads nothing. It runs only in time the [check time budget](#check-time-budget) has free after what the check still reserves and the time one routine report needs, for at most 5 seconds, and is skipped when less than a second is left.
+- **What.** The supervised thread only, never a lane, and never message text. Output over 64 KiB, an error envelope, a figure that is missing, quoted, fractional or out of range, a window of zero and a missing `estimated` flag all count as unavailable. So does a bb without the command. An unavailable reading fails nothing and warns nothing; the last good reading stays with its own time.
+- **Where it is kept.** One record, `state.context` (layout `version` 1), for one target: the latest reading with the time of the check that read it; one summary per UTC day with the lowest, highest and last tokens used, the last window, the number of readings and whether any was marked as an estimate, for at most 31 days; and the last 8 readings, so a drop such as a reset or a compaction shows with the reading before and after it. The oldest day and reading are dropped first. An unavailable reading adds nothing. The record also keeps `turnEndSeenAt`, the time of the last check that saw this target's turn end (noted before that check's reading, and written whether or not `loop.context_window` is set), and `turnEndsTracked`, set by a build that keeps it. A handoff, a switch-back, a retarget or a transfer clears the whole record with the thread's other observations, and a reading of another target starts a new one.
+- **Where it shows.** Only in `status`. The text prints `context window:` with the latest figures, "estimated by BB" when BB marked them as an estimate ("reported by BB" otherwise) and how long ago they were read, and `context window by day` with the three newest days. `status --json` has the object `contextWindow`, `version` 1: `availability` (`recorded` or `unavailable`), `reason` (`not_recorded` or `not_supported`), `target`, `usedTokens`, `windowTokens`, `estimated`, `readAt`, `ageSeconds`, `age`, `text`, `days` (`day`, `lowest`, `highest`, `last`, `windowTokens`, `count`, `estimated`, oldest first) and `recent` (`usedTokens`, `windowTokens`, `estimated`, `at`, oldest first). The panel does not show it yet. Every other adapter reads `unavailable`; see the [capability matrix](adapters.md#context-window-reading).
+
+Tested with fixtures and a stand-in bb only. The shape was taken from one bb build's output and is not a published contract; a bb that changes it reads as unavailable.
+
+### Context window reset preview
+
+Unreleased source, fixture-tested only. With [`loop.context_window.reset_at`](configuration.md#context_window) set, `status` previews what a context-threshold reset would do at the loop's next turn boundary. It is a preview: this build never resets, compacts, sends, asks for a checkpoint or writes anything because of it, and no check's decisions, sends or saved state change with the key set or unset. It reads recorded state only, the same records as the rest of `status`, and runs no provider or `bb` command.
+
+The decision is `contextwindow.Decide`, a pure function. It says "would reset" only when every rule below passes, tried in this order; the first that fails names the rule and a fixed reason code:
+
+| Rule | Reason codes (would not reset) | Passes when |
+| --- | --- | --- |
+| `configuration` | `not_configured` | `reset_at` is set |
+| `controls` | `controls_unreadable`, `stopped`, `paused`, `held` | `control.json` reads, and the loop is not stopped, paused, switched off, awaiting a person or completed |
+| `reading` | `not_supported`, `no_reading`, `malformed_reading`, `estimate_flag_missing`, `freshness_unknown`, `reading_too_old`, `past_safety_limit` | the active target is a BB thread; its latest reading is recorded in a layout this build reads, with a positive window, a time not in the future and BB's `estimated` flag; no turn is known to have run since it was taken; and it is at most 24 hours old |
+| `session` | `no_observation`, `in_error`, `limit_wait`, `retrying`, `refusal`, `awaiting_input`, `not_idle` | the last check observed the active target idle after a turn, with no error, limit wait, provider retry or turn retry at that check, refusal streak or refusal hold, and no interaction pending |
+| `lanes` | `lanes_unverified`, `lanes_active` | the run graph has a complete lane listing of the active target from that check, with no lane active or awaiting input |
+| `threshold` | `below_threshold` | used tokens over the window are at or above `reset_at` |
+| `spacing` | `too_soon`, `daily_cap_used` | at least 6 hours since the last reset, and fewer than 2 today (UTC) |
+| `would_reset` | `at_or_above_threshold` | all of the above |
+
+**When a reading is current.** An idle session's context does not grow between turns, so a reading's age alone says little: one taken at a turn's end hours ago is still exact while the session stays idle. A reading is current when the records show no turn has run since it was taken: `state.json` `lastSentAt` (the last time looptender sent anything) is before the reading's time, and `context.turnEndSeenAt` (the last check that saw the turn end) is not after it. A send in the same check as the reading counts as after it, because that reading is taken as the turn the send began starts. A turn a person starts is caught the same way: the first check that sees it ended notes `turnEndSeenAt` and takes a new reading; if that reading is unavailable, the old one is out of date (`reading_too_old`). A record written before this rule existed has no `context.turnEndsTracked` and reads `freshness_unknown`. A turn looptender's own send began and that ended before the next check is read by that next check, which sends nothing and finds the reading not after the send. A turn a person starts and ends entirely between two checks is not seen by any check: it stays unseen until the next recorded send or the 24-hour safety limit (`past_safety_limit`). This build makes no resets, so none is recorded and `spacing` never fails yet. BB's `estimated` flag is kept in the words: "estimated by BB" or "reported by BB".
+
+- **Text.** A configured loop prints one line after the context window lines: `context window reset at the next turn boundary: would reset: 85% of the window used (170,000 of 200,000 tokens, estimated by BB), at or above the 80% threshold, …; preview only: this build never resets, compacts, sends or asks for a checkpoint`, or `would not reset:` with the reason in words. A loop without the key prints nothing new.
+- **JSON.** `status --json` has the object `contextWindowReset`, `version` 1: `preview` (always `true`), `configured`, `wouldReset`, `rule`, `reason`, `text`, and for a configured loop `threshold`, `estimated` (when the decision reached a reading), `safetyLimitSeconds` (86400), `minIntervalSeconds` (21600) and `dailyCap` (2). A loop without the key has the fixed value `{"version":1,"preview":true,"configured":false,"wouldReset":false,"rule":"configuration","reason":"not_configured","text":"not configured"}`. Like the other objects from `state.json`, it is left out when that file cannot be read.
+
+### Turn usage reading
+
+Unreleased source. For a Codex target, a check records the token counts Codex reports for each finished turn on the `turn.completed` event of `codex exec --json`: input, cached input, cache write input, output and reasoning output tokens. They are the agent's own counts for one turn. They are not the size of the context window (see [context window reading](#context-window-reading)), not an account's usage window, and not money. It is a diagnostic: no decision, send, allowance or hold reads it, and a check decides, sends and saves the same state with or without it.
+
+- **When.** At a check that observed the target's turn ended (idle or in error), after the check's action, unless the check is a dry run, a stop, or moved the loop to another route. A paused, stopped, held or switched-off check reads nothing. It reads the turn's saved output only; no provider is asked.
+- **What.** The typed `usage` object only, never message text. A count is kept only when it is a plain JSON integer from 0 to 10,000,000,000; a negative, fractional, quoted, null or larger figure is absent, and a usage object with no usable count is no reading. A missing count is never estimated. A malformed usage value never changes how the turn itself is read.
+- **Counted once.** A turn is named by a digest of its run record, so a turn read by several checks is counted once, and the digest keeps the record's stop key out of saved state.
+- **Where it is kept.** One record, `state.turnUsage` (layout `version` 1), for one target: the latest turn with the time of the check that recorded it, and one sum per UTC day (of that check) with the number of turns and, for each count, its total and how many turns reported it, for at most 31 days, the oldest dropped first. A handoff, a switch-back, a retarget or a transfer clears it with the target's other observations, and a turn of another target starts a new record.
+- **Where it shows.** Only in `status`. The text prints `tokens per turn:` with the latest turn's counts and how long ago they were recorded, and `tokens per turn by day` with the three newest days; a count some turns of a day did not report says how many turns it is from. `status --json` has the object `turnUsage`, `version` 1: `availability` (`recorded` or `unavailable`), `reason` (`not_recorded` or `not_supported`), `target`, `latest` (`inputTokens`, `cachedInputTokens`, `cacheWriteInputTokens`, `outputTokens`, `reasoningOutputTokens`, each left out when not reported, `recordedAt`, `ageSeconds`, `age`), `text` and `days` (`day`, `turns`, and for each count `tokens` and `turns`, oldest first). The panel does not show it.
+
+Claude Code is not covered: no Claude Code result object with usage fields has been captured, so its turns read `not_supported`, as do BB, Cursor, process and defined agents; see the [capability matrix](adapters.md#turn-usage-reading). Tested with fixtures only; the Codex shape is the one in the repository's fixtures, and no live turn was run for this.
+
+### Savings figures
+
+Unreleased source. `status` adds what looptender's restraint amounted to for the loop over the last 7 UTC days, today included, projected from records it already keeps: the incident history (`incidents.json`) and the [context window reading](#context-window-reading). Status reads them only; it calls no provider and no `bb`, and writes nothing. No decision reads the figures. There is no money figure, no single headline number and no comparison with an ordinary chat: in a chat nobody is woken at all, so looptender adds sends there rather than saving them.
+
+- **Withheld wakes.** A check is a withheld wake only when it sent nothing, the loop was not held, and the check observed the session idle (the incident record's `observation.state`), so that a timer's send there would have started a turn; counted by the check's fixed reason code (the `cause` of the incident history, for example `idle` or `child_busy`). A check that saw the session working, in a limit wait, retrying, failing or not observed at all is not one, since a timer's send would have queued or failed, and a hold (paused, switched off, stopped, completed or awaiting a person) is not one either. The count depends on how often checks run: a shorter interval gives more checks, and so more withheld wakes, for the same idle time.
+- **Spaced wakes.** Checks at which an idle wake was spaced, one per check, by fixed code (`idle_unchanged`), summed over the period's UTC days from the `idleSpacedDays` record in `state.json`. Each is a check at which a timer would have sent. They are shown on their own and not added to withheld wakes or to the estimate. Without that record (no build writes it yet) it reads `unavailable` with reason `not_recorded`, and with a malformed one `record_unreadable`.
+- **Checks that sent nothing.** Every check that succeeded without sending, whatever the session was doing, holds included, by fixed reason code.
+- **Sends.** By kind: `wake`, `nudge`, `reprompt`, `turn_retry` (BB retried the failed turn), `handoff` and `switch_back`. A held-back nudge is not a send. A dry run and a check that failed count in none of these. With [`loop.prompt_context`](#supervision-context-in-sends), `contextBlocks` and `contextBytes` count the checks whose sends carried the supervision context and its length in bytes; a check that failed counts here too, since its sends were made.
+- **Context window now.** The latest context window reading, with BB's estimated flag and its age, as in `context window`.
+- **Session resets.** Each `session reset` in the period, who ran it (`thread` or `terminal`), and the nearest of the last 8 context readings before and after it, or "not recorded".
+- **Estimate.** Labelled as an estimate on its own line, with its baseline: tokens not spent because wakes were withheld, as a range, the withheld wakes times the lowest and the highest context window reading of the period's UTC days. With no reading in the period it is absent, not zero. It is worded "estimated by BB" when any of those readings was, and is never tokens billed.
+
+When retention removed records from inside the period, or a summary of folded checks began before it, the counts are a floor: the text says "at least" and the history line names why.
+
+`status --json` has the object `savings`, `version` 1: `period` (`from`, the start of the first UTC day, and `days`; it ends at status's `readAt`); `history` (`availability`, `reason` `record_unreadable`, `partial`, `partialReasons` from `history_pruned`, `history_dropped` and `collapsed_span`); `withheldWakes`, `spacedWakes` and `checksSentNothing`, each with `availability`, `reason`, `total`, `byReason` (`reason`, `count`, `text`) and `text`; `sends` (`availability`, `total`, `byKind` of `kind` and `count`, `text`, `contextBlocks`, `contextBytes`); `contextNow` (`availability`, `reason`, `usedTokens`, `windowTokens`, `estimated`, `readAt`, `ageSeconds`, `text`); `resets` (`availability`, `items` of `at`, `by`, `before` and `after` readings, `text`); `estimate` (`label` always `estimate`, `availability`, `reason` `no_readings` or `record_unreadable`, `baseline`, `withheldWakes`, `lowestReading`, `highestReading`, `lowTokens`, `highTokens`, `estimated`, `text`); and `lines`, the text status prints. A total that could not be counted is absent, not zero. The panel does not show it yet.
+
 ### When a record cannot be read
 
 If `control.json` or `state.json` in the state directory cannot be read, `status` says so on standard error, says what checks are doing meanwhile and what to do, then prints everything it could still read, and exits 1. The record may be damaged (empty, cut short, not JSON, or JSON of the wrong shape, such as a hand-edited time that is not in RFC 3339 form), or looptender may be unable to open it (permissions, something other than a regular file in its place, or Windows refusing it for longer than reads retry). Only an error from the filesystem counts as unable to open; once the bytes were read, any error is damaged content. Status never rewrites or moves the file.
@@ -211,7 +358,7 @@ If `control.json` or `state.json` in the state directory cannot be read, `status
 `status --json` lists such records under `unreadable`, each with `file`, a fixed `problem` (`not_json`, `wrong_shape`, `not_a_file` or `cannot_open`; never the file's content or the raw error), `offset` (the byte a parse stopped at, for the first two) and `remedy`. Nothing is shown that an empty record would fill in:
 
 - With `control.json` unreadable, there is no `control` object, and the control state, activity and reason read `unavailable`: an empty record would read as a disabled loop, and a stopped loop as not stopped. The schedule is not judged (`schedule.notJudged` is `control_unreadable`), and the lane-stop line says it is unavailable.
-- With `state.json` unreadable, the target reads `unavailable`, `targetConfigured` is false, and everything taken from it is left out: `state`, `targetAgent`, `targetSession`, `newThreads`, `redundancy`, `promptSend`, `limitWait`, `turnRetry`, `refusals`, `laneRecovery`, `childErrorReport` and `takeoverBriefs`. Activity and history read `unavailable`, and `schedule.notJudged` is `state_unreadable`. The text output prints one `state: unavailable` line for all of it.
+- With `state.json` unreadable, the target reads `unavailable`, `targetConfigured` is false, and everything taken from it is left out: `state`, `targetAgent`, `targetSession`, `newThreads`, `redundancy`, `promptSend`, `limitWait`, `turnRetry`, `context`, `savings`, `refusals`, `laneRecovery`, `childErrorReport` and `takeoverBriefs`. Activity and history read `unavailable`, and `schedule.notJudged` is `state_unreadable`. The text output prints one `state: unavailable` line for all of it.
 - With either one unreadable, the no-progress flag is `not_available` with reason `record_unreadable`.
 
 A damaged `sends.json` is reported differently, as `sendRecord` ([a send recorded before it is made](#a-send-recorded-before-it-is-made)), and does not by itself make `status` exit 1; when it is damaged beside `control.json` or `state.json`, the last line names all of them.
@@ -240,7 +387,7 @@ On the next check, a completed loop skips observation, yield checks, progress re
 
 Declaring completion also ends a wait on a person, so `status` shows the loop as completed and not as awaiting user. What the person was being asked is not thrown away: the hold may have been raised by a check (a child waiting on a person, a spent cap), its note is stored nowhere else, and a completed loop stops observing. `complete` prints that a question was still open (without repeating the note), `control.json` keeps the hold's note and the time as `openQuestion`, `status` shows it on an `open question:` line until a `resume`, and the `complete` entry in `timeline` records that an awaiting-user hold was outstanding. The incident history never stores notes, so the note itself is only in `control.json` and `status`. A pause or a stop is the operator's and stays.
 
-To reopen the task, or continue with a revised `prompt` or `prompt_file`, run `keepgoing resume`. Resume explicitly clears completion along with pause, stop, and awaiting-user, and clears the old note. It preserves the current target and session; it does not create a fresh conversation. It also does not enable a disabled loop: use `enable` separately in that case. `enable` alone never clears completion. Manual commands such as `fallbacks check` remain explicit operations and can still run while a task is completed.
+To reopen the task, or continue with a revised `prompt` or `prompt_file`, run `keepgoing resume`. The supervised session cannot run it on its own loop ([why](#the-supervised-session-cannot-clear-its-own-hold)). Resume explicitly clears completion along with pause, stop, and awaiting-user, and clears the old note. It preserves the current target and session; it does not create a fresh conversation. It also does not enable a disabled loop: use `enable` separately in that case. `enable` alone never clears completion. Manual commands such as `fallbacks check` remain explicit operations and can still run while a task is completed.
 
 Use `await-user` when unfinished work needs a person, and `complete` when all authorized work is done. If the task is an entire roadmap, completing one item is not completion of the task.
 
@@ -250,11 +397,13 @@ looptender repeats work by design: each ordinary check may send one message to t
 
 | Session | Sent | Spacing | Count kept | Count resets when |
 | --- | --- | --- | --- | --- |
-| Idle | wake | none: every eligible check | none | not applicable |
+| Idle | wake | none: every eligible check; with the opt-in [`progress.idle_spacing`](configuration.md#spacing-idle-wakes-that-changed-nothing), a wake after which no watched fact changed waits a growing interval up to its cap | consecutive unchanged idle wakes, only with `idle_spacing`; a wake counts once the adapter accepted it and its turn ended | a watched fact changes, including a turn looptender did not ask for (a person's message, BB only), or the session or a direct lane is seen in error |
 | Active, Git fingerprint unchanged for `stall_after` | nudge | `min_wake_interval` since the last send | `max_nudges` | the fingerprint changes, or the session is seen in any state other than active |
 | Error | re-prompt (for a BB target in v0.2.0, a [retry of the failed turn](#recovering-a-failed-bb-turn-by-retry) with no new prompt) | `errors.backoff` | `max_reprompts` | the session is seen idle (a turn ended without an error), or it is active and the Git fingerprint changes |
 
 The nudge and re-prompt caps each bound one stalled turn or one error episode. They are not a bound on total work: a session that keeps finishing turns is woken again on the next check, and both counts start over. Seeing the session active does not by itself restart the re-prompt count, because a re-prompt makes the session active: a re-prompted turn that fails again spends the same allowance, so repeated failures reach the hold. Git progress restarts it only while the session is active. A change first seen on a check that finds the session in error does not, although the fingerprint is taken there and no later check sees it: the fingerprint covers every worktree, so lanes, other loops and people change it, and a session that never leaves error would otherwise be re-prompted for as long as anyone committed, with no backoff and no hold. A session that worked, committed and failed again between two checks therefore carries its count into the new failure; telling that apart needs evidence about the session's own turns, which is a [roadmap item](roadmap.md#priority-reliability-checkpoints). The rejected handoff-brief counts restart on the same condition. The condition is evaluated at checks, so it is coarser than "one error": the count carries over when a session works for hours without a commit and then fails again, and when queued input starts the next turn before any check sees the session idle. Unrelated errors can therefore share one allowance and reach the hold sooner than three failures of the same kind would. Without `progress.repositories` there is no Git evidence, and the count restarts only when a check sees the session idle. An explicit [`keepgoing resume` starts a new episode](#what-resume-starts-over), so a loop held on a spent cap recovers again on the next check. Before the count was tied to evidence of recovery (v0.2.0) any active check restarted it, so a session alternating between active and error was re-prompted without limit. A handoff also restarts the re-prompt count, and a switch-back restarts both. With no `loop.limits` field configured, which is the default, nothing limits how many times this repeats. Sending then stops only through `complete`, a stop, pause or disable, or an awaiting-user hold: a per-episode cap, an auth error without a handoff, a missing target, or a child waiting on a person. Other gates, such as the operating window, queued messages, running children or a pending interaction, defer a send without ending the repetition.
+
+`progress.idle_spacing` (unreleased, off by default) only spaces idle wakes that changed nothing looptender can see; it is not a bound on total work and adds no hold. A loop that sets it is still woken, at most `max` apart, for as long as it stays enabled.
 
 v0.2.0 makes that visible. `keepgoing validate` prints a `warning:` line on stderr when none of the three limits below is configured, and otherwise a `bounds:` line naming those that are. `keepgoing status` prints the same on its `bounds:` line, and `status --json` adds `workBounds` with `limits` (configured limit names in decision order, possibly empty), `unbounded` and, when unbounded, `warning`. The warning is advice about the loaded configuration only: no default limit is applied, nothing is refused, exit codes are unchanged, and it says nothing about whether a configured limit has been reached. Other commands, including `start`, `tick` and `doctor`, do not print it.
 
@@ -538,7 +687,7 @@ The reset is recorded. `runs.jsonl` gets a `session_reset` event with the target
 - **The target is gone.** An archived, deleted, or missing target marks the loop awaiting user and reports `await_user`.
 - **The saved session cannot be used.** Unreleased source. For an agent defined in configuration that continues a session, a saved identifier that is no longer usable, with a last turn that did not report one, holds the loop and reports `await_user`. keepgoing does not start a new conversation by itself. See [starting a new conversation on purpose](#starting-a-new-conversation-on-purpose).
 - **A headless turn was stopped.** Stopping a headless turn ends its process without an exit code, so it reads as an `unknown` error. After `keepgoing resume`, it is re-prompted under the ordinary error rules.
-- **Only `resume` clears a stop.** `enable` does not.
+- **Only `resume` clears a stop.** `enable` does not. The session the loop supervises cannot run that `resume` itself; see [the supervised session cannot clear its own hold](#the-supervised-session-cannot-clear-its-own-hold).
 
 ### A refused or restricted turn
 
@@ -1146,7 +1295,7 @@ With the option on, a lane that a check saw working and a later check finds in e
 
 When `keepgoing enable` runs inside BB, it records `BB_THREAD_ID` in `control.ownership`, with a generation number. The owner is the thread operating the loop; it is separate from the configured agent target. Claiming or transferring ownership never retargets the loop or changes a BB parent/child relationship. `status` shows the owner and latest handoff, and `status --json` includes the ownership metadata.
 
-A different BB thread is refused by `validate`, `enable`, `start`, and `daemon`, as well as direct ticks, resume, retarget, and executing manual probes. Read-only status/doctor and probe previews remain available. Disable, pause, stop, complete, and await-user remain available from any thread. Missing `BB_THREAD_ID` identifies an external scheduler or ordinary terminal: commands use the existing claim without changing it. Legacy loops without ownership metadata continue working; their first enable from a BB thread records the claim. This relies on cooperative callers and private runtime files, not an authentication boundary.
+A different BB thread is refused by `validate`, `enable`, `start`, and `daemon`, as well as direct ticks, resume, retarget, and executing manual probes. Read-only status/doctor and probe previews remain available. Disable, pause, stop, complete, and await-user remain available from any thread. Missing `BB_THREAD_ID` identifies an external scheduler or ordinary terminal: commands use the existing claim without changing it. A process the loop's own supervisor started is the exception for clearing holds ([below](#the-supervised-session-cannot-clear-its-own-hold)). Legacy loops without ownership metadata continue working; their first enable from a BB thread records the claim. This relies on cooperative callers and private runtime files, not an authentication boundary.
 
 From the BB thread that should become the new owner:
 
@@ -1168,6 +1317,62 @@ Claims and transfers serialize with ticks and early polls. If a tick is in fligh
 
 Offline fixtures verify conflicting identities, preview and explicit takeover, shared-state config paths, simultaneous claiming processes, directory aliases, control-file symlink refusal, hold preservation, scheduler access, and old-daemon exit including a transfer back to its original owner. Live transfers between real threads remain unverified; the tests make no live model calls.
 
+### The supervised session cannot clear its own hold
+
+Unreleased source. Supervision never clears a hold; a person does. On top of the ownership rule above, `resume`, `retarget`, `client prepare-resume`, `client resume`, and the panel's and `client review`'s resume refuse two callers, even when they own the loop:
+
+- **The loop's current target thread.** `BB_THREAD_ID` equals the BB thread of the route the loop is on now. Every command the session runs, and a BB terminal opened on that thread, carries that ID.
+- **Anything this loop's supervisor started.** `tick` and `daemon` put `LOOPTENDER_SUPERVISED_LOOP`, set to the loop's state directory, in their own environment. A headless Claude Code, Codex or Cursor turn, a process-adapter command, a probe and every program those start inherit it. A process carrying another loop's state directory there is not refused for this loop.
+
+Nothing is changed. The command says the request came from the supervised session and names the panel and an ordinary terminal, and exits 1. `client prepare-resume` and `client resume` report the issue `supervised_session`. A person resumes from an ordinary terminal or from a panel started there; an operator thread that is not the target resumes as before. `pause`, `stop`, `complete` and `await-user` stay available to the session: they add a hold. `enable` is not refused: it clears no hold.
+
+This is cooperative, like ownership. `BB_THREAD_ID` is taken as the session says it, not checked with BB, and a session can unset either variable or write `control.json`. A session the supervisor did not start and that is not the current target is treated like any other caller. That includes a lane, a former target and an unrelated agent; when the loop has an owner, the ownership rule still refuses a BB lane. A headless or process turn does not inherit its supervisor's `BB_THREAD_ID` or its other session variables ([below](#what-a-supervised-session-inherits)). Offline fixtures only; no live session was asked to resume.
+
+The [BB plugin](../integrations/bb-plugin-keepgoing/README.md) does not resume a loop at all, by design. A Resume click in BB, an agent running `bb plugin rpc call`, and `bb keepgoing resume` all reach the plugin the same way: its SDK reports each caller only as a client. So the plugin cannot tell a person from the session the loop supervises. A held loop's banner, and `bb keepgoing resume`, say where a person resumes it instead, from an ordinary terminal: `keepgoing resume -c <config>`, or the panel started there. A terminal BB opened on the target thread carries that thread's identity and is refused. Pause and stop from the plugin are unchanged.
+
+**Mixed versions.** Only a supervisor on this build sets `LOOPTENDER_SUPERVISED_LOOP`. A `daemon` or service started from an older build keeps running without it until it is restarted on this build, and the headless turns it starts meanwhile are not refused by the marker. The target-thread refusal does not depend on the supervisor: it applies from the first `resume` run with this build. Restart a running supervisor after upgrading. Turns it already started keep the environment they were started with.
+
+
+### What a supervised session inherits
+
+Unreleased source; a security fix. A headless Claude Code, Codex, Cursor or ACP turn, and every command of the process adapter, runs with the supervisor's environment minus an exact list of names. The names describe the session the supervisor itself was started from:
+
+| Variable | What it is |
+| --- | --- |
+| `BB_THREAD_ID`, `BB_THREAD_STORAGE`, `BB_PROJECT_ID`, `BB_ENVIRONMENT_ID` | The BB thread the supervisor was started in: its ID, its private storage directory, its project and its environment. |
+| `CLAUDE_CODE_SESSION_ID`, `CLAUDE_CODE_MESSAGING_SOCKET`, `CLAUDE_CODE_MESSAGING_TOKEN`, `CLAUDE_PID`, `CLAUDECODE`, `CLAUDE_CODE_ENTRYPOINT` | That thread's own Claude Code session. The messaging token is a credential to that session. |
+
+A `daemon` or `tick` started by hand inside a BB thread inherits all of these. Before this change it passed them on, with three effects:
+
+- The headless session looked like that thread to ownership checks.
+- The session could reach the thread's private storage.
+- The session held the thread's Claude Code messaging token.
+
+The list is matched by exact name in any letter case, never by prefix, so account selection such as `CLAUDE_CONFIG_DIR` or `CODEX_HOME` is never removed. How to reach BB (`BB_CLI`, `BB_SERVER_URL`, `BB_HOST_DAEMON_PORT`) is kept. An entry the loop's configuration sets in its own `env` always wins over the removal. The list is `envvar.SupervisorSession` in the source.
+
+The same list is removed for every program a supervisor runs that is configured or belongs to a provider:
+
+- the wrapper handshake, which runs this build to check its turn protocol;
+- scheduled and manual probes, built-in or `command`;
+- the Codex and custom-agent limits lookups;
+- the Cursor version check;
+- the yield `busy_command`;
+- the connectivity check's command;
+- `git` in the progress check, because a repository's configuration can name programs git runs.
+
+Each program's own configured entries still come after the removal, so they win.
+
+Programs that keep the caller's environment:
+
+- The `bb` CLI. It is BB's own program and needs BB's variables. `bb thread tell` already runs without `BB_THREAD_ID`.
+- What `keepgoing net-retry -- <command>` runs for its caller.
+- Commands a person or agent runs directly, such as `doctor` and `accounts`. The supervisor sets `LOOPTENDER_SUPERVISED_LOOP` for what it starts, on purpose ([above](#the-supervised-session-cannot-clear-its-own-hold)).
+
+**Not yet covered: a Codex operator thread.** A supervisor started from a Codex thread may inherit variables that thread's Codex session sets. No such name is listed, because none can be cited from Codex's documentation or source. This project has only observed `CODEX_TOOL_CALL_ID`, a per-call identifier, which is not removed.
+
+**Where these never existed.** A supervisor started as a service never had these variables: its unit clears `BB_THREAD_ID` and runs outside any BB thread. Neither did a supervisor started from a plain terminal outside BB.
+
+**Mixed versions.** Only a supervisor on this build removes them. A `daemon` already running an older build keeps passing them to the turns it starts until it is restarted on this build. A turn already running keeps the environment it was started with. Offline fixtures and the scenario harness only. The tests record variable names, never values. No live session was checked.
 
 ## Owned headless cancellation
 

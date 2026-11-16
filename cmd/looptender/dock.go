@@ -48,7 +48,7 @@ const (
 	// dockMaxResponse bounds the JSON a read may produce. The projection
 	// caps every list and string, and states what it leaves out. The largest
 	// registry (128 loops) with every list at its cap and every name at its
-	// longest measured about 5.4 MB with identifiers, and 6.1 MB with names
+	// longest measured about 5.5 MB with identifiers, and 6.2 MB with names
 	// of four-byte characters; tests keep both under three quarters of this
 	// bound (6 MiB).
 	dockMaxResponse = 8 << 20
@@ -444,9 +444,14 @@ func (d *dockReader) read(ctx context.Context, identifiers bool) (result dockRep
 		validated[entry.ID] = loaded[i]
 	}
 	inputs := make([]dockInput, len(entries))
+	// The catalog is read once, for the account each route names.
+	catalog := routeAccountCatalog(d.accountsDir)
 	each(func(i int) {
 		if i < len(entries) {
 			inputs[i] = d.readLoop(ctx, dir, entries[i], f.Entries, validated, now)
+			if inputs[i].Chain != nil {
+				inputs[i].Chain.Catalog = catalog
+			}
 		}
 	})
 	r := buildDockReport(inputs, now, d.refresh, d.staleAfter, identifiers, true, omitted, ctx.Err() == nil)

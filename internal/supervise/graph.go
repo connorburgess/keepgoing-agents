@@ -158,7 +158,7 @@ func (t *tick) graphBegin(target, action, mode string, message prompt.Message) s
 		t.graphFailed = true
 		return ""
 	}
-	a := rungraph.Attempt{ID: id, Target: target, Action: action, Mode: mode, GoalID: message.GoalID, GoalRevision: message.GoalRevision, RecordedAt: t.now}
+	a := rungraph.Attempt{ID: id, Target: target, Action: action, Mode: mode, GoalID: message.GoalID, GoalRevision: message.GoalRevision, ContextBytes: message.ContextBytes, RecordedAt: t.now}
 	if !t.graphUpdate(func(g *rungraph.Graph) (bool, error) { return true, g.Begin(a) }) {
 		return ""
 	}
