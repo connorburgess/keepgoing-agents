@@ -400,6 +400,7 @@ func (d *dockReader) read(ctx context.Context, identifiers bool) (result dockRep
 		if dir, err := accountsDirectory(d.accountsDir); err == nil && ctx.Err() == nil {
 			view = accounts.ReadView(dir, d.clock())
 		}
+		dockLinkAccountRoutes(&view, result)
 		result.Accounts = &view
 	}()
 
