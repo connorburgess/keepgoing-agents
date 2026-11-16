@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- A "Needs you" card for a held loop on a read-only panel no longer ends in an action the page cannot take. It gives the command that resumes the loop, `keepgoing resume -c CONFIG`, to copy, and says that `keepgoing registry list --private` lists the configuration path. A panel started with `--allow-changes` keeps its own resume control.
+
 - The panel no longer shows a loop with a failed lane as all well. A lane its last check found in error is said in words on the loop's picker row ("1 lane failed"), its "Loops and lanes" row and its page, and the loop is listed under "Worth knowing" (not "Needs you": a failed lane does not hold the loop). Only the lanes' recorded status is read.
 
 - The panel's header buttons keep their labels on one line at every width. They are quieter and one height, the two toggles show when they are on by shape as well as colour, and **Show identifiers** is labelled **Identifiers** on screen, with "Show identifiers, lane titles and notes" as its tooltip and accessible name. When room runs short the status line takes its own row first, and only on a phone-width window do the buttons show icons alone; a longer status line no longer moves the buttons or the page. A failed read is announced once when reads start failing and once if they are still failing after two minutes, instead of twice and on every failed read; its notice no longer pushes the page down, and stays neutral until reads have failed for two minutes. See [the panel](docs/dock.md).

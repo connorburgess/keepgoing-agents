@@ -159,6 +159,12 @@ type dockNeed struct {
 	// Waited is how long, in words.
 	Waited string `json:"waited"`
 	Action string `json:"action"`
+	// Resume is the command that clears the hold from a terminal, set when
+	// resuming is the way out of it. A page that cannot resume (one served
+	// without --allow-changes) shows it to copy. The configuration path is
+	// not part of the report, so it stays the placeholder CONFIG and the
+	// page says where to find it.
+	Resume string `json:"resume,omitempty"`
 }
 
 type dockLoop struct {
@@ -1654,11 +1660,15 @@ const (
 	dockHoldAdviceNote = "See the note left with the hold, and the conversation. Resume the loop when what it is waiting for is done."
 )
 
+// dockResumeCommand is the command a person runs to resume a held loop, as
+// operations.md gives it: resume takes the loop's configuration with -c.
+const dockResumeCommand = "keepgoing resume -c CONFIG"
+
 // dockHoldNeed explains an awaiting-user hold from the fixed cause recorded
 // when it started. Nothing is inferred from the note's text. The note is
 // shown with its identifiers masked, or whole with identifiers.
 func dockHoldNeed(st *statusOut, hold *dockHold, identifiers bool) *dockNeed {
-	n := &dockNeed{Kind: "held", Reason: "It is held for a person.", Action: dockHoldAdvice}
+	n := &dockNeed{Kind: "held", Reason: "It is held for a person.", Action: dockHoldAdvice, Resume: dockResumeCommand}
 	cause := ""
 	switch {
 	case hold != nil && hold.Marked:

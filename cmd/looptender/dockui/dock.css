@@ -220,6 +220,10 @@ body.has-banner { padding-bottom: 8rem; }
 .need .reason { font-weight: 500; }
 .note { margin: 0.25rem 0; padding: 0.5rem 0.75rem; background: var(--sunk); border-radius: 8px; color: var(--ink); overflow-wrap: anywhere; }
 .note-label, .todo-label { display: block; font-size: 0.75rem; font-weight: 600; color: var(--ink-2); letter-spacing: 0.01em; }
+.need .resume-where { overflow-wrap: anywhere; }
+.need .resume-where code { font-family: var(--mono); }
+.need .resume-command { display: flex; flex-wrap: wrap; align-items: center; gap: 0.5rem; min-width: 0; }
+.need .resume-command .command { font-family: var(--mono); white-space: normal; overflow-wrap: anywhere; }
 .worth { list-style: none; margin: 0.6rem 0 0; padding: 0; display: grid; gap: 0.55rem; }
 .worth li { display: grid; grid-template-columns: 0.6rem minmax(0, 1fr); gap: 0.6rem; align-items: baseline; font-size: 0.9rem; }
 .worth .dot { align-self: center; }

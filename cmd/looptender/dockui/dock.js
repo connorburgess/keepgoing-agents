@@ -292,6 +292,15 @@
     todo.appendChild(el("span", "todo-label", "What to do"));
     todo.appendChild(document.createTextNode(n.action));
     li.appendChild(todo);
+    // A page that cannot resume says how to, rather than end on an action
+    // it cannot take. With changes allowed, the loop's own controls do it.
+    if (n.resume && !changesOn()) {
+      li.appendChild(el("p", "sub resume-where", "This page cannot resume a loop. In a terminal, run:"));
+      li.appendChild(copyCommand(el("p", "copy resume-command"), n.resume, "copy-resume-" + n.key));
+      var where = el("p", "sub resume-where");
+      put(where, ["CONFIG is the path of " + n.loop + "'s configuration file; ", el("code", null, "keepgoing registry list --private"), " lists it."]);
+      li.appendChild(where);
+    }
     return li;
   }
 
@@ -768,12 +777,16 @@
   var THREAD_ID = /^thr_[A-Za-z0-9_]+$/;
   function threadCommand(id) {
     if (typeof id !== "string" || !THREAD_ID.test(id)) return null;
-    var text = "bb thread open " + id, dd = el("dd", "copy");
-    dd.appendChild(el("code", "command", text));
+    return copyCommand(el("dd", "copy"), "bb thread open " + id, "copy-thread-command");
+  }
+  // A command to copy and run yourself, into box: the command, selectable,
+  // and a button only where the browser can copy.
+  function copyCommand(box, text, focus) {
+    box.appendChild(el("code", "command", text));
     if (navigator.clipboard && navigator.clipboard.writeText) {
       var b = el("button", "btn", "Copy the command");
       b.type = "button";
-      b.dataset.focus = "copy-thread-command";
+      b.dataset.focus = focus;
       b.addEventListener("click", function () {
         // Cleared first, so a second press is announced again.
         state.said = "";
@@ -784,9 +797,9 @@
           announce("Could not copy. Select the command instead.");
         });
       });
-      dd.appendChild(b);
+      box.appendChild(b);
     }
-    return dd;
+    return box;
   }
 
   // ---- Changes: pause, stop and resume, on a panel started with --allow-changes ----
