@@ -13,10 +13,14 @@ const dockNearLimitPercent = 70
 // windows, and a recent one can describe windows that have all ended.
 //
 // Age alone is information, not something for a person to act on. An old
-// reading needs a person only when it was near its limit: a window that had
-// not ended was at dockNearLimitPercent or more when read, or the route or
-// account it is shown on is at a usage limit. Then it carries NeedsPerson and
-// AgeNote, as what it said may since have changed either way.
+// reading needs a person only when it leaves a real question open: a window
+// that had not ended was near its limit (dockNearLimitPercent to 99%) when
+// read, no window that had not ended was used up, and the route or account it
+// is shown on is not already marked at a usage limit. Then it carries
+// NeedsPerson and AgeNote, as what it said may since have changed. A used-up
+// window cannot have improved before its reset, and the page already says
+// when it was used up and when it resets; a place at a limit already says so.
+// Those readings keep their age in neutral words only.
 //
 // It also records the age of the oldest old reading the report shows, so the
 // page can say how old its data is and not only when it read its records.
@@ -36,7 +40,7 @@ func dockMarkOldUsage(r *dockReport, staleAfter time.Duration) {
 			return
 		}
 		u.Old = true
-		if limited || dockUsageNearLimit(*u) {
+		if !limited && dockUsageNearLimit(*u) {
 			u.NeedsPerson = true
 			u.AgeNote = "This reading is " + dockSpan(time.Duration(*u.AgeSeconds)*time.Second) + " old and was near its limit; it may have changed."
 		}
@@ -60,14 +64,23 @@ func dockMarkOldUsage(r *dockReport, staleAfter time.Duration) {
 }
 
 // dockUsageNearLimit: a window of the reading that had not ended was at
-// dockNearLimitPercent or more when it was read.
+// dockNearLimitPercent or more, but under 100%, when it was read, and no
+// window that had not ended was used up. A window that has ended since is
+// left to the ended-window handling.
 func dockUsageNearLimit(u dockUsageTarget) bool {
+	near := false
 	for _, w := range u.Windows {
-		if !w.Stale && w.UsedPercent >= dockNearLimitPercent {
-			return true
+		if w.Stale {
+			continue
+		}
+		if w.UsedPercent >= 100 {
+			return false
+		}
+		if w.UsedPercent >= dockNearLimitPercent {
+			near = true
 		}
 	}
-	return false
+	return near
 }
 
 func dockNotesAtLimit(notes []dockNote) bool {
