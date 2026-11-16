@@ -48,7 +48,7 @@ The report then has a `plan` with `acrossEnvironment`, `acceptWorkspaceOutside`,
 
 ## Reading the result
 
-The version-1 JSON report always has `outcome: "preview"` and `applySupported: true` (this CLI has an apply command, not a promise that this preview is actionable). Its `compatibility` describes only the metadata checks:
+The version-1 JSON report always has `outcome: "preview"`. `applySupported` is `true` unless a `plan` is present (this CLI has an apply command for a same-environment move, not a promise that this preview is actionable). Its `compatibility` describes only the metadata checks:
 
 | Value | Meaning | Exit code |
 | --- | --- | --- |
