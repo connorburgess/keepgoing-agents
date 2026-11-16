@@ -546,6 +546,21 @@ For a [coordinator](glossary.md): a conversation that hands out lane work and re
 - [ ] **Tell a session what supervises it.** A read-only `context` command that prints a loop's name, target, owner, holds, bounds, lane policy and the authority looptender keeps, from the loop's records only. Merged into unreleased source in [#269](https://github.com/looptender/looptender/pull/269). `context --here` answers which loop targets the session running it, from the session records, and is implemented in unreleased source and fixture-tested only; see [which loop supervises this session](operations.md#which-loop-supervises-this-session). Sending that text with a wake comes later and is opt-in.
 - [ ] **A supervised session cannot clear its own hold, and wakes say what they are.** The supervised session itself cannot clear a hold, so only a person ends one (today `resume` checks only the loop's owner), and every automatic wake states that it is an automatic looptender wake.
 
+#### Scheduled runs (planned)
+
+looptender does not keep time and will not become a scheduler: the operating system or another tool fires a run, and looptender supervises it from that moment. What exists today: an external scheduler can call `keepgoing tick -c <config> --routine <source>/<routine>` to record which entry fired ([run discovery](run-discovery.md)), [`service install`](services.md) keeps a loop's own checks running on macOS and Linux, [exit codes](operations.md#exit-codes-for-external-schedulers) are stable for schedulers, and a stopped scheduler is noticed with an opt-in `check_gap` report ([external schedulers can stop](operations.md#external-schedulers-can-stop-on-their-own)). Everything below is planned, not built.
+
+- [ ] **A bounded run.** One supervised run starts a fresh session, works within a time limit measured from its start, ends with a recorded result (outcome, duration, and usage where the adapter reports it) and exits; today the nearest thing is one check of an existing loop.
+- [ ] **A fresh session for every run, automatically.** Today [`session reset`](operations.md#starting-a-new-conversation-on-purpose) does this only as a manual command.
+- [ ] **A time limit relative to the start of a run.** Today `loop.limits.deadline` is an absolute time ([limits](configuration.md)).
+- [ ] **Setup help for the native scheduler.** One command writes and registers the entry (a launchd job on macOS, a systemd user timer on Linux) and always prints the exact command line, so any other scheduler can be used instead (cron, a BB automation, or Windows Task Scheduler by hand); registering with Windows is not planned for the first version.
+- [ ] **An environment check when a schedule is added.** The existing `doctor` checks run under the same minimal environment the scheduler will use, so a missing executable, login or path fails at setup instead of at the first fire.
+- [ ] **Missed and failed runs are never silent.** Record each expected fire time, flag a fire that did not happen, refuse a run that would overlap one still running, and report a run that failed.
+- [ ] **A dry run.** A run that reads and decides but performs no outward action the adapter can withhold, building on `tick --dry-run`, which records decisions without acting; it can guarantee only that looptender itself sends, stops and moves nothing, not that an agent session already running does nothing.
+- [ ] **Scheduled runs in the panel.** The panel lists each scheduled run with its last result and its next expected fire.
+
+Not planned: priorities between runs or shared resource slots, a chat view, and looptender firing runs itself.
+
 ### 9. Independent review and configured stages (planned)
 
 - [ ] Define a versioned external stage/result contract tied to goal revision, repository revision, policy version and evidence. Support user-selected stages rather than imposing one universal sequence.
