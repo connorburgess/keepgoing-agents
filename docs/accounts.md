@@ -71,7 +71,8 @@ command in this slice.
     looptender accounts check --id CONNECTION_ID --json
     looptender accounts list --json
 
-This is the command the panel means by "the explicit accounts check command".
+The Accounts page names this command in its footnote and in a card's
+"To check again" line.
 Run it yourself to record a new observation for one entry; the panel never runs
 it. CONNECTION_ID is the opaque ID that accounts add returned, also listed by
 accounts list.
@@ -89,11 +90,27 @@ reports credentials present and a nonzero exit is ambiguous. No account identity
 is inferred. Only allowlisted broad Claude subscriptionType strings, when
 actually supplied by structured status, become reported plan evidence.
 Raw max displays as Max. Unknown plan values are discarded; no numeric tier,
-capacity or quota is inferred. Codex plan remains unavailable.
+capacity or quota is inferred. Codex's login status reports no plan, so a
+Codex card says "Codex does not report a plan." A Claude card without a plan
+says why: "Claude Code's status reported no recognized plan." after a login,
+"No plan is read without a login." after none, and "Not checked" before any
+check. These are not failures and need nothing; the card's JSON carries the
+reason as `plan.missing` (`not_reported`, `not_recognized`, `no_login`,
+`not_checked`). A check that established no login leaves the plan Unavailable.
 
-Configured model, actual response model and route associations are unavailable
-in this slice. A requested/probe model or configuration fingerprint is not an
-actual response model or verified account identity.
+The catalog records no model: a route chooses the model, and a check never
+calls one. The page says so in one line instead of showing configured and
+actual response model rows; `configuredModel` and `observedModel` stay in the
+JSON with `missing: not_recorded`. A requested/probe model or configuration
+fingerprint is not an actual response model or verified account identity.
+
+The page's Routes row says whether a route [names the entry](#say-which-account-a-route-uses),
+from the routes the panel read ("A route names this account."). When none
+does, it says "No route names this account yet. Add `account: <ID>` to a route
+to link it", with the ID filled in under **Show identifiers**. When not every
+loop or route could be read, it says the answer is not known rather than
+none. The panel data carries this as the card's `routes` (`named`, `none`,
+`unknown`); `accounts list` does not read routes and leaves it out.
 
 A check's successful command exit means its minimized observation was saved;
 it does not mean login passed. Inspect auth state and reason. Missing/corrupt
