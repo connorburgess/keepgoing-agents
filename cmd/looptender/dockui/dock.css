@@ -358,6 +358,23 @@ body.has-banner { padding-bottom: 8rem; }
 .words dd { margin: 0; display: inline; }
 .words div { margin: 0; }
 
+/* Usage: what looptender did, as counted sentences and one table per loop. */
+.usage-lines { margin: 0.6rem 0 0; padding: 0; list-style: none; display: grid; gap: 0.45rem; max-width: 72ch; }
+.usage-how { margin: 0.75rem 0 0; max-width: 72ch; font-size: 0.875rem; color: var(--ink-2); }
+.usage-sub { margin: 1.1rem 0 0; font-size: 0.875rem; font-weight: 650; color: var(--ink-2); }
+.usage-loop > h2 { overflow-wrap: anywhere; }
+.usage-loop > h2 a { color: var(--ink); text-decoration: underline; text-decoration-color: var(--line-2); text-underline-offset: 0.2em; }
+.usage-loop > h2 a:hover, .usage-brief .work-inspect:hover { text-decoration-color: currentColor; }
+.usage-brief .work-inspect { margin-top: 0.35rem; color: var(--limit); text-underline-offset: 0.2em; }
+.table-wrap { margin-top: 0.75rem; max-inline-size: 100%; overflow-x: auto; }
+.usage-days { border-collapse: collapse; font-size: 0.8125rem; font-variant-numeric: tabular-nums; }
+.usage-days caption { padding-bottom: 0.35rem; text-align: start; color: var(--ink-2); }
+.usage-days th, .usage-days td { padding: 0.35rem 1rem 0.35rem 0; text-align: start; white-space: nowrap; border-bottom: 1px solid var(--line); }
+.usage-days thead th { font-weight: 600; color: var(--ink-2); }
+.usage-days tbody th { font-weight: 500; }
+.usage-days .num, .usage-days thead th:nth-child(n+2):nth-child(-n+5) { text-align: end; }
+.usage-days tr > :last-child { padding-right: 0; }
+
 /* Where the status line would be squeezed beside the buttons, it takes its own row. */
 @media (max-width: 60rem) {
   .bar-in { flex-wrap: wrap; }

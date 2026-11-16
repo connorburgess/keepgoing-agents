@@ -11,7 +11,10 @@
   var FAIL_LONG_MS = 120000;
   var API = "api/v1/dock";
   var SERVER = "api/v1/server";
-  var state = { data: null, identifiers: false, paused: false, timer: 0, busy: false, again: false, lastOk: null, failed: false, failedSince: 0, failedLong: false, notice: "", pending: false, said: "", server: null, treeOpen: Object.create(null), accountOpen: Object.create(null) };
+  // What looptender did: worded by the same read as API, served on its own
+  // for its size, and read only for the Usage page and a loop's page.
+  var USAGE = "api/v1/usage";
+  var state = { data: null, identifiers: false, paused: false, timer: 0, busy: false, again: false, lastOk: null, failed: false, failedSince: 0, failedLong: false, notice: "", pending: false, said: "", server: null, treeOpen: Object.create(null), accountOpen: Object.create(null), usage: null, usageFailed: false, usageBusy: false };
 
   var TONES = {
     supervising: "good", waiting_for_you: "attn", waiting_on_limit: "limit", waiting_on_network: "limit", checks_failing: "warn",
@@ -117,13 +120,15 @@
   }
 
   // Routing: "#/" is the overview, "#/loop/<key>" one loop, "#/routes" every
-  // route and "#/routes/<key>" every route, at that one.
+  // route and "#/routes/<key>" every route, at that one; "#/usage" is what
+  // looptender did.
   function route() {
     var h = location.hash.replace(/^#\/?/, "");
     var m = /^routes(?:\/(r[0-9a-f]+))?$/.exec(h);
     if (m) return { view: "routes", key: m[1] || "" };
     if (h === "accounts") return { view: "accounts" };
     if (h === "versions") return { view: "versions" };
+    if (h === "usage") return { view: "usage" };
     m = /^loop\/([a-z0-9]+)$/.exec(h);
     if (m) return { view: "loop", key: m[1] };
     return { view: "home" };
@@ -338,6 +343,7 @@
     fixed.appendChild(pickRow("#/accounts", "dot-calm", "Accounts", ac.complete ? list(ac.cards).length + " selected" : "Unavailable", r.view === "accounts"));
     var vs = d.versions || {};
     fixed.appendChild(pickRow("#/versions", vs.behind ? "dot-limit" : "dot-calm", "Versions", vs.summary || "", r.view === "versions"));
+    fixed.appendChild(pickRow("#/usage", "dot-calm", "Usage", d.usagePicker || "", r.view === "usage"));
     nav.appendChild(fixed);
 
     var label = el("p", "pick-label", "Loops");
@@ -747,6 +753,113 @@
       checks.appendChild(ids);
     }
     pane.appendChild(checks);
+    pane.appendChild(usageBrief(key));
+  }
+
+  // ---- Usage: what looptender did, in counted sentences ----
+  // The server words every sentence from the loop's recorded figures; the
+  // page only lays them out. Nothing here is a warning.
+  function usageFor(key) { return state.usage ? list(state.usage.loops).filter(function (x) { return x.key === key; })[0] : null; }
+  function usagePending() {
+    return state.usageFailed ? "What looptender did could not be read. It is read again with the next update." : "Reading what looptender did…";
+  }
+  function sentences(items, keys) {
+    var ul = el("ul", "usage-lines");
+    list(items).forEach(function (s) {
+      var li = el("li");
+      // A configuration key in the sentence is set as code.
+      if (keys) String(s).split(/\b([a-z]+(?:_[a-z]+)+(?:\.[a-z_]+)?)\b/).forEach(function (part, i) { li.appendChild(i % 2 ? el("code", null, part) : document.createTextNode(part)); });
+      else li.textContent = s;
+      ul.appendChild(li);
+    });
+    return ul;
+  }
+  function usageBrief(key) {
+    var p = panel("What looptender did this week");
+    p.classList.add("usage-brief");
+    var x = usageFor(key);
+    if (x) p.appendChild(sentences(x.brief));
+    else p.appendChild(el("p", "sub", state.usage ? "Not counted yet. It is read again with the next update." : usagePending()));
+    p.appendChild(link("#/usage", "Every count, on the Usage page", "work-inspect"));
+    return p;
+  }
+  var DAY_HEADS = ["Day (UTC)", "Lowest", "Highest", "Last", "Window", "Source"];
+  function daysTable(x) {
+    var id = "usage-days-" + x.key;
+    var wrap = el("div", "table-wrap");
+    // Keyboard users can scroll it when it is wider than the page.
+    wrap.tabIndex = 0;
+    wrap.setAttribute("role", "region");
+    wrap.setAttribute("aria-labelledby", id);
+    var t = el("table", "usage-days");
+    var cap = el("caption", null, "Context readings by day, in tokens");
+    cap.id = id;
+    t.appendChild(cap);
+    var head = el("thead"), hr = el("tr");
+    DAY_HEADS.forEach(function (h) { var th = el("th", null, h); th.scope = "col"; hr.appendChild(th); });
+    head.appendChild(hr);
+    t.appendChild(head);
+    var body = el("tbody");
+    list(x.days).forEach(function (day) {
+      var tr = el("tr");
+      var th = el("th", null, day.day);
+      th.scope = "row";
+      tr.appendChild(th);
+      [day.lowest, day.highest, day.last, day.window].forEach(function (v) { tr.appendChild(el("td", "num", v)); });
+      tr.appendChild(el("td", null, day.estimated ? "estimated by BB" : "reported by BB"));
+      body.appendChild(tr);
+    });
+    t.appendChild(body);
+    wrap.appendChild(t);
+    return wrap;
+  }
+  function renderUsage(d, pane) {
+    pane.appendChild(back());
+    pane.appendChild(paneHead("Usage"));
+    var u = state.usage;
+    if (!u) {
+      pane.appendChild(emptyBox(usagePending(), ""));
+      return;
+    }
+    pane.appendChild(el("p", "lede", u.lede));
+    pane.appendChild(el("p", "detail", u.period));
+    var all = panel("Across loops");
+    all.appendChild(sentences(u.total));
+    all.appendChild(el("p", "usage-how", u.mechanism));
+    pane.appendChild(all);
+    var ctx = panel("What looptender does about context");
+    ctx.appendChild(sentences(u.context, true));
+    ctx.appendChild(el("p", "usage-how", u.chat));
+    pane.appendChild(ctx);
+    list(u.loops).forEach(function (x) {
+      var p = el("section", "panel usage-loop");
+      var h = el("h2");
+      h.appendChild(link("#/loop/" + x.key, x.name));
+      p.appendChild(h);
+      p.appendChild(sentences(x.did));
+      p.appendChild(el("h3", "usage-sub", "Context window"));
+      p.appendChild(sentences(x.window));
+      if (list(x.days).length) p.appendChild(daysTable(x));
+      pane.appendChild(p);
+    });
+  }
+  function wantsUsage(r) { return r.view === "usage" || r.view === "loop"; }
+  // Read on its own after the report, at low priority on a loop's page
+  // where it is not the main content. A failure leaves the last answer.
+  function loadUsage() {
+    if (state.usageBusy) return;
+    state.usageBusy = true;
+    fetch(USAGE, { cache: "no-store", credentials: "same-origin", headers: { Accept: "application/json" }, priority: route().view === "usage" ? "auto" : "low" })
+      .then(function (r) { if (!r.ok) throw new Error("status " + r.status); return r.json(); })
+      .then(function (u) {
+        if (!u || u.schemaVersion !== SCHEMA || !Array.isArray(u.loops)) throw new Error("schema");
+        state.usage = u; state.usageFailed = false;
+      })
+      .catch(function () { state.usageFailed = true; })
+      .then(function () {
+        state.usageBusy = false;
+        if (state.data && wantsUsage(route())) render(false);
+      });
   }
 
   // The command that opens a loop's BB thread, to copy and run yourself.
@@ -1270,6 +1383,7 @@
       if (r.view === "loop") renderLoop(d, pane, r.key);
       else if (r.view === "routes") renderRoutes(d, pane);
       else if (r.view === "versions") renderVersions(d, pane);
+      else if (r.view === "usage") renderUsage(d, pane);
       else if (r.view === "accounts") renderAccounts(d, pane);
       else renderHome(d, pane);
     } catch (err) {
@@ -1389,6 +1503,7 @@
       .then(function (d) {
         if (!d || d.schemaVersion !== SCHEMA || !d.registry || !Array.isArray(d.loops)) throw new Error("schema");
         state.data = d; state.lastOk = Date.now(); state.failed = false; state.failedSince = 0; state.failedLong = false;
+        if (wantsUsage(route())) loadUsage();
         if (render(false) !== false) notice("cut", d.complete === false ? "This read was cut off before every loop was read. Loops that were not read are listed as could not be read; it reads again shortly." : "");
       })
       .catch(function (err) {
@@ -1441,7 +1556,10 @@
       ev.preventDefault();
       $("pane").focus();
     });
-    window.addEventListener("hashchange", function () { render(true); });
+    window.addEventListener("hashchange", function () {
+      render(true);
+      if (wantsUsage(route())) loadUsage();
+    });
     document.addEventListener("keydown", function (ev) {
       if (ev.key === "Escape" && state.change && state.change.preview && !state.change.busy) { ev.preventDefault(); cancelChange(); }
     });
