@@ -464,6 +464,13 @@ A route is a model on an account at an effort level ([glossary](glossary.md)). T
   - [x] **Offer the standard list in guided `fallbacks add` and in BB plugin setup (unreleased).** Guided add asks first, for a loop with no other routes, and also turns handoff on for rate limits when it is off; the plugin's setup panel offers an unchecked choice when the host's CLI reports a usable list, and shows the routes that apply before Create. The New thread switch stays single-agent. CLI fixtures; plugin tests through `server.ts` and the SDK's fake host (offer, create, pause, stop and resume after a handoff, a move preview, the restored note), controller, DOM and built-CLI tests; no live BB walkthrough.
   - [ ] **The page.** Panel step V4b, built by the dock lane on these commands: the read side first, then preview and apply for move, switch off and on, add from known routes, remove, follow-standard and own.
 
+- [ ] **P11 — Switching between subscriptions made easy.** Moving work between the accounts a person already holds should take no hand-edited configuration. In order:
+  - [ ] **Name the account a route uses.** A person states which account each route runs on; the command is merged in [#296](https://github.com/looptender/looptender/pull/296), and a panel card showing it is planned.
+  - [ ] **Set up a loop's ordered list of accounts in one step.** One guided step builds the list instead of editing configuration, on top of the route commands in P10.
+  - [ ] **Move supervision across projects and providers.** Tracked under [coordinating lanes](#coordinating-lanes-planned); a preview is in review in [#285](https://github.com/looptender/looptender/pull/285), and applying the move is planned.
+  - [ ] **Return to the preferred route when it recovers.** This is P3 above; today only opt-in `switch_back` returns to the primary after its reported reset and an exact probe (released), and unreleased `loop.timing` steps return on a BB loop's own thread.
+  - [ ] **Treat several accounts of one provider as one pool.** Planned, not started; today routes are an ordered list, never a pool that looptender balances.
+
 There is no "ask first" or grace mode: turning handoff off entirely (an empty `failover_on`) remains the way to make a loop wait.
 
 Work that moves to wherever it can continue must not be able to spread by itself. The bounds are stated in the [glossary](glossary.md#what-moves-and-what-never-does) and in AGENTS.md, and each item above is implemented inside them: only configured routes, accounts and devices; no self-installation; one owner per loop; capped and spaced creation; every move recorded.
