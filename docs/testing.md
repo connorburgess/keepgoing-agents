@@ -51,6 +51,18 @@ Unreleased source records one attempted error report before delivery. Fixtures c
 
 A live local daemon fixture verifies status and doctor wording, the panel need with its first timestamp even when its registered configuration path is gone, and a missing-path restart that fails without another report. Cross-platform daemoninfo fixtures round-trip and clear the optional timestamp over its authenticated loopback channel. These are local fixture checks, not an installed-service restart, reboot, real notification receipt, or live provider acceptance. No new process-control mechanism is added. Incident/timeline and notification-history formats are unchanged; optional private state and live-diagnostic fields carry the new evidence. Record exact head, platform, checks and unrun native acceptance in the review handoff.
 
+## Changing CI: prove the check
+
+A check that has never failed has not been shown to work. Any change that adds or changes a workflow, a job, a required or advisory check, a scanner or an automated reviewer is tested on real CI before anyone relies on it:
+
+1. **A run that should pass.** The pull request's own run, on the case the check is meant to accept.
+2. **A control that should fail or report a finding.** A throwaway branch containing exactly what the check is meant to catch, run on real CI, then deleted.
+3. **Both run links in the pull request body,** with one plain sentence on what the check does not cover.
+
+Reviewers do not approve a CI change without both links. Local runs, a green run on the pull request alone, or a job that "has never reported anything" do not count as evidence that the check catches what it claims to.
+
+This rule came from an advisory scan that had never reported a finding and was assumed to be working. A control run was the first thing to show what it actually caught and what it let through.
+
 ## Stand-in executables in tests
 
 Install any shell script a test executes with `internal/testexec`, not `os.WriteFile`: `testexec.Script(t, path, content)` for a script used by one test, `testexec.Shared` for content that many fixtures install unchanged. The content must begin with `#!/bin/sh`. In `cmd/looptender`, the `write` helper already does this for executable shell scripts.

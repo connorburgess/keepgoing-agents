@@ -60,6 +60,7 @@ Use the project's own words in new docs, command output, interface text, commits
 - Read [docs/architecture.md](docs/architecture.md) before changing package boundaries. Update README.md in the same change when behavior, setup, or limitations make it inaccurate.
 - Before checking off a roadmap item or merging a capability/release change, apply the [capability and documentation review](docs/testing.md#capability-and-documentation-review). Record reviewed docs, command/release evidence and remaining gaps in the PR; if no doc change is needed, explain why. Review again when the implementation or release scope changes. A documentation edit does not close unverified acceptance criteria.
 - For process lifecycle, OS integration or installer changes, apply the [lifecycle and platform review checks](docs/testing.md#lifecycle-and-platform-review). Distinguish platform compilation, native fixture execution and live acceptance; record unrun checks explicitly.
+- For a change to CI (a workflow, job, required or advisory check, scanner or automated reviewer), [prove the check](docs/testing.md#changing-ci-prove-the-check): link one real run that passes and one control run that fails or reports a finding, and say what the check does not cover.
 
 ## Panel frontend guidance
 
