@@ -206,6 +206,31 @@ func TestObserveModelFallbackAfterARefusal(t *testing.T) {
 	}
 }
 
+// The idle spacing rule's turn facts: every turn request, whoever sent it,
+// and every turn start are counted from their event types alone; a
+// provider's retry of a request is not a new request. Message text is never
+// read.
+func TestObserveCountsTurnRequestsAndStarts(t *testing.T) {
+	person := `{"type":"client/turn/requested","data":{"initiator":"user","input":[{"type":"text","text":"PRIVATE_TEXT"}]}}`
+	retry := `{"type":"client/turn/requested","data":{"retryOfRequestId":"request_example"}}`
+	for _, tc := range []struct {
+		name string
+		log  string
+		want decide.TurnCounts
+	}{
+		{"empty", "[]", decide.TurnCounts{}},
+		{"one wake and its turn", "[" + person + "," + turnStarted + "]", decide.TurnCounts{Requests: 1, Starts: 1}},
+		{"a second message queued into the same turn", "[" + person + "," + turnStarted + "," + person + "]", decide.TurnCounts{Requests: 2, Starts: 1}},
+		{"a retry is not a new request", "[" + person + "," + turnStarted + "," + retry + "," + turnStarted + "]", decide.TurnCounts{Requests: 1, Starts: 2}},
+	} {
+		a, _ := newFake(`{"thread":{"status":"idle"}}`, tc.log, false)
+		obs, _ := a.Observe(context.Background())
+		if obs.Turns == nil || *obs.Turns != tc.want {
+			t.Errorf("%s: %+v", tc.name, obs.Turns)
+		}
+	}
+}
+
 // A refusal or restriction stays for the rest of its turn: a later error
 // event does not replace it, so it cannot become a limit that hands off. A
 // restriction outranks a refusal, a new turn clears both, and so does the

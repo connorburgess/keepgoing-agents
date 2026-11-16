@@ -130,6 +130,21 @@
               "maximum": 1000,
               "default": 4,
               "description": "checks that found an error or retried the turn, with no recorded change to the repositories, that raise the panel's no-progress flag; 0 is off"
+            },
+            "idle_spacing": {
+              "type": "object",
+              "additionalProperties": false,
+              "description": "opt-in: space idle wakes after which no structured fact changed; absent is off",
+              "properties": {
+                "first": {
+                  "$ref": "#/$defs/duration",
+                  "description": "wait after one idle wake that changed nothing; default 10m, at least 1m"
+                },
+                "max": {
+                  "$ref": "#/$defs/duration",
+                  "description": "cap of the wait, which doubles with each further unchanged wake; default 2h, at most 24h"
+                }
+              }
             }
           }
         },
@@ -414,6 +429,20 @@
             }
           },
           "description": "usage-aware timing, off by default; collects readings and, with same-thread BB steps, applies decisions at idle turn boundaries; status previews recorded evidence"
+        },
+        "context_window": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["reset_at"],
+          "properties": {
+            "reset_at": {
+              "type": "number",
+              "minimum": 0.5,
+              "maximum": 0.95,
+              "description": "share of the conversation's context window at or above which a reset would be due; no default; BB loops only; this build previews it in status and never resets"
+            }
+          },
+          "description": "context-threshold reset, previewed only: status says what it would do at the next turn boundary; nothing resets, compacts or sends"
         },
         "probe": {
           "type": "object",

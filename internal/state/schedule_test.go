@@ -144,3 +144,25 @@ func TestScheduleIgnoresAControlChangeInTheFuture(t *testing.T) {
 		t.Fatalf("%+v", s)
 	}
 }
+
+// Recent is how far apart recent checks were, judged or not, once three
+// gaps are seen; it is an observation and never part of the rule.
+func TestScheduleRecentGapIsAnObservation(t *testing.T) {
+	now := time.Date(2030, 1, 1, 12, 0, 0, 0, time.UTC)
+	for _, tc := range []struct {
+		name string
+		f    File
+		in   ScheduleInput
+		want time.Duration
+	}{
+		{"held", File{CheckedAt: now.Add(-m), ScheduleGaps: gaps(9*m, 10*m, 12*m)}, ScheduleInput{Enabled: true, Held: true}, 10 * m},
+		{"disabled", File{CheckedAt: now.Add(-m), ScheduleGaps: gaps(9*m, 10*m, 12*m)}, ScheduleInput{}, 10 * m},
+		{"judged", File{CheckedAt: now.Add(-m), ScheduleGaps: gaps(5*m, 5*m, 5*m, 5*m)}, ScheduleInput{Enabled: true}, 5 * m},
+		{"too few gaps", File{CheckedAt: now.Add(-m), ScheduleGaps: gaps(10*m, 10*m)}, ScheduleInput{Enabled: true, Held: true}, 0},
+		{"gaps from another window", File{CheckedAt: now.Add(-m), ScheduleGaps: gaps(10*m, 10*m, 10*m), ScheduleWindowID: "old"}, ScheduleInput{Enabled: true, WindowID: "new"}, 0},
+	} {
+		if s := ScheduleOf(tc.f, tc.in, now); s.Recent != tc.want {
+			t.Errorf("%s: %+v", tc.name, s)
+		}
+	}
+}

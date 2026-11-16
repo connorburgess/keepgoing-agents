@@ -229,12 +229,54 @@ A saved session identity is checked again each time it is read. A value that is 
 | `min_wake_interval` | `60m` | Minimum gap between a nudge and anything sent before it: a wake, nudge, re-prompt, or handoff. |
 | `flag_after_sends` | `6` | Messages sent with no recorded change to the repositories that raise the [no-progress flag](dock.md#the-no-progress-flag): wakes, nudges, re-prompts, notices about failed lanes, and briefs sent on a move to another route or back, each by the send's own result, and turn retries the provider accepted. `0` turns this fact off. A whole number from 0 to 1000. The flag only informs: it never holds, pauses, moves or stops anything. A binary from before this key refuses a configuration that sets it. |
 | `flag_after_errors` | `4` | Checks that found an error or retried the turn, with no recorded change to the repositories, that raise the same flag; `0` turns this fact off. A whole number from 0 to 1000. A binary from before this key refuses a configuration that sets it. |
+| `idle_spacing` | off | Opt-in. Spaces idle wakes after which nothing changed that looptender can see: `{first: 10m, max: 2h}`, with `idle_spacing: {}` taking those defaults. See [spacing idle wakes that changed nothing](#spacing-idle-wakes-that-changed-nothing). Unreleased; a binary from before this key refuses a configuration that sets it. |
 
 The fingerprint covers every worktree of each repository. It includes `HEAD`, `git status --porcelain` for tracked files, and the size and modification time of tracked files that differ from `HEAD`. Untracked files, file contents, and transcripts are never read.
 
 Without `repositories` the no-progress flag is not available: it reads "not available: no progress source is configured", never "no progress".
 
-Idle wakes follow the supervisor's check cadence, subject to other gates. `min_wake_interval` spaces stall nudges; it does not throttle idle wakes. `max_nudges` resets when a turn ends and is not a loop-wide work budget.
+Idle wakes follow the supervisor's check cadence, subject to other gates. `min_wake_interval` spaces stall nudges; it does not throttle idle wakes. `max_nudges` resets when a turn ends and is not a loop-wide work budget. Without `idle_spacing`, which is the default, an idle session is woken at every eligible check.
+
+### Spacing idle wakes that changed nothing
+
+Unreleased, fixture-tested only. With `progress.idle_spacing` set, an idle session whose previous idle wake changed nothing looptender can see is not woken at every check. After one such wake the next waits `first` (default `10m`, at least `1m`) from it; each further one in a row doubles the wait, up to `max` (default `2h`, at least `first`, at most `24h`). At the defaults: 10m, 20m, 40m, 80m, then 2h.
+
+```yaml
+loop:
+  progress:
+    idle_spacing: {first: 10m, max: 2h}
+```
+
+"Changed" means only these structured facts, compared between the last idle wake and the current check. Any one of them starts the spacing over, and the next check wakes at once:
+
+- the Git progress fingerprint (only with `repositories`);
+- a new child outcome notice in the session's log (BB only);
+- a turn looptender did not ask for (BB only): a person typing in the thread, a message from another agent or a `bb thread tell`, or a notice. Read from the log's typed events only: the count of turn requests (a provider's retry of a request excluded) and of turn starts. After an idle wake the count must have grown by exactly the wake's own request and its one turn; any other request or turn starts the spacing over, including a message queued into the wake's own turn;
+- the goal revision;
+- any change to `control.json`, which includes `resume`, `pause`, `enable` and a person's answer to a hold;
+- the target or what set it: a handoff, a switch-back, a `retarget`, a timing step;
+- the session seen in error: the error and the recovery that follows;
+- a direct lane (child) in error, from BB's child listing status (BB only): while one is, idle wakes are not spaced.
+
+A loop with no `repositories` still has every other fact. The rule never reads transcript or message text, and never infers that there is nothing to do: it only notices that none of these facts moved.
+
+An idle wake counts as having changed nothing only once the adapter accepted it and the turn it started has ended. A send that failed is not recorded: the next check wakes again, as it would without the key, and the attempt still counts toward `max_sends` and the other per-attempt caps as before. On BB the turn has ended when the log holds the wake's request and its turn start and the thread is idle again; until then the next idle check is not spaced. An adapter that cannot count turns (every adapter other than BB) treats any later idle check as the turn having ended. If the clock is set back so that the last idle wake appears to be in the future, the wait counts as passed and the session is woken.
+
+It only spaces. It adds no hold, never shortens any other wait, and never overrides a stop, pause, hold, the operating window, child-work suppression, a limit wait or the error rules, all of which come first. A switch-back and a child-error notice are not idle wakes and are never spaced. A spaced check sends nothing, so it spends no `max_sends` and refunds none. The daemon keeps its usual interval; a check that comes before the next idle wake is due records `idle; previous idle wakes changed nothing looptender can see; next idle wake spaced` (cause `idle_unchanged`) and does nothing else.
+
+`status` prints an `idle spacing:` line with the next idle wake's due time and the fixed reason code `idle_unchanged`; `status --json` has `idleSpacing` with `nextIdleWakeAt`, `wait`, `unchanged`, `spacedTotal` and `days`, the count of spaced wakes per UTC day and reason code, kept for 31 days. That history is diagnostic only and never a decision input. The record lives in `state.json` and survives a restart.
+
+**Known limits.** Anything that is not one of the facts above is invisible to the rule, and a wake can be late by up to `max` unless something else changes. Choose `max` with that in mind. What does not start the spacing over:
+
+- a CI result or a review: a coordinator idle and waiting on CI is the typical case;
+- work that makes no Git change, or any Git change when the loop has no `repositories`;
+- a person's activity the adapter cannot see: on any adapter other than BB a person's message is not a fact, and on BB a person's work outside the thread (in a lane, in a terminal, on GitHub) is not one either;
+- a lane that ends without a child outcome notice in the parent's log;
+- a lane parked with a pending provider retry, for example on a rate limit: BB lists it as idle, not in error, and seeing the retry would take a further `bb provider-retry status` call per lane, which looptender does not make for this rule (a follow-up);
+- an edit to the configuration file, other than turning the key off, which clears the record;
+- a daemon restart: the record persists in `state.json`, by design.
+
+The cap is not derived from any provider's prompt-cache lifetime, which this project does not know.
 
 ## limits
 
@@ -356,6 +398,23 @@ Rules 3 to 5 wait `min_on_step` after the last timing move (`too_soon`). A missi
 - `keepgoing retarget` is a person's choice, recorded whether or not timing is on: timing waits until the first named window resets, as the latest reading reports it then. With no reading of it at the time of the retarget, the first reset a reading shows after it is saved, and the wait is never moved after that.
 
 **Before going back to an older binary.** A binary from before U4 refuses the step fields, and one from before `loop.timing` refuses the whole block. A U4 build can preview steps but does not apply them. An older binary also drops `targetSetBy` and the timing record from `state.json`, after which its switch-back can pull a loop off a timing step. So first run `keepgoing retarget primary -c <config>`, so the loop is on its first route, then remove `steps`, `ceiling`, `unused_at_least`, `down_at` and `min_on_step` from `loop.timing` (for a binary from before `loop.timing`, remove the whole `loop.timing` block).
+
+## context_window
+
+Unreleased source, previewed only. The [context-threshold reset](roadmap.md) is not built: this build never resets, compacts, sends or asks for a checkpoint because of this key. `status` shows what it would do at the next turn boundary; see [context window reset preview](operations.md#context-window-reset-preview).
+
+```yaml
+loop:
+  adapter: bb
+  context_window:
+    reset_at: 0.8   # share of the context window; no default
+```
+
+| Field | Default | Meaning |
+| --- | --- | --- |
+| `reset_at` | none | The share of the conversation's context window at or above which a reset would be due. Between `0.5` and `0.95`. |
+
+It has no default: without `reset_at` the feature is off, and a `context_window` block without it is refused. Below half a reset would give up a conversation with room left in it; above 95% the provider's own compaction or limit is likely to act first. Only a loop on a BB thread may set it, because only BB reports a [context window reading](adapters.md#context-window-reading); any other adapter is refused, naming the rule `context_window_reading`. While the loop is on a fallback that reports none, the preview says `not_supported`. The rule's other limits are fixed, not configured: a reading counts only while no turn is known to have run since it was taken, with a 24-hour safety limit on its age; 6 hours between resets; and at most 2 resets per UTC day.
 
 ## errors
 

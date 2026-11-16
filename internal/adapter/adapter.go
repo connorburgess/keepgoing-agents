@@ -121,6 +121,29 @@ type ContextReading struct {
 	Estimated    bool
 }
 
+// TurnUsageReader is implemented by adapters whose agent reports, in a
+// structured form, how many tokens its latest finished turn used. The reading
+// is diagnostic only: it is recorded and shown, and is never an input to a
+// decision, a send, an allowance or a hold. ok is false when the agent
+// reported none, the turn is not finished, or its output was not read; a
+// figure the agent did not report is absent, never estimated.
+type TurnUsageReader interface {
+	LatestTurnUsage() (u TurnUsage, ok bool)
+}
+
+// TurnUsage is the token counts of one finished turn, as its agent reported
+// them. ID is an opaque identity of the turn, the same for every read of
+// the same turn, so a turn is counted once however many checks read it. A
+// nil count was not reported.
+type TurnUsage struct {
+	ID              string
+	Input           *int64
+	CachedInput     *int64
+	CacheWriteInput *int64
+	Output          *int64
+	ReasoningOutput *int64
+}
+
 // CLIPather is implemented by adapters that run a provider executable: the
 // absolute path the system resolved for it on the last command started, or
 // "" before one was. A check records it, so a caller with a shorter PATH (the
