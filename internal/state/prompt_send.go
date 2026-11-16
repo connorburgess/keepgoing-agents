@@ -18,6 +18,9 @@ type PromptSend struct {
 	Outcome      string    `json:"outcome"`
 	GoalID       string    `json:"goalId,omitempty"`
 	GoalRevision uint64    `json:"goalRevision,omitempty"`
+	// ContextBytes is the length of the supervision context block the send
+	// carried (loop.prompt_context), zero when it carried none.
+	ContextBytes int `json:"contextBytes,omitempty"`
 }
 
 var promptGoalID = regexp.MustCompile(`^goal_[0-9a-f]{32}$`)
@@ -49,6 +52,9 @@ func (p PromptSend) Valid() bool {
 		return false
 	}
 	if p.Outcome != "adapter_returned" && p.Outcome != "adapter_error" && p.Outcome != "not_started" {
+		return false
+	}
+	if p.ContextBytes < 0 {
 		return false
 	}
 	if p.GoalID == "" {

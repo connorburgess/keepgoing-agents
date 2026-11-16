@@ -10,7 +10,7 @@ import (
 	"github.com/looptender/looptender/internal/control"
 	"github.com/looptender/looptender/internal/loopcontext"
 	"github.com/looptender/looptender/internal/state"
-	"github.com/looptender/looptender/internal/window"
+	"github.com/looptender/looptender/internal/supervise"
 )
 
 // contextCmd prints the loop's supervision context. It reads the loop's
@@ -37,49 +37,13 @@ func readContextInput(cfg *config.Config, cfgPath string, now time.Time) loopcon
 	if abs, err := filepath.Abs(cfgPath); err == nil {
 		cfgPath = abs
 	}
-	in := loopcontext.Input{Loop: l, CommandPrefix: initCommandPrefix(), ConfigArg: commandQuote(cfgPath), Now: now}
-	if ctl, err := control.Load(l.StateDir); err == nil {
-		in.Control = &ctl
+	var ctl *control.File
+	if c, err := control.Load(l.StateDir); err == nil {
+		ctl = &c
 	}
-	if st, err := state.Load(l.StateDir); err == nil {
-		in.State = &st
-		if st.Target() == state.Primary {
-			a := l.Agent
-			in.TargetAgent = &a
-		} else if c, ok := effectiveRoutes(cfg, st).Find(st.Target()); ok && !c.Disabled {
-			if a, known := st.CandidateAgent(c); known {
-				in.TargetAgent = &a
-				in.TargetCreated = c.Agent.BB != nil && c.Agent.BB.NewThread
-			} else {
-				in.TargetPending = true
-			}
-		}
+	var st *state.File
+	if s, err := state.Load(l.StateDir); err == nil {
+		st = &s
 	}
-	if l.Limits.MaxSends > 0 {
-		if used, err := state.LoadSends(l.StateDir); err != nil {
-			in.SendsError = "sends.json could not be read"
-		} else {
-			in.SendsUsed = &used
-		}
-	}
-	if timeout := l.Limits.NoProgressTimeout.Duration; timeout > 0 {
-		p, err := state.LoadProgress(l.StateDir)
-		switch {
-		case err != nil:
-			in.ProgressError = "progress.json could not be read"
-		case p == nil:
-		case now.Before(p.ObservedAt):
-			in.ProgressError = "host clock precedes the last verified progress observation"
-		case p.Sources != state.ProgressSources(l.Progress.Repositories):
-			in.ProgressError = "repository list changed; the next check sets a new baseline"
-		default:
-			in.Progress = p
-		}
-	}
-	inside, why, err := window.Inside(l.Window, now)
-	in.Window = loopcontext.Window{Set: l.Window != nil, Inside: inside, Text: why}
-	if err != nil {
-		in.Window.Error = "the window could not be evaluated"
-	}
-	return in
+	return supervise.ContextInput(cfg, initCommandPrefix(), commandQuote(cfgPath), ctl, st, now)
 }

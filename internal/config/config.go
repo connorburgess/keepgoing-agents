@@ -63,10 +63,14 @@ type Loop struct {
 	StateDir string `yaml:"state_dir"`
 	Agent    `yaml:",inline"`
 
-	Prompt      string `yaml:"prompt,omitempty"`
-	PromptFile  string `yaml:"prompt_file,omitempty"`
-	PromptGoal  bool   `yaml:"prompt_goal,omitempty"`
-	HandoffFile string `yaml:"handoff_file,omitempty"`
+	Prompt     string `yaml:"prompt,omitempty"`
+	PromptFile string `yaml:"prompt_file,omitempty"`
+	PromptGoal bool   `yaml:"prompt_goal,omitempty"`
+	// PromptContext appends the loop's supervision context (see
+	// internal/loopcontext) to wakes, re-prompts and handoff briefs, when it
+	// is new to the conversation or has changed. Off by default.
+	PromptContext bool   `yaml:"prompt_context,omitempty"`
+	HandoffFile   string `yaml:"handoff_file,omitempty"`
 
 	Progress Progress   `yaml:"progress"`
 	Window   *Window    `yaml:"window,omitempty"`
