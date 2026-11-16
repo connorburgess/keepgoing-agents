@@ -23,6 +23,7 @@ import (
 
 	"github.com/looptender/looptender/internal/config"
 	"github.com/looptender/looptender/internal/control"
+	"github.com/looptender/looptender/internal/envvar"
 	"github.com/looptender/looptender/internal/lock"
 	"github.com/looptender/looptender/internal/snapshot"
 )
@@ -148,7 +149,10 @@ func validPlan(s string) bool {
 }
 
 // Context fingerprints relevant effective auth inputs without retaining values.
-// It does not read credentials or attest provider identity.
+// It does not read credentials or attest provider identity. The variables of
+// the session that ran the command (envvar.SupervisorSession) are not inputs:
+// they change between agent sessions and tool calls, and a check does not
+// pass them to the provider.
 func Context(f File, e Entry, env []string) string {
 	return contextForOS(f, e, env, runtime.GOOS == "windows")
 }
@@ -156,7 +160,7 @@ func contextForOS(f File, e Entry, env []string, windows bool) string {
 	m := map[string]string{}
 	for _, pair := range env {
 		k, v, ok := strings.Cut(pair, "=")
-		if !ok {
+		if !ok || envvar.IsSupervisorSession(k) {
 			continue
 		}
 		k = environmentKey(k, windows)
@@ -195,12 +199,51 @@ func contextForOS(f File, e Entry, env []string, windows bool) string {
 	sort.Strings(keys)
 	key, _ := hex.DecodeString(f.Salt)
 	h := hmac.New(sha256.New, key)
+	_, _ = h.Write([]byte(contextDefinition + "\n"))
 	enc := json.NewEncoder(h)
 	_ = enc.Encode([]string{e.Provider, e.Mode, e.CLI, e.Directory, e.Workdir})
 	for _, k := range keys {
 		_ = enc.Encode([]string{k, m[k]})
 	}
-	return hex.EncodeToString(h.Sum(nil))
+	sum := h.Sum(nil)[:24]
+	return hex.EncodeToString(append(sum, contextTag(key, sum)...))
+}
+
+// contextDefinition names the inputs Context covers. A digest is 24 bytes of
+// keyed fingerprint followed by an 8-byte keyed tag of this definition, so a
+// binding recorded by an earlier build, whose digest is a plain 32-byte HMAC
+// that also covered the caller's session variables, is recognizable without a
+// new stored field that earlier builds would refuse.
+const contextDefinition = "looptender accounts context 2"
+
+func contextTag(key, sum []byte) []byte {
+	h := hmac.New(sha256.New, key)
+	_, _ = h.Write([]byte(contextDefinition + " tag\n"))
+	_, _ = h.Write(sum)
+	return h.Sum(nil)[:8]
+}
+
+// currentDefinition reports whether digest was computed by Context as defined
+// in this build.
+func currentDefinition(f File, digest string) bool {
+	b, err := hex.DecodeString(digest)
+	if err != nil || len(b) != 32 {
+		return false
+	}
+	key, _ := hex.DecodeString(f.Salt)
+	return hmac.Equal(b[24:], contextTag(key, b[:24]))
+}
+
+// Bound returns the context a check records for e under env, and whether e's
+// binding accepts it. A binding computed under the current definition must
+// match exactly. A binding recorded by an earlier build cannot be compared,
+// because its digest covered the session variables of whichever session added
+// the entry; it is accepted, and the check replaces it with the current
+// digest, so every later check compares exactly. The entry's provider,
+// executable, working directory and account directory are bound either way.
+func Bound(f File, e Entry, env []string) (string, bool) {
+	current := Context(f, e, env)
+	return current, current == e.Context || !currentDefinition(f, e.Context)
 }
 func checkDir(dir string) error {
 	st, err := os.Lstat(dir)
@@ -348,18 +391,20 @@ type Evidence struct {
 	Freshness  string     `json:"freshness"`
 }
 type Card struct {
-	ID              string    `json:"id"`
-	Label           string    `json:"label"`
-	Provider        string    `json:"provider"`
-	Selection       string    `json:"selection"`
-	Auth            Evidence  `json:"auth"`
-	Plan            Evidence  `json:"plan"`
-	ConfiguredModel Evidence  `json:"configuredModel"`
-	ObservedModel   Evidence  `json:"observedModel"`
-	PreviousAuth    *Evidence `json:"previousAuth,omitempty"`
-	Reason          string    `json:"reason,omitempty"`
-	Uses            string    `json:"uses"`
-	Identity        string    `json:"identity"`
+	ID              string   `json:"id"`
+	Label           string   `json:"label"`
+	Provider        string   `json:"provider"`
+	Selection       string   `json:"selection"`
+	Auth            Evidence `json:"auth"`
+	Plan            Evidence `json:"plan"`
+	ConfiguredModel Evidence `json:"configuredModel"`
+	ObservedModel   Evidence `json:"observedModel"`
+	Reason          string   `json:"reason,omitempty"`
+	// FailedCheckAt is the time of the latest check when it did not produce a
+	// login result and Auth and Plan show the observation before it.
+	FailedCheckAt *time.Time `json:"failedCheckAt,omitempty"`
+	Uses          string     `json:"uses"`
+	Identity      string     `json:"identity"`
 }
 type View struct {
 	State    string `json:"state"`
@@ -396,10 +441,16 @@ func Project(f File, now time.Time) View {
 				c.Plan.Text = planText(o.Plan)
 			}
 		}
+		// A check that did not produce a login result keeps the last recognized
+		// observation, with its own time, and says when and why the latest
+		// check failed. It is previous evidence, never a refreshed result.
 		if e.Last != nil && (e.Attempt == nil || e.Attempt.Auth == "unavailable") {
-			x := evidence(e.Last.Auth, "", observationSource(e.Provider, e.Last.Version), e.Last.At, now)
-			x.Freshness = "stale"
-			c.PreviousAuth = &x
+			c.Auth = evidence(e.Last.Auth, "", observationSource(e.Provider, e.Last.Version), e.Last.At, now)
+			c.Auth.Freshness = "stale"
+			if e.Attempt != nil {
+				at := e.Attempt.At
+				c.FailedCheckAt = &at
+			}
 			if e.Last.Plan != "" {
 				c.Plan = evidence("reported", e.Last.Plan, e.Provider+" previous status", e.Last.At, now)
 				c.Plan.Text = planText(e.Last.Plan)
@@ -456,15 +507,18 @@ func observationSource(provider, version string) string {
 	return provider + " CLI " + version + " status"
 }
 
-// ExecutionEnvironment applies the one supported account-directory override
-// using the same name equivalence as os/exec (case insensitive on Windows).
-// Other environment entries remain ephemeral and are passed through as before.
+// ExecutionEnvironment drops the caller's session variables
+// (envvar.SupervisorSession) and applies the one supported account-directory
+// override using the same name equivalence as os/exec (case insensitive on
+// Windows). Other environment entries remain ephemeral and pass through.
 func ExecutionEnvironment(e Entry, env []string) []string {
 	return executionEnvironmentForOS(e, env, runtime.GOOS == "windows")
 }
 func executionEnvironmentForOS(e Entry, env []string, windows bool) []string {
+	// The provider's status command is not the session that ran the check.
+	env = envvar.WithoutSupervisorSession(env)
 	if e.Mode != "explicit_directory" {
-		return append([]string(nil), env...)
+		return env
 	}
 	key := "CLAUDE_CONFIG_DIR"
 	if e.Provider == "codex" {

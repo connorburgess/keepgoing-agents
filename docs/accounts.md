@@ -67,7 +67,8 @@ accounts list.
 
 Check runs only the selected executable's version command, then Claude's
 auth status --json or Codex's login status. Each command has a five-second
-deadline and 64 KiB stdout limit; stderr is discarded. Version output must
+deadline and 64 KiB stdout limit; stderr is discarded. The commands do not
+receive the variables of the session that ran the check (the list below). Version output must
 match the existing diagnostic version format. A recognized version string is
 not a guarantee about every release's behavior. No login or model command runs.
 The provider's own status command may contact its account service.
@@ -87,9 +88,13 @@ A check's successful command exit means its minimized observation was saved;
 it does not mean login passed. Inspect auth state and reason. Missing/corrupt
 storage or a concurrent selection change refuses the operation. An overlapping
 check for the same selection returns skipped. A recognized absent login,
-unavailable result, timeout or cancellation is recorded as such. A failed latest
-check preserves the previous recognized observation and its original time,
-shown as previous/stale rather than refreshed success.
+unavailable result, timeout or cancellation is recorded as such. A latest
+check that produced no login result, including one refused because the context
+changed, preserves the previous recognized observation and its original time.
+The card keeps showing that login and plan, marked stale rather than refreshed,
+with one line saying when the latest check ran and why it gave no result, for
+example "could not be compared: the context differs from the selection". A
+card with no earlier recognized observation shows Unavailable and the reason.
 
 Evidence becomes display-stale after five minutes. The timestamp and original
 fact remain visible. Freshness is not health, quota, account-identity verification
@@ -226,13 +231,39 @@ Context binding includes provider, canonical executable and working directory,
 selection mode/account directory, home/config locations and effective
 authentication-related environment prefixes and proxy/TLS inputs. Values are
 fingerprinted with a per-catalog keyed digest, never copied into storage.
-The exact CODEX_TOOL_CALL_ID environment name is excluded from the fingerprint:
-it identifies one agent tool invocation, not authentication. Windows applies its
-existing case-insensitive name comparison; Unix excludes only that exact case.
-The value still passes through to execution, and all other bindings remain.
-Existing records are not automatically rebound after this correction. Review
-and use an explicit revision-bound same-selection update to clear old status
-before checking under the corrected binding contract.
+
+Two kinds of variable describe the session running the command, not the
+account context, and are not bound:
+
+- The exact CODEX_TOOL_CALL_ID name identifies one agent tool invocation.
+  Windows applies its existing case-insensitive name comparison; Unix excludes
+  only that exact case. Its value still passes through to execution.
+- The caller-session list that supervised turns already drop (see
+  [what a supervised session inherits](operations.md#what-a-supervised-session-inherits)):
+  BB_THREAD_ID, BB_THREAD_STORAGE, BB_PROJECT_ID, BB_ENVIRONMENT_ID,
+  CLAUDE_CODE_SESSION_ID, CLAUDE_CODE_MESSAGING_SOCKET,
+  CLAUDE_CODE_MESSAGING_TOKEN, CLAUDE_PID, CLAUDECODE and
+  CLAUDE_CODE_ENTRYPOINT. They are matched by exact name in any letter case,
+  never by prefix, so CLAUDE_CONFIG_DIR and other CLAUDE_ inputs stay bound.
+  They change between agent sessions and tool calls, so the same account
+  context looked changed when added in one session and checked in another.
+  The status commands do not receive them either.
+
+All other bindings remain.
+
+**Entries recorded by an earlier build.** Earlier builds bound those session
+variables too, and their digests cannot be recomputed without the old values.
+A digest now carries a keyed tag of the binding definition, so this build
+recognizes an earlier one without a new stored field (older builds refuse
+unknown fields). The first check of such an entry by this build is not reported
+as a changed context: it runs, and records the current digest in place of the
+earlier one, keeping the entry's revision and its previous observation. From
+then on the binding compares exactly. That first check therefore cannot detect
+an authentication-environment change made between the earlier selection and
+that check; the provider, executable, working directory and account directory
+are verified as before. To bind deliberately instead, review the entry and
+use an explicit revision-bound same-selection update before checking. An older
+build checking an entry bound by this build reports a changed context.
 Environment duplicates use last-wins semantics. Windows names are compared
 case-insensitively, including provider prefixes and proxy names. Unix names
 remain case-sensitive; lowercase http_proxy/https_proxy/all_proxy/no_proxy are
@@ -265,8 +296,9 @@ atomic replacement; corruption is refused rather than repaired or truncated.
 Checks use a separate per-selection lock while the external command runs,
 then re-read and validate the revision before committing.
 
-Metadata operations preserve the actual inherited BB_THREAD_ID privately.
-They do not impersonate a person, strip caller identity, relax person-only
+Metadata operations preserve the actual inherited BB_THREAD_ID privately, as
+the recorded caller; it is not passed to the provider's status commands.
+They do not impersonate a person, drop the recorded caller identity, relax person-only
 standard-route edits or grant loop/control/build/answer authority. The browser
 receives only the allowlisted display projection: no private paths, raw CLI
 output, environment values, context fingerprints, caller identity or revisions.
