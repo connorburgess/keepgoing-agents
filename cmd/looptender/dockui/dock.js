@@ -913,6 +913,14 @@
     if (e.source) wrap.appendChild(el("span", "sub", e.source));
     return wrap;
   }
+  var failedChecks = {
+    context_changed: "could not be compared: the context differs from the selection",
+    timeout: "timed out",
+    cancelled: "was cancelled",
+    version_unavailable: "could not read the CLI version",
+    command_unavailable: "could not run the selected CLI",
+    status_unavailable: "returned no recognized login result"
+  };
   function renderAccounts(d, pane) {
     var a = d.accounts || {};
     pane.appendChild(back());
@@ -944,7 +952,10 @@
       var identity = el("span", "account-title"); identity.appendChild(name); identity.appendChild(provider);
       identity.appendChild(el("span", "sub", c.selection === "inherited" ? "Inherited context" : c.selection === "explicit_directory" ? "Selected context" : "External context"));
       summary.appendChild(identity);
-      var status = el("span", "account-status"); status.appendChild(accountEvidence(c.auth)); summary.appendChild(status);
+      var status = el("span", "account-status"); status.appendChild(accountEvidence(c.auth));
+      // The login and plan shown are the last good check; say when and why the latest one failed.
+      if (c.failedCheckAt) status.appendChild(el("span", "sub", "Last check " + fmt(secFmt, c.failedCheckAt) + " " + (failedChecks[c.reason] || "did not complete") + "."));
+      summary.appendChild(status);
       var plan = el("span", "account-plan");
       plan.appendChild(el("span", "sub", "Reported plan"));
       plan.appendChild(accountEvidence(c.plan)); summary.appendChild(plan);
@@ -956,7 +967,6 @@
       facts.appendChild(fact("Configured model", accountEvidence(c.configuredModel)));
       facts.appendChild(fact("Actual response model", accountEvidence(c.observedModel)));
       facts.appendChild(fact("Route associations", "Unavailable. No route has been enrolled by this selection."));
-      if (c.previousAuth) facts.appendChild(fact("Previous observation", accountEvidence(c.previousAuth)));
       body.appendChild(facts);
       var reasons = {
         context_changed: "The effective context differs from the selection. Review and update it before checking again.",

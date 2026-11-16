@@ -150,17 +150,24 @@ var SupervisorSession = []string{
 	"CLAUDE_CODE_SESSION_ID", "CLAUDE_CODE_MESSAGING_SOCKET", "CLAUDE_CODE_MESSAGING_TOKEN", "CLAUDE_PID", "CLAUDECODE", "CLAUDE_CODE_ENTRYPOINT",
 }
 
+// IsSupervisorSession reports whether name is one of the SupervisorSession
+// variables, in any letter case as Windows matches names.
+func IsSupervisorSession(name string) bool {
+	for _, n := range SupervisorSession {
+		if strings.EqualFold(name, n) {
+			return true
+		}
+	}
+	return false
+}
+
 // WithoutSupervisorSession returns environ without the SupervisorSession
 // variables, matched in any letter case as Windows matches names.
 func WithoutSupervisorSession(environ []string) []string {
 	env := make([]string, 0, len(environ))
 	for _, kv := range environ {
 		name, _, _ := strings.Cut(kv, "=")
-		drop := false
-		for _, n := range SupervisorSession {
-			drop = drop || strings.EqualFold(name, n)
-		}
-		if !drop {
+		if !IsSupervisorSession(name) {
 			env = append(env, kv)
 		}
 	}
