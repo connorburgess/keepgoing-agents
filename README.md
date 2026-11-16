@@ -14,15 +14,15 @@ looptender supervises a coding agent: it wakes an idle session, handles structur
   <img alt="Diagram: You, at the top, set goals and give approvals to a Coordinator session that plans, assigns and reviews work. A dashed ring labelled looptender surrounds the coordinator: looptender wakes it, bounds it, recovers it and holds for you when needed. Below the ring, the coordinator delegates to three Lane conversations, which sit outside it." src="docs/assets/looptender-model-light.svg" width="960">
 </picture>
 
-In one line: one coordinator per project is the session you talk to, and it hands pieces of work to lanes. Coordinators of different projects are peers and can send each other requests; that happens between the sessions themselves, not through looptender. looptender keeps each coordinator going while you are away, and stops to ask you when something needs a person.
+In one line: you talk to one coordinator per project. The coordinator splits the work into lanes, picks a model for each lane that fits its task, and sends requests to the coordinators of your other projects, which can decline them. looptender keeps each coordinator going while you are away, and stops to ask you when something needs your approval.
 
 The picture has three parts, using the words in the [glossary](docs/glossary.md):
 
 - **You** are the person in the loop. Goals and approvals come from you, and a **hold** sends nothing until a person acts.
 - A **coordinator** is the session you put under supervision: it hands out work and reviews it. Supervising that one session is a **loop**. looptender wakes it, keeps it within the limits you set, recovers it from structured failures and holds it for you when it needs a person. Coordinator is a role, not a setting: a session that delegates nothing is supervised the same way.
-- **Lanes** are the conversations a coordinator starts for pieces of its work. looptender does not supervise, message or create them. For a BB loop it counts them and their state, so a working lane keeps the loop from being woken as idle, and it acts on a lane in two cases only: retrying a failed turn when the loop opts in, and stopping lanes when a person asks with `stop --lanes`.
+- **Lanes** are the conversations a coordinator starts for pieces of its work, each on the model the coordinator chose for it. For a BB loop looptender counts them and their state, so a working lane keeps the loop from being woken as idle; it retries a lane's failed turn when the loop opts in, and stops lanes when a person asks with `stop --lanes`.
 
-The supervised session can be a BB thread, a headless Claude Code, Codex or Cursor session, an agent defined in configuration, or another program described to looptender by its status and resume commands. Which model each lane uses is the coordinator's choice; looptender does not route lanes.
+There are two layers. The looptender supervisor watches, wakes, bounds, recovers and holds the coordinator's session and, on a limit, moves it to the next route you configured; the coordinator agent under it splits the work into lanes, chooses their models and talks to other coordinators. The supervised session can be a BB thread, a headless Claude Code, Codex or Cursor session, an agent defined in configuration, or another program described to looptender by its status and resume commands.
 
 The core is a single binary for macOS, Linux and Windows. Use its daemon or an existing scheduler to check the loop. No separate loop skill is required. The host and supervisor must be running for checks to happen.
 
@@ -237,7 +237,7 @@ Decisions use structured status: exit codes, JSON fields, HTTP status and provid
 
 ## Where this is headed
 
-The aim is for one person to run many coordinators and lanes at once without wasting usage: fewer and smaller turns, state kept in files instead of long conversations, and each lane on the least costly model that fits its task. Planned steps include a command that tells a supervised session what supervises it and what it may not do, recording the supervised session's context size, spacing out idle wakes that changed nothing, a panel view of a coordinator and its lanes, and moving supervision to another project or provider after a preview. None of these is in the current build. Choosing a model per lane will remain a convention that looptender does not enforce; see [coordinating lanes](docs/coordinating-lanes.md). The [roadmap](docs/roadmap.md) tracks each step and what verifies it.
+The aim is for one person to run many coordinators and lanes at once without wasting usage: fewer and smaller turns, state kept in files instead of long conversations, and each lane on the least costly model that fits its task. Planned steps include a command that tells a supervised session what supervises it and what it may not do, recording the supervised session's context size, spacing out idle wakes that changed nothing, a panel view of a coordinator and its lanes, and moving supervision to another project or provider after a preview. None of these is in the current build. [Coordinating lanes](docs/coordinating-lanes.md) describes how a coordinator works with its lanes. The [roadmap](docs/roadmap.md) tracks each step and what verifies it.
 
 ## Documentation
 

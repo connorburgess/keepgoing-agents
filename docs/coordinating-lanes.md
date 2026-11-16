@@ -1,6 +1,6 @@
 # Coordinating lanes
 
-A convention for a [coordinator](glossary.md): a conversation that hands out lane work and reviews it, and is the parent of those lanes. It is written for agents and the people who set them up. The usual shape is one coordinator per project: the session the person talks to, which hands work to lanes and is kept going by a loop while the person is away. Coordinators of different projects are peers and may send each other requests; that happens between the sessions, not through looptender.
+A convention for a [coordinator](glossary.md): a conversation that hands out lane work and reviews it, and is the parent of those lanes. It is written for agents and the people who set them up. The usual shape is one coordinator per project: the session the person talks to, which hands work to lanes and is kept going by a loop while the person is away. Coordinators of different projects are peers and send each other requests, which can be declined and never carry approval.
 
 **looptender enforces none of this.** It does not read a ledger, check a report's length, record approvals, choose a lane's model or limit nesting. Each rule below is something a coordinator does by itself. What looptender does for lanes today is listed [at the end](#what-looptender-does-for-lanes-today).
 
