@@ -11,8 +11,8 @@ provider account globally. Another running session can have a different context.
 
 **View recorded usage** opens Routes and its existing Allowances section.
 Those readings belong to configured route groups, are not live, and are not
-linked to these account cards. Read their recorded age, stale or unavailable
-state; an old limit reading does not establish current exhaustion. Selecting an
+linked to these account cards. Read their recorded age, ended windows or
+unavailable state; an old limit reading does not establish current exhaustion. Selecting an
 account does not assign its ID to a route group or usage identity. The link
 reads only the existing recorded projection; it does not invoke BB usage APIs
 or refresh provider measurements, including APIs whose refresh:false option
@@ -91,14 +91,29 @@ check for the same selection returns skipped. A recognized absent login,
 unavailable result, timeout or cancellation is recorded as such. A latest
 check that produced no login result, including one refused because the context
 changed, preserves the previous recognized observation and its original time.
-The card keeps showing that login and plan, marked stale rather than refreshed,
-with one line saying when the latest check ran and why it gave no result, for
-example "could not be compared: the context differs from the selection". A
+The card keeps showing that login and plan with their own age, not as refreshed,
+with one line, marked "Needs you", saying when the latest check ran and why it
+gave no result, for example "could not be compared: the context differs from
+the selection". A
 card with no earlier recognized observation shows Unavailable and the reason.
 
-Evidence becomes display-stale after five minutes. The timestamp and original
-fact remain visible. Freshness is not health, quota, account-identity verification
-or permission to act. Ordinary page refresh never refreshes login evidence.
+Nothing checks again on its own, so the page shows each observation's age in
+plain words ("Checked 3 h ago") and never as a warning. A login or plan
+observation older than 24 hours adds "· check again to confirm", and the card
+shows the check command to copy (its connection ID appears only with
+**Show identifiers**). Warning style, with the words "Needs you", is
+kept for what a person must act on: no login reported, a latest check that
+failed (timed out, was cancelled, or did not establish a result), or a changed
+context. A card whose provider is externally managed, or that was never
+checked, is not a warning. Age is not health, quota, account-identity
+verification or permission to act. Ordinary page refresh never refreshes login
+evidence.
+
+In the data, each evidence keeps `freshness` (`stale` five minutes after the
+observation, and always for an observation kept after a failed check) for
+existing consumers, and adds
+`ageSeconds` and `checkAgain`. Each card adds `needsPerson` and, when it is
+true, `attention`: `no_login`, `check_failed` or `context_changed`.
 
 ## Several accounts of one provider
 
