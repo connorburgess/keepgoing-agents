@@ -116,9 +116,14 @@ When routes name the entry, the Routes row lists each of them, the loops that
 use each, and each route's own recorded usage reading; readings of different
 routes are never merged. It says once "assigned by you · identity not
 verified", and under a BB thread route "assigned by you · not verified for BB
-threads (account set per project)". The card's summary gives the newest
-reading among those routes only: "Five-hour allowance out since read 2 h ago ·
-resets in 3 h", "Not out when read 2 h ago", or that no reading is recorded.
+threads (account set per project)". A route that names the entry but whose
+check found a mismatch is still listed, says what its check says in place of
+"assigned by you", and its reading is not counted for the entry. The card's
+summary is from those readings, never merged: if any route's reading had a
+window used up that has not ended, the newest such, naming its route when the
+card has more than one ("opus-example: Five-hour allowance was out when read
+2 h ago · resets in 3 h"); otherwise "Not out when read 2 h ago" from the
+newest reading, or that no reading is recorded.
 Being out is information, not a warning.
 
 ### Accounts not named yet
