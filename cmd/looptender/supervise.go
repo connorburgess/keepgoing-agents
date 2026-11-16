@@ -15,6 +15,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/looptender/looptender/internal/accounts"
 	"github.com/looptender/looptender/internal/adapter"
 	"github.com/looptender/looptender/internal/adapter/bb"
 	"github.com/looptender/looptender/internal/adapter/factory"
@@ -111,7 +112,34 @@ func validate(e env, cfg *config.Config, path string, takeOver ...bool) int {
 	if l.Report != nil {
 		fmt.Fprintf(e.stdout, "report: %s format, %s, events %s\n", l.Report.Format, l.Report.Scheme, strings.Join(l.Report.Events, ","))
 	}
+	if !validateRouteAccounts(e, cfg, "") {
+		return exitFailed
+	}
 	return exitOK
+}
+
+// validateRouteAccounts says what each route that names an account was found
+// to be. It is false when a route other than a BB thread names an entry that
+// does not match; an unreadable catalog is only a warning.
+func validateRouteAccounts(e env, cfg *config.Config, catalogDir string) bool {
+	results, readable := routeAccountChecks(cfg, catalogDir)
+	if !readable {
+		e.errf("warning: %s; nothing stops supervision", accounts.RouteCheckText(accounts.RouteCatalogUnavailable))
+	}
+	ok := true
+	for _, r := range results {
+		switch {
+		case r.Refused:
+			ok = false
+			e.errf("error: route %s: account %s: %s; fix the account in the configuration or the catalog (keepgoing accounts list)", r.ID, r.Account, accounts.RouteCheckText(r.Check))
+		case r.Check == accounts.RouteCatalogUnavailable:
+		case r.Check == accounts.RouteNotInCatalog:
+			e.errf("warning: route %s: account %s: %s; assigned by you; not verified", r.ID, r.Account, accounts.RouteCheckText(r.Check))
+		default:
+			fmt.Fprintf(e.stdout, "account (%s): %s, %s\n", r.ID, r.Label, accounts.RouteCheckText(r.Check))
+		}
+	}
+	return ok
 }
 
 // daemonKey carries what is known of the daemon running a pass.
@@ -660,6 +688,10 @@ type agentRef struct {
 	BBThread string `json:"bbThread,omitempty"`
 	Workdir  string `json:"workdir,omitempty"`
 	Model    string `json:"model,omitempty"`
+	// Account is the accounts-catalog entry the route names, as stated by
+	// a person, or the derived account context of one that names none. Only
+	// status sets it.
+	Account *accounts.RouteAccount `json:"account,omitempty"`
 }
 
 func refOf(a config.Agent) agentRef {
@@ -1127,13 +1159,15 @@ func readStatus(ctx context.Context, cfg *config.Config, now time.Time, staleAft
 		out.WorkBounds.Unbounded, out.WorkBounds.Warning = true, config.UnboundedWarning
 	}
 	out.PrimaryAgent = refOf(l.Agent)
+	out.PrimaryAgent.Account = routeAccountOf(l.Agent, "")
 	if st.Target() == state.Primary {
-		out.TargetAgent, out.TargetConfigured = refOf(l.Agent), true
+		out.TargetAgent, out.TargetConfigured = out.PrimaryAgent, true
 	} else if c, ok := effectiveRoutes(cfg, st).Find(st.Target()); ok && !c.Disabled {
 		// A fallback that starts a new thread at handoff is a target only
 		// once its thread exists.
 		if a, known := st.CandidateAgent(c); known {
 			out.TargetAgent = refOf(a)
+			out.TargetAgent.Account = routeAccountOf(a, "")
 			out.TargetConfigured = true
 		}
 	}

@@ -80,6 +80,11 @@
             "type": "string",
             "description": "account or quota pool; defaults to provider"
           },
+          "account": {
+            "type": "string",
+            "pattern": "^[0-9a-f]{32}$",
+            "description": "accounts catalog ID (32 lowercase hexadecimal characters, as accounts add prints) of the account a person states this route uses; never derived, and optional"
+          },
           "bb": {
             "$ref": "#/$defs/bb"
           },

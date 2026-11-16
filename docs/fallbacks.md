@@ -159,6 +159,7 @@ candidates:
 - `id` is how state, health, and reports refer to the candidate. `primary` is reserved for the loop's own agent.
 - `provider` is required. Redundancy counts by it.
 - `group` is the account or quota pool and defaults to the provider. Candidates in the active target's group are never handoff targets, never count toward redundancy, and are not probed on schedule, because they draw on the same quota. Set the primary's `group` in `keepgoing.yaml` too.
+- `account` is optional: the [accounts catalog](accounts.md#say-which-account-a-route-uses) ID of the account you state the candidate uses. It changes nothing about handoffs, probes or redundancy; `validate` and `doctor` compare it with the catalog. Guided `fallbacks add` does not ask for it; add it by hand, and `fallbacks add`, `move`, `remove` and the `routes` commands keep it as written.
 - Order matters. A handoff tries healthy candidates from the top.
 - `disabled: true` keeps a candidate in the file without using it.
 

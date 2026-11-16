@@ -286,6 +286,11 @@ func TestStandardRoutesFileIsValidated(t *testing.T) {
 		{"reserved_id", base + strings.Replace(route, "id: one", "id: primary", 1) + "}\n", false},
 		{"names_a_thread", base + route + ", thread: thr_example}\n", false},
 		{"relative_probe_account", base + route + ", probe: {account_dir: login}}\n", false},
+		{"account", base + route + ", account: 0123456789abcdef0123456789abcdef}\n", true},
+		{"account_on_conversation", base + strings.Replace(route, "headless", "same_conversation", 1) + ", account: 0123456789abcdef0123456789abcdef}\n", true},
+		{"account_uppercase", base + route + ", account: 0123456789ABCDEF0123456789ABCDEF}\n", false},
+		{"account_a_label", base + route + ", account: work}\n", false},
+		{"account_too_short", base + route + ", account: 0123456789abcdef}\n", false},
 		{"ttl_below_every", "version: 1\nprobe: {every: 6h, ttl: 1h}\nroutes: []\n", false},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -591,5 +596,75 @@ func TestStandardRoutesPathDefault(t *testing.T) {
 	}
 	if _, err := os.Lstat(filepath.Join(base, "looptender")); err == nil {
 		t.Fatal("resolving the path created a directory")
+	}
+}
+
+// A stated account travels from the standard list to the resolved route and
+// back to the saved template unchanged; a route without one gains none.
+func TestStandardRoutesCarryTheStatedAccount(t *testing.T) {
+	const work = "0123456789abcdef0123456789abcdef"
+	writeRoutes(t, `version: 1
+routes:
+  - {id: claude-work, provider: claude-code, model: example-large, group: claude-work, account: `+work+`, enter: headless, account_dir: /example/accounts/work}
+  - {id: claude-plain, provider: claude-code, model: example-large, group: claude-plain, enter: headless}
+`)
+	loop := "  adapter: claude\n  provider: claude-code\n  group: claude-main\n  claude: {workdir: ./project, model: example-medium}\n  routes: standard\n"
+	cfg, err := Load(loopFile(t, loop))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if ids(cfg.FallbackSet) != "claude-work,claude-plain" {
+		t.Fatalf("resolved %q (skipped %+v)", ids(cfg.FallbackSet), cfg.RouteList.Skipped)
+	}
+	for i, want := range []string{work, ""} {
+		c := cfg.FallbackSet.Candidates[i]
+		if c.Account != want {
+			t.Fatalf("%s: account %q, want %q", c.ID, c.Account, want)
+		}
+		rt, ok := RouteOf(cfg.Loop, c)
+		if !ok || rt.Account != want {
+			t.Fatalf("%s: saved template %+v", c.ID, rt)
+		}
+		back, ok := ResolveSaved(cfg.Loop, rt, cfg.FallbackSet)
+		if !ok || back.Account != want {
+			t.Fatalf("%s: resolved again %+v", c.ID, back)
+		}
+	}
+}
+
+// A loop's first route and a fallback may each state an account by its
+// catalog ID. Leaving it out is always valid; only a malformed ID is refused.
+func TestAgentAccountIsACatalogIDWhenSet(t *testing.T) {
+	const work = "0123456789abcdef0123456789abcdef"
+	agent := "  adapter: claude\n  provider: claude-code\n  claude: {workdir: ./project}\n"
+	for _, tc := range []struct {
+		name, account string
+		ok            bool
+	}{
+		{"absent", "", true},
+		{"catalog_id", "  account: " + work + "\n", true},
+		{"label", "  account: work\n", false},
+		{"uppercase", "  account: " + strings.ToUpper(work) + "\n", false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			cfg, err := Load(loopFile(t, agent+tc.account))
+			if (err == nil) != tc.ok {
+				t.Fatalf("loop: %v", err)
+			}
+			if err != nil && !strings.Contains(err.Error(), "account must be an accounts catalog ID") {
+				t.Fatalf("loop: %v", err)
+			}
+			if tc.ok && tc.account != "" && cfg.Loop.Account != work {
+				t.Fatalf("loop account %q", cfg.Loop.Account)
+			}
+			fb := "version: 1\ncandidates:\n  - id: personal\n    adapter: codex\n    provider: codex\n    group: personal\n" + strings.ReplaceAll(tc.account, "  account", "    account") + "    codex: {workdir: /example/project}\n    probe: {kind: codex}\n"
+			parsed, err := ParseFallbacks([]byte(fb))
+			if (err == nil) != tc.ok {
+				t.Fatalf("fallbacks: %v", err)
+			}
+			if tc.ok && tc.account != "" && parsed.Candidates[0].Account != work {
+				t.Fatalf("candidate account %q", parsed.Candidates[0].Account)
+			}
+		})
 	}
 }

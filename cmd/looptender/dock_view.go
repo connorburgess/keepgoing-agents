@@ -394,8 +394,11 @@ type dockChainEntry struct {
 	ProbedAt *time.Time      `json:"probedAt,omitempty"`
 	ProbeAge *int64          `json:"probeAgeSeconds,omitempty"`
 	Usage    dockUsageTarget `json:"usage"`
-	identity string
-	probeOK  bool
+	// CatalogAccount is the accounts-catalog entry the route names, or its
+	// derived account context (route_account.go).
+	CatalogAccount *accounts.RouteAccount `json:"catalogAccount,omitempty"`
+	identity       string
+	probeOK        bool
 }
 
 // dockRoute is one route across every loop that names it. keepgoing knows it
@@ -975,6 +978,8 @@ type dockChainInput struct {
 	// "daily cap reached", ...), as the scheduler would see it now; nil when
 	// the probe history was not read.
 	Due map[string]string
+	// Catalog is the accounts catalog, read once per report; nil when unread.
+	Catalog *accounts.File
 }
 
 // dockInput is everything one loop's view is built from.
@@ -2107,6 +2112,7 @@ func dockHandoffChain(in *dockChainInput, use dockRouteUse, test dockTesting, f 
 		main.Notes = append(main.Notes, dockNote{Tone: "limit", Text: main.Usage.UsedUp})
 	}
 	main.identity = dockAccountIdentity(in.Primary, main.Usage)
+	main.CatalogAccount = dockCatalogAccount(in, in.Primary.Agent)
 	c.Entries = append(c.Entries, main)
 	if len(in.Candidates) == 0 {
 		c.Availability = "none_configured"
@@ -2194,6 +2200,7 @@ func dockHandoffChain(in *dockChainInput, use dockRouteUse, test dockTesting, f 
 			e.Notes = append(e.Notes, dockNote{Tone: "limit", Text: e.Usage.UsedUp})
 		}
 		e.identity = dockAccountIdentity(cand, e.Usage)
+		e.CatalogAccount = dockCatalogAccount(in, cand.Agent)
 		c.Entries = append(c.Entries, e)
 	}
 	if c.Omitted > 0 {
