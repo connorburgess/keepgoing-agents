@@ -19,6 +19,7 @@ import (
 	"time"
 	"unicode/utf8"
 
+	"github.com/looptender/looptender/internal/accounts"
 	"github.com/looptender/looptender/internal/config"
 	"github.com/looptender/looptender/internal/control"
 	"github.com/looptender/looptender/internal/health"
@@ -1960,11 +1961,15 @@ func TestDockFourByteNamesStayUnderTheResponseBound(t *testing.T) {
 		in.Chain.Primary.Agent = in.Chain.Candidates[0].Agent
 		inputs[i] = in
 	}
-	body, err := json.Marshal(buildDockReport(inputs, dockNow, time.Minute, defaultStaleAfter, true, true, 0, true))
+	r := buildDockReport(inputs, dockNow, time.Minute, defaultStaleAfter, true, true, 0, true)
+	// With the account route lists the Accounts page adds, every account
+	// an unnamed context of four-byte names.
+	r.AccountUses, r.AccountUsesOmitted = dockAccountUses(r, accounts.View{State: "available", Complete: true, Cards: []accounts.Card{}}, nil, true, dockNow)
+	body, err := json.Marshal(r)
 	if err != nil {
 		t.Fatal(err)
 	}
-	t.Logf("%d bytes", len(body))
+	t.Logf("%d bytes, %d account route lists", len(body), len(r.AccountUses))
 	if len(body) > dockMaxResponse*3/4 {
 		t.Errorf("%d bytes, over three quarters of the %d-byte bound", len(body), dockMaxResponse)
 	}
