@@ -68,6 +68,9 @@ func (a *Adapter) WithStateDir(dir string) *Adapter {
 // Name implements adapter.Adapter.
 func (a *Adapter) Name() string { return "bb" }
 
+// ConversationKey implements adapter.ConversationKeyer: the configured thread.
+func (a *Adapter) ConversationKey() (string, bool) { return a.cfg.Thread, a.cfg.Thread != "" }
+
 type envelope struct {
 	OK    *bool `json:"ok"`
 	Error *struct {

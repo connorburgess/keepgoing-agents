@@ -467,3 +467,12 @@ func TestCursorPersistsAndReadsOnlyNewEvents(t *testing.T) {
 		t.Errorf("--after-seq values = %v, want 0 then 2", after)
 	}
 }
+
+func TestConversationKeyIsTheConfiguredThread(t *testing.T) {
+	if key, known := (&Adapter{cfg: config.BB{Thread: "thr_example"}}).ConversationKey(); key != "thr_example" || !known {
+		t.Fatalf("%q %v", key, known)
+	}
+	if key, known := (&Adapter{}).ConversationKey(); key != "" || known {
+		t.Fatalf("no thread: %q %v", key, known)
+	}
+}

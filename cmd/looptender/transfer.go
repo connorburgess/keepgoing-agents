@@ -170,6 +170,16 @@ func transferCommand(e env, args []string, run doctorRun) int {
 			} else {
 				add("provider", "ok", "Both thread provider IDs match the configured provider label.")
 			}
+			// Advisory only: appended directly so that it never changes
+			// compatibility, whatever its status.
+			for _, side := range []struct{ id, path string }{{"workspace.from", fromPath}, {"workspace.to", toPath}} {
+				status, message := workspaceVerdict(e.ctx, side.path, cfg.Loop.Progress.Repositories, *timeout)
+				fix := ""
+				if status == "warning" {
+					fix = workspaceFix
+				}
+				r.Checks = append(r.Checks, doctorCheck{ID: side.id, Status: status, Message: message, Fix: fix})
+			}
 		}
 	}
 	if cfg.CheckSources() != nil {

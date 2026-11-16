@@ -1100,6 +1100,9 @@ func readStatus(ctx context.Context, cfg *config.Config, now time.Time, staleAft
 		out.Goal = &summary
 	}
 	out.PromptSend = describePromptSend(st.LastPromptSend, out.Goal)
+	if st.GoalCopy != nil && st.GoalCopy.Valid() {
+		out.PromptSend.GoalCopy = st.GoalCopy
+	}
 	out.LimitWait = describeLimitWait(st.LimitWaitReport, l, now)
 	out.IdleSpacing = describeIdleSpacing(st, l.Progress)
 	out.TurnRetry = describeTurnRetry(st.LastTurnRetry)
