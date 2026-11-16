@@ -2,6 +2,8 @@ package main
 
 import (
 	"path/filepath"
+	"runtime"
+	"strings"
 
 	"github.com/looptender/looptender/internal/accounts"
 )
@@ -16,7 +18,8 @@ const accountDefaultDirFix = "Use --selection inherited for the default login; k
 
 // accountDefaultDirectory returns the config directory a provider uses when
 // its account variable is unset, or "" when it is not known here. Only Claude
-// Code is covered (~/.claude, used when CLAUDE_CONFIG_DIR is unset): the
+// Code is covered (~/.claude, used when CLAUDE_CONFIG_DIR is unset; home is
+// os.UserHomeDir, so %USERPROFILE%\.claude on Windows): the
 // different login context was observed for it. Codex is not covered, because
 // nothing in this repository establishes the same behaviour for CODEX_HOME.
 func accountDefaultDirectory(provider, home string) string {
@@ -42,7 +45,12 @@ func accountExplicitIsDefault(e accounts.Entry, home string) bool {
 	if resolved, err := filepath.EvalSymlinks(def); err == nil {
 		def = resolved
 	}
-	return filepath.Clean(e.Directory) == filepath.Clean(def)
+	dir, def := filepath.Clean(e.Directory), filepath.Clean(def)
+	if runtime.GOOS == "windows" {
+		// Windows paths compare without regard to case.
+		return strings.EqualFold(dir, def)
+	}
+	return dir == def
 }
 
 // doctorAccountsCatalog is the catalog directory doctor reads for

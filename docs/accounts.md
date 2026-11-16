@@ -44,7 +44,7 @@ authentication inputs; selection does not override arbitrary credential sources.
 
 **Warning: the default Claude Code login is `inherited`, not an explicit
 directory.** Claude Code treats CLAUDE_CONFIG_DIR set to its default directory
-(`~/.claude`) as a different login context from the default login, with the
+(`~/.claude`, `%USERPROFILE%\.claude` on Windows) as a different login context from the default login, with the
 variable unset. An explicit_directory entry for `~/.claude` can therefore report
 no login while you are signed in. `accounts add` and `accounts update` print a
 warning for such an entry (they still save it), and

@@ -5,6 +5,7 @@ import (
 	"context"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -36,6 +37,11 @@ func TestAccountExplicitIsDefault(t *testing.T) {
 				t.Errorf("got %v, want %v", got, tc.want)
 			}
 		})
+	}
+	// Windows paths compare without regard to case; elsewhere case counts.
+	upper := accounts.Entry{Provider: "claude-code", Mode: "explicit_directory", Directory: `C:\Users\Example\.CLAUDE`}
+	if got, want := accountExplicitIsDefault(upper, `c:\users\example`), runtime.GOOS == "windows"; got != want {
+		t.Errorf("case-different default: got %v, want %v", got, want)
 	}
 	if accountExplicitIsDefault(accounts.Entry{Provider: "claude-code", Mode: "explicit_directory", Directory: "/.claude"}, "") {
 		t.Error("an unknown home matched")
@@ -75,7 +81,9 @@ func TestAccountsAddWarnsOnExplicitDefaultDirectory(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
+	// os.UserHomeDir reads HOME, or USERPROFILE on Windows.
 	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home)
 	cli := filepath.Join(root, "fixture-cli.exe")
 	if err := os.WriteFile(cli, []byte("fictional stand-in"), 0700); err != nil {
 		t.Fatal(err)
