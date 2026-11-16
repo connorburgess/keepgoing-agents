@@ -1214,6 +1214,8 @@
       (old != null ? " · oldest usage reading " + span(old) + " old" : "") +
       (state.failed ? " · the last read failed" : "");
     r.classList.toggle("is-stale", state.failed);
+    // The line keeps a fixed box; when it is cut there, its tooltip has it whole.
+    if (r.scrollHeight > r.clientHeight + 1) r.title = r.textContent; else r.removeAttribute("title");
   }
   // Only what changes for a person is announced: the needs-you line, and a
   // read that failed. The time of each read is not.
