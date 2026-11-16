@@ -63,6 +63,7 @@ To change the matrix, edit the table and run `KEEPGOING_UPDATE_ADAPTERS_DOC=1 go
 | [Probes](#probes) | yes · live | yes · live | yes · live | missing · none | missing · none | yes · fixture | partial · fixture |
 | [Quota readings](#quota-readings) | partial · live | yes · live | partial · live | missing · none | missing · none | missing · none | missing · none |
 | [Context window reading](#context-window-reading) | yes · fixture | missing · none | missing · none | missing · none | missing · none | missing · none | missing · none |
+| [Turn usage reading](#turn-usage-reading) | missing · none | missing · none | yes · fixture | missing · none | missing · none | missing · none | missing · none |
 | [Handoff into a new conversation](#handoff-into-a-new-conversation) | yes · fixture | yes · fixture | yes · fixture | missing · none | missing · none | n/a | yes · fixture |
 | [Run graph and keepgoing runs](#run-graph-and-keepgoing-runs) | yes · live | yes · fixture | yes · fixture | yes · fixture | missing · none | partial · fixture | partial · fixture |
 | [Stop and owned cancellation](#stop-and-owned-cancellation) | yes · live | yes · fixture | yes · fixture | yes · live | missing · none | partial · fixture | partial · fixture |
@@ -267,11 +268,23 @@ Record how much of the model's context window the supervised conversation uses, 
 
 - **BB thread:** yes, evidence fixture. `bb thread context <thread> --json` for the supervised thread only, never a lane: used tokens, the window and BB's estimated flag. Read after a check's wake, re-prompt or nudge, or when it first sees a turn ended, within what is left of the check's budget; anything malformed, slow or missing (older bb) is unavailable. The shape was seen on one bb build; the parser runs against fixtures only. [`TestReadContextAcceptsOnlyTheKnownShape`](../internal/adapter/bb/context_test.go) [`TestContextReadingChangesNoDecision`](../internal/supervise/context_test.go) [operations.md#context-window-reading](operations.md#context-window-reading)
 - **Claude Code headless:** missing, evidence none. Unavailable: no reading is taken.
-- **Codex headless:** missing, evidence none. Unavailable. Per-turn usage appears in the event stream but is not read.
+- **Codex headless:** missing, evidence none. Unavailable. The per-turn token counts in the event stream are recorded as turn usage, which is not a context window size.
 - **Cursor headless:** missing, evidence none. Unavailable: no reading is taken.
 - **Antigravity:** missing, evidence none. No adapter is registered, so a loop cannot use it. [antigravity.md](antigravity.md)
 - **Generic process:** missing, evidence none. Unavailable: no reading is taken.
 - **Agent defined in configuration:** missing, evidence none. Unavailable: a definition declares no context window reading.
+
+### Turn usage reading
+
+Record the token counts the agent reports for each finished turn, for status only. No decision, send, allowance or hold reads it, and no figure the agent did not report is estimated.
+
+- **BB thread:** missing, evidence none. Unavailable: the agent reports no per-turn token counts that are read.
+- **Claude Code headless:** missing, evidence none. Not captured: no Claude Code result object with usage fields has been recorded, so none is read. [`TestClaudeReportsNoTurnUsage`](../internal/adapter/runner/turnusage_test.go)
+- **Codex headless:** yes, evidence fixture. The typed usage object of `turn.completed` in `codex exec --json`: input, cached input, cache write input, output and reasoning output tokens. Only plain integers up to ten billion are kept; anything else is absent. Each turn is counted once, by its run record. Unreleased; the parser runs against fixtures only. [`TestCodexTurnUsageReadsOnlyTypedCounts`](../internal/adapter/runner/turnusage_test.go) [`TestTurnUsageChangesNoDecision`](../internal/supervise/turnusage_test.go) [operations.md#turn-usage-reading](operations.md#turn-usage-reading)
+- **Cursor headless:** missing, evidence none. Unavailable: the agent reports no per-turn token counts that are read.
+- **Antigravity:** missing, evidence none. No adapter is registered, so a loop cannot use it. [antigravity.md](antigravity.md)
+- **Generic process:** missing, evidence none. Unavailable: the agent reports no per-turn token counts that are read.
+- **Agent defined in configuration:** missing, evidence none. Unavailable: a definition declares no per-turn token counts.
 
 ### Handoff into a new conversation
 

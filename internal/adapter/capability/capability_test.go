@@ -460,6 +460,10 @@ func TestPortedAgentsSetExactlyTheirInputs(t *testing.T) {
 		if listed := byID("error_classes").Cells[spec.Name].Status == Yes; listed != spec.Capabilities.StructuredErrors {
 			t.Errorf("%s: StructuredErrors=%v but the error_classes row is %s", spec.Name, spec.Capabilities.StructuredErrors, byID("error_classes").Cells[spec.Name].Status)
 		}
+		// It reports per-turn usage exactly when the matrix says so.
+		if listed := byID("turn_usage").Cells[spec.Name].Status == Yes; listed != spec.Capabilities.TurnUsage {
+			t.Errorf("%s: TurnUsage=%v but the turn_usage row is %s", spec.Name, spec.Capabilities.TurnUsage, byID("turn_usage").Cells[spec.Name].Status)
+		}
 		// Waiting on a person is structured exactly when permissions are.
 		if listed := byID("permissions").Cells[spec.Name].Status == Yes; listed != spec.Capabilities.StructuredWaiting {
 			t.Errorf("%s: StructuredWaiting=%v but the permissions row is %s", spec.Name, spec.Capabilities.StructuredWaiting, byID("permissions").Cells[spec.Name].Status)

@@ -80,9 +80,76 @@ func TestContextReadDue(t *testing.T) {
 		{"wake on a dry run", act(decide.Wake), idle, "idle", false, true, true, false},
 	}
 	for _, c := range cases {
-		if got := contextReadDue(c.d, c.obs, c.previous, c.held, c.same, c.dry); got != c.want {
+		if got := contextReadDue(c.d, c.obs, c.previous, c.held, c.same, c.dry, false); got != c.want {
 			t.Errorf("%s: got %v, want %v", c.name, got, c.want)
 		}
+	}
+}
+
+// A send's turn that started and ended between two checks: the next idle
+// check that sends nothing reads, once, when the latest reading is not after
+// the latest send. One row per case.
+func TestContextReadDueAfterAnUnseenTurn(t *testing.T) {
+	idle := decide.Observation{State: decide.Idle}
+	act := func(a decide.Action) decide.Decision { return decide.Decision{Action: a} }
+	cases := []struct {
+		name   string
+		d      decide.Decision
+		obs    decide.Observation
+		same   bool
+		dry    bool
+		unread bool
+		want   bool
+	}{
+		{"idle, nothing sent, reading not after the send", act(decide.None), idle, true, false, true, true},
+		{"idle, nothing sent, reading after the send", act(decide.None), idle, true, false, false, false},
+		{"still active", act(decide.None), decide.Observation{State: decide.Active}, true, false, true, false},
+		{"in error", act(decide.None), decide.Observation{State: decide.Error}, true, false, true, false},
+		{"hold raised", act(decide.AwaitUser), idle, true, false, true, false},
+		{"stop", act(decide.Stop), idle, true, false, true, false},
+		{"moved the loop", act(decide.Handoff), idle, false, false, true, false},
+		{"dry run", act(decide.None), idle, true, true, true, false},
+	}
+	for _, c := range cases {
+		if got := contextReadDue(c.d, c.obs, "idle", false, c.same, c.dry, c.unread); got != c.want {
+			t.Errorf("%s: got %v, want %v", c.name, got, c.want)
+		}
+	}
+	at := t0
+	for name, c := range map[string]struct {
+		st   state.File
+		want bool
+	}{
+		"read in the check that sent": {state.File{LastSentAt: at, Context: &state.ContextRecord{Target: state.Primary, Latest: state.ContextReading{At: at}}}, true},
+		"read after the send":         {state.File{LastSentAt: at, Context: &state.ContextRecord{Target: state.Primary, Latest: state.ContextReading{At: at.Add(time.Minute)}}}, false},
+		"read before the send":        {state.File{LastSentAt: at, Context: &state.ContextRecord{Target: state.Primary, Latest: state.ContextReading{At: at.Add(-time.Minute)}}}, true},
+		"never sent":                  {state.File{Context: &state.ContextRecord{Target: state.Primary, Latest: state.ContextReading{At: at}}}, false},
+		"no reading":                  {state.File{LastSentAt: at}, false},
+		"reading of another target":   {state.File{LastSentAt: at, Context: &state.ContextRecord{Target: "example-fallback", Latest: state.ContextReading{At: at}}}, false},
+	} {
+		if got := unreadAfterSend(&c.st, state.Primary); got != c.want {
+			t.Errorf("%s: got %v, want %v", name, got, c.want)
+		}
+	}
+}
+
+// A wake whose turn ends before the next check: that check, idle and sending
+// nothing, reads once; the check after it does not read again.
+func TestUnseenTurnIsReadOnce(t *testing.T) {
+	w, f := contextWorld(t, decide.Observation{State: decide.Idle})
+	if res, err := Tick(context.Background(), w.cfg, w.contextOpts(t0, f)); err != nil || res.Action != "wake" || f.calls != 1 {
+		t.Fatalf("wake: %+v %v, %d reads", res, err, f.calls)
+	}
+	// Idle with a lane working: the checks below send nothing.
+	f.obs = decide.Observation{State: decide.Idle, ActiveChildren: 1, ActiveChildIDs: []string{"thr_examplelane"}}
+	for i, want := range []int{2, 2} {
+		res, err := Tick(context.Background(), w.cfg, w.contextOpts(t0.Add(time.Duration(i+1)*time.Minute), f))
+		if err != nil || res.Action != "none" || f.calls != want {
+			t.Fatalf("idle check %d: %+v %v, %d reads, want %d", i+1, res, err, f.calls, want)
+		}
+	}
+	if st := loadState(t, w); !st.Context.Latest.At.After(st.LastSentAt) {
+		t.Fatalf("the reading is not after the send: %+v, sent %v", st.Context.Latest, st.LastSentAt)
 	}
 }
 
@@ -98,7 +165,8 @@ func TestWakeRecordsTheContextReadingOnce(t *testing.T) {
 	got := loadState(t, w).Context
 	r := state.ContextReading{UsedTokens: 48_000, WindowTokens: 200_000, Estimated: true, At: t0}
 	want := &state.ContextRecord{Version: state.ContextVersion, Target: state.Primary, Latest: r, Recent: []state.ContextReading{r},
-		Days: []state.ContextDay{{Day: "2026-11-09", Lowest: 48_000, Highest: 48_000, Last: 48_000, WindowTokens: 200_000, Count: 1, Estimated: true}}}
+		Days:            []state.ContextDay{{Day: "2026-11-09", Lowest: 48_000, Highest: 48_000, Last: 48_000, WindowTokens: 200_000, Count: 1, Estimated: true}},
+		TurnEndsTracked: true}
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("recorded %+v, want %+v", got, want)
 	}
