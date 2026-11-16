@@ -32,6 +32,12 @@ The goal is to grow from one loop on your machine to fleets of agents across mac
 
 These are the failures that stop an agent nobody is watching, and what looptender does about each today:
 
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="docs/assets/looptender-failures-dark.svg">
+  <source media="(prefers-color-scheme: light)" srcset="docs/assets/looptender-failures-light.svg">
+  <img alt="Diagram: one row per case and what looptender does. Limit reached: moves to the next route you configured, or waits for the reset. Connection lost: waits, then resumes on the first check after it returns. Turn failed: retries or re-prompts, within a cap. No progress: nudges within a cap, then holds. Needs a person: holds and shows it in status and the panel. Caption: when the right move is not clear, looptender holds and asks you." src="docs/assets/looptender-failures-light.svg" width="960">
+</picture>
+
 - **A provider limit is reached.** If you configured other routes, looptender moves the work to the next one in your list, in the order you gave, after one small real request confirms that route works. It is an ordered list, not a pool that it balances. Without other routes it waits, and a known reset time holds recovery until then. Returning to the first route is opt-in. The full [preferred routes](docs/roadmap.md#preferred-routes-planned) rule is partly implemented.
 - **The network drops.** Before a re-prompt, a handoff or a probe, looptender checks that the network is up, so it does not spend retries into a dead connection, and it recovers the session on the first check after the network returns. This has been seen once in a real outage; otherwise it is fixture-tested.
 - **The machine goes away and comes back.** Nothing runs while the machine is off. Installed as a macOS or Linux [service](docs/services.md), supervision starts again when the machine is back, and `status`, `doctor` and the panel say when a loop's checks have stopped.
@@ -43,6 +49,12 @@ Whenever the right move is not clear, looptender holds and asks you instead of d
 ## How this differs from built-in loops
 
 Agent tools have their own loops, retries and background agents, and each of them knows only its own tool. looptender runs on your machine outside any one tool and watches sessions in several of them. You do not do your development through it, and it is not another chat interface: each session stays where it lives, and looptender only watches, wakes, bounds and holds it.
+
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="docs/assets/looptender-tools-dark.svg">
+  <source media="(prefers-color-scheme: light)" srcset="docs/assets/looptender-tools-light.svg">
+  <img alt="Diagram: one machine with four agent tools side by side, each with its own session: an agent host such as BB with a BB thread, headless Claude Code or Codex, the Cursor CLI, and your own agent described by its status and resume commands. One looptender box on the same machine has dashed arrows to every session: watch, wake, bound, hold. Caption: the session stays where it lives." src="docs/assets/looptender-tools-light.svg" width="960">
+</picture>
 
 ## Where it works best today
 
