@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"context"
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -53,8 +54,22 @@ func TestFallbacksByLoopName(t *testing.T) {
 	if err := os.MkdirAll(f.account("claude-d"), 0o700); err != nil {
 		t.Fatal(err)
 	}
-	if code, out, errOut := call("fallbacks", "add", "--loop", "example-loop", "--directory", reg, "--non-interactive", "--agent", "claude", "--account-dir", f.account("claude-d"), "--group", "pool-d", "--dry-run"); code != exitOK || !strings.Contains(out, "pool-d") {
-		t.Fatalf("add by name: %d %s %s", code, out, errOut)
+	// add looks up agent CLIs on PATH, so it runs with the fixture's lookup
+	// on the arguments --loop resolves to, as the command does.
+	{
+		var out, errOut bytes.Buffer
+		e := env{context.Background(), &out, &errOut}
+		args, code, ok := fallbacksByLoop(e, "add", []string{"--loop", "example-loop", "--directory", reg, "--non-interactive", "--agent", "claude", "--account-dir", f.account("claude-d"), "--group", "pool-d", "--dry-run"})
+		if !ok || code != exitOK || len(args) < 2 || args[0] != "-c" || args[1] != f.cfg {
+			t.Fatalf("add by name resolved to %q: %d %s", args, code, errOut.String())
+		}
+		noBB := func(_ context.Context, _ string, args ...string) ([]byte, error) {
+			t.Errorf("unexpected bb invocation: %v", args)
+			return nil, errors.New("not allowed")
+		}
+		if code := fallbacksAdd(e, args, strings.NewReader(""), f.lookPath, noBB); code != exitOK || !strings.Contains(out.String(), "pool-d") {
+			t.Fatalf("add by name: %d %s %s", code, out.String(), errOut.String())
+		}
 	}
 
 	before := f.files(t)
@@ -81,7 +96,9 @@ func TestFallbacksByLoopName(t *testing.T) {
 	if err := os.Mkdir(bad, 0o700); err != nil {
 		t.Fatal(err)
 	}
-	write(t, filepath.Join(bad, registry.FileName), "not a registry", 0o600)
+	if err := os.WriteFile(filepath.Join(bad, registry.FileName), []byte("not a registry"), 0o600); err != nil {
+		t.Fatal(err)
+	}
 	if code, out, errOut := call("fallbacks", "list", "--loop", "example-loop", "--directory", bad); code != exitFailed || out != "" || !strings.Contains(errOut, "The loop registry cannot be read.") || strings.Contains(errOut, bad) {
 		t.Errorf("unreadable registry: %d %q %q", code, out, errOut)
 	}
