@@ -247,7 +247,7 @@ func dockScratch(t testing.TB, root string, now time.Time) string {
 			// person; later held checks record only "awaiting user".
 			held := now.Add(-(2*time.Hour + 14*time.Minute))
 			ctl.AwaitingUser = true
-			ctl.Note = "Needs a decision on the refund table: keep the old columns or migrate them? Answer in the thread, then resume."
+			ctl.Note = "Needs a decision on the refund table: keep the old columns or migrate them? Answer in thr_example0101 (plan in /example/path/refunds.md), then resume."
 			st.CheckedAt, st.LastCheck = recent, dockFixtureCheck(recent, "", "none", "awaiting user")
 			st.LastCheck.ObservedTarget = ""
 			children = []rungraph.Child{{Key: childKeyOf("thr_child0011"), Status: rungraph.ChildAwaiting}, {Key: childKeyOf("thr_child0012"), Status: rungraph.ChildActive}}
