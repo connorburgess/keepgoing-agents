@@ -56,6 +56,19 @@ type Observation struct {
 	// when there is none. It is diagnostic: the supervisor notes a new one in
 	// the timeline, and it never changes Decide policy.
 	ModelFallback int64
+	// ChildOutcome is the position, in the session's own log, of the latest
+	// child outcome notice its provider delivered; 0 when there is none or
+	// the adapter has no such notices. Decide never reads it: the supervisor
+	// compares it between checks as one of the idle spacing rule's facts.
+	ChildOutcome int64
+	// Turns counts the turn requests and turn starts in the session's own
+	// log, from typed events only; nil when the adapter cannot count them.
+	// Decide never reads it: the supervisor compares it between checks as
+	// one of the idle spacing rule's facts, so that input looptender did not
+	// send (a person's message, another agent's message, a notice) starts
+	// the spacing over, and an idle wake counts as having changed nothing
+	// only once the turn it started has ended.
+	Turns *TurnCounts
 	// ErrorTurn names the turn an error ended, when the adapter can tell; a
 	// new turn has a new name. It counts a refused turn once however many
 	// checks see it, and never changes any other rule.
@@ -213,6 +226,70 @@ type Input struct {
 	// HandoffDeferred: a handoff is due and a fallback is listed healthy, but
 	// this check ran out of time to confirm one. Nothing is spent on that.
 	HandoffDeferred bool
+
+	// IdleSpacing spaces idle wakes that changed nothing; off unless
+	// loop.progress.idle_spacing is set. See IdleSpacing.
+	IdleSpacing IdleSpacing
+}
+
+// IdleSpacing is the opt-in rule that spaces idle wakes after which no
+// structured fact changed. The command layer compares the facts; Decide only
+// sees the count, so nothing here reads text or infers "nothing to do".
+type IdleSpacing struct {
+	// First is the wait after one idle wake that changed nothing; each further
+	// one doubles it, up to Max. Max zero turns the rule off.
+	First, Max time.Duration
+	// Unchanged counts consecutive idle wakes, up to and including the last
+	// one, after which none of the listed facts changed. Zero when one
+	// changed, or when no idle wake is on record.
+	Unchanged int
+	// SinceIdleWake is the time since the last idle wake. Negative (the
+	// clock was set back) counts as the wait having passed.
+	SinceIdleWake time.Duration
+}
+
+// TurnCounts counts events in a session's own log since it began. Requests
+// are turn requests from any sender, a provider's retry of an earlier request
+// excluded; Starts are turns that started. Neither is ever read from message
+// text.
+type TurnCounts struct {
+	Requests int64
+	Starts   int64
+}
+
+// IdleWait names why an idle wake is waiting. It is a fixed code: callers
+// read it, never the Reason text.
+type IdleWait string
+
+// IdleUnchanged: the previous idle wakes changed none of the structured facts
+// the rule watches, so the next one waits IdleSpacingWait after the last.
+const IdleUnchanged IdleWait = "idle_unchanged"
+
+// IdleSpacedReason is recorded on a check that spaced an idle wake.
+const IdleSpacedReason = "idle; previous idle wakes changed nothing looptender can see; next idle wake spaced"
+
+// IdleSpacingWait is how long after the last idle wake the next one waits when
+// n idle wakes in a row changed nothing: first for one, doubled for each
+// further one, never more than max. Zero when n is 0 or the rule is off.
+func IdleSpacingWait(first, max time.Duration, n int) time.Duration {
+	if n <= 0 || max <= 0 || first <= 0 {
+		return 0
+	}
+	w := min(first, max)
+	for i := 1; i < n && w < max; i++ {
+		w = min(mulSat(w, 2), max)
+	}
+	return w
+}
+
+// idleSpaced reports whether an idle wake waits under IdleSpacing. A wake
+// that carries a child-error notice is never spaced: the notice is a change.
+// A negative time since the last idle wake means the clock was set back; the
+// wait counts as passed, so a clock change can never delay a wake.
+func idleSpaced(in Input) bool {
+	s := in.IdleSpacing
+	wait := IdleSpacingWait(s.First, s.Max, s.Unchanged)
+	return wait > 0 && s.SinceIdleWake >= 0 && s.SinceIdleWake < wait && !childErrorNoticeDue(in)
 }
 
 // Failover is the supervisor's view of whether a handoff is possible.
@@ -293,6 +370,10 @@ type Decision struct {
 	// because the turn may be hung (Input.HungTurn). It is recorded exactly
 	// as a nudge is, and not sent.
 	HeldNudge bool
+	// IdleWake is set only on the ordinary wake of an idle session, the one
+	// IdleSpacing spaces. IdleWait is set only when that wake was spaced.
+	IdleWake bool
+	IdleWait IdleWait
 }
 
 // SessionLostReason is fixed text. It names the way out: a person decides to
@@ -421,7 +502,12 @@ func Decide(in Input) Decision {
 		if in.SwitchBackReady {
 			return Decision{Action: SwitchBack, Reason: "primary's limit has reset"}
 		}
-		return Decision{Action: Wake, Reason: "idle"}
+		// Spacing only: every hold, gate and wait above still comes first, and
+		// a switch-back or a child-error notice is never spaced.
+		if idleSpaced(in) {
+			return Decision{Action: None, Reason: IdleSpacedReason, IdleWait: IdleUnchanged}
+		}
+		return Decision{Action: Wake, Reason: "idle", IdleWake: true}
 	case Active:
 		// A turn that went silent before a network outage and stayed silent
 		// after it may be hung. Nothing is sent into it: a nudge would only

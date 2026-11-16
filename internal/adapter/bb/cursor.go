@@ -48,6 +48,12 @@ type Cursor struct {
 	Thread          string `json:"thread"`
 	LastSeq         int64  `json:"lastSeq"`
 	TurnSeq         int64  `json:"turnSeq,omitempty"` // latest turn start
+	// TurnRequests counts client/turn/requested events that are not a
+	// retry of an earlier request, and TurnStarts counts turn/started
+	// events, since the scan began. Only the type and the retry field are
+	// read. They are the idle spacing rule's turn facts.
+	TurnRequests int64 `json:"turnRequests,omitempty"`
+	TurnStarts   int64 `json:"turnStarts,omitempty"`
 	// TurnStartedMs is BB's own createdAt of the latest turn/started event, in
 	// epoch milliseconds, unbounded. It is compared only with other BB times.
 	TurnStartedMs int64             `json:"turnStartedMs,omitempty"`
@@ -237,9 +243,13 @@ func (c *Cursor) apply(e event, seenAt time.Time) {
 	case e.Type == "client/turn/requested":
 		// Input can be queued behind a reconnecting turn; it is not recovery.
 		c.TurnSeq = e.Seq
+		if !retriedRequest(e) {
+			c.TurnRequests++
+		}
 	case e.Type == "turn/started":
 		// A new turn makes earlier errors stale.
 		c.TurnSeq, c.Error = e.Seq, nil
+		c.TurnStarts++
 		c.TurnStartSeq, c.OpenTools, c.ToolsUncertain = e.Seq, nil, false
 		c.TurnStartedMs = 0
 		if at := e.time(); !at.IsZero() {
@@ -451,4 +461,13 @@ func (a *Adapter) scan(ctx context.Context) (Cursor, bool) {
 		}
 	}
 	return c, false // An incomplete scan must not authorize an early check.
+}
+
+// retriedRequest reports whether a turn request is a provider's retry of an
+// earlier one, from its structured retryOfRequestId field only.
+func retriedRequest(e event) bool {
+	var d struct {
+		RetryOf string `json:"retryOfRequestId"`
+	}
+	return json.Unmarshal(e.Data, &d) == nil && d.RetryOf != ""
 }

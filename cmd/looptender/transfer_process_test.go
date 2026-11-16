@@ -109,7 +109,12 @@ func TestTransferProcessCrashStopRecoveryAndNewTargetOnly(t *testing.T) {
 	if ctl.PendingTransfer != nil || ctl.BBTarget != "thr_destination" || !ctl.Stop || !ctl.AwaitingUser {
 		t.Fatal("recovery lost stop/hold")
 	}
-	if code, out := transferProcess(t, "thr_destination", "", "resume", "-c", path); code != 0 {
+	// The destination now owns the loop and is its target: it is the
+	// supervised session, so a person resumes from a terminal.
+	if code, out := transferProcess(t, "thr_destination", "", "resume", "-c", path); code == 0 || !strings.Contains(out, "supervised session") {
+		t.Fatal("the destination cleared its own hold", code, out)
+	}
+	if code, out := transferProcess(t, "", "", "resume", "-c", path); code != 0 {
 		t.Fatal(code, out)
 	}
 	b, _ := json.Marshal(transferResponse("thr_destination"))

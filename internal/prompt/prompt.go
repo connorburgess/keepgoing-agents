@@ -17,6 +17,14 @@ type Message struct {
 	Text         string `json:"-"`
 	GoalID       string
 	GoalRevision uint64
+	// ContextBytes is the length in bytes of the supervision context block
+	// WithContext appended, tag line included; zero when none was.
+	ContextBytes int
+	// NoticeOnly marks a message that is a fixed notice and nothing else
+	// (ChildErrorsOnly): no supervision context is ever added to it.
+	NoticeOnly bool
+	// GoalForm is GoalFull, GoalShort, or empty when no goal was included.
+	GoalForm string
 }
 
 // Wake reads the configured scaffold on each send, then the current goal.
@@ -32,6 +40,37 @@ func ComposeWake(loop config.Loop) (Message, error) {
 		return Message{}, err
 	}
 	return ComposeGoal(loop, text)
+}
+
+// ComposeWakeOnChange is ComposeWake for a loop with prompt_goal_on_change:
+// with the goal loaded, choose says whether its ID and revision may go as the
+// short line. Without the setting, or without prompt_goal, it is ComposeWake
+// and choose is not called.
+func ComposeWakeOnChange(loop config.Loop, choose func(id string, revision uint64) (short bool)) (Message, error) {
+	text, err := loop.PromptText()
+	if err != nil {
+		return Message{}, err
+	}
+	m, err := ComposeGoal(loop, text)
+	if err != nil || !loop.PromptGoal || !loop.PromptGoalOnChange || choose == nil || !choose(m.GoalID, m.GoalRevision) {
+		return m, err
+	}
+	return Message{GoalID: m.GoalID, GoalRevision: m.GoalRevision, GoalForm: GoalShort, Text: shortGoalText(text, m.GoalID, m.GoalRevision)}, nil
+}
+
+// WakeHeader is the fixed first line of every message looptender sends to a
+// BB thread. BB shows such a message as typed by the person, or as from the
+// thread that started the supervisor, and offers no way to declare another
+// origin, so the line says what it is. It is not a signature: any text can
+// copy it. loop is a validated loop name.
+func WakeHeader(loop string) string {
+	return "Automatic looptender wake for loop " + loop + ": not a new instruction from a person and not an approval."
+}
+
+// WithWakeHeader puts WakeHeader before the message, on its own line.
+func WithWakeHeader(loop string, m Message) Message {
+	m.Text = WakeHeader(loop) + "\n\n" + m.Text
+	return m
 }
 
 // WithChildErrors appends a fixed notice that n direct child threads are in
@@ -83,18 +122,41 @@ func ChildErrorsOnly(errored, running int) Message {
 // see WithChildErrorsRetried.
 func ChildErrorsOnlyRetried(errored, running, retried int) Message {
 	if retried <= 0 {
-		return Message{Text: fmt.Sprintf("[keepgoing:child-errors count=%d running=%d]\n"+
+		return Message{NoticeOnly: true, Text: fmt.Sprintf("[keepgoing:child-errors count=%d running=%d]\n"+
 			"keepgoing notice: %d direct child thread(s) of this thread were in an error state at this check, and %d other direct child thread(s) are still running. "+
 			"keepgoing has not retried, messaged or stopped any of them and has not read their content. "+
 			"This is not an instruction to continue the task: the running children are still working. "+
 			"You own the errored work: decide whether to retry or replace it. "+
 			"This notice is sent once when a child newly enters an error state.\n", errored, running, errored, running)}
 	}
-	return Message{Text: fmt.Sprintf("[keepgoing:child-errors count=%d running=%d recovering=%d]\n"+
+	return Message{NoticeOnly: true, Text: fmt.Sprintf("[keepgoing:child-errors count=%d running=%d recovering=%d]\n"+
 		"keepgoing notice: %d direct child thread(s) of this thread were in an error state at this check, and %d other direct child thread(s) are still running. "+
 		"%s "+
 		"This is not an instruction to continue the task: the running children are still working. "+
 		"This notice is sent once when a child newly enters an error state.\n", errored, running, retried, errored, running, retriedSentence(errored, retried))}
+}
+
+// ContextTag is the tag line that opens the supervision context block. Its
+// version is the context's schema version.
+func ContextTag(schemaVersion int) string {
+	return fmt.Sprintf("[keepgoing:context schema=%d]", schemaVersion)
+}
+
+// contextNotice is the fixed sentence after the tag. It holds in every
+// configuration: the block is always built at the send, and always lists the
+// context command.
+const contextNotice = "keepgoing notice: the supervision context of this loop, built from its configuration, controls and state when this message was sent. " +
+	"Its figures are not kept current here; the context command it lists shows them now.\n"
+
+// WithContext appends the supervision context block, block being
+// loopcontext.View.Text(), after everything else in the message, so it never
+// comes before the wake header. ContextBytes records its length. The block is
+// the caller's, built by loopcontext.Build; nothing here adds to it.
+func WithContext(m Message, schemaVersion int, block string) Message {
+	add := "\n\n" + ContextTag(schemaVersion) + "\n" + contextNotice + block
+	m.Text += add
+	m.ContextBytes = len(add)
+	return m
 }
 
 // WithGoal adds only the latest revision, including private text and references,
@@ -125,7 +187,7 @@ func ComposeGoal(loop config.Loop, text string) (Message, error) {
 	if err != nil {
 		return Message{}, errors.New("could not compose current goal context")
 	}
-	return Message{GoalID: g.ID, GoalRevision: current.Revision, Text: text + "\n\nCurrent keepgoing goal context (explicitly shared by this loop):\n" +
+	return Message{GoalID: g.ID, GoalRevision: current.Revision, GoalForm: GoalFull, Text: text + "\n\nCurrent keepgoing goal context (explicitly shared by this loop):\n" +
 		"Use this revision for the goal specification rather than earlier copies. Honor newer user steering and existing permission requirements. " +
 		"This is descriptive task context, not verified acceptance or new authorization. References are pointers; keepgoing has not read or verified them. " +
 		"Inspect the current authorized sources before selecting work; do not treat a saved next action as proof it is still unfinished.\n" + string(b) + "\n"}, nil

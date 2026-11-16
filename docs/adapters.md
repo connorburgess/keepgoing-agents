@@ -32,7 +32,7 @@ The matrix below is generated from one Go table, [`internal/adapter/capability`]
 - `decide.Observation` gains a field the table does not list. A new decision input cannot be introduced silently.
 - An adapter's source refers to an Observation field the table does not list for it, or stops referring to one it lists. An adapter cannot start reporting a new input without its column changing.
 - The adapter factory builds an adapter the table does not register, or the other way round.
-- An adapter gains or loses the optional activate or wake-poll interface, or a check records a session reference for a different set of adapters than the table says.
+- An adapter gains or loses the optional activate, wake-poll or context window reading interface, or a check records a session reference for a different set of adapters than the table says.
 - A cell is empty, an implemented cell has no evidence or no reference, or a reference names a file or test that does not exist.
 - An agent on the runner contract, built in or defined in configuration, sets a field the table does not list for it: its real runner is run over sample turns and the fields it set are compared with the table. For defined agents a definition that declares everything must produce exactly the column's inputs, and one that declares nothing must produce only state, error class and evidence.
 - This document's matrix differs from the table.
@@ -62,6 +62,9 @@ To change the matrix, edit the table and run `KEEPGOING_UPDATE_ADAPTERS_DOC=1 go
 | [Switch-back](#switch-back) | yes · fixture | yes · fixture | yes · fixture | missing · none | missing · none | yes · fixture | yes · fixture |
 | [Probes](#probes) | yes · live | yes · live | yes · live | missing · none | missing · none | yes · fixture | partial · fixture |
 | [Quota readings](#quota-readings) | partial · live | yes · live | partial · live | missing · none | missing · none | missing · none | missing · none |
+| [Context window reading](#context-window-reading) | yes · fixture | missing · none | missing · none | missing · none | missing · none | missing · none | missing · none |
+| [Supervision context in sends](#supervision-context-in-sends) | yes · fixture | yes · fixture | yes · fixture | yes · fixture | missing · none | yes · fixture | yes · fixture |
+| [Turn usage reading](#turn-usage-reading) | missing · none | missing · none | yes · fixture | missing · none | missing · none | missing · none | missing · none |
 | [Handoff into a new conversation](#handoff-into-a-new-conversation) | yes · fixture | yes · fixture | yes · fixture | missing · none | missing · none | n/a | yes · fixture |
 | [Run graph and keepgoing runs](#run-graph-and-keepgoing-runs) | yes · live | yes · fixture | yes · fixture | yes · fixture | missing · none | partial · fixture | partial · fixture |
 | [Stop and owned cancellation](#stop-and-owned-cancellation) | yes · live | yes · fixture | yes · fixture | yes · live | missing · none | partial · fixture | partial · fixture |
@@ -259,6 +262,42 @@ Record how much of a usage window is used, from structured fields a probe alread
 - **Antigravity:** missing, evidence none. No adapter is registered, so a loop cannot use it. [antigravity.md](antigravity.md)
 - **Generic process:** missing, evidence none. A command probe reports health only.
 - **Agent defined in configuration:** missing, evidence none. No usage reading is taken. A limit lookup, when defined, only says whether an unclassified failure is a usage limit and when it resets. [`TestDefinedAgentLimitLookup`](../internal/adapter/runner/definition_unix_test.go)
+
+### Context window reading
+
+Record how much of the model's context window the supervised conversation uses, for status only. No decision, send, allowance or hold reads it.
+
+- **BB thread:** yes, evidence fixture. `bb thread context <thread> --json` for the supervised thread only, never a lane: used tokens, the window and BB's estimated flag. Read after a check's wake, re-prompt or nudge, or when it first sees a turn ended, within what is left of the check's budget; anything malformed, slow or missing (older bb) is unavailable. The shape was seen on one bb build; the parser runs against fixtures only. [`TestReadContextAcceptsOnlyTheKnownShape`](../internal/adapter/bb/context_test.go) [`TestContextReadingChangesNoDecision`](../internal/supervise/context_test.go) [operations.md#context-window-reading](operations.md#context-window-reading)
+- **Claude Code headless:** missing, evidence none. Unavailable: no reading is taken.
+- **Codex headless:** missing, evidence none. Unavailable. The per-turn token counts in the event stream are recorded as turn usage, which is not a context window size.
+- **Cursor headless:** missing, evidence none. Unavailable: no reading is taken.
+- **Antigravity:** missing, evidence none. No adapter is registered, so a loop cannot use it. [antigravity.md](antigravity.md)
+- **Generic process:** missing, evidence none. Unavailable: no reading is taken.
+- **Agent defined in configuration:** missing, evidence none. Unavailable: a definition declares no context window reading.
+
+### Supervision context in sends
+
+With `loop.prompt_context` (off by default), append the loop's supervision context, as `context` shows it, to wakes, nudges, re-prompts and handoff briefs: on the first send after the key is turned on, after a control save (enable, resume, a change of owner), with every handoff and switch-back brief, and when its content changes. Never to the notice-only lane-error wake. With the key off every sent byte is unchanged.
+
+- **BB thread:** yes, evidence fixture. Last in the text `bb thread tell` sends, after the fixed wake header and the whole message; in a thread looptender creates for a handoff, last in its first message. BB has no session reset, so only the events above send it again. Run against a stand-in bb only. [`TestScenarioPromptContextBB`](../internal/scenario/prompt_context_test.go) [`TestPromptContextOnlyWhereDue`](../internal/supervise/promptcontext_test.go) [`TestPromptContextInANewThreadsFirstMessage`](../internal/supervise/promptcontext_test.go) [`TestPromptContextOffSendsMainBytes`](../internal/supervise/sent_bytes_test.go) [operations.md#supervision-context-in-sends](operations.md#supervision-context-in-sends)
+- **Claude Code headless:** yes, evidence fixture. Last in the turn's prompt, on standard input or in the private prompt file, with no wake header. The turn that a `session reset` starts, a new conversation, carries it again. Never in a probe's request. Run against a stand-in CLI only. [`TestScenarioPromptContextHeadless`](../internal/scenario/prompt_context_test.go) [`TestPromptContextAfterASessionReset`](../internal/supervise/promptcontext_test.go) [operations.md#supervision-context-in-sends](operations.md#supervision-context-in-sends)
+- **Codex headless:** yes, evidence fixture. As for Claude Code, through the same runner. The scenario runs with Claude Code's stand-in only. [`TestPromptContextAfterASessionReset`](../internal/supervise/promptcontext_test.go) [operations.md#supervision-context-in-sends](operations.md#supervision-context-in-sends)
+- **Cursor headless:** yes, evidence fixture. Last in the prompt Cursor's runner sends. `session reset` is not available for Cursor and looptender cannot see a new Cursor conversation, so only the events above send it again. The decision is the same for every adapter and is tested with a fake adapter, not with this one. [`TestPromptContextResendRules`](../internal/supervise/promptcontext_test.go) [operations.md#supervision-context-in-sends](operations.md#supervision-context-in-sends)
+- **Antigravity:** missing, evidence none. No adapter is registered, so a loop cannot use it. [antigravity.md](antigravity.md)
+- **Generic process:** yes, evidence fixture. Last on the resume command's standard input, after the prompt. The status, stop and probe commands never receive it. looptender cannot see which conversation the command reaches, so a new one there does not send it again; a pause and resume does. [`TestPromptContextOnAProcessStandIn`](../internal/supervise/promptcontext_process_unix_test.go) [operations.md#supervision-context-in-sends](operations.md#supervision-context-in-sends)
+- **Agent defined in configuration:** yes, evidence fixture. Last in the prompt, passed as the definition declares, with no wake header. With exact_resume, the turn a `session reset` starts carries it again; without it every turn starts a new session, so every turn carries it. The decision is the same for every adapter and is tested with a fake adapter, not with this one. [`TestPromptContextAfterASessionReset`](../internal/supervise/promptcontext_test.go) [operations.md#supervision-context-in-sends](operations.md#supervision-context-in-sends)
+
+### Turn usage reading
+
+Record the token counts the agent reports for each finished turn, for status only. No decision, send, allowance or hold reads it, and no figure the agent did not report is estimated.
+
+- **BB thread:** missing, evidence none. Unavailable: the agent reports no per-turn token counts that are read.
+- **Claude Code headless:** missing, evidence none. Not captured: no Claude Code result object with usage fields has been recorded, so none is read. [`TestClaudeReportsNoTurnUsage`](../internal/adapter/runner/turnusage_test.go)
+- **Codex headless:** yes, evidence fixture. The typed usage object of `turn.completed` in `codex exec --json`: input, cached input, cache write input, output and reasoning output tokens. Only plain integers up to ten billion are kept; anything else is absent. Each turn is counted once, by its run record. Unreleased; the parser runs against fixtures only. [`TestCodexTurnUsageReadsOnlyTypedCounts`](../internal/adapter/runner/turnusage_test.go) [`TestTurnUsageChangesNoDecision`](../internal/supervise/turnusage_test.go) [operations.md#turn-usage-reading](operations.md#turn-usage-reading)
+- **Cursor headless:** missing, evidence none. Unavailable: the agent reports no per-turn token counts that are read.
+- **Antigravity:** missing, evidence none. No adapter is registered, so a loop cannot use it. [antigravity.md](antigravity.md)
+- **Generic process:** missing, evidence none. Unavailable: the agent reports no per-turn token counts that are read.
+- **Agent defined in configuration:** missing, evidence none. Unavailable: a definition declares no per-turn token counts.
 
 ### Handoff into a new conversation
 

@@ -67,6 +67,10 @@ type Record struct {
 	Nudges               int            `json:"nudges"`
 	Reprompts            int            `json:"reprompts"`
 	LastActiveRecoveryAt *time.Time     `json:"lastActiveRecoveryAt"`
+	// ContextBytes is the length of the supervision context blocks
+	// (loop.prompt_context) this check's sends carried, counting only sends
+	// the adapter did not refuse to start. Zero when there were none.
+	ContextBytes int `json:"contextBytes,omitempty"`
 }
 
 // ControlChange describes a successful save, not report delivery or an agent
@@ -587,8 +591,10 @@ func clean(r Record) Record {
 	r.TurnRetry = oneOf(r.TurnRetry, "none", "retried", "queued", "nothing_to_retry", "not_in_error", "already_queued", "queue_unconfirmed", "refused", "unsupported")
 	r.Lanes = LaneWork{Retried: max(0, r.Lanes.Retried), GivenUp: max(0, r.Lanes.GivenUp), Deferred: max(0, r.Lanes.Deferred)}
 	r.Refusal = oneOf(r.Refusal, "", "refused", "recovered")
+	r.ContextBytes = max(0, r.ContextBytes)
 	if r.Kind != "tick" {
 		r.LimitWaitReport, r.TurnRetry, r.Lanes, r.RouteListChanged, r.Refusal, r.ModelFallback, r.Returned = "none", "none", LaneWork{}, false, "", false, nil
+		r.ContextBytes = 0
 	}
 	if r.Returned != nil {
 		ret := Return{FromKey: r.Returned.FromKey, Reason: oneOf(r.Returned.Reason, "unavailable", ReturnRemoved, ReturnDisabled, ReturnNoCreatedThread)}
@@ -665,6 +671,8 @@ func Cause(reason string) string {
 		return "nudge_held"
 	case decide.HungTurnReason:
 		return "hung_wait"
+	case decide.IdleSpacedReason:
+		return string(decide.IdleUnchanged)
 	}
 	// The stall rule's hold after nudges that were held back.
 	if strings.HasPrefix(reason, "no progress after ") && strings.Contains(reason, decide.HeldNudgesClause+")") {
@@ -689,11 +697,14 @@ func DecisionCause(d decide.Decision) string {
 	if d.LimitWait != "" {
 		return cleanCause(string(d.LimitWait))
 	}
+	if d.IdleWait != "" {
+		return cleanCause(string(d.IdleWait))
+	}
 	return Cause(d.Reason)
 }
 
 func cleanCause(value string) string {
-	return oneOf(value, "unavailable", "disabled", "paused", "awaiting_user", "completed", "retrying", "retry_unverified", "retry_silent", "handoff_deferred", "network_down", "deadline", "send_limit", "git_limit", "stall_limit", "stall_limit_held", "nudge_held", "hung_wait", "stall", "idle", "active", "child_input", "child_busy", "child_error", "child_unverified", "input", "stop", "limit_wait", "limit_no_fallback", "limit_failover_disabled", "limit_refusal_unrecovered", "restricted", "refused_continue", "refused_wait", "refusal_ask", "decline_acknowledged",
+	return oneOf(value, "unavailable", "disabled", "paused", "awaiting_user", "completed", "retrying", "retry_unverified", "retry_silent", "handoff_deferred", "network_down", "deadline", "send_limit", "git_limit", "stall_limit", "stall_limit_held", "nudge_held", "hung_wait", "stall", "idle", "active", "child_input", "child_busy", "child_error", "child_unverified", "input", "stop", "limit_wait", "limit_no_fallback", "limit_failover_disabled", "limit_refusal_unrecovered", "restricted", "refused_continue", "refused_wait", "refusal_ask", "decline_acknowledged", "idle_unchanged",
 		TimingStepUp, TimingStepDown, TimingReturn, TimingRepair,
 		"near_reset_unused", "projected_over_down_at", "reset_passed", "runs_out_since_step_up", "left_configuration", "unsettled_step", "route_left_configuration", "other")
 }

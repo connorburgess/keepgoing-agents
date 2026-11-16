@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"github.com/looptender/looptender/internal/envvar"
 	"os"
 	"os/exec"
 	"slices"
@@ -96,6 +97,10 @@ type Options struct {
 	// Threads creates and finds BB threads for handoffs to candidates with
 	// bb.new_thread. Swapped in tests.
 	Threads func(cli string) ThreadCreator
+	// CommandPrefix runs this build of the command, quoted for the shell,
+	// for the session commands the supervision context lists
+	// (loop.prompt_context). Empty uses DefaultCommandPrefix.
+	CommandPrefix string
 }
 
 // ProbeNote summarises a probe that ran during the tick.
@@ -195,6 +200,11 @@ type Result struct {
 }
 
 type tick struct {
+	// ctl is the control record as this check loaded it.
+	ctl control.File
+	// contextBytes adds up the supervision context blocks this check's sends
+	// carried, for the incident record.
+	contextBytes int
 	// refusalMark is "refused" or "recovered" when this check counted a
 	// refused turn or the recovery that ended a streak, for the journal.
 	refusalMark string
@@ -221,6 +231,10 @@ type tick struct {
 	incidentControl     *incident.Controls
 	incidentProbes      incident.Probes
 	incidentLimitWait   decide.LimitWait // from the last engine decision, which sets the tick's reason
+	// idleFactsAfterWake is this check's digest of the idle spacing rule's
+	// facts as they will be once a wake sent now has started its turn; empty
+	// when the rule is off or the session is in error.
+	idleFactsAfterWake string
 	// incidentLimitWaitReport is set only by the check that detects a long limit wait.
 	incidentLimitWaitReport string
 	// incidentTurnRetry is set only by a check that asked the provider to retry a failed turn.
@@ -659,6 +673,7 @@ func (t *tick) run() error {
 		return err
 	}
 	res.Control = ctl.Summary()
+	t.ctl = ctl
 	t.briefHold, t.stopRequested = ctl.BriefHold, ctl.Stop
 	if ctl.Stop && ctl.StopLanesAt != nil {
 		t.stopLanesFor = ctl.StopLanesAt.UTC()
@@ -670,6 +685,9 @@ func (t *tick) run() error {
 		return err
 	}
 	t.incidentStateLoaded = true
+	if !loop.PromptContext {
+		t.st.ContextSent = nil // turning the key on again starts afresh
+	}
 	t.wakeAtStart = t.st.LastWakeAt
 	t.savedSends = t.st.SendsRecorded
 	// Whether a check was overdue is judged from the records as they were
@@ -1002,6 +1020,7 @@ func (t *tick) run() error {
 		SinceLastReprompt: sinceReprompt, Backoff: loop.Errors.Backoff.Duration,
 		SwitchBackReady: t.switchBackReady(target),
 	}
+	in.IdleSpacing = t.idleSpacingInput(obs, ctl)
 	// A loop held for a restricted turn runs no check until a person resumes
 	// it. Reaching this point with that same turn still showing therefore
 	// means a person resumed: their request for one try.
@@ -1236,6 +1255,13 @@ func (t *tick) run() error {
 		if err := t.reg.Save(loop.StateDir); err != nil && actErr == nil {
 			actErr = err
 		}
+	}
+	// After the decision and the action, so it can change neither; within
+	// what is left of the budget, and never for a lane.
+	t.readContext(a, target, d, obs, t.st.LastState)
+	t.readTurnUsage(a, target, d, obs)
+	if res.Action == string(d.Action) {
+		t.noteIdleSpacing(t.decisionInput, d)
 	}
 	t.reportLongLimitWait(target, obs)
 	t.reportChildErrors(target, obs)
@@ -1858,7 +1884,12 @@ func (t *tick) act(a adapter.Adapter, d decide.Decision) error {
 			// prompt, under the send already reserved for this recovery.
 			reserved = true
 		}
-		text, err := prompt.ComposeWake(loop)
+		text, err := prompt.ComposeWakeOnChange(loop, func(id string, revision uint64) bool {
+			conversation, known := conversationKey(a)
+			form, _ := prompt.ChooseGoalForm(prompt.GoalFacts{Last: t.st.GoalCopy, Target: t.res.Target,
+				Conversation: conversation, ConversationKnown: known, GoalID: id, GoalRevision: revision, Now: t.now})
+			return form == prompt.GoalShort
+		})
 		if err != nil {
 			return err
 		}
@@ -1916,6 +1947,9 @@ func (t *tick) act(a adapter.Adapter, d decide.Decision) error {
 			}
 		}
 		t.st.Nudges, t.st.Reprompts, t.st.LastWakeAt, t.st.LastRepromptAt = c.Nudges, c.Reprompts, c.LastSendAt, c.LastRepromptAt
+		if d.IdleWake && err == nil {
+			t.recordIdleWake(t.decisionInput, childErrors > 0)
+		}
 		if err != nil {
 			var unsupported adapter.ErrUnsupported
 			if errors.As(err, &unsupported) {
@@ -2054,7 +2088,18 @@ func (t *tick) childNoticeSent(childErrors int, err error) {
 // send records only a returned adapter call. It is persisted with the completed
 // tick, not a durable pre-send intent or an acknowledgement of agent execution.
 func (t *tick) send(a adapter.Adapter, message prompt.Message, mode adapter.Mode, target, action string) error {
+	var sentContext *state.ContextSent
+	if t.loop.PromptContext && !message.NoticeOnly {
+		// Appended at the end, so the wake header below stays first.
+		message, sentContext = t.withContext(message, target, action)
+	}
+	if a.Name() == "bb" {
+		// A BB thread cannot otherwise tell this from a person's message
+		// or a peer thread's.
+		message = prompt.WithWakeHeader(t.cfg.Loop.Name, message)
+	}
 	attempt := t.graphBegin(target, action, string(mode), message)
+	conversation, _ := conversationKey(a) // before the send, which may start one
 	err := a.Send(t.ctx, message.Text, mode)
 	outcome := "adapter_returned"
 	var refused adapter.ErrNotStarted
@@ -2074,9 +2119,60 @@ func (t *tick) send(a adapter.Adapter, message prompt.Message, mode adapter.Mode
 	t.graphFinish(attempt, graphOutcome)
 	t.st.LastPromptSend = &state.PromptSend{
 		Version: 1, CheckAt: t.now, Target: target, Action: action, Mode: string(mode), Outcome: outcome,
-		GoalID: message.GoalID, GoalRevision: message.GoalRevision,
+		GoalID: message.GoalID, GoalRevision: message.GoalRevision, ContextBytes: message.ContextBytes,
+		Bytes: len(message.Text), GoalForm: message.GoalForm,
 	}
+	t.sentContext(sentContext, message.ContextBytes, outcome, err)
+	t.noteGoalCopy(message, target, conversation, outcome == "adapter_returned")
 	return err
+}
+
+// sentContext records a send that carried the supervision context: its
+// length for the incident record unless the adapter refused to start, and
+// the record that stops it repeating only when the call returned no error.
+func (t *tick) sentContext(rec *state.ContextSent, n int, outcome string, err error) {
+	if rec == nil {
+		return
+	}
+	if outcome != "not_started" {
+		t.contextBytes += n
+	}
+	if err == nil {
+		t.st.ContextSent = rec
+	}
+}
+
+// conversationKey is the hashed conversation the next send to a goes to.
+func conversationKey(a adapter.Adapter) (string, bool) {
+	k, ok := a.(adapter.ConversationKeyer)
+	if !ok {
+		return "", false
+	}
+	key, known := k.ConversationKey()
+	return prompt.ConversationHash(key), known
+}
+
+// noteGoalCopy keeps the record that lets a later send name an unchanged
+// goal. A full copy that returned replaces it; a full copy that did not
+// clears it, so the next send is full; a short send that returned is
+// counted, and ties a copy that started a new conversation to that one.
+// The record never changes what is sent while prompt_goal_on_change is off.
+func (t *tick) noteGoalCopy(m prompt.Message, target, conversation string, returned bool) {
+	switch m.GoalForm {
+	case prompt.GoalFull:
+		t.st.GoalCopy = nil
+		if returned {
+			t.st.GoalCopy = &state.GoalCopy{Version: 1, At: t.now, Target: target, Conversation: conversation,
+				GoalID: m.GoalID, GoalRevision: m.GoalRevision}
+		}
+	case prompt.GoalShort:
+		if g := t.st.GoalCopy; returned && g != nil {
+			g.ShortSends++
+			if g.Conversation == "" {
+				g.Conversation = conversation
+			}
+		}
+	}
 }
 
 // failureReport is the error report a failed check sends, worded by the step
@@ -2221,7 +2317,8 @@ func runBusy(ctx context.Context, y config.Yield) (bool, error) {
 	ctx, cancel := context.WithTimeout(ctx, y.Timeout.Duration)
 	defer cancel()
 	cmd := exec.CommandContext(ctx, y.BusyCommand[0], y.BusyCommand[1:]...)
-	cmd.Env = os.Environ()
+	// A configured program: not the session the supervisor was started from.
+	cmd.Env = envvar.WithoutSupervisorSession(os.Environ())
 	err := cmd.Run()
 	if err == nil {
 		return true, nil

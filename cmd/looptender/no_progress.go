@@ -275,14 +275,16 @@ func noProgressOf(cfg *config.Config, st state.File, ctl control.File, j *incide
 		dockCapital(count(msgs, "message", "messages"))+" sent since then (wakes, nudges, re-prompts, notices about failed lanes, and briefs sent on a move to another route or back); "+flagAt(msgs)+".",
 		dockCapital(count(errs, "check", "checks"))+" since then found an error or retried the turn; "+flagAt(errs)+".")
 	if h := v.Held; h != nil {
-		held := dockSpan(time.Duration(h.Seconds) * time.Second)
+		held := "Held for a person for " + dockSpan(time.Duration(h.Seconds)*time.Second) + " of "
+		tail := ""
 		if h.Seconds == 0 {
-			held = "no time"
+			// A pause is a different hold, so a paused loop reads zero here.
+			held, tail = "Not held for a person in ", "; a pause is a different hold and is not counted here"
 		}
 		if h.AtLeast {
-			v.Lines = append(v.Lines, "Held for a person for "+held+" of "+last(time.Duration(h.CoveredSeconds)*time.Second)+", which is as far back as its history covers.")
+			v.Lines = append(v.Lines, held+last(time.Duration(h.CoveredSeconds)*time.Second)+", which is as far back as its history covers"+tail+".")
 		} else {
-			v.Lines = append(v.Lines, "Held for a person for "+held+" of "+last(window)+".")
+			v.Lines = append(v.Lines, held+last(window)+tail+".")
 		}
 	}
 	raised := []string{}
@@ -394,4 +396,32 @@ func noProgressHeldOf(j *incident.Journal, ctl control.File, coveredFrom, since,
 	}
 	h.Seconds = int64(total / time.Second)
 	return h
+}
+
+// explainNoCheck rewords a flag not available for no_check when other
+// records say more. The flag counts from state's ProgressChangedAt, which a
+// check writes only after it has observed the session. A check of a held
+// loop, or one that stops at a reached no_progress_timeout, ends before
+// that; the timeout keeps its own record (progress.json), written earlier
+// in the check. So a loop held since before this flag was first recorded
+// shows a time without Git progress under its limits and no flag, and the
+// flag must not say that no check has looked at its repositories.
+func (v *noProgressView) explainNoCheck(ctl control.File, a *progressAllowanceStatus) {
+	if v.Availability != "not_available" || v.Reason != "no_check" {
+		return
+	}
+	limit := a != nil && a.Error == "" && a.ChangedAt != nil
+	switch {
+	case ctl.Paused || ctl.AwaitingUser:
+		v.Text = "Not counted yet: checks start this count only once they look at the session, and they do not while the loop is held."
+	case limit && a.Due:
+		v.Text = "Not counted yet: checks start this count only once they look at the session, and they stop before that while its no-progress limit is reached."
+	case limit:
+		v.Text = "Not counted yet: no check has looked at the session since this count began."
+	default:
+		return
+	}
+	if limit {
+		v.Text += " The time without Git progress under its limits comes from the limit's own record."
+	}
 }

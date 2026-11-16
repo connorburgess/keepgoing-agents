@@ -73,6 +73,9 @@ type Adapter struct {
 	LaneStopper bool
 	// SessionEvidence says a check records a chat/session reference for it.
 	SessionEvidence bool
+	// ContextReader says the adapter can read how much of the model's
+	// context window the conversation uses (adapter.ContextReader).
+	ContextReader bool
 }
 
 // Behaviour is one row of the matrix.
@@ -85,10 +88,10 @@ type Behaviour struct {
 
 // Adapters in column order.
 var Adapters = []Adapter{
-	{ID: "bb", Title: "BB thread", Registered: true, Activator: true, WakePoller: true, TurnRetrier: true, LaneRecoverer: true, LaneStopper: true, SessionEvidence: true,
+	{ID: "bb", Title: "BB thread", Registered: true, Activator: true, WakePoller: true, TurnRetrier: true, LaneRecoverer: true, LaneStopper: true, SessionEvidence: true, ContextReader: true,
 		Files: []string{"internal/adapter/bb/bb.go", "internal/adapter/bb/children.go", "internal/adapter/bb/cursor.go", "internal/adapter/bb/lanes.go", "internal/adapter/bb/wake.go"},
-		Inputs: []string{"ActiveChildIDs", "ActiveChildren", "AwaitingChildren", "AwaitingInput", "Background", "ChildTitles", "ChildrenUnverified", "ErrorClass", "ErroredChildren", "Evidence",
-			"ErrorTurn", "Gone", "HealthyChildren", "ModelFallback", "Queued", "ResetsAt", "RetryDeclined", "RetryExpired", "RetryKnown", "RetryUnverified", "Retrying", "State", "Turn", "TurnUnknown"}},
+		Inputs: []string{"ActiveChildIDs", "ActiveChildren", "AwaitingChildren", "AwaitingInput", "Background", "ChildOutcome", "ChildTitles", "ChildrenUnverified", "ErrorClass", "ErroredChildren", "Evidence",
+			"ErrorTurn", "Gone", "HealthyChildren", "ModelFallback", "Queued", "ResetsAt", "RetryDeclined", "RetryExpired", "RetryKnown", "RetryUnverified", "Retrying", "State", "Turn", "TurnUnknown", "Turns"}},
 	{ID: "claude", Title: "Claude Code headless", Registered: true, SessionEvidence: true,
 		Files:  []string{"internal/adapter/runner/claude.go", "internal/adapter/runner/spec.go"},
 		Inputs: []string{"ErrorClass", "Evidence", "State"}},
@@ -113,8 +116,8 @@ var Adapters = []Adapter{
 
 // ObservationFields is every field of decide.Observation. A new field must be
 // added here, and to the Inputs of each adapter that sets it.
-var ObservationFields = []string{"ActiveChildIDs", "ActiveChildren", "AwaitingChildren", "AwaitingInput", "Background", "ChildTitles", "ChildrenUnverified", "DeferredInteraction", "ErrorClass",
-	"ErrorTurn", "ErroredChildren", "Evidence", "Gone", "HealthyChildren", "ModelFallback", "Queued", "ResetsAt", "RetryDeclined", "RetryExpired", "RetryKnown", "RetryUnverified", "Retrying", "SessionLost", "State", "Turn", "TurnUnknown"}
+var ObservationFields = []string{"ActiveChildIDs", "ActiveChildren", "AwaitingChildren", "AwaitingInput", "Background", "ChildOutcome", "ChildTitles", "ChildrenUnverified", "DeferredInteraction", "ErrorClass",
+	"ErrorTurn", "ErroredChildren", "Evidence", "Gone", "HealthyChildren", "ModelFallback", "Queued", "ResetsAt", "RetryDeclined", "RetryExpired", "RetryKnown", "RetryUnverified", "Retrying", "SessionLost", "State", "Turn", "TurnUnknown", "Turns"}
 
 func t(path, test string) Ref { return Ref{Path: path, Test: test} }
 func d(path string) Ref       { return Ref{Path: path} }
@@ -159,6 +162,7 @@ const (
 	waitingLive   = "docs/run-discovery.md#live-check-waiting-on"
 	runsLive      = "docs/run-discovery.md#live-check"
 	fakeDecision  = "The decision is the same for every adapter and is tested with a fake adapter, not with this one."
+	contextDoc    = "docs/operations.md#supervision-context-in-sends"
 )
 
 // Matrix is every behaviour in row order.
@@ -276,6 +280,29 @@ var Matrix = []Behaviour{
 			"cursor":  {Missing, None, "No probe contract.", nil},
 			"process": {Missing, None, "A command probe reports health only.", nil},
 		})},
+	{ID: "context", Title: "Context window reading", What: "Record how much of the model's context window the supervised conversation uses, for status only. No decision, send, allowance or hold reads it.",
+		Cells: merge(map[string]Cell{
+			"bb":    {Yes, Fixture, "`bb thread context <thread> --json` for the supervised thread only, never a lane: used tokens, the window and BB's estimated flag. Read after a check's wake, re-prompt or nudge, or when it first sees a turn ended, within what is left of the check's budget; anything malformed, slow or missing (older bb) is unavailable. The shape was seen on one bb build; the parser runs against fixtures only.", []Ref{t("internal/adapter/bb/context_test.go", "TestReadContextAcceptsOnlyTheKnownShape"), t("internal/supervise/context_test.go", "TestContextReadingChangesNoDecision"), d("docs/operations.md#context-window-reading")}},
+			"codex": {Missing, None, "Unavailable. The per-turn token counts in the event stream are recorded as turn usage, which is not a context window size.", nil},
+		}, same(Cell{Missing, None, "Unavailable: no reading is taken.", nil}, "claude", "cursor", "process"))},
+	{ID: "prompt_context", Title: "Supervision context in sends", What: "With `loop.prompt_context` (off by default), append the loop's supervision context, as `context` shows it, to wakes, nudges, re-prompts and handoff briefs: on the first send after the key is turned on, after a control save (enable, resume, a change of owner), with every handoff and switch-back brief, and when its content changes. Never to the notice-only lane-error wake. With the key off every sent byte is unchanged.",
+		Cells: merge(map[string]Cell{
+			"bb": {Yes, Fixture, "Last in the text `bb thread tell` sends, after the fixed wake header and the whole message; in a thread looptender creates for a handoff, last in its first message. BB has no session reset, so only the events above send it again. Run against a stand-in bb only.",
+				[]Ref{t("internal/scenario/prompt_context_test.go", "TestScenarioPromptContextBB"), t("internal/supervise/promptcontext_test.go", "TestPromptContextOnlyWhereDue"), t("internal/supervise/promptcontext_test.go", "TestPromptContextInANewThreadsFirstMessage"), t("internal/supervise/sent_bytes_test.go", "TestPromptContextOffSendsMainBytes"), d(contextDoc)}},
+			"claude": {Yes, Fixture, "Last in the turn's prompt, on standard input or in the private prompt file, with no wake header. The turn that a `session reset` starts, a new conversation, carries it again. Never in a probe's request. Run against a stand-in CLI only.",
+				[]Ref{t("internal/scenario/prompt_context_test.go", "TestScenarioPromptContextHeadless"), t("internal/supervise/promptcontext_test.go", "TestPromptContextAfterASessionReset"), d(contextDoc)}},
+			"codex": {Yes, Fixture, "As for Claude Code, through the same runner. The scenario runs with Claude Code's stand-in only.",
+				[]Ref{t("internal/supervise/promptcontext_test.go", "TestPromptContextAfterASessionReset"), d(contextDoc)}},
+			"cursor": {Yes, Fixture, "Last in the prompt Cursor's runner sends. `session reset` is not available for Cursor and looptender cannot see a new Cursor conversation, so only the events above send it again. " + fakeDecision,
+				[]Ref{t("internal/supervise/promptcontext_test.go", "TestPromptContextResendRules"), d(contextDoc)}},
+			"process": {Yes, Fixture, "Last on the resume command's standard input, after the prompt. The status, stop and probe commands never receive it. looptender cannot see which conversation the command reaches, so a new one there does not send it again; a pause and resume does.",
+				[]Ref{t("internal/supervise/promptcontext_process_unix_test.go", "TestPromptContextOnAProcessStandIn"), d(contextDoc)}},
+		})},
+	{ID: "turn_usage", Title: "Turn usage reading", What: "Record the token counts the agent reports for each finished turn, for status only. No decision, send, allowance or hold reads it, and no figure the agent did not report is estimated.",
+		Cells: merge(map[string]Cell{
+			"codex":  {Yes, Fixture, "The typed usage object of `turn.completed` in `codex exec --json`: input, cached input, cache write input, output and reasoning output tokens. Only plain integers up to ten billion are kept; anything else is absent. Each turn is counted once, by its run record. Unreleased; the parser runs against fixtures only.", []Ref{t("internal/adapter/runner/turnusage_test.go", "TestCodexTurnUsageReadsOnlyTypedCounts"), t("internal/supervise/turnusage_test.go", "TestTurnUsageChangesNoDecision"), d("docs/operations.md#turn-usage-reading")}},
+			"claude": {Missing, None, "Not captured: no Claude Code result object with usage fields has been recorded, so none is read.", []Ref{t("internal/adapter/runner/turnusage_test.go", "TestClaudeReportsNoTurnUsage")}},
+		}, same(Cell{Missing, None, "Unavailable: the agent reports no per-turn token counts that are read.", nil}, "bb", "cursor", "process"))},
 	{ID: "new_conversation", Title: "Handoff into a new conversation", What: "Take the work over in a conversation that did not exist before the handoff.",
 		Cells: merge(map[string]Cell{
 			"bb":      {Yes, Fixture, "Opt-in: a candidate with bb.new_thread has looptender create the thread, within loop.limits.max_new_threads.", []Ref{t("internal/supervise/newthread_test.go", "TestHandoffToANewThreadCreatesItOnce"), d("docs/fallbacks.md")}},
@@ -338,8 +365,11 @@ var customCells = map[string]Cell{
 	"handoff_target":   {Partial, Fixture, "With a probe in the definition, or a command probe. Guided setup does not create it; the candidate is written by hand.", []Ref{t("internal/config/custom_test.go", "TestCustomAgentDefinition"), d(definedDoc)}},
 	"switch_back":      {Yes, Fixture, fakeDecision, []Ref{t(superTest, "TestSwitchBackAfterThePrimaryResets")}},
 	"probes":           {Partial, Fixture, "With a probe in the definition: one small request with the prompt passed as a turn's is, judged by the finished and error rules.", []Ref{t("internal/probe/custom_test.go", "TestCustomProbe")}},
+	"context":          {Missing, None, "Unavailable: a definition declares no context window reading.", nil},
+	"turn_usage":       {Missing, None, "Unavailable: a definition declares no per-turn token counts.", nil},
 	"quota":            {Missing, None, "No usage reading is taken. A limit lookup, when defined, only says whether an unclassified failure is a usage limit and when it resets.", []Ref{t(definedTest, "TestDefinedAgentLimitLookup")}},
 	"new_conversation": {Yes, Fixture, "A candidate has no saved session, so the handoff brief starts one.", []Ref{t(definedTest, "TestDefinedAgentTurnLifecycle")}},
+	"prompt_context":   {Yes, Fixture, "Last in the prompt, passed as the definition declares, with no wake header. With exact_resume, the turn a `session reset` starts carries it again; without it every turn starts a new session, so every turn carries it. " + fakeDecision, []Ref{t("internal/supervise/promptcontext_test.go", "TestPromptContextAfterASessionReset"), d(contextDoc)}},
 	"run_graph":        {Partial, Fixture, "Runs and sends are recorded. The session identifier is the agent's own shape and is not shown.", []Ref{t(definedReadTest, "TestDefinitionBecomesASpecification")}},
 	"stop":             {Partial, Fixture, "With can_be_stopped: the same wrapper as the built-in headless agents. Without it a stop is refused and nothing is signalled.", []Ref{t(definedTest, "TestDefinedAgentStop")}},
 	"restricted":       {Partial, Fixture, "A definition may map its agent's own codes or exit codes to restricted or refused, and HTTP 403 in http_status_field is restricted; either in any field wins over a limit and over a matching finished rule, and restricted wins over refused. Validation refuses a definition that maps a code looptender itself reads as a refusal or restriction to a class a loop may fail over on. What the agent does not report in a declared field stays unknown or looks like a finished turn.", []Ref{t(definedReadTest, "TestDefinitionDeclaredRefusalsAndRestrictions"), t(definedReadTest, "TestDeclinedTurnIsNotFinished"), t("internal/config/custom_test.go", "TestCustomDefinitionCannotRelabelARefusalAsALimit")}},

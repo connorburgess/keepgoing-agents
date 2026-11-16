@@ -109,3 +109,14 @@ func TestChildErrorsOnlyIsFixedWordingWithoutATaskPrompt(t *testing.T) {
 		t.Fatalf("got %+v", got)
 	}
 }
+
+func TestWakeHeaderIsFixedWording(t *testing.T) {
+	const want = "Automatic looptender wake for loop example-loop: not a new instruction from a person and not an approval."
+	if got := WakeHeader("example-loop"); got != want {
+		t.Fatalf("%q", got)
+	}
+	m := WithWakeHeader("example-loop", Message{Text: "Continue the fictional task.", GoalID: "goal_example", GoalRevision: 2})
+	if m.Text != want+"\n\nContinue the fictional task." || m.GoalID != "goal_example" || m.GoalRevision != 2 {
+		t.Fatalf("%+v", m)
+	}
+}
