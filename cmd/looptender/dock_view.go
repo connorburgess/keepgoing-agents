@@ -275,6 +275,11 @@ type dockUsageTarget struct {
 	// whatever its windows say; availability "stale" is that every window
 	// has reset since.
 	Old bool `json:"old,omitempty"`
+	// NeedsPerson is true only for an old reading that was near its limit
+	// (see dockMarkOldUsage); AgeNote then says so in a sentence. Age alone
+	// sets neither.
+	NeedsPerson bool   `json:"needsPerson,omitempty"`
+	AgeNote     string `json:"ageNote,omitempty"`
 	// Reason says, when a record shows it, why there is no reading.
 	Reason string `json:"reason,omitempty"`
 	// FromAnotherLoop: the reading is another loop's record of the same

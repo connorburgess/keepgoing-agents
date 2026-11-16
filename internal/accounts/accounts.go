@@ -345,7 +345,17 @@ type Evidence struct {
 	Value      string     `json:"value,omitempty"`
 	Source     string     `json:"source,omitempty"`
 	ObservedAt *time.Time `json:"observedAt,omitempty"`
-	Freshness  string     `json:"freshness"`
+	// Freshness is "stale" five minutes after the observation, and always for
+	// a previous observation. It is kept for consumers; the page shows age as
+	// AgeSeconds instead, since nothing re-checks on its own.
+	Freshness string `json:"freshness"`
+	// AgeSeconds is how long before the view was built the observation was
+	// made; absent without an observation or when it is dated in the future.
+	AgeSeconds *int64 `json:"ageSeconds,omitempty"`
+	// CheckAgain is true when the observation is older than ConfirmAfter, so
+	// a person who relies on it should check again to confirm it. It is a
+	// hint, not a warning.
+	CheckAgain bool `json:"checkAgain,omitempty"`
 }
 type Card struct {
 	ID              string    `json:"id"`
@@ -360,6 +370,13 @@ type Card struct {
 	Reason          string    `json:"reason,omitempty"`
 	Uses            string    `json:"uses"`
 	Identity        string    `json:"identity"`
+	// NeedsPerson is true only when the card shows something a person must
+	// act on, named by Attention: no_login (the selected CLI reports no
+	// login), check_failed (the latest check did not establish a result) or
+	// context_changed (the effective context differs from the selection).
+	// The age of an observation never sets it.
+	NeedsPerson bool   `json:"needsPerson"`
+	Attention   string `json:"attention,omitempty"`
 }
 type View struct {
 	State    string `json:"state"`
@@ -367,12 +384,37 @@ type View struct {
 	Cards    []Card `json:"cards"`
 }
 
+// ConfirmAfter is the age past which a login or plan observation carries the
+// hint to check again to confirm it.
+const ConfirmAfter = 24 * time.Hour
+
 func evidence(state, value, source string, at time.Time, now time.Time) Evidence {
 	fresh := "fresh"
 	if at.After(now) || now.Sub(at) >= 5*time.Minute {
 		fresh = "stale"
 	}
-	return Evidence{Text: authText(state), State: state, Value: value, Source: source, ObservedAt: &at, Freshness: fresh}
+	e := Evidence{Text: authText(state), State: state, Value: value, Source: source, ObservedAt: &at, Freshness: fresh}
+	if !at.After(now) {
+		age := int64(now.Sub(at) / time.Second)
+		e.AgeSeconds = &age
+		e.CheckAgain = now.Sub(at) > ConfirmAfter
+	}
+	return e
+}
+
+// attention names what on a card needs a person, or "" when nothing does.
+// A failed check outranks what an earlier check reported, as the earlier
+// result is no longer current.
+func attention(e Entry, c Card) string {
+	switch {
+	case c.Reason == "context_changed":
+		return "context_changed"
+	case e.Attempt != nil && e.Attempt.Auth == "unavailable" && c.Reason != "unsupported":
+		return "check_failed"
+	case c.Auth.State == "reported_absent":
+		return "no_login"
+	}
+	return ""
 }
 func Project(f File, now time.Time) View {
 	v := View{State: "available", Complete: true, Cards: []Card{}}
@@ -406,6 +448,8 @@ func Project(f File, now time.Time) View {
 				c.Plan.Freshness = "stale"
 			}
 		}
+		c.Attention = attention(e, c)
+		c.NeedsPerson = c.Attention != ""
 		v.Cards = append(v.Cards, c)
 	}
 	return v

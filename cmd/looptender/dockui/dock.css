@@ -216,6 +216,8 @@ details[open] > .work-summary .work-name::before { transform: rotate(45deg); }
 .fact dd { margin: 0; font-size: 0.9rem; overflow-wrap: anywhere; }
 .tag { display: inline-block; margin-left: 0.4rem; padding: 0 0.4rem; border-radius: 5px; font-size: 0.72rem; font-weight: 650; letter-spacing: 0.02em; vertical-align: 0.08em; }
 .tag-stale { color: var(--warn); box-shadow: inset 0 0 0 1px color-mix(in oklch, var(--warn) 55%, transparent); }
+.tag-calm { color: var(--ink-2); box-shadow: inset 0 0 0 1px var(--line); }
+.tag-needs { color: var(--warn); box-shadow: inset 0 0 0 1px color-mix(in oklch, var(--warn) 55%, transparent); }
 .tag-reached { color: var(--attn); box-shadow: inset 0 0 0 1px color-mix(in oklch, var(--attn) 55%, transparent); }
 .issues { margin: 0.85rem 0 0; padding: 0.6rem 0.75rem; list-style: none; border-radius: 8px; background: var(--sunk); font-size: 0.8125rem; color: var(--ink-2); display: grid; gap: 0.2rem; }
 .ids { margin: 0.85rem 0 0; padding-top: 0.7rem; border-top: 1px dashed var(--line-2); font-size: 0.8125rem; display: grid; gap: 0.2rem; }
@@ -258,6 +260,7 @@ details[open] > .work-summary .work-name::before { transform: rotate(45deg); }
 /* What is recorded against a route comes first; a limit is boxed. */
 .route-note { margin: 0.35rem 0 0; font-size: 0.875rem; max-width: 62ch; overflow-wrap: anywhere; }
 .route-note.is-limit { padding: 0.45rem 0.7rem; border-radius: 8px; background: var(--limit-soft); color: var(--ink); }
+.route-note.is-attn { padding: 0.45rem 0.7rem; border-radius: 8px; background: var(--attn-soft); color: var(--ink); border-left: 3px solid var(--attn); }
 .route-note.is-plain { color: var(--ink-2); }
 /* Readiness is a sentence tied to its test: dark text, with only the dot coloured. */
 .route-status { display: flex; align-items: baseline; gap: 0.45rem; margin-top: 0.3rem; font-size: 0.875rem; font-weight: 560; background: none; box-shadow: none; overflow-wrap: anywhere; }
@@ -360,7 +363,8 @@ details[open] > .work-summary .work-name::before { transform: rotate(45deg); }
   *, *::before, *::after { transition: none !important; animation: none !important; }
 }
 @media (forced-colors: active) {
-  .state, .tag, .in-use, .pos, .meter, .now > div, .panel, .need, .lanes, .route-note.is-limit, .work-role { border: 1px solid CanvasText; }
+  .state, .tag, .in-use, .pos, .meter, .now > div, .panel, .need, .lanes, .route-note.is-limit, .route-note.is-attn, .work-role { border: 1px solid CanvasText; }
+  .account-card.is-attention { border: 3px double CanvasText; }
   .meter > i { background: Highlight; }
   .dot, .event .mark { background: CanvasText; forced-color-adjust: none; }
   .dot-unknown { background: Canvas; border: 1px solid CanvasText; }
@@ -411,6 +415,11 @@ details[open] > .work-summary .work-name::before { transform: rotate(45deg); }
 .account-body .work-facts { margin-top: 1rem; }
 .account-evidence .tag { align-self: flex-start; }
 .account-note { border-left: 3px solid currentColor; padding-left: .8rem; }
+.account-card.is-attention { border-color: color-mix(in oklch, var(--warn) 55%, var(--line)); border-left: 4px solid var(--warn); }
+.account-attention { display: flex; flex-direction: column; gap: .3rem; margin-top: .5rem; color: var(--ink); font-size: .875rem; }
+.account-attention .tag { align-self: flex-start; margin-left: 0; }
+.account-hint { margin: 0; padding: 0 1.2rem 1rem 2.6rem; font-size: .8125rem; overflow-wrap: anywhere; }
+.account-command { user-select: all; -webkit-user-select: all; font-family: var(--mono); font-size: .8125rem; }
 .account-summary > *, .account-body dd { overflow-wrap: anywhere; min-width: 0; }
 @media (max-width: 760px) {
  .account-summary { grid-template-columns: minmax(0, 1fr); gap: 1rem; }

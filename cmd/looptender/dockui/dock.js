@@ -193,12 +193,14 @@
       return box;
     }
     var uh = el("div", "sub usage-read", u.readLine || "Usage reading");
-    // Two different marks: old is a reading older than the panel's
-    // stale-after; availability "stale" is that every window it describes
-    // has ended since it was taken.
-    if (u.old) uh.appendChild(tag("stale", "Stale"));
-    if (u.availability === "stale") uh.appendChild(tag("stale", "Windows ended"));
+    // Age is said in the read line and is not a warning. Availability
+    // "stale" is that every window it describes has ended since it was
+    // taken: a neutral label. Only an old reading that was near its limit
+    // (needsPerson) gets one amber line, as only then may its age change a
+    // decision.
+    if (u.availability === "stale") uh.appendChild(tag("calm", "Windows ended"));
     box.appendChild(uh);
+    if (u.needsPerson && u.ageNote) box.appendChild(el("p", "route-note is-attn usage-age", u.ageNote));
     box.appendChild(meters(u));
     if (u.readingsNote) box.appendChild(el("p", "sub usage-note", u.readingsNote));
     return box;
@@ -904,14 +906,35 @@
 
   // ---- Versions: where each build runs ----
   var versionDots = { current: "dot-good", same_file: "dot-good", newer: "dot-good", older: "dot-limit", different: "dot-limit", different_file: "dot-limit", stale: "dot-calm" };
+  // Age is information: "Checked 3 h ago" in plain words, never a badge.
+  // An observation older than a day adds a quiet hint to check again.
   function accountEvidence(e) {
     e = e || {};
     var wrap = el("div", "account-evidence");
     wrap.appendChild(el("span", null, e.text || "Unavailable"));
-    if (e.freshness === "stale") wrap.appendChild(tag("stale", "Stale"));
-    if (e.observedAt) wrap.appendChild(el("span", "sub", "Observed " + fmt(secFmt, e.observedAt)));
+    if (e.ageSeconds != null) {
+      var age = el("span", "sub account-age", "Checked " + span(e.ageSeconds) + " ago" + (e.checkAgain ? " · check again to confirm" : ""));
+      if (e.observedAt) age.title = fmt(dayTimeFmt, e.observedAt);
+      wrap.appendChild(age);
+    } else if (e.observedAt) wrap.appendChild(el("span", "sub", "Checked at " + fmt(dayTimeFmt, e.observedAt)));
     if (e.source) wrap.appendChild(el("span", "sub", e.source));
     return wrap;
+  }
+  // What on a card needs a person, in words; the warning style is kept for
+  // these and never used for age alone.
+  var ACCOUNT_ATTENTION = {
+    no_login: "No login reported. Sign in with the provider's own tool, then check again.",
+    check_failed: "The last check failed, so the login is not known now.",
+    context_changed: "The context changed since it was selected. Review and update it before checking again."
+  };
+  // The explicit check command to copy. The connection ID appears only with
+  // identifiers and notes, as other identifiers on the page do.
+  function accountCheckHint(c) {
+    var p = el("p", "sub account-hint");
+    p.appendChild(document.createTextNode("To check again, run "));
+    p.appendChild(el("code", "account-command", "looptender accounts check --id " + (state.identifiers ? c.id : "CONNECTION_ID") + " --json"));
+    p.appendChild(document.createTextNode(state.identifiers ? "" : " (Show identifiers and notes to fill in the ID)"));
+    return p;
   }
   function renderAccounts(d, pane) {
     var a = d.accounts || {};
@@ -935,7 +958,7 @@
     pane.appendChild(el("p", "account-count", cards.length + (cards.length === 1 ? " selected account" : " selected accounts")));
     var ul = el("ul", "accounts-list"), retained = Object.create(null);
     cards.forEach(function (c) {
-      var li = el("li", "account-card"), details = el("details");
+      var li = el("li", "account-card" + (c.needsPerson ? " is-attention" : "")), details = el("details");
       details.open = !!state.accountOpen[c.id]; retained[c.id] = details.open;
       var summary = el("summary", "account-summary");
       summary.setAttribute("data-focus", "account-" + c.id);
@@ -944,7 +967,14 @@
       var identity = el("span", "account-title"); identity.appendChild(name); identity.appendChild(provider);
       identity.appendChild(el("span", "sub", c.selection === "inherited" ? "Inherited context" : c.selection === "explicit_directory" ? "Selected context" : "External context"));
       summary.appendChild(identity);
-      var status = el("span", "account-status"); status.appendChild(accountEvidence(c.auth)); summary.appendChild(status);
+      var status = el("span", "account-status"); status.appendChild(accountEvidence(c.auth));
+      if (c.needsPerson) {
+        var need = el("span", "account-attention");
+        need.appendChild(tag("needs", "Needs you"));
+        need.appendChild(el("span", null, ACCOUNT_ATTENTION[c.attention] || "Something on this account needs a look."));
+        status.appendChild(need);
+      }
+      summary.appendChild(status);
       var plan = el("span", "account-plan");
       plan.appendChild(el("span", "sub", "Reported plan"));
       plan.appendChild(accountEvidence(c.plan)); summary.appendChild(plan);
@@ -967,10 +997,13 @@
         status_unavailable: "The latest status command did not establish a recognized login result."
       };
       if (c.reason) body.appendChild(el("p", "account-note", reasons[c.reason] || "The latest account check is unavailable."));
-      body.appendChild(el("p", "sub", "Login and plan reports do not verify quota, model access or continuing availability. Status becomes stale after five minutes. Use the explicit accounts check command to record another observation."));
+      body.appendChild(el("p", "sub", "Login and plan reports do not verify quota, model access or continuing availability. Nothing checks again on its own: the age shown is when the last explicit check ran, and after a day the card suggests checking again. Use the explicit accounts check command to record another observation."));
       details.appendChild(body);
       details.addEventListener("toggle", function () { if (details.isConnected) state.accountOpen[c.id] = details.open; });
-      li.appendChild(details); ul.appendChild(li);
+      li.appendChild(details);
+      // A changed context is updated before it is checked again, so it gets no check command.
+      if (c.attention !== "context_changed" && (c.needsPerson || (c.auth && c.auth.checkAgain) || (c.plan && c.plan.checkAgain))) li.appendChild(accountCheckHint(c));
+      ul.appendChild(li);
     });
     state.accountOpen = retained;
     pane.appendChild(ul);
