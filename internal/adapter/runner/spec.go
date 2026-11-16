@@ -394,6 +394,21 @@ func (h *Headless) session() (session string, lost bool) {
 // the documented guard is held, or at the explicitly unguarded sample boundary.
 var afterResetSample, beforeSessionCommit, afterSessionCommit func()
 
+// ConversationKey implements adapter.ConversationKeyer: the saved session the
+// next turn resumes, or empty when it starts a new conversation. A session
+// that is saved but unusable is reported as new, and so is every turn of an
+// agent that never resumes one.
+func (h *Headless) ConversationKey() (string, bool) {
+	if !h.spec.Capabilities.ExactResume {
+		return "", true
+	}
+	s, lost := h.session()
+	if lost {
+		return "", true
+	}
+	return s, true
+}
+
 // ResetSession forgets the saved session, so that the next turn starts a new
 // conversation. It is for a person's deliberate decision only: nothing in a
 // check calls it. had says whether a session was saved. It refuses while a

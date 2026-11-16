@@ -96,6 +96,10 @@
           "type": "boolean",
           "description": "Append the loop's supervision context, as the context command shows it, to wakes, nudges, re-prompts and handoff briefs: on the first send after it is turned on, a control change (enable, resume, a change of owner), a handoff or switch-back, or a new conversation, and again when the context changes. Default false."
         },
+        "prompt_goal_on_change": {
+          "type": "boolean",
+          "description": "With prompt_goal, send the goal in full only when the conversation may not have it (first send, revision, target change, new conversation, failed full send, 12 short sends or 4 hours) and otherwise one fixed line naming the unchanged goal ID and revision. Requires prompt_goal."
+        },
         "handoff_file": {
           "type": "string"
         },

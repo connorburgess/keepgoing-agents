@@ -433,9 +433,16 @@ func TestSessionResetStartsANewConversationOnPurpose(t *testing.T) {
 	if obs, _ := h.Observe(ctx); obs.State != decide.Idle || h.dir.Session() != exampleSessionToken {
 		t.Fatalf("%+v session %q", obs, h.dir.Session())
 	}
+	if key, known := h.ConversationKey(); key != exampleSessionToken || !known {
+		t.Fatalf("conversation key before the reset: %q %v", key, known)
+	}
 	had, err := h.ResetSession()
 	if !had || err != nil || h.dir.Session() != "" {
 		t.Fatalf("had=%v %v session %q", had, err, h.dir.Session())
+	}
+	// The next send starts a new conversation, so a goal copy goes in full.
+	if key, known := h.ConversationKey(); key != "" || !known {
+		t.Fatalf("conversation key after the reset: %q %v", key, known)
 	}
 	// The finished turn still says which session it was; observing it, any
 	// number of times, does not save it again.

@@ -318,6 +318,7 @@ func resetTransferState(dir string) error {
 	st.LastState = ""
 	st.LastCheck = nil
 	st.LastPromptSend = nil
+	st.GoalCopy = nil // the next send carries the goal in full
 	st.CheckedAt = time.Time{}
 	st.StopRequestedSent = false
 	st.AwaitingReported = false

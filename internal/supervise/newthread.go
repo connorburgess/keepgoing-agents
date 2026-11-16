@@ -169,12 +169,13 @@ func (t *tick) createThread(from string, fromAgent config.Agent, c config.Candid
 	}
 	t.graphFinish(attempt, outcome)
 	t.st.LastPromptSend = &state.PromptSend{Version: 1, CheckAt: t.now, Target: c.ID, Action: "handoff", Mode: string(adapter.ModeAuto), Outcome: outcome,
-		GoalID: brief.GoalID, GoalRevision: brief.GoalRevision, ContextBytes: brief.ContextBytes}
+		GoalID: brief.GoalID, GoalRevision: brief.GoalRevision, ContextBytes: brief.ContextBytes, Bytes: len(text), GoalForm: brief.GoalForm}
 	started := outcome
 	if errors.Is(err, bb.ErrSpawnNotStarted) {
 		started = "not_started" // recorded as adapter_error above, as before
 	}
 	t.sentContext(sentContext, brief.ContextBytes, started, err)
+	t.noteGoalCopy(brief, c.ID, prompt.ConversationHash(thread), err == nil)
 	if err == nil {
 		t.adoptThread(intent, thread)
 		return thread, nil

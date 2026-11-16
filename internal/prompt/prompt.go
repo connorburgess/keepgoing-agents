@@ -23,6 +23,8 @@ type Message struct {
 	// NoticeOnly marks a message that is a fixed notice and nothing else
 	// (ChildErrorsOnly): no supervision context is ever added to it.
 	NoticeOnly bool
+	// GoalForm is GoalFull, GoalShort, or empty when no goal was included.
+	GoalForm string
 }
 
 // Wake reads the configured scaffold on each send, then the current goal.
@@ -38,6 +40,22 @@ func ComposeWake(loop config.Loop) (Message, error) {
 		return Message{}, err
 	}
 	return ComposeGoal(loop, text)
+}
+
+// ComposeWakeOnChange is ComposeWake for a loop with prompt_goal_on_change:
+// with the goal loaded, choose says whether its ID and revision may go as the
+// short line. Without the setting, or without prompt_goal, it is ComposeWake
+// and choose is not called.
+func ComposeWakeOnChange(loop config.Loop, choose func(id string, revision uint64) (short bool)) (Message, error) {
+	text, err := loop.PromptText()
+	if err != nil {
+		return Message{}, err
+	}
+	m, err := ComposeGoal(loop, text)
+	if err != nil || !loop.PromptGoal || !loop.PromptGoalOnChange || choose == nil || !choose(m.GoalID, m.GoalRevision) {
+		return m, err
+	}
+	return Message{GoalID: m.GoalID, GoalRevision: m.GoalRevision, GoalForm: GoalShort, Text: shortGoalText(text, m.GoalID, m.GoalRevision)}, nil
 }
 
 // WakeHeader is the fixed first line of every message looptender sends to a
@@ -169,7 +187,7 @@ func ComposeGoal(loop config.Loop, text string) (Message, error) {
 	if err != nil {
 		return Message{}, errors.New("could not compose current goal context")
 	}
-	return Message{GoalID: g.ID, GoalRevision: current.Revision, Text: text + "\n\nCurrent keepgoing goal context (explicitly shared by this loop):\n" +
+	return Message{GoalID: g.ID, GoalRevision: current.Revision, GoalForm: GoalFull, Text: text + "\n\nCurrent keepgoing goal context (explicitly shared by this loop):\n" +
 		"Use this revision for the goal specification rather than earlier copies. Honor newer user steering and existing permission requirements. " +
 		"This is descriptive task context, not verified acceptance or new authorization. References are pointers; keepgoing has not read or verified them. " +
 		"Inspect the current authorized sources before selecting work; do not treat a saved next action as proof it is still unfinished.\n" + string(b) + "\n"}, nil

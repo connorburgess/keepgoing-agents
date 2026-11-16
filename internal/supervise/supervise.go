@@ -1884,7 +1884,12 @@ func (t *tick) act(a adapter.Adapter, d decide.Decision) error {
 			// prompt, under the send already reserved for this recovery.
 			reserved = true
 		}
-		text, err := prompt.ComposeWake(loop)
+		text, err := prompt.ComposeWakeOnChange(loop, func(id string, revision uint64) bool {
+			conversation, known := conversationKey(a)
+			form, _ := prompt.ChooseGoalForm(prompt.GoalFacts{Last: t.st.GoalCopy, Target: t.res.Target,
+				Conversation: conversation, ConversationKnown: known, GoalID: id, GoalRevision: revision, Now: t.now})
+			return form == prompt.GoalShort
+		})
 		if err != nil {
 			return err
 		}
@@ -2094,6 +2099,7 @@ func (t *tick) send(a adapter.Adapter, message prompt.Message, mode adapter.Mode
 		message = prompt.WithWakeHeader(t.cfg.Loop.Name, message)
 	}
 	attempt := t.graphBegin(target, action, string(mode), message)
+	conversation, _ := conversationKey(a) // before the send, which may start one
 	err := a.Send(t.ctx, message.Text, mode)
 	outcome := "adapter_returned"
 	var refused adapter.ErrNotStarted
@@ -2114,8 +2120,10 @@ func (t *tick) send(a adapter.Adapter, message prompt.Message, mode adapter.Mode
 	t.st.LastPromptSend = &state.PromptSend{
 		Version: 1, CheckAt: t.now, Target: target, Action: action, Mode: string(mode), Outcome: outcome,
 		GoalID: message.GoalID, GoalRevision: message.GoalRevision, ContextBytes: message.ContextBytes,
+		Bytes: len(message.Text), GoalForm: message.GoalForm,
 	}
 	t.sentContext(sentContext, message.ContextBytes, outcome, err)
+	t.noteGoalCopy(message, target, conversation, outcome == "adapter_returned")
 	return err
 }
 
@@ -2131,6 +2139,39 @@ func (t *tick) sentContext(rec *state.ContextSent, n int, outcome string, err er
 	}
 	if err == nil {
 		t.st.ContextSent = rec
+	}
+}
+
+// conversationKey is the hashed conversation the next send to a goes to.
+func conversationKey(a adapter.Adapter) (string, bool) {
+	k, ok := a.(adapter.ConversationKeyer)
+	if !ok {
+		return "", false
+	}
+	key, known := k.ConversationKey()
+	return prompt.ConversationHash(key), known
+}
+
+// noteGoalCopy keeps the record that lets a later send name an unchanged
+// goal. A full copy that returned replaces it; a full copy that did not
+// clears it, so the next send is full; a short send that returned is
+// counted, and ties a copy that started a new conversation to that one.
+// The record never changes what is sent while prompt_goal_on_change is off.
+func (t *tick) noteGoalCopy(m prompt.Message, target, conversation string, returned bool) {
+	switch m.GoalForm {
+	case prompt.GoalFull:
+		t.st.GoalCopy = nil
+		if returned {
+			t.st.GoalCopy = &state.GoalCopy{Version: 1, At: t.now, Target: target, Conversation: conversation,
+				GoalID: m.GoalID, GoalRevision: m.GoalRevision}
+		}
+	case prompt.GoalShort:
+		if g := t.st.GoalCopy; returned && g != nil {
+			g.ShortSends++
+			if g.Conversation == "" {
+				g.Conversation = conversation
+			}
+		}
 	}
 }
 
