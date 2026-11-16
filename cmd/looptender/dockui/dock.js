@@ -1293,8 +1293,9 @@
       h.id = "how-account-" + c[0];
       body.appendChild(h);
       body.appendChild(howStep("copy-account-" + c[0], c[2], c[3], c[4], h.id));
-      body.appendChild(el("p", "sub", NAMES_ONLY));
     });
+    // Said once, after the three cases.
+    body.appendChild(el("p", null, NAMES_ONLY));
     if (unnamed) body.appendChild(el("p", null, "An account your routes already use without a name is listed below as “not named yet”, with its own command to name it."));
     return howEnd(box, body);
   }

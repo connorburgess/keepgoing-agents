@@ -165,6 +165,11 @@ func TestDockHowToBlocksP1(t *testing.T) {
 			t.Errorf("dock.js lacks %q", want)
 		}
 	}
+	// "This names the account…" is said once, after the three cases, not
+	// once per case (review of #322).
+	if body := funcBody(t, js, "addAccountBox"); strings.Count(body, "NAMES_ONLY") != 1 || strings.Index(body, "NAMES_ONLY") < strings.Index(body, "cases.forEach") {
+		t.Error("addAccountBox says NAMES_ONLY other than once after the cases")
+	}
 	// Nothing here posts, fetches or runs: the blocks only show text.
 	for _, name := range []string{"addAccountBox", "addRouteBox", "reorderBox", "standardRouteBox", "howStep", "howBox"} {
 		body := funcBody(t, js, name)
