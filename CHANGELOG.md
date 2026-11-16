@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- On a narrow window, a loop's "Inspect" link under "Loops and lanes" wraps a long loop name instead of running past the edge of the page.
+
 - The panel no longer puts an orange "Stale" badge beside a loop's last-check age on the "Loops and lanes" row and the loop's "Last check" card. The age is said in plain words, as usage readings' ages are; a loop that is on and not checked for longer than `--stale-after` keeps its own "Not checked recently" state.
 
 - A hidden panel tab no longer keeps `keepgoing panel` running past its idle limit: it makes no request while hidden, not even for the footer, and reads once when shown. Each read now times out a little under the refresh interval (4 to 30 seconds) and fails into the existing failed-read notice, so one read that never answers cannot stop the updates, and a reply read before identifiers were turned on or off is dropped.
