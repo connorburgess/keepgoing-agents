@@ -18,6 +18,71 @@ reads only the existing recorded projection; it does not invoke BB usage APIs
 or refresh provider measurements, including APIs whose refresh:false option
 may still contact a provider.
 
+## Add an account, a subscription or a model
+
+The short version. Run these in a terminal of your own, not inside a BB agent
+thread: a BB thread is refused for the standard route list, and for a loop
+that has no recorded owner. Released builds name the command `keepgoing`;
+`looptender` is the same program. Names and paths are examples.
+
+Two lists are involved. The **accounts catalog** is the accounts you name
+(the panel's Accounts page). A **loop's routes** are the order it works
+through when the one it is on runs out. Adding an account to the catalog
+does not put it in any loop. `looptender registry list --private` prints each
+loop's configuration path.
+
+**Another subscription of a provider you already use.** Sign in to it in a
+new, empty directory with the provider's own tool (for Claude Code, run it
+with `CLAUDE_CONFIG_DIR` set to that directory; for Codex, `CODEX_HOME`), then
+name it:
+
+    looptender accounts add --label "personal-pro" --provider claude-code \
+      --selection explicit_directory --account-dir /private/example/claude-personal
+
+This adds one entry and prints its ID. It never signs in, reads a credential,
+calls a model, or changes a loop or route.
+
+**Another provider.** The same, with `--provider codex` and its `CODEX_HOME`.
+A provider that manages its own login, such as Cursor or BB:
+
+    looptender accounts add --label "example-cursor" --provider cursor \
+      --selection externally_managed
+
+**An API key.** Give it its own entry and label. If a CLI uses it, sign in with
+the key in its own directory and add that directory as above. Otherwise:
+
+    looptender accounts add --label "api-team" --provider other \
+      --selection externally_managed
+
+The key is never a field; looptender never stores or reads it.
+
+**Put an account or model into a loop's order, and reorder it.**
+
+    looptender fallbacks add -c /private/example-loop/looptender.yaml        # guided questions
+    looptender fallbacks move claude-personal-pro --to 1 -c /private/example-loop/looptender.yaml
+    looptender fallbacks list -c /private/example-loop/looptender.yaml
+
+Each previews and writes only after you answer yes; nothing runs. Two things
+to know: a new route counts as not healthy, and is not handed off to, until a
+check of it passes, either the loop's scheduled checks or one you run now
+(`fallbacks check --id ID --exact` sends one real request on that account,
+which uses its quota and may cost money; `--dry-run` previews it for free);
+and automatic handoff stays off until `fallbacks handoff on`. To keep one
+order for every loop instead, use the [standard route list](routes.md):
+`routes add`, `routes move`, then `routes follow-standard --loop NAME`.
+
+**Say which account a route uses.** On the standard list,
+`routes add --account ID`. On a loop's first route or its own fallbacks, add
+`account: ID` to that route by hand, then run `looptender validate -c FILE`;
+see [below](#say-which-account-a-route-uses). It is your statement and
+changes nothing about how the route runs.
+
+**Check an account again.** `looptender accounts check --id ID`, then
+`looptender accounts list`. This runs only the CLI's version and login-status
+commands (the provider's status command may contact its account service). It
+never signs in or calls a model, and it does not establish quota or which
+account a login really is.
+
 The page is read-only. Refresh reads the catalog only, executes no provider
 command and sends no model request. The setup commands below do not start a
 loop, enroll a route, sign in or copy credentials. Complete provider sign-in in

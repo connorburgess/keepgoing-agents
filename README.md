@@ -127,6 +127,8 @@ Cursor and Antigravity are [parallel integration tracks](docs/roadmap.md#6-curso
 
 ## Fallbacks: several subscriptions, accounts or models
 
+New to this? [Add an account, a subscription or a model](docs/accounts.md#add-an-account-a-subscription-or-a-model) has the commands in one place.
+
 A loop can name other agents to move to when its current one reports a usage limit: another provider, another account of the same provider, or another model with its own limit. Each fallback uses a login you already set up. looptender never logs in, creates accounts or copies credentials.
 
 - **Handoff order.** Fallbacks are tried in the order listed in `fallbacks.yaml`. A candidate takes over only after passing an exact probe, one small real request on its own account and model, during the same check.

@@ -2,6 +2,8 @@
 
 `fallbacks.yaml` is the maintained list of agents the loop may move to when its current agent cannot continue. Point the loop at it with `loop.fallbacks`. A loop can instead follow one list kept for all of a person's loops; see [the standard route list](routes.md) (v0.2.0).
 
+To name an account first, or for the steps from sign-in to a loop's order in one place, see [Add an account, a subscription or a model](accounts.md#add-an-account-a-subscription-or-a-model).
+
 ## Add a fallback with guided setup
 
 Released in v0.2.0; v0.1.5 does not include this command. For an existing loop:
