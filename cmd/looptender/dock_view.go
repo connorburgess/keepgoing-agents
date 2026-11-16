@@ -169,6 +169,11 @@ type dockNeed struct {
 type dockLoop struct {
 	Key  string `json:"key"`
 	Name string `json:"name"`
+	// LoopArg is "--loop NAME" with the loop's registered name quoted for a
+	// shell, for the commands the loop page shows to copy. It is absent when
+	// the name is longer than a page shows in full, so a clipped name never
+	// reaches a command; also when its quoted form is over dockMaxLoopArg.
+	LoopArg string `json:"loopArg,omitempty"`
 	// State is one of supervising, waiting_for_you, waiting_on_limit,
 	// waiting_on_network, checks_failing, paused, stopped, finished, off,
 	// outside_hours, not_checked_recently or unknown. Phrase is its label,
@@ -363,6 +368,9 @@ type dockChain struct {
 	Entries   []dockChainEntry `json:"entries"`
 	Omitted   int              `json:"omitted"`
 	More      string           `json:"more,omitempty"`
+	// Standard is whether the loop follows the standard route list, so the
+	// page shows the routes commands for that list instead of the loop's own.
+	Standard bool `json:"standard,omitempty"`
 }
 
 type dockChainEntry struct {
@@ -978,7 +986,9 @@ func dockShareAcrossLoops(loops []dockLoop, routes []dockRoute, now time.Time) {
 // dockChainInput is the configuration-derived part of the chain plus the
 // fallbacks list summary; Summary is nil when probe history was unreadable.
 type dockChainInput struct {
-	Primary    config.Candidate
+	Primary config.Candidate
+	// Standard: the loop follows the standard route list.
+	Standard   bool
 	Candidates []config.Candidate
 	// TimingOn and TimingSteps are usage-aware timing's configuration.
 	TimingOn    bool
@@ -1285,9 +1295,27 @@ func dockTestingOf(state string, st *statusOut, chain *dockChainInput) dockTesti
 	return t
 }
 
+// dockMaxLoopArg bounds LoopArg in bytes, so 128 loops add at most about
+// 22 KB to the report.
+const dockMaxLoopArg = 160
+
+// dockLoopArg is "--loop NAME" for a command a person copies from the loop
+// page, with the name quoted for a shell. A name the page clips, one whose
+// quoted form is over dockMaxLoopArg bytes, or none gives "", and the page
+// shows a placeholder instead.
+func dockLoopArg(name string) string {
+	if name == "" || utf8.RuneCountInString(name) > dockMaxText {
+		return ""
+	}
+	if arg := "--loop " + shellQuote(name); len(arg) <= dockMaxLoopArg {
+		return arg
+	}
+	return ""
+}
+
 func projectDockLoop(in dockInput, now time.Time, staleAfter time.Duration, identifiers bool) (dockLoop, *dockNeed) {
 	l := dockLoop{Key: dockKey(in.Entry.ID), Name: clip(in.Entry.Loop, dockMaxText), Evidence: in.Client.Outcome,
-		Limits: []dockLimit{}, Issues: []string{}, Can: []string{}}
+		Limits: []dockLimit{}, Issues: []string{}, Can: []string{}, LoopArg: dockLoopArg(in.Entry.Loop)}
 	if snap := in.Client.Snapshot; snap != nil && snap.Controls != nil {
 		c := snap.Controls
 		if !c.Paused {
@@ -2091,6 +2119,7 @@ func dockHandoffChain(in *dockChainInput, use dockRouteUse, test dockTesting, f 
 		c.How = "Unknown: its configuration could not be read."
 		return c
 	}
+	c.Standard = in.Standard
 	for _, class := range in.FailoverOn {
 		c.HandoffOn = append(c.HandoffOn, clip(class, 40))
 	}

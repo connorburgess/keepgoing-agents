@@ -702,6 +702,14 @@
     routing.appendChild(ol);
     if (c.more) routing.appendChild(el("p", "sub", c.more));
     if (!entries.some(function (e) { return e.current; })) routing.appendChild(laneBox(l));
+    // Beside the order: how to add a route and change the order, to copy.
+    if (c.availability !== "unknown") {
+      var how = el("div", "how-group");
+      how.appendChild(addRouteBox(l));
+      var order = reorderBox(l);
+      if (order) how.appendChild(order);
+      routing.appendChild(how);
+    }
     pane.appendChild(routing);
 
     pane.appendChild(eventsPanel(l.events));
@@ -1133,10 +1141,14 @@
     uses.forEach(function (u) { if (u.card) byCard[u.card] = u; });
     var unnamed = uses.filter(function (u) { return u.context; });
     if (!cards.length && !unnamed.length) {
-      pane.appendChild(emptyBox("No accounts selected here yet", "Select an existing account context with the accounts add command, then explicitly check it with accounts check. Provider sign-in stays in the official provider tool."));
+      pane.appendChild(emptyBox("No accounts selected here yet", FIRST_RUN));
+      pane.appendChild(addAccountBox(true));
       return;
     }
     pane.appendChild(el("p", "account-count", cards.length + (cards.length === 1 ? " selected account" : " selected accounts") + (unnamed.length ? " · " + unnamed.length + " not named yet" : "")));
+    // One way to add, said once; an account routes already use has its own
+    // filled-in command on its card below.
+    pane.appendChild(addAccountBox(false, unnamed.length > 0));
     if (!d.complete || (d.registry || {}).availability !== "available") pane.appendChild(el("p", "sub", "Not every loop could be read, so an account its routes use may be missing here."));
     var ul = el("ul", "accounts-list"), retained = Object.create(null);
     cards.forEach(function (c) {
@@ -1215,6 +1227,137 @@
     pane.appendChild(note);
   }
 
+  // ---- How to add an account, add a route and change the order ----
+  // Text and commands to copy, for a person to run in Terminal. The page
+  // runs nothing and changes nothing. A value the page does not know is a
+  // placeholder in capitals, with one line saying what to put there.
+  var IN_TERMINAL = "Run in Terminal, not in a BB agent thread.";
+  var NAMES_ONLY = "This names the account. It does not put it in any loop. To use it, add it to a loop's order.";
+  var FIRST_RUN = "An account is a sign-in you already have, with a name you choose. A route is one model on one of your accounts. Each loop works down its own order of routes: it uses the first that has room, moves to the next when one runs out, and moves back up when it can.";
+  var ROUTE_ADD_FIELDS = "Put a new ID in place of ROUTE_ID (lowercase letters, digits and hyphens), claude-code or codex for PROVIDER, the model for MODEL, the usage limit it draws on for GROUP, and same_conversation, new_conversation or headless for ENTER.";
+  // Whether each disclosure is open, by its key, kept across re-renders.
+  var howOpen = Object.create(null);
+  function howBox(key, title, open) {
+    var d = el("details", "how");
+    d.open = key in howOpen ? howOpen[key] : !!open;
+    var s = el("summary", "how-summary", title);
+    s.setAttribute("data-focus", key);
+    d.appendChild(s);
+    d.addEventListener("toggle", function () { if (d.isConnected) howOpen[key] = d.open; });
+    return d;
+  }
+  // One command: what it does, which also describes its copy button, the
+  // command, and the line that says what to put in place of a placeholder.
+  function howStep(focus, what, command, fill, describedBy) {
+    var w = el("div", "how-step");
+    var p = el("p", null, what);
+    p.id = focus + "-what";
+    w.appendChild(p);
+    w.appendChild(copyCommand("div", command, focus, (describedBy ? describedBy + " " : "") + p.id));
+    if (fill) w.appendChild(el("p", "sub", fill));
+    return w;
+  }
+  // Every block ends with where to run its commands.
+  function howEnd(box, body) {
+    body.appendChild(el("p", "how-terminal", IN_TERMINAL));
+    box.appendChild(body);
+    return box;
+  }
+  // "--loop NAME" with the name the server quoted for a shell, or a
+  // placeholder when the name is too long to put in a command.
+  function loopArg(l) { return l.loopArg || "--loop LOOP_NAME"; }
+  var LOOP_NAME_FILL = "Put this loop's name in place of LOOP_NAME, in quotes if it has a space.";
+  function withLoopFill(l, fill) { return l.loopArg ? fill : [fill, LOOP_NAME_FILL].filter(Boolean).join(" "); }
+  var ROUTE_ID = /^[a-z0-9-]+$/;
+
+  // unnamed: accounts routes already use without a name, which have their
+  // own filled-in command on their cards; said here once.
+  function addAccountBox(open, unnamed) {
+    var box = howBox("how-account", "Add an account", open), body = el("div", "how-body");
+    var cases = [
+      ["folder", "Another subscription of a provider you use",
+        "Sign in with the provider's own tool in a new folder, then name that folder here.",
+        "looptender accounts add --label ACCOUNT_LABEL --provider PROVIDER --selection explicit_directory --account-dir FOLDER",
+        "Put a name you choose in place of ACCOUNT_LABEL (in quotes if it has a space), claude-code or codex for PROVIDER, and the folder you signed in to for FOLDER."],
+      ["managed", "A provider that manages its own login",
+        "Cursor and BB keep their own login. Name the account here; looptender does not check it.",
+        "looptender accounts add --label ACCOUNT_LABEL --provider PROVIDER --selection externally_managed",
+        "Put a name you choose in place of ACCOUNT_LABEL, and cursor or bb for PROVIDER."],
+      ["key", "An API key",
+        "Give the key its own entry. If you use it through the provider's tool, sign in with it in its own folder and name that folder as above. Otherwise:",
+        "looptender accounts add --label ACCOUNT_LABEL --provider other --selection externally_managed",
+        "Put a name you choose in place of ACCOUNT_LABEL. looptender never takes the key."]
+    ];
+    cases.forEach(function (c) {
+      var h = el("h3", "how-case", c[1]);
+      h.id = "how-account-" + c[0];
+      body.appendChild(h);
+      body.appendChild(howStep("copy-account-" + c[0], c[2], c[3], c[4], h.id));
+      body.appendChild(el("p", "sub", NAMES_ONLY));
+    });
+    if (unnamed) body.appendChild(el("p", null, "An account your routes already use without a name is listed below as “not named yet”, with its own command to name it."));
+    return howEnd(box, body);
+  }
+
+  // The loop page: add a route to this loop, and change its order. A loop
+  // that follows the standard route list changes that list instead.
+  function addRouteBox(l) {
+    var c = l.chain || {}, arg = loopArg(l);
+    var box = howBox("how-route-" + l.key, "Add a route to this loop"), body = el("div", "how-body");
+    if (c.standard) {
+      body.appendChild(el("p", null, "This loop follows your standard route list, which every loop that follows it uses. Add the route to that list."));
+      body.appendChild(howStep("copy-route-add", "Add a route to the standard list.",
+        "looptender routes add --id ROUTE_ID --provider PROVIDER --model MODEL --group GROUP --enter ENTER", ROUTE_ADD_FIELDS));
+      body.appendChild(el("p", null, "A new route is used only after a check of it passes."));
+      body.appendChild(howStep("copy-route-check", "Check it. This is one real request and uses this account's quota.",
+        "looptender routes check ROUTE_ID --exact " + arg, withLoopFill(l, "Put the new route's ID in place of ROUTE_ID.")));
+      if (!list(c.handoffOn).length) body.appendChild(el("p", null, "Automatic handoff is off for this loop, so it does not move to another route by itself. For a loop that follows the standard list, it is set by errors.failover_on in the loop's configuration file."));
+    } else {
+      body.appendChild(howStep("copy-route-add", "Add a route. A guide asks for the provider, the account, the model and its place in the order, and shows a preview before it changes anything.",
+        "looptender fallbacks add " + arg, withLoopFill(l, "")));
+      body.appendChild(el("p", null, "A new route is used only after a check of it passes."));
+      body.appendChild(howStep("copy-route-check", "Check it. This is one real request and uses this account's quota.",
+        "looptender fallbacks check --id ROUTE_ID --exact " + arg, withLoopFill(l, "Put the new route's ID in place of ROUTE_ID; the guide shows it in its preview.")));
+      if (!list(c.handoffOn).length) body.appendChild(howStep("copy-route-handoff", "Automatic handoff is off for this loop, so it does not move to another route by itself. To turn it on:",
+        "looptender fallbacks handoff on " + arg, withLoopFill(l, "")));
+    }
+    return howEnd(box, body);
+  }
+  function reorderBox(l) {
+    var c = l.chain || {}, rest = list(c.entries).filter(function (e) { return e.position > 0; });
+    if (rest.length + (c.omitted || 0) < 2) return null;
+    var box = howBox("how-order-" + l.key, "Change the order"), body = el("div", "how-body");
+    var move = c.standard ? function (id) { return "looptender routes move " + id + " --to PLACE"; } :
+      function (id) { return "looptender fallbacks move " + id + " --to PLACE " + loopArg(l); };
+    body.appendChild(el("p", null, c.standard ?
+      "This loop follows your standard route list, so the order is that list's, and every loop that follows it gets the new order. Put the route's new place in the list in place of PLACE: 1 is the top." :
+      "The first choice stays first. Put the route's new place after it in place of PLACE: 1 is the next choice."));
+    var ids = rest.filter(function (e) { return e.id && ROUTE_ID.test(e.id); });
+    if (state.identifiers && ids.length === rest.length) {
+      rest.forEach(function (e) {
+        body.appendChild(howStep("copy-move-" + e.position, "Choice " + (e.position + 1) + ": " + e.title, move(e.id), ""));
+      });
+      if (!c.standard && !l.loopArg) body.appendChild(el("p", "sub", LOOP_NAME_FILL));
+    } else {
+      var fill = "Put the route's ID in place of ROUTE_ID.";
+      if (!state.identifiers) fill = "Put the route's ID in place of ROUTE_ID. Show identifiers to see each route's ID.";
+      body.appendChild(howStep("copy-move", "Move a route.", move("ROUTE_ID"), c.standard ? fill : withLoopFill(l, fill)));
+    }
+    return howEnd(box, body);
+  }
+  // The Routes page: add a route to the standard list, then have a loop
+  // follow it.
+  function standardRouteBox(open) {
+    var box = howBox("how-standard", "Add a route for every loop", open), body = el("div", "how-body");
+    body.appendChild(el("p", null, "Your standard route list is one order of routes that every loop following it uses."));
+    body.appendChild(howStep("copy-standard-add", "Add a route to the standard list.",
+      "looptender routes add --id ROUTE_ID --provider PROVIDER --model MODEL --group GROUP --enter ENTER --account ACCOUNT_ID",
+      ROUTE_ADD_FIELDS + " Put the account's ID in place of ACCOUNT_ID; the Accounts page shows it with Show identifiers."));
+    body.appendChild(howStep("copy-standard-follow", "Then have a loop follow the list.",
+      "looptender routes follow-standard --loop LOOP_NAME", "Put the loop's name in place of LOOP_NAME, in quotes if it has a space."));
+    return howEnd(box, body);
+  }
+
   function renderVersions(d, pane) {
     var v = d.versions || {};
     pane.appendChild(back());
@@ -1269,6 +1412,7 @@
     var routes = list(d.routes), rs = d.routesSummary || {};
     if (!routes.length) {
       pane.appendChild(emptyBox(d.registry.availability === "available" ? "No routes to show." : "Unknown: the registry could not be read.", ""));
+      if (d.registry.availability === "available") pane.appendChild(standardRouteBox(true));
       return;
     }
     var sum = el("p", "route-summary");
@@ -1277,6 +1421,7 @@
     if (rs.trouble && rs.first) sum.appendChild(link("#/routes/" + rs.first, rs.problem, "c-warn"));
     else if (rs.problem) sum.appendChild(el("span", "sub", rs.problem));
     pane.appendChild(sum);
+    pane.appendChild(standardRouteBox(false));
     pane.appendChild(allowancesPanel(d));
 
     var wrap = panel("All routes", [el("span", "sub", "those at a limit or not ready first")]);

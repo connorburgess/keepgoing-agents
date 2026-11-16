@@ -469,3 +469,25 @@ body.has-banner { padding-bottom: 8rem; }
  .account-summary { grid-template-columns: minmax(0, 1fr); gap: 1rem; }
  .account-plan { border-top: 1px solid var(--line); padding-top: .8rem; }
 }
+/* How to add an account, add a route and change the order: disclosures with commands to copy. Neutral: nothing here is a warning. */
+.how { margin-top: 1rem; background: var(--surface); border: 1px solid var(--line); border-radius: 14px; }
+.how-summary { cursor: pointer; display: flex; align-items: baseline; gap: 0.6rem; padding: 0.85rem 1.1rem; font-weight: 620; border-radius: 14px; }
+.how-summary::marker { content: ""; }
+.how-summary::-webkit-details-marker { display: none; }
+.how-summary::before { content: ""; flex: none; width: 0.45rem; height: 0.45rem; border-inline-end: 1.5px solid currentColor; border-block-end: 1.5px solid currentColor; transform: rotate(-45deg); }
+details[open] > .how-summary::before { transform: rotate(45deg); }
+.how-summary:hover { background: var(--sunk); }
+.how-body { padding: 0.15rem 1.1rem 1.1rem; display: grid; gap: 0.75rem; }
+.how-body p { margin: 0; max-width: 75ch; }
+.how-case { margin: 0.6rem 0 -0.25rem; font-size: 0.9375rem; font-weight: 620; }
+.how-step { display: grid; gap: 0.4rem; }
+.how-step .copy { display: flex; flex-wrap: wrap; align-items: center; gap: 0.5rem; }
+.how-step .command { white-space: normal; overflow-wrap: anywhere; font-family: var(--mono); font-size: 0.8125rem; }
+.how-step .btn { white-space: nowrap; }
+.how-terminal { font-weight: 560; }
+/* Inside the loop's routes panel: rules between, not a box in a box. */
+.how-group { margin-top: 1rem; border-top: 1px solid var(--line); }
+.how-group .how { margin: 0; background: none; border: 0; border-bottom: 1px solid var(--line); border-radius: 0; }
+.how-group .how:last-child { border-bottom: 0; }
+.how-group .how-summary { padding-inline: 0.25rem; border-radius: 6px; }
+.how-group .how-body { padding-inline: 0.25rem; }
