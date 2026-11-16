@@ -112,6 +112,37 @@ loop or route could be read, it says the answer is not known rather than
 none. The panel data carries this as the card's `routes` (`named`, `none`,
 `unknown`); `accounts list` does not read routes and leaves it out.
 
+When routes name the entry, the Routes row lists each of them, the loops that
+use each, and each route's own recorded usage reading; readings of different
+routes are never merged. It says once "assigned by you · identity not
+verified", and under a BB thread route "assigned by you · not verified for BB
+threads (account set per project)". A route that names the entry but whose
+check found a mismatch is still listed, says what its check says in place of
+"assigned by you", and its reading is not counted for the entry. The card's
+summary is from those readings, never merged: if any route's reading had a
+window used up that has not ended, the newest such, naming its route when the
+card has more than one ("opus-example: Five-hour allowance was out when read
+2 h ago · resets in 3 h"); otherwise "Not out when read 2 h ago" from the
+newest reading, or that no reading is recorded.
+Being out is information, not a warning.
+
+### Accounts not named yet
+
+The page also lists each account context that a registered loop's routes use
+without naming a catalog entry, headed "Unnamed Codex account" (or Claude
+Code, Cursor, or the route's provider) with a quiet "not named yet" tag, the
+routes and loops that use it, and their readings. These come only from loop
+configurations and the catalog: nothing on the computer is searched, no
+provider is called, and nothing is adopted. Each gives the `accounts add`
+command that would name it, with the provider and selection its routes state
+and `ACCOUNT_LABEL` for your own label; a selected directory is filled in only
+under **Show identifiers**. Naming an account changes no route: to assign its
+routes, add `account: <ID>` to each. "May be the same account as" a catalog
+entry appears only when the provider and the selection match, the same
+directory or both inherited, as `validate` compares them; never by label, and
+never for a BB thread route. The panel data carries this as `accountUses`
+(catalog cards first, then unnamed contexts; route and loop keys only).
+
 A check's successful command exit means its minimized observation was saved;
 it does not mean login passed. Inspect auth state and reason. Missing/corrupt
 storage or a concurrent selection change refuses the operation. An overlapping
@@ -201,8 +232,17 @@ computer, which is BB's login only when they share it
 A route can state which catalog entry it uses, with an optional `account`
 field holding the entry's ID (the 32 hexadecimal characters `accounts add`
 prints). It goes on a loop's first route (`loop.account`), on a fallback in
-`fallbacks.yaml`, or on a route in the [standard list](routes.md) (also with
-`routes add --account ID`):
+`fallbacks.yaml`, or on a route in the [standard list](routes.md). Commands
+write it for you: `routes add --account ID` for the standard list, and
+`init --account ID` and `fallbacks add --account ID` for a loop's first route
+and its fallbacks (unreleased). The guided `init` and `fallbacks add` list the
+catalog's entries for the route's provider by name, and picking one by number
+uses its directory, suggests a group made from its name, and states it. A
+directory typed instead states nothing. Setup refuses an entry that `validate`
+would reject, and also one it cannot compare but that does not fit: an entry
+on the normal login for a route with its own directory, and, for a BB thread,
+an entry for neither BB nor the thread's provider. The refusal names the
+entries that fit.
 
     loop:
       adapter: claude
@@ -257,8 +297,12 @@ provider, how the account is selected (its directory, `inherited`,
 identities are, so no path is included. Two routes with the same `context`
 select the same account context as configured; that does not make them the
 same account, and different contexts are not said to be different accounts.
-The label and ID are shown as they are in the Accounts view. The panel page
-does not show these fields yet.
+The label and ID are shown as they are in the Accounts view. A loop's page
+shows a route that names a consistent entry as "on *Label* · assigned by you ·
+identity not verified" (for a BB thread route, "not verified for BB threads"),
+and a route that names none as "Not assigned to an account." with its account
+group. The Allowances strip on the Routes page still groups by recorded usage
+identity and is not linked to account cards.
 
 ## Change a selection deliberately
 

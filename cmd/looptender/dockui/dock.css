@@ -469,6 +469,19 @@ body.has-banner { padding-bottom: 8rem; }
 .account-hint { margin: 0; padding: 0 1.2rem 1rem 2.6rem; font-size: .8125rem; overflow-wrap: anywhere; }
 .account-command { user-select: all; -webkit-user-select: all; font-family: var(--mono); font-size: .8125rem; }
 .account-summary > *, .account-body dd { overflow-wrap: anywhere; min-width: 0; }
+/* Each account's routes, each with its loops and its own reading. */
+.account-routes { list-style: none; margin: .5rem 0 0; padding: 0; display: grid; gap: .9rem; }
+.account-route { display: grid; gap: .3rem; padding-left: .8rem; border-left: 1px solid var(--line); min-width: 0; }
+.account-route p { margin: 0; max-width: 75ch; }
+.account-route-name { font-weight: 600; }
+.account-route a { color: var(--ink); text-decoration: underline; text-decoration-color: var(--ink-3); text-underline-offset: 0.2em; }
+.account-route a:hover { text-decoration-color: currentColor; }
+.account-reading { display: block; margin-top: .3rem; }
+.account-name .tag { font-weight: 600; }
+.account-name-it { margin-top: 1rem; display: grid; gap: .5rem; }
+.account-name-it p { margin: 0; max-width: 75ch; }
+.account-name-it .copy { display: flex; flex-wrap: wrap; align-items: center; gap: .5rem; }
+.account-name-it .command { white-space: normal; overflow-wrap: anywhere; font-family: var(--mono); font-size: .8125rem; }
 @media (max-width: 760px) {
  .account-summary { grid-template-columns: minmax(0, 1fr); gap: 1rem; }
  .account-plan { border-top: 1px solid var(--line); padding-top: .8rem; }

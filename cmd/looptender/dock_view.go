@@ -40,8 +40,13 @@ const (
 )
 
 type dockReport struct {
-	Accounts      *accounts.View `json:"accounts,omitempty"`
-	SchemaVersion int            `json:"schemaVersion"`
+	Accounts *accounts.View `json:"accounts,omitempty"`
+	// AccountUses is each account card, then each account context routes
+	// use with no catalog entry, with the routes and loops that use it
+	// (dock_account_routes.go). It is filled with Accounts.
+	AccountUses        []dockAccountUse `json:"accountUses,omitempty"`
+	AccountUsesOmitted int              `json:"accountUsesOmitted,omitempty"`
+	SchemaVersion      int              `json:"schemaVersion"`
 	// ReadOnly is true for every response of this schema: the page offers no
 	// control and there is no write endpoint.
 	ReadOnly          bool         `json:"readOnly"`
@@ -414,6 +419,7 @@ type dockChainEntry struct {
 	// CatalogAccount is the accounts-catalog entry the route names, or its
 	// derived account context (route_account.go).
 	CatalogAccount *accounts.RouteAccount `json:"catalogAccount,omitempty"`
+	acct           dockAccountFacts
 	identity       string
 	probeOK        bool
 }
@@ -2143,7 +2149,7 @@ func dockHandoffChain(in *dockChainInput, use dockRouteUse, test dockTesting, f 
 		main.Notes = append(main.Notes, dockNote{Tone: "limit", Text: main.Usage.UsedUp})
 	}
 	main.identity = dockAccountIdentity(in.Primary, main.Usage)
-	main.CatalogAccount = dockCatalogAccount(in, in.Primary.Agent)
+	main.CatalogAccount, main.acct = dockCatalogAccount(in, in.Primary.Agent), dockAccountFactsOf(in.Primary.Agent)
 	c.Entries = append(c.Entries, main)
 	if len(in.Candidates) == 0 {
 		c.Availability = "none_configured"
@@ -2231,7 +2237,7 @@ func dockHandoffChain(in *dockChainInput, use dockRouteUse, test dockTesting, f 
 			e.Notes = append(e.Notes, dockNote{Tone: "limit", Text: e.Usage.UsedUp})
 		}
 		e.identity = dockAccountIdentity(cand, e.Usage)
-		e.CatalogAccount = dockCatalogAccount(in, cand.Agent)
+		e.CatalogAccount, e.acct = dockCatalogAccount(in, cand.Agent), dockAccountFactsOf(cand.Agent)
 		c.Entries = append(c.Entries, e)
 	}
 	if c.Omitted > 0 {

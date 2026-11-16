@@ -434,11 +434,15 @@ func (d *dockReader) bodies(identifiers bool) (dockCached, error) {
 func (d *dockReader) read(ctx context.Context, identifiers bool) (result dockReport) {
 	defer func() {
 		view := accounts.View{State: "unavailable", Complete: false, Cards: []accounts.Card{}}
+		var catalog *accounts.File
 		if dir, err := accountsDirectory(d.accountsDir); err == nil && ctx.Err() == nil {
-			view = accounts.ReadView(dir, d.clock())
+			if f, err := accounts.Load(dir); err == nil {
+				view, catalog = accounts.Project(f, d.clock()), &f
+			}
 		}
 		dockLinkAccountRoutes(&view, result)
 		result.Accounts = &view
+		result.AccountUses, result.AccountUsesOmitted = dockAccountUses(result, view, catalog, identifiers, d.clock())
 	}()
 
 	now := d.clock()
