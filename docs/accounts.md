@@ -42,6 +42,17 @@ login or a stable subscription identity. Explicit directory selects the existing
 CLAUDE_CONFIG_DIR or CODEX_HOME context. The environment can still supply other
 authentication inputs; selection does not override arbitrary credential sources.
 
+**Warning: the default Claude Code login is `inherited`, not an explicit
+directory.** Claude Code treats CLAUDE_CONFIG_DIR set to its default directory
+(`~/.claude`) as a different login context from the default login, with the
+variable unset. An explicit_directory entry for `~/.claude` can therefore report
+no login while you are signed in. `accounts add` and `accounts update` print a
+warning for such an entry (they still save it), and
+[doctor](diagnostics.md#stated-accounts) flags an existing one. Use
+`--selection inherited` for the default login. This was observed for Claude
+Code; it is not claimed for Codex, so a CODEX_HOME at `~/.codex` gets no
+warning.
+
 Only Claude Code and Codex have status checks in this slice. Cursor, BB and
 other providers may be selected as externally_managed entries, without CLI,
 account-directory or working-directory flags. Their cards say external or
@@ -124,7 +135,11 @@ it, and it is not evidence of which account a context is signed in to.
 
 **Several Claude Code subscriptions.** Sign in to each one in its own config
 directory with the official Claude Code tool, then add one explicit_directory
-entry per directory. The directory is the CLAUDE_CONFIG_DIR that entry selects:
+entry per directory. The directory is the CLAUDE_CONFIG_DIR that entry selects.
+The default login (`~/.claude`, with CLAUDE_CONFIG_DIR unset) is an `inherited`
+entry: an explicit directory is for a second, separate config directory, and
+naming `~/.claude` explicitly selects a different login context (see the
+warning above):
 
     looptender accounts add --label "work" --provider claude-code \
       --selection explicit_directory --account-dir /private/example/claude-work \

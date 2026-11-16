@@ -248,6 +248,9 @@ func doctor(e env, args []string, run doctorRun) int {
 		}
 	}
 	doctorRouteAccounts(&r, cfg, "")
+	if home, err := os.UserHomeDir(); err == nil {
+		doctorAccountDefaultDirectories(&r, doctorAccountsCatalog, home)
+	}
 	queryCtx, cancel := context.WithTimeout(e.ctx, *timeout)
 	d := inspectDaemon(queryCtx, cfg.Loop.StateDir, version, *offline)
 	cancel()
