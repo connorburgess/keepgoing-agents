@@ -4,8 +4,10 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"path/filepath"
 	"strconv"
 	"strings"
+	"unicode/utf8"
 
 	"github.com/looptender/looptender/internal/accounts"
 	"github.com/looptender/looptender/internal/config"
@@ -71,15 +73,23 @@ func setupSelectionText(e accounts.Entry) string {
 	return "managed by the provider"
 }
 
-// printSetupAccountChoices lists the entries a person may pick by number.
+// setupLabelWidth bounds a name in a setup list or line, in characters.
+const setupLabelWidth = 40
+
+// setupLabel is an entry's name as setup shows it: printable and bounded.
+func setupLabel(e accounts.Entry) string { return bbLabel(e.Label, setupLabelWidth) }
+
+// printSetupAccountChoices lists the entries a person may pick by number,
+// names padded by characters so the second column lines up.
 func printSetupAccountChoices(w io.Writer, choices []accounts.Entry) {
 	fmt.Fprintln(w, "  Your named accounts (keepgoing accounts list):")
 	width := 0
 	for _, e := range choices {
-		width = max(width, len(e.Label))
+		width = max(width, utf8.RuneCountInString(setupLabel(e)))
 	}
 	for i, e := range choices {
-		fmt.Fprintf(w, "    %d) %-*s  %s\n", i+1, width, e.Label, setupSelectionText(e))
+		label := setupLabel(e)
+		fmt.Fprintf(w, "    %d) %s%s  %s\n", i+1, label, strings.Repeat(" ", width-utf8.RuneCountInString(label)), setupSelectionText(e))
 	}
 }
 
@@ -123,18 +133,57 @@ func setupAccountDir(e *accounts.Entry, given string) string {
 }
 
 // setupCheckAccount states the entry on the route and compares them, as
-// validate does. A mismatch is refused: setup never writes a statement that
-// validate would reject.
+// validate does, and more strictly where validate cannot tell: a route that
+// names its own directory does not fit an entry on the normal login, and a
+// BB thread route fits only an entry for BB or for the thread's provider,
+// the entries the guided questions offer. A mismatch is refused, naming the
+// entries that fit: setup never writes a statement validate would reject or
+// one the questions would not have offered.
 func setupCheckAccount(a *config.Agent, e *accounts.Entry) error {
 	if e == nil {
 		return nil
 	}
-	a.Account = e.ID
-	r := accounts.CheckRoute(&accounts.File{Entries: []accounts.Entry{*e}}, *a)
-	if r.Refused {
-		return fmt.Errorf("account %q: %s", bbLabel(e.Label, 60), accounts.RouteCheckText(r.Check))
+	kind := a.Adapter
+	_, dir := accounts.RouteSelection(*a)
+	var why string
+	switch {
+	case kind == "bb":
+		if e.Provider != "bb" && e.Provider != a.Provider {
+			why = "the entry is for " + e.Provider + ", not for BB or this thread's provider (" + a.Provider + ")"
+		}
+	case dir != "" && e.Mode != "explicit_directory":
+		why = "the entry uses " + setupSelectionText(*e) + ", but this route names its own account directory"
 	}
-	return nil
+	a.Account = e.ID
+	if why == "" {
+		if r := accounts.CheckRoute(&accounts.File{Entries: []accounts.Entry{*e}}, *a); r.Refused {
+			why = accounts.RouteCheckText(r.Check)
+		}
+	}
+	if why == "" {
+		return nil
+	}
+	a.Account = ""
+	return fmt.Errorf("account %q does not fit this route: %s. %s", setupLabel(*e), why, setupFitting(kind, a.Provider, dir))
+}
+
+// setupFitting names the catalog entries that would fit a route of this
+// kind, for a refusal.
+func setupFitting(kind, provider, dir string) string {
+	var names []string
+	for _, c := range setupAccountChoices(setupCatalog(), kind, provider) {
+		// A route with its own directory fits only an entry for that
+		// directory; one without fits any, since an entry's directory is
+		// used when none is given.
+		if dir != "" && (c.Mode != "explicit_directory" || filepath.Clean(c.Directory) != dir) {
+			continue
+		}
+		names = append(names, fmt.Sprintf("%q", setupLabel(c)))
+	}
+	if len(names) == 0 {
+		return "No named account fits it; name one with keepgoing accounts add."
+	}
+	return "Named accounts that fit it: " + strings.Join(names, ", ") + "."
 }
 
 // setupGroupFromLabel is a usage-limit label made from an account's name, or

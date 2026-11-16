@@ -193,7 +193,10 @@ and its fallbacks (unreleased). The guided `init` and `fallbacks add` list the
 catalog's entries for the route's provider by name, and picking one by number
 uses its directory, suggests a group made from its name, and states it. A
 directory typed instead states nothing. Setup refuses an entry that `validate`
-would reject.
+would reject, and also one it cannot compare but that does not fit: an entry
+on the normal login for a route with its own directory, and, for a BB thread,
+an entry for neither BB nor the thread's provider. The refusal names the
+entries that fit.
 
     loop:
       adapter: claude

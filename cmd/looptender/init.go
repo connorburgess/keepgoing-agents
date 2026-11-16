@@ -926,7 +926,7 @@ func printInitAccount(w io.Writer, a config.Agent) {
 		label := a.Account
 		if f := setupCatalog(); f != nil {
 			if e := accounts.Find(f, a.Account); e != nil {
-				label = e.Label
+				label = setupLabel(*e)
 			}
 		}
 		fmt.Fprintf(w, "  Named account: %s, stated by you (written as account: %s)\n", label, a.Account)

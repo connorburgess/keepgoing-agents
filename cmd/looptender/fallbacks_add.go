@@ -645,7 +645,7 @@ func (w *fallbackAddWizard) collectAccount() error {
 			return err
 		}
 		o.accountEntry = entry
-		fmt.Fprintf(out, "  Named account: %s\n", entry.Label)
+		fmt.Fprintf(out, "  Named account: %s\n", setupLabel(*entry))
 		return checkDir(setupAccountDir(entry, o.account))
 	}
 	var choices []accounts.Entry
@@ -682,7 +682,7 @@ func (w *fallbackAddWizard) collectAccount() error {
 		}
 		if entry != nil {
 			o.accountEntry, o.account = entry, setupAccountDir(entry, "")
-			fmt.Fprintf(out, "  Named account: %s\n", entry.Label)
+			fmt.Fprintf(out, "  Named account: %s\n", setupLabel(*entry))
 		} else {
 			o.account = s
 		}
@@ -1297,7 +1297,7 @@ func printFallbackAddPreview(w io.Writer, p *fallbackAddPlan) {
 		printHeadlessCandidate(w, c)
 	}
 	if e := p.accountEntry; e != nil {
-		fmt.Fprintf(w, "  Named account: %s, stated by you (written as account: %s)\n", e.Label, e.ID)
+		fmt.Fprintf(w, "  Named account: %s, stated by you (written as account: %s)\n", setupLabel(*e), e.ID)
 	}
 	if len(p.warnings) > 0 {
 		fmt.Fprintln(w)

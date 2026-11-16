@@ -1,12 +1,15 @@
 package main
 
 import (
+	"bytes"
+	"context"
 	"encoding/json"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 	"time"
+	"unicode/utf8"
 
 	"github.com/looptender/looptender/internal/accounts"
 	"github.com/looptender/looptender/internal/config"
@@ -297,5 +300,137 @@ func TestFallbacksAddNamesAnAccountForABBThread(t *testing.T) {
 	}
 	if a := r.Candidate.CatalogAccount; a == nil || a.ID != ids[0] || a.Label != "bb-home" {
 		t.Fatalf("report: %+v", r.Candidate)
+	}
+}
+
+// validatesAs runs validate's account comparison on what setup wrote, with
+// the catalog setup read, and returns its output.
+func validatesAs(t *testing.T, cfgPath string) string {
+	t.Helper()
+	cfg, err := config.Load(cfgPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var out, errOut bytes.Buffer
+	if !validateRouteAccounts(env{context.Background(), &out, &errOut}, cfg, setupAccountsDir) || errOut.Len() != 0 {
+		t.Fatalf("validate rejects what setup wrote: %s %s", out.String(), errOut.String())
+	}
+	return out.String()
+}
+
+func TestSetupWritesWhatValidateAccepts(t *testing.T) {
+	f := newAddFixture(t)
+	claude, codex, _ := addCatalog(t, f)
+	if code, _, errOut := f.add(t, "", "--non-interactive", "--agent", "claude", "--account", claude); code != exitOK {
+		t.Fatalf("%d %s", code, errOut)
+	}
+	if code, _, errOut := f.add(t, "", "--non-interactive", "--agent", "codex", "--account", codex); code != exitOK {
+		t.Fatalf("%d %s", code, errOut)
+	}
+	out := validatesAs(t, f.cfg)
+	for _, want := range []string{"Personal Pro, assigned by you; the entry's provider and directory match this route", "team codex, assigned by you; the entry's provider and directory match this route"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("validate output missing %q:\n%s", want, out)
+		}
+	}
+}
+
+// An entry on the normal login does not fit a route that names its own
+// directory, and the refusal names the entries that do.
+func TestSetupRefusesANormalLoginEntryForARouteWithADirectory(t *testing.T) {
+	f := newAddFixture(t)
+	_, _, inherited := addCatalog(t, f)
+	before := f.files(t)
+	code, _, errOut := f.add(t, "", "--non-interactive", "--agent", "codex", "--account", inherited, "--account-dir", f.account("codex-b"))
+	if code != exitUsage || !strings.Contains(errOut, `account "codex-everyday" does not fit this route: the entry uses your normal login, but this route names its own account directory`) || !strings.Contains(errOut, `Named accounts that fit it: "team codex".`) {
+		t.Fatalf("%d %s", code, errOut)
+	}
+	if f.files(t) != before {
+		t.Fatal("a refused --account changed the loop's files")
+	}
+}
+
+// A BB thread route fits only an entry for BB or for the thread's provider,
+// the entries the guided questions offer.
+func TestSetupRefusesAnotherProvidersEntryForABBThread(t *testing.T) {
+	f := newAddFixture(t)
+	ids := setupCatalogFixture(t,
+		accounts.Entry{Label: "team codex", Provider: "codex", Mode: "inherited"},
+		accounts.Entry{Label: "bb-home", Provider: "bb", Mode: "externally_managed"},
+		accounts.Entry{Label: "example-cursor", Provider: "cursor", Mode: "externally_managed"},
+	)
+	for _, id := range []string{ids[0], ids[2]} {
+		code, _, errOut := f.add(t, "", "--non-interactive", "--agent", "bb", "--thread", "thr_example_other", "--provider", "claude-code", "--account", id, "--dry-run")
+		if code != exitUsage || !strings.Contains(errOut, "not for BB or this thread's provider (claude-code)") || !strings.Contains(errOut, `Named accounts that fit it: "bb-home".`) {
+			t.Errorf("%d %s", code, errOut)
+		}
+	}
+	g := newSetupFixture(t)
+	args := []string{"--non-interactive", "--name", "example-loop", "--agent", "bb", "--thread", "thr_example", "--provider", "claude-code", "--project", g.project, "--directory", g.destination, "--task", "Complete and verify the fictional example task.", "--account", ids[0]}
+	if code, _, errOut := g.run(t, args, ""); code == exitOK || !strings.Contains(errOut, "not for BB or this thread's provider") {
+		t.Fatalf("init: %d %s", code, errOut)
+	}
+}
+
+// The init guide offers named accounts for each fallback it asks about,
+// and what it writes is what validate accepts.
+func TestInitWizardOffersNamedAccountsForAFallback(t *testing.T) {
+	f := newSetupFixture(t)
+	dir := filepath.Join(f.root, "accounts", "claude-b")
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	ids := setupCatalogFixture(t,
+		accounts.Entry{Label: "Personal Pro", Provider: "claude-code", Mode: "explicit_directory", Directory: dir},
+		accounts.Entry{Label: "team codex", Provider: "codex", Mode: "inherited"},
+	)
+	args := []string{"--name", "example-loop", "--agent", "codex", "--account-dir", "", "--project", f.project, "--directory", f.destination, "--task", "Complete and verify the fictional example task.", "--with-goal=false", "--routes", "own", "--group", "codex-main"}
+	// model (default), a fallback on claude, the first named account, its group (default),
+	// no more fallbacks, then defaults for the limits
+	input := "\nclaude\n1\n\n\n\n\n\n\n\n\n\n\n"
+	code, out, errOut := f.run(t, args, input)
+	if code != exitOK {
+		t.Fatalf("%d %s\n%s", code, errOut, out)
+	}
+	if !strings.Contains(out, "1) Personal Pro  its own signed-in directory") || strings.Contains(out, "team codex") {
+		t.Errorf("offered the wrong accounts:\n%s", out)
+	}
+	cfgPath := filepath.Join(f.destination, config.FileName)
+	cfg, err := config.Load(cfgPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	c := cfg.FallbackSet.Candidates[0]
+	if c.Account != ids[0] || c.Group != "personal-pro" || c.ProbeEnv()["CLAUDE_CONFIG_DIR"] != dir {
+		t.Fatalf("fallback: account %q group %q env %v", c.Account, c.Group, c.ProbeEnv())
+	}
+	if cfg.Loop.Account != "" {
+		t.Fatalf("the first route states %q, though none was named", cfg.Loop.Account)
+	}
+	if out := validatesAs(t, cfgPath); !strings.Contains(out, "account (fallback-1): Personal Pro, assigned by you; the entry's provider and directory match this route") {
+		t.Errorf("validate: %s", out)
+	}
+}
+
+// A long name is shown bounded, and the list's second column lines up by
+// characters, not bytes.
+func TestSetupPickListBoundsAndAlignsNames(t *testing.T) {
+	long := strings.Repeat("ö", 60)
+	setupCatalogFixture(t,
+		accounts.Entry{Label: long, Provider: "codex", Mode: "inherited"},
+		accounts.Entry{Label: "short", Provider: "codex", Mode: "inherited"},
+	)
+	var b bytes.Buffer
+	printSetupAccountChoices(&b, setupAccountChoices(setupCatalog(), "codex", ""))
+	lines := strings.Split(strings.TrimRight(b.String(), "\n"), "\n")
+	if len(lines) != 3 {
+		t.Fatalf("%q", lines)
+	}
+	col := func(line string) int { return utf8.RuneCountInString(line[:strings.Index(line, "your normal login")]) }
+	if !strings.Contains(lines[1], strings.Repeat("ö", setupLabelWidth-1)+"…") || strings.Contains(lines[1], strings.Repeat("ö", setupLabelWidth)) {
+		t.Errorf("long name not bounded: %q", lines[1])
+	}
+	if col(lines[1]) != col(lines[2]) {
+		t.Errorf("columns differ: %q / %q", lines[1], lines[2])
 	}
 }
