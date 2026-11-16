@@ -136,8 +136,10 @@
   function lastCheck(c) {
     if (c.availability === "never" || c.availability === "unknown" || !c.text) return unknown(c.text);
     var f = frag();
+    // The age is said in plain words, with no badge: a loop that is on and
+    // not checked for longer than it should be has its own state, "Not
+    // checked recently"; for a paused or held loop an old check is expected.
     f.appendChild(document.createTextNode(c.text));
-    if (c.availability === "stale") f.appendChild(tag("stale", "Stale"));
     if (c.failed) f.appendChild(el("div", "sub", c.failed));
     return f;
   }
@@ -490,9 +492,8 @@
       if (l.lanesFailed) status.appendChild(tag("needs", l.lanesFailed));
       summary.appendChild(status);
       summary.appendChild(el("span", "sub work-observation", l.lanes && l.lanes.summary ? "Lanes: " + l.lanes.summary : "Lane evidence: " + ((l.children && l.children.phrase) || "Unknown")));
-      var age = el("span", "sub work-age", (l.lastCheck && l.lastCheck.text) || "Last check unknown");
-      if (l.lastCheck && l.lastCheck.availability === "stale") age.appendChild(tag("stale", "Stale"));
-      summary.appendChild(age);
+      // Age in plain words, as for usage readings; see lastCheck().
+      summary.appendChild(el("span", "sub work-age", (l.lastCheck && l.lastCheck.text) || "Last check unknown"));
       details.appendChild(summary);
       var body = el("div", "work-body");
       body.appendChild(el("p", "detail", l.detail));
