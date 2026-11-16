@@ -147,6 +147,9 @@ func accountsCommand(e env, args []string, run accountRun) int {
 			resultID, revision = selected.ID, selected.Revision
 			return nil
 		})
+		if home, herr := os.UserHomeDir(); err == nil && herr == nil && accountExplicitIsDefault(selected, home) {
+			e.errf("warning: %s. %s", accountDefaultDirWarning, accountDefaultDirFix)
+		}
 	case "check":
 		err = accountCheck(e.ctx, path, *id, caller, run, now)
 	}

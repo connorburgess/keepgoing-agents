@@ -42,6 +42,17 @@ login or a stable subscription identity. Explicit directory selects the existing
 CLAUDE_CONFIG_DIR or CODEX_HOME context. The environment can still supply other
 authentication inputs; selection does not override arbitrary credential sources.
 
+**Warning: the default Claude Code login is `inherited`, not an explicit
+directory.** Claude Code treats CLAUDE_CONFIG_DIR set to its default directory
+(`~/.claude`, `%USERPROFILE%\.claude` on Windows) as a different login context from the default login, with the
+variable unset. An explicit_directory entry for `~/.claude` can therefore report
+no login while you are signed in. `accounts add` and `accounts update` print a
+warning for such an entry (they still save it), and
+[doctor](diagnostics.md#stated-accounts) flags an existing one. Use
+`--selection inherited` for the default login. This was observed for Claude
+Code; it is not claimed for Codex, so a CODEX_HOME at `~/.codex` gets no
+warning.
+
 Only Claude Code and Codex have status checks in this slice. Cursor, BB and
 other providers may be selected as externally_managed entries, without CLI,
 account-directory or working-directory flags. Their cards say external or
@@ -60,7 +71,8 @@ command in this slice.
     looptender accounts check --id CONNECTION_ID --json
     looptender accounts list --json
 
-This is the command the panel means by "the explicit accounts check command".
+The Accounts page names this command in its footnote and in a card's
+"To check again" line.
 Run it yourself to record a new observation for one entry; the panel never runs
 it. CONNECTION_ID is the opaque ID that accounts add returned, also listed by
 accounts list.
@@ -78,11 +90,27 @@ reports credentials present and a nonzero exit is ambiguous. No account identity
 is inferred. Only allowlisted broad Claude subscriptionType strings, when
 actually supplied by structured status, become reported plan evidence.
 Raw max displays as Max. Unknown plan values are discarded; no numeric tier,
-capacity or quota is inferred. Codex plan remains unavailable.
+capacity or quota is inferred. Codex's login status reports no plan, so a
+Codex card says "Codex does not report a plan." A Claude card without a plan
+says why: "Claude Code's status reported no recognized plan." after a login,
+"No plan is read without a login." after none, and "Not checked" before any
+check. These are not failures and need nothing; the card's JSON carries the
+reason as `plan.missing` (`not_reported`, `not_recognized`, `no_login`,
+`not_checked`). A check that established no login leaves the plan Unavailable.
 
-Configured model, actual response model and route associations are unavailable
-in this slice. A requested/probe model or configuration fingerprint is not an
-actual response model or verified account identity.
+The catalog records no model: a route chooses the model, and a check never
+calls one. The page says so in one line instead of showing configured and
+actual response model rows; `configuredModel` and `observedModel` stay in the
+JSON with `missing: not_recorded`. A requested/probe model or configuration
+fingerprint is not an actual response model or verified account identity.
+
+The page's Routes row says whether a route [names the entry](#say-which-account-a-route-uses),
+from the routes the panel read ("A route names this account."). When none
+does, it says "No route names this account yet. Add `account: <ID>` to a route
+to link it", with the ID filled in under **Show identifiers**. When not every
+loop or route could be read, it says the answer is not known rather than
+none. The panel data carries this as the card's `routes` (`named`, `none`,
+`unknown`); `accounts list` does not read routes and leaves it out.
 
 A check's successful command exit means its minimized observation was saved;
 it does not mean login passed. Inspect auth state and reason. Missing/corrupt
@@ -124,7 +152,11 @@ it, and it is not evidence of which account a context is signed in to.
 
 **Several Claude Code subscriptions.** Sign in to each one in its own config
 directory with the official Claude Code tool, then add one explicit_directory
-entry per directory. The directory is the CLAUDE_CONFIG_DIR that entry selects:
+entry per directory. The directory is the CLAUDE_CONFIG_DIR that entry selects.
+The default login (`~/.claude`, with CLAUDE_CONFIG_DIR unset) is an `inherited`
+entry: an explicit directory is for a second, separate config directory, and
+naming `~/.claude` explicitly selects a different login context (see the
+warning above):
 
     looptender accounts add --label "work" --provider claude-code \
       --selection explicit_directory --account-dir /private/example/claude-work \
