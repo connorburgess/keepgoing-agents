@@ -149,6 +149,7 @@ const fallbackAddUsage = `Add a fallback to an existing loop: another provider, 
 Usage:
   keepgoing fallbacks add -c looptender.yaml                 guided questions, preview, then confirm
   keepgoing fallbacks add -c looptender.yaml --non-interactive --agent codex [flags]
+  keepgoing fallbacks add --loop NAME                         the same, naming a registered loop
 
 The command looks up installed agent CLIs without running them, previews the
 fallback and the handoff order, and writes only after confirmation (or with
@@ -161,6 +162,7 @@ own conversation on another model. For a BB thread the guided questions can,
 after you agree, run two read-only listings (bb thread list, bb provider
 models) to offer pick lists; flags never run bb.
 
+` + fallbacksLoopFlagHelp + `
 Flags:
 `
 
