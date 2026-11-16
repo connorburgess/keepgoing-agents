@@ -945,10 +945,13 @@
   var versionDots = { current: "dot-good", same_file: "dot-good", newer: "dot-good", older: "dot-limit", different: "dot-limit", different_file: "dot-limit", stale: "dot-calm" };
   // Age is information: "Checked 3 h ago" in plain words, never a badge.
   // An observation older than a day adds a quiet hint to check again.
-  function accountEvidence(e) {
+  // sameCheck leaves out the age and source when the login above already
+  // says them for the same check.
+  function accountEvidence(e, sameCheck) {
     e = e || {};
     var wrap = el("div", "account-evidence");
     wrap.appendChild(el("span", null, e.text || "Unavailable"));
+    if (sameCheck) return wrap;
     if (e.ageSeconds != null) {
       var age = el("span", "sub account-age", "Checked " + span(e.ageSeconds) + " ago" + (e.checkAgain ? " · check again to confirm" : ""));
       if (e.observedAt) age.title = fmt(dayTimeFmt, e.observedAt);
@@ -977,14 +980,30 @@
   var ACCOUNT_ATTENTION = {
     no_login: "No login reported. Sign in with the provider's own tool, then check again."
   };
-  // The explicit check command to copy. The connection ID appears only with
-  // identifiers, as other identifiers on the page do.
+  // The connection ID appears only with identifiers, as other identifiers on
+  // the page do; otherwise a placeholder to replace.
+  function accountId(c) { return state.identifiers && c ? c.id : "CONNECTION_ID"; }
+  // The explicit check command to copy, for card c, or with the placeholder.
+  function accountCheckCommand(c) {
+    return el("code", "account-command", "looptender accounts check --id " + accountId(c) + " --json");
+  }
   function accountCheckHint(c) {
     var p = el("p", "sub account-hint");
     p.appendChild(document.createTextNode("To check again, run "));
-    p.appendChild(el("code", "account-command", "looptender accounts check --id " + (state.identifiers ? c.id : "CONNECTION_ID") + " --json"));
+    p.appendChild(accountCheckCommand(c));
     p.appendChild(document.createTextNode(state.identifiers ? "" : " (Show identifiers to fill in the ID)"));
     return p;
+  }
+  // Whether a route names the entry, from the routes the report read; the
+  // account card that lists them is later work.
+  function accountRoutes(c) {
+    if (c.routes === "named") return "A route names this account. See Routes.";
+    if (c.routes !== "none") return "Not known: not every route could be read.";
+    var f = frag();
+    f.appendChild(document.createTextNode("No route names this account yet. Add "));
+    f.appendChild(el("code", "account-command", "account: " + accountId(c)));
+    f.appendChild(document.createTextNode(" to a route to link it (see docs/accounts.md)."));
+    return f;
   }
   function renderAccounts(d, pane) {
     var a = d.accounts || {};
@@ -1030,16 +1049,22 @@
       summary.appendChild(status);
       var plan = el("span", "account-plan");
       plan.appendChild(el("span", "sub", "Reported plan"));
-      plan.appendChild(accountEvidence(c.plan)); summary.appendChild(plan);
+      var auth = c.auth || {}, sameCheck = !!(c.plan && c.plan.observedAt && c.plan.observedAt === auth.observedAt && c.plan.source === auth.source);
+      plan.appendChild(accountEvidence(c.plan, sameCheck)); summary.appendChild(plan);
       details.appendChild(summary);
       var body = el("div", "account-body");
       var facts = el("dl", "work-facts");
-      facts.appendChild(fact("Selected context", c.selection === "explicit_directory" ? "Explicitly selected directory" : c.selection === "inherited" ? "Inherited environment and provider defaults" : "Externally managed"));
+      if (state.identifiers) facts.appendChild(fact("Connection ID", c.id));
       facts.appendChild(fact("Account identity", "Not verified. The name is your selected label."));
-      facts.appendChild(fact("Configured model", accountEvidence(c.configuredModel)));
-      facts.appendChild(fact("Actual response model", accountEvidence(c.observedModel)));
-      facts.appendChild(fact("Route associations", "Unavailable. No route has been enrolled by this selection."));
+      facts.appendChild(fact("Routes", accountRoutes(c)));
       body.appendChild(facts);
+      // The catalog records no model: a route chooses it, and a check never
+      // calls one. Said once, quietly, in place of two empty rows.
+      if (c.configuredModel && c.configuredModel.missing === "not_recorded" && c.observedModel && c.observedModel.missing === "not_recorded") body.appendChild(el("p", "sub", "Models are not recorded here: a route chooses the model, and a check never calls one."));
+      else {
+        facts.appendChild(fact("Configured model", accountEvidence(c.configuredModel)));
+        facts.appendChild(fact("Actual response model", accountEvidence(c.observedModel)));
+      }
       var reasons = {
         context_changed: "The effective context differs from the selection. Review and update it before checking again.",
         unsupported: "Authentication is externally managed or unsupported here. Use the provider's own controls.",
@@ -1049,7 +1074,6 @@
         status_unavailable: "The latest status command did not establish a recognized login result."
       };
       if (c.reason) body.appendChild(el("p", "account-note", reasons[c.reason] || "The latest account check is unavailable."));
-      body.appendChild(el("p", "sub", "Login and plan reports do not verify quota, model access or continuing availability. Nothing checks again on its own: the age shown is when the last explicit check ran, and after a day the card suggests checking again. Use the explicit accounts check command to record another observation."));
       details.appendChild(body);
       details.addEventListener("toggle", function () { if (details.isConnected) state.accountOpen[c.id] = details.open; });
       li.appendChild(details);
@@ -1059,6 +1083,13 @@
     });
     state.accountOpen = retained;
     pane.appendChild(ul);
+    // One footnote for the page, naming the command. With one card its ID
+    // fills in as on the card's own hint.
+    var note = el("p", "sub account-footnote");
+    note.appendChild(document.createTextNode("Login and plan reports do not verify quota, model access or continuing availability. Nothing checks again on its own: the age shown is when the last explicit check ran, and after a day the card suggests checking again. To record another observation, run "));
+    note.appendChild(accountCheckCommand(cards.length === 1 ? cards[0] : null));
+    note.appendChild(document.createTextNode(cards.length === 1 && state.identifiers ? "." : state.identifiers ? " with the card's connection ID." : " with the card's connection ID (Show identifiers to see it)."));
+    pane.appendChild(note);
   }
 
   function renderVersions(d, pane) {
