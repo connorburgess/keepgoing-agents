@@ -14,6 +14,8 @@ looptender supervises a coding agent: it wakes an idle session, handles structur
   <img alt="Diagram: You, at the top, set goals and give approvals to a Coordinator session that plans, assigns and reviews work. A dashed ring labelled looptender surrounds the coordinator: looptender wakes it, bounds it, recovers it and holds for you when needed. Below the ring, the coordinator delegates to three Lane conversations, which sit outside it." src="docs/assets/looptender-model-light.svg" width="960">
 </picture>
 
+In one line: one coordinator per project is the session you talk to, and it hands pieces of work to lanes. Coordinators of different projects are peers and can send each other requests; that happens between the sessions themselves, not through looptender. looptender keeps each coordinator going while you are away, and stops to ask you when something needs a person.
+
 The picture has three parts, using the words in the [glossary](docs/glossary.md):
 
 - **You** are the person in the loop. Goals and approvals come from you, and a **hold** sends nothing until a person acts.
@@ -25,6 +27,26 @@ The supervised session can be a BB thread, a headless Claude Code, Codex or Curs
 The core is a single binary for macOS, Linux and Windows. Use its daemon or an existing scheduler to check the loop. No separate loop skill is required. The host and supervisor must be running for checks to happen.
 
 The goal is to grow from one loop on your machine to fleets of agents across machines, with clear ownership, bounded execution, and work that stays visible. Today, [supervision runs on the same machine as the agents](docs/architecture.md); [cross-device coordination is planned](docs/roadmap.md#loops-across-devices-planned).
+
+## What it handles
+
+These are the failures that stop an agent nobody is watching, and what looptender does about each today:
+
+- **A provider limit is reached.** If you configured other routes, looptender moves the work to the next one in your list, in the order you gave, after one small real request confirms that route works. It is an ordered list, not a pool that it balances. Without other routes it waits, and a known reset time holds recovery until then. Returning to the first route is opt-in. The full [preferred routes](docs/roadmap.md#preferred-routes-planned) rule is partly implemented.
+- **The network drops.** Before a re-prompt, a handoff or a probe, looptender checks that the network is up, so it does not spend retries into a dead connection, and it recovers the session on the first check after the network returns. This has been seen once in a real outage; otherwise it is fixture-tested.
+- **The machine goes away and comes back.** Nothing runs while the machine is off. Installed as a macOS or Linux [service](docs/services.md), supervision starts again when the machine is back, and `status`, `doctor` and the panel say when a loop's checks have stopped.
+- **A turn dies for no clear reason.** A failed BB turn is retried by reference. An error looptender cannot classify gets a limited number of re-prompts and then a hold, and it never moves the work to another route.
+- **A loop spins without progress.** Nudges to a stalled session are capped, and when they are spent the loop holds for a person. Optional deadlines, send limits and a Git-based no-progress timeout bound the total.
+
+Whenever the right move is not clear, looptender holds and asks you instead of deciding for you.
+
+## How this differs from built-in loops
+
+Agent tools have their own loops, retries and background agents, and each of them knows only its own tool. looptender runs on your machine outside any one tool and watches sessions in several of them. You do not do your development through it, and it is not another chat interface: each session stays where it lives, and looptender only watches, wakes, bounds and holds it.
+
+## Where it works best today
+
+BB threads get the most: lane awareness, retrying a failed turn by reference, and the BB plugin. Headless Claude Code and Codex sessions get the general behaviour (wakes, limited re-prompts with exact session resume, routes, limits and reports) but nothing for lanes. Cursor runs as a first route only and cannot be a fallback. Agents defined in configuration have been tested only with stand-ins. For Antigravity there is an internal foundation tested with a stand-in; looptender has no Antigravity adapter and has never run Antigravity itself ([details](docs/antigravity.md)). Much of the rest is fixture-tested and the full live walkthrough is unfinished; the table below says what has been verified where.
 
 ## Current availability
 
