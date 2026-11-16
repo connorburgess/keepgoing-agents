@@ -63,10 +63,18 @@ type Loop struct {
 	StateDir string `yaml:"state_dir"`
 	Agent    `yaml:",inline"`
 
-	Prompt      string `yaml:"prompt,omitempty"`
-	PromptFile  string `yaml:"prompt_file,omitempty"`
-	PromptGoal  bool   `yaml:"prompt_goal,omitempty"`
-	HandoffFile string `yaml:"handoff_file,omitempty"`
+	Prompt     string `yaml:"prompt,omitempty"`
+	PromptFile string `yaml:"prompt_file,omitempty"`
+	PromptGoal bool   `yaml:"prompt_goal,omitempty"`
+	// PromptGoalOnChange sends the goal in full only when it may be new to
+	// the conversation, and otherwise one line naming its ID and revision.
+	// It requires PromptGoal.
+	PromptGoalOnChange bool `yaml:"prompt_goal_on_change,omitempty"`
+	// PromptContext appends the loop's supervision context (see
+	// internal/loopcontext) to wakes, re-prompts and handoff briefs, when it
+	// is new to the conversation or has changed. Off by default.
+	PromptContext bool   `yaml:"prompt_context,omitempty"`
+	HandoffFile   string `yaml:"handoff_file,omitempty"`
 
 	Progress Progress   `yaml:"progress"`
 	Window   *Window    `yaml:"window,omitempty"`
@@ -758,6 +766,9 @@ func (c *Config) Validate() error {
 	}
 	if l.Prompt != "" && l.PromptFile != "" {
 		add("set only one of loop.prompt and loop.prompt_file")
+	}
+	if l.PromptGoalOnChange && !l.PromptGoal {
+		add("loop.prompt_goal_on_change needs loop.prompt_goal: true")
 	}
 	if l.Progress.StallAfter.Duration < time.Minute {
 		add("loop.progress.stall_after must be at least 1m")

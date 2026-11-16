@@ -42,3 +42,12 @@ func (d Dir) InspectSession() (string, error) {
 	}
 	return id, nil
 }
+
+// ResetPending says a session reset is waiting for the next turn: the reset
+// fence is in place, so that turn starts a new conversation. It reads only
+// whether the fence exists, never what it holds, and is false when that
+// cannot be read.
+func (d Dir) ResetPending() bool {
+	_, err := os.Lstat(d.path(sessionResetFile))
+	return err == nil
+}

@@ -9,6 +9,7 @@ package loopcontext
 
 import (
 	"fmt"
+	"runtime"
 	"strings"
 	"time"
 
@@ -192,6 +193,16 @@ const (
 	laneRetryOff      = "Lane recovery is off: looptender does not retry a lane's failed turn."
 	laneStop          = "looptender stops a lane only for stop --lanes, which is for a person. looptender does not enforce this."
 )
+
+// Quote quotes s as one literal word for the shell the session commands are
+// written for: single quotes on Unix, PowerShell's literal string on
+// Windows, so nothing in a path is expanded.
+func Quote(s string) string {
+	if runtime.GOOS == "windows" {
+		return "'" + strings.ReplaceAll(s, "'", "''") + "'"
+	}
+	return "'" + strings.ReplaceAll(s, "'", "'\\''") + "'"
+}
 
 // Build returns the supervision context. It is pure.
 func Build(in Input) View {

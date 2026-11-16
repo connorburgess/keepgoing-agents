@@ -81,9 +81,45 @@ Missing, corrupt or wrong-loop goal records refuse the send before reserving its
 Offline fixtures cover revised goals across ticks, opt-in privacy, legacy behavior, unavailable records, handoff variants, holds, and logs/reports without private goal text. Live provider adoption remains unverified. In v0.1.5, `init --with-goal` and the wizard choice can create revision 1 and enable this transport during disabled setup; see [goal setup](setup.md#optional-goal-during-setup). The rebuilt BB setup UI exposes this choice and displays only recorded identity/revision in ordinary diagnostics. Live setup verification and revision-bound results remain unfinished.
 
 
+### Sending an unchanged goal once
+
+Unreleased. Off by default. With `prompt_goal: true` every wake, nudge and re-prompt repeats the whole goal specification and its fixed preamble. Set `loop.prompt_goal_on_change: true` as well to send the goal in full only when the conversation may not have it, and otherwise one fixed line:
+
+```text
+Current keepgoing goal: goal_<id> revision <n>, unchanged since the last full copy this loop sent to this conversation. Use that copy; if you no longer have it, the full copy can be read from this loop's private goal record.
+```
+
+The line names no command: the composer knows neither the command name nor the configuration path the loop's own prompt uses, and a person or the loop's prompt can say how to read the goal record (for example `keepgoing goal show --private -c <config>`).
+
+```yaml
+loop:
+  # Other required loop fields are omitted here.
+  prompt_file: wake-policy.md
+  prompt_goal: true
+  prompt_goal_on_change: true   # needs prompt_goal
+```
+
+A wake, nudge or re-prompt carries the goal in full when any of these holds, and the short line otherwise:
+
+- there is no record of a full copy whose adapter call returned, or the record is unreadable; a full send that failed clears it;
+- the goal ID or revision differs from the copy's;
+- the target differs from the copy's, as after a handoff or switch-back to another target;
+- the adapter reports that the next turn starts a new conversation: a headless agent with no saved session (after `looptender session reset`, or one that never resumes a session), or a different conversation than the copy went to (another saved session, another BB thread). An adapter that cannot say (process adapters, Cursor) relies on the other rules;
+- 12 short sends have returned since the copy;
+- the copy is 4 hours old, or its time is in the future.
+
+The last two exist because a provider may compact a conversation and drop the copy, and looptender cannot see that. At a twenty-minute wake spacing twelve sends is about four hours, so the two bounds meet; one full copy in every twelve keeps most of the byte saving while capping how long an agent can go without the goal. The rule is a pure function, `prompt.ChooseGoalForm`, with a table test. Handoff and switch-back briefs, including a new-thread handoff, always carry the goal in full. Child-error notices that carry no goal are unchanged.
+
+The short line takes the full goal's place and nothing else moves: a wake is the BB wake header, then the configured prompt, then the goal (in full or as the short line), then, last, the supervision context block when `prompt_context` adds one. The two settings are independent and each keeps its own record of what it last sent: `goalCopy` for the goal, `contextSent` for the context.
+
+looptender reads only the goal's ID and revision and the adapter's conversation identity for this choice. It never reads or compares goal text or conversation content. The conversation identity is kept in `state.json` only as a 16-hex-digit hash, in the `goalCopy` record, which a transfer clears.
+
+With the setting unset every message is byte-identical to before; a fixture checks this. The saving is measured in bytes per send, not in tokens, and is small beside the context a turn already reads: a goal of a few kilobytes is a small share of a turn's input. Fixtures only; not observed with a live provider.
+
+
 ## Recorded send provenance
 
-Available in v0.1.5. Ordinary `keepgoing status` and `status --json` show the latest **recorded automatic send call** independently of the current goal record. `promptSend.last` includes the goal ID/revision composed into that message, the target alias, action (`wake`, `nudge`, `reprompt`, `handoff` or `switch_back`), requested delivery mode, and the tick's check timestamp. The timestamp is not an exact send or provider-receipt time. A message sent without `prompt_goal` has no goal ID/revision, even if a goal record exists.
+Available in v0.1.5. Ordinary `keepgoing status` and `status --json` show the latest **recorded automatic send call** independently of the current goal record. `promptSend.last` includes the goal ID/revision composed into that message, the target alias, action (`wake`, `nudge`, `reprompt`, `handoff` or `switch_back`), requested delivery mode, and the tick's check timestamp. The timestamp is not an exact send or provider-receipt time. A message sent without `prompt_goal` has no goal ID/revision, even if a goal record exists. Unreleased: the record also holds `bytes`, the length of the whole text handed to the adapter (on BB including the fixed wake header, and including the supervision context block when [`prompt_context`](operations.md#supervision-context-in-sends) added one, whose own length is `contextBytes`), and `goalForm`, `full` or `short` when a goal was included; ordinary status prints them as a `size:` line. `promptSend.goalCopy` shows the latest full copy's goal, revision, target, time and the short sends since; see [sending an unchanged goal once](#sending-an-unchanged-goal-once). Both are diagnostic only: no rule reads the size, bytes are measured and tokens are not.
 
 - `adapter_returned`: the adapter returned without error. A queued message may still be waiting; a process adapter may only have started a command. This does not establish receipt, agent adoption, execution or acceptance.
 - `adapter_error`: the adapter returned an error, including an unsupported operation. Delivery remains uncertain; a failure does not prove that no side effect occurred. Raw error text is excluded from this record.

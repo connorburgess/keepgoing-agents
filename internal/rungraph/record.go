@@ -83,7 +83,7 @@ func (g *Graph) Begin(a Attempt) error {
 	for i, prior := range g.Attempts {
 		retained[i] = prior.contract()
 	}
-	if _, err := rd.BeginAttempt(g.state(), a.contract(), retained...); err != nil || a.Target == "" || len(a.Target) > maxTarget {
+	if _, err := rd.BeginAttempt(g.state(), a.contract(), retained...); err != nil || a.Target == "" || len(a.Target) > maxTarget || a.ContextBytes < 0 {
 		return rd.ErrInvalid
 	}
 	g.Attempts = append(g.Attempts, a)

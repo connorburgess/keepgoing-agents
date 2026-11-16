@@ -36,7 +36,9 @@ const Primary = "primary"
 // File is what one tick leaves for the next.
 type File struct {
 	LastPromptSend *PromptSend `json:"lastPromptSend,omitempty"`
-	StallRetry     *StallRetry `json:"stallRetry,omitempty"`
+	// GoalCopy is the latest full goal copy sent; see GoalCopy.
+	GoalCopy   *GoalCopy   `json:"goalCopy,omitempty"`
+	StallRetry *StallRetry `json:"stallRetry,omitempty"`
 	// SilentRetry records when the active target was first observed with an
 	// expired retry notice, so its continued silence can be bounded.
 	SilentRetry *SilentRetry `json:"silentRetry,omitempty"`
@@ -262,6 +264,22 @@ type File struct {
 	// and fixed reason code, newest last and at most IdleSpacedDaysKept days.
 	// It is diagnostic history only: no decision reads it.
 	IdleSpacedDays []IdleSpacedDay `json:"idleSpacedDays,omitempty"`
+	// ContextSent is the record of loop.prompt_context: digests of the
+	// supervision context last sent, never its text. Nil while the key is off
+	// and before the first send that carried the context.
+	ContextSent *ContextSent `json:"contextSent,omitempty"`
+}
+
+// ContextSent records the supervision context block last sent with an
+// adapter call that returned without error. Digest covers the block's
+// content, leaving out the figures that change with every send or with the
+// clock (counts used and remaining, time remaining, whether inside the
+// window now), and the time of the last saved control change. It holds no
+// identifier and no text.
+type ContextSent struct {
+	Digest string    `json:"digest"`
+	At     time.Time `json:"at"`
+	Bytes  int       `json:"bytes"`
 }
 
 // IdleSpacedDay is one UTC day of IdleSpacedDays. Day is YYYY-MM-DD.
@@ -817,6 +835,9 @@ func Load(stateDir string) (File, error) {
 	}
 	if f.LastPromptSend != nil && !f.LastPromptSend.Valid() {
 		f.LastPromptSend = nil
+	}
+	if f.GoalCopy != nil && !f.GoalCopy.Valid() {
+		f.GoalCopy = nil
 	}
 	return f, nil
 }
