@@ -362,9 +362,15 @@
     var head = el("div", "pane-head");
     var h = el("h1", null, title);
     h.id = "pane-title";
+    // Focus lands here after a change of view or the skip link.
+    h.tabIndex = -1;
     head.appendChild(h);
     if (pill) head.appendChild(pill);
     return head;
+  }
+  // The view's heading takes focus; the pane only when there is none.
+  function focusPaneTitle(scroll) {
+    ($("pane-title") || $("pane")).focus({ preventScroll: !scroll });
   }
   function back() {
     var a = link("#/", "", "back");
@@ -1408,10 +1414,11 @@
     if (needsSaid !== state.needsSaid) { state.needsSaid = needsSaid; announce(needsSaid); }
     window.scrollTo(0, top);
     if (navigated) {
-      // A link to one route lands on that route; any other lands on the pane.
+      // A link to one route lands on that route; any other lands on the
+      // view's heading. A read that is not a change of view moves nothing.
       var at = r.view === "routes" && r.key ? $("route-" + r.key) : null;
       if (at) { at.focus({ preventScroll: true }); at.scrollIntoView({ block: "start" }); }
-      else pane.focus({ preventScroll: true });
+      else focusPaneTitle();
       var cur = $("picker").querySelector('.pick-scroll [aria-current="page"]');
       if (cur && cur.scrollIntoView) cur.scrollIntoView({ block: "nearest" });
     } else if (key) {
@@ -1560,7 +1567,7 @@
     // The skip link moves focus to the details without changing the view.
     document.querySelector("a.skip").addEventListener("click", function (ev) {
       ev.preventDefault();
-      $("pane").focus();
+      focusPaneTitle(true);
     });
     window.addEventListener("hashchange", function () { render(true); });
     document.addEventListener("keydown", function (ev) {
