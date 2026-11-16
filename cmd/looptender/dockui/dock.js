@@ -446,6 +446,7 @@
   // parent's observation. No relationship is inferred from names or order.
   function workTree(d) {
     var p = panel("Loops and lanes");
+    p.appendChild(el("p", "sub", "Only conversations that looptender supervises are shown here, with their lanes. To see another coordinator here, create a loop for it."));
     p.appendChild(el("p", "sub", "Supervision and agent observations are separate. Expand a loop to see its recorded direct lanes."));
     p.appendChild(el("p", "sub work-evidence", "Active does not prove progress or connectivity. Only direct lanes are listed; absent lanes do not establish completion. Finished means declared, not verified."));
     var ul = el("ul", "work-tree");
@@ -458,13 +459,15 @@
       var summary = el("summary", "work-summary");
       summary.setAttribute("data-focus", "tree-" + l.key);
       var name = el("span", "work-name", l.name);
+      // The glossary's role: its last verified listing has lanes.
+      if (l.lanes && l.lanes.role === "coordinator") name.appendChild(el("span", "work-role", "coordinator"));
       summary.appendChild(name);
       var status = el("span", "work-status");
       status.appendChild(el("span", "dot dot-" + (TONES[l.state] || "unknown")));
       status.appendChild(el("span", null, "Supervision: " + l.phrase));
       if (l.state === "finished") status.appendChild(tag("stale", "Unverified declaration"));
       summary.appendChild(status);
-      summary.appendChild(el("span", "sub work-observation", "Lane evidence: " + ((l.children && l.children.phrase) || "Unknown")));
+      summary.appendChild(el("span", "sub work-observation", l.lanes && l.lanes.summary ? "Lanes: " + l.lanes.summary : "Lane evidence: " + ((l.children && l.children.phrase) || "Unknown")));
       var age = el("span", "sub work-age", (l.lastCheck && l.lastCheck.text) || "Last check unknown");
       if (l.lastCheck && l.lastCheck.availability === "stale") age.appendChild(tag("stale", "Stale"));
       summary.appendChild(age);
@@ -476,6 +479,14 @@
       facts.appendChild(fact("Next check", nextCheck(l.nextCheck || { availability: "unknown" })));
       body.appendChild(facts);
       body.appendChild(laneBox(l, true));
+      var more = body.querySelector("details.lane-more"), moreKey = l.key + "/lanes";
+      if (more) {
+        more.open = !!state.treeOpen[moreKey];
+        retainedOpen[moreKey] = more.open;
+        more.addEventListener("toggle", function () {
+          if (more.isConnected) state.treeOpen[moreKey] = more.open;
+        });
+      }
       body.appendChild(link("#/loop/" + l.key, "Inspect " + l.name, "work-inspect"));
       details.appendChild(body);
       details.addEventListener("toggle", function () {
@@ -564,8 +575,7 @@
       b.appendChild(!c || !c.phrase ? unknown() : c.availability === "unknown" ? unknown(c.phrase) : el("span", "sub", c.phrase));
       return b;
     }
-    var ul = el("ul", "lane-list");
-    rows.forEach(function (x) {
+    function row(x) {
       var li = el("li", "lane");
       li.appendChild(el("span", "dot " + (x.state === "working" ? "dot-good" : x.state === "waiting" ? "dot-attn" : x.state === "failed" ? "dot-warn" : "dot-unknown")));
       li.appendChild(el("span", "lane-state", x.phrase));
@@ -582,9 +592,27 @@
         what.appendChild(el("code", null, x.key));
       }
       li.appendChild(what);
-      ul.appendChild(li);
-    });
-    b.appendChild(ul);
+      return li;
+    }
+    function rowList(xs) {
+      var ul = el("ul", "lane-list");
+      xs.forEach(function (x) { ul.appendChild(row(x)); });
+      return ul;
+    }
+    // On the overview, a long listing shows the lanes waiting for an answer
+    // and folds the rest into one details element.
+    var shown = rows, rest = [];
+    if (overview && rows.length > 8) {
+      shown = rows.filter(function (x) { return x.state === "waiting"; });
+      rest = rows.filter(function (x) { return x.state !== "waiting"; });
+    }
+    if (shown.length) b.appendChild(rowList(shown));
+    if (rest.length) {
+      var fold = el("details", "lane-more");
+      fold.appendChild(el("summary", null, (shown.length ? "Show the other " + rest.length + " of " : "Show all ") + rows.length + (lanes.omitted ? " listed" : "") + " lanes"));
+      fold.appendChild(rowList(rest));
+      b.appendChild(fold);
+    }
     if (overview) {
       if (lanes.omitted) b.appendChild(el("p", "more", lanes.omitted + " more lanes are not listed."));
       b.appendChild(el("p", "more", "Lane titles appear only with identifiers and notes. Routes for individual lanes are not recorded."));

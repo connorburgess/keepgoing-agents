@@ -106,6 +106,7 @@ details[open] > .work-summary .work-name::before { transform: rotate(45deg); }
 .work-observation { padding-inline-start: 1.05rem; }
 .work-age, .work-observation, .work-status { font-size: 0.8125rem; overflow-wrap: anywhere; }
 .work-summary:hover { background: var(--sunk); }
+.work-role { flex: none; padding: 0 0.4rem; border-radius: 5px; font-size: 0.72rem; font-weight: 600; color: var(--ink-2); box-shadow: inset 0 0 0 1px var(--line-2); }
 .work-body { margin-inline-start: 0.45rem; padding: 0 0 1.25rem 1.25rem; border-inline-start: 1px solid var(--line-2); }
 .work-body > p { max-width: 70ch; }
 .work-body > .sub { font-size: 0.8125rem; }
@@ -306,6 +307,8 @@ details[open] > .work-summary .work-name::before { transform: rotate(45deg); }
 .lane-what { color: var(--ink-2); overflow-wrap: anywhere; flex: 1 1 14rem; min-width: 0; }
 .lane-title { color: var(--ink); }
 .lane-what code { font-size: 0.8rem; }
+.lane-more { margin-top: 0.35rem; border-top: 1px solid var(--line-2); }
+.lane-more > summary { cursor: pointer; padding-block: 0.45rem; font-size: 0.875rem; font-weight: 560; }
 .more { margin: 0.55rem 0 0; font-size: 0.8125rem; color: var(--ink-2); }
 .events { list-style: none; margin: 0.6rem 0 0; padding: 0; }
 .event { display: grid; grid-template-columns: 6.75rem 1.1rem minmax(0, 1fr); gap: 0.5rem; padding: 0.5rem 0; font-size: 0.9rem; overflow-wrap: anywhere; }
@@ -359,7 +362,7 @@ details[open] > .work-summary .work-name::before { transform: rotate(45deg); }
   *, *::before, *::after { transition: none !important; animation: none !important; }
 }
 @media (forced-colors: active) {
-  .state, .tag, .in-use, .pos, .meter, .now > div, .panel, .need, .lanes, .route-note.is-limit { border: 1px solid CanvasText; }
+  .state, .tag, .in-use, .pos, .meter, .now > div, .panel, .need, .lanes, .route-note.is-limit, .work-role { border: 1px solid CanvasText; }
   .meter > i { background: Highlight; }
   .dot, .event .mark { background: CanvasText; forced-color-adjust: none; }
   .dot-unknown { background: Canvas; border: 1px solid CanvasText; }

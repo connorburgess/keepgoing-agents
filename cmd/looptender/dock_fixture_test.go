@@ -26,7 +26,7 @@ import (
 var dockLoops = []string{
 	"docs-site-refresh",        // supervising, with child work
 	"billing-api-migration",    // waiting for you, with a note
-	"mobile-onboarding",        // paused
+	"mobile-onboarding",        // paused, with twelve lanes listed before the pause
 	"search-indexer",           // provider limit with its reset, send limit
 	"release-notes-bot",        // finished
 	"nightly-dependency-bumps", // not checked recently
@@ -260,6 +260,18 @@ func dockScratch(t testing.TB, root string, now time.Time) string {
 			ctl.Paused = true
 			at := now.Add(-40 * time.Minute)
 			st.CheckedAt, st.LastCheck = at, dockFixtureCheck(at, "idle", "none", "paused")
+			// Its last listing, from before the pause, has twelve lanes: more
+			// than the overview lists without folding.
+			for k := 1; k <= 12; k++ {
+				status := rungraph.ChildActive
+				if k <= 2 {
+					status = rungraph.ChildAwaiting
+				} else if k == 3 {
+					status = rungraph.ChildErrored
+				}
+				children = append(children, rungraph.Child{Key: childKeyOf(fmt.Sprintf("thr_child01%02d", k)), Status: status})
+			}
+			run, waitAt = 3, now.Add(-3*time.Hour)
 		case "search-indexer":
 			at := now.Add(-6 * time.Minute)
 			st.CheckedAt, st.LastCheck = at, dockFixtureCheck(at, "error", "none", "rate limited; waiting for the reset")
