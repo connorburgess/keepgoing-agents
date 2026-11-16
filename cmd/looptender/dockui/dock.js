@@ -1018,6 +1018,7 @@
   // person's label and that the binding is theirs, never a verified identity.
   var ASSIGNED = "assigned by you · identity not verified";
   var ASSIGNED_BB = "assigned by you · not verified for BB threads (account set per project)";
+  function dockCapital(t) { return t ? t.charAt(0).toUpperCase() + t.slice(1) : t; }
   function boundAccount(a) {
     if (!a || a.assigned !== "by_you" || !a.label || (a.check !== "consistent" && a.check !== "not_verified")) return "";
     return a.label + " · " + (a.check === "not_verified" ? ASSIGNED_BB : ASSIGNED);
@@ -1040,14 +1041,17 @@
     var names = Object.create(null);
     list(d.loops).forEach(function (l) { names[l.key] = l.name; });
     var wrap = frag();
-    if (list(use.routes).some(function (r) { return !r.bbThread; }) && named) wrap.appendChild(el("p", "sub", ASSIGNED));
+    // A route whose check found a mismatch says what the check says in
+    // place of "assigned by you".
+    if (list(use.routes).some(function (r) { return !r.bbThread && !r.checkText; }) && named) wrap.appendChild(el("p", "sub", ASSIGNED));
     var ul = el("ul", "account-routes");
     list(use.routes).forEach(function (r) {
       var li = el("li", "account-route");
       var head = el("p", "account-route-name");
       head.appendChild(link("#/routes/" + r.route, r.title));
       li.appendChild(head);
-      if (r.bbThread && named) li.appendChild(el("p", "sub", ASSIGNED_BB));
+      if (r.checkText) li.appendChild(el("p", "sub", dockCapital(r.checkText) + ". Its reading is not counted for this account."));
+      else if (r.bbThread && named) li.appendChild(el("p", "sub", ASSIGNED_BB));
       var used = el("p", "sub");
       used.appendChild(document.createTextNode(list(r.loops).length === 1 && !r.omitted ? "Used by the loop " : "Used by the loops "));
       list(r.loops).forEach(function (k, i) {
@@ -1089,7 +1093,6 @@
     if (rs.length) identity.appendChild(el("span", "sub", "Routes: " + rs[0].title + (more ? " and " + more + " more" : "")));
     summary.appendChild(identity);
     var status = el("span", "account-status");
-    status.appendChild(el("span", null, "Named by no catalog entry"));
     var reading = accountReading(u);
     if (reading) status.appendChild(reading);
     summary.appendChild(status);

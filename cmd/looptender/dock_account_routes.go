@@ -1,7 +1,6 @@
 package main
 
 import (
-	"path/filepath"
 	"strings"
 	"time"
 
@@ -62,11 +61,15 @@ type dockAccountUse struct {
 // dockAccountRoute is one route of an account, by its key in the report's
 // routes, with the loops that use it by their keys.
 type dockAccountRoute struct {
-	Route    string   `json:"route"`
-	Title    string   `json:"title"`
-	BBThread bool     `json:"bbThread,omitempty"`
-	Loops    []string `json:"loops"`
-	Omitted  int      `json:"omitted,omitempty"`
+	Route    string `json:"route"`
+	Title    string `json:"title"`
+	BBThread bool   `json:"bbThread,omitempty"`
+	// CheckText is set when the route names this entry but its check found
+	// a mismatch (accounts.RouteCheckText). Its reading is then left out of
+	// the account's summary.
+	CheckText string   `json:"checkText,omitempty"`
+	Loops     []string `json:"loops"`
+	Omitted   int      `json:"omitted,omitempty"`
 }
 
 // dockAccountUses lists each catalog card with the routes that name it, then
@@ -131,7 +134,11 @@ func dockAccountUses(r dockReport, v accounts.View, f *accounts.File, identifier
 				if e.TitleAccount != "" {
 					title += " on " + e.TitleAccount
 				}
-				x.use.Routes = append(x.use.Routes, dockAccountRoute{Route: e.Route, Title: clip(title, 80), BBThread: e.acct.selection == "bb_thread", Loops: []string{}})
+				rt := dockAccountRoute{Route: e.Route, Title: clip(title, 80), BBThread: e.acct.selection == "bb_thread", Loops: []string{}}
+				if a.Check == accounts.RouteProviderMismatch || a.Check == accounts.RouteDirectoryMismatch {
+					rt.CheckText = accounts.RouteCheckText(a.Check)
+				}
+				x.use.Routes = append(x.use.Routes, rt)
 				i = len(x.use.Routes) - 1
 				x.routes[e.Route] = i
 			}
@@ -158,13 +165,13 @@ func dockAccountUses(r dockReport, v accounts.View, f *accounts.File, identifier
 	for _, k := range order {
 		x := byKey[k]
 		u := x.use
-		var newest *dockUsageTarget
+		var readings []dockRouteReading
 		for _, rt := range u.Routes {
-			if t, ok := usage[rt.Route]; ok && t.Availability != "unavailable" && t.ObservedAt != nil && (newest == nil || t.ObservedAt.After(*newest.ObservedAt)) {
-				newest = &t
+			if t, ok := usage[rt.Route]; ok && rt.CheckText == "" {
+				readings = append(readings, dockRouteReading{title: rt.Title, usage: t})
 			}
 		}
-		u.Reading, u.Out = dockAccountReading(newest, len(u.Routes)+u.Omitted, now)
+		u.Reading, u.Out = dockAccountReading(readings, len(u.Routes)+u.Omitted, now)
 		if u.Context != "" {
 			u.Provider, u.Selection, u.Group = clip(x.facts.provider, dockMaxText), x.facts.selection, clip(x.facts.group, dockMaxText)
 			// A directory too long to send is left as the placeholder.
@@ -181,38 +188,71 @@ func dockAccountUses(r dockReport, v accounts.View, f *accounts.File, identifier
 	return out, omitted
 }
 
-// dockAccountReading says whether the newest reading among an account's
-// routes had a window used up, when it resets and how old the reading is, in
-// the words the route readings use. Readings are never merged.
-func dockAccountReading(u *dockUsageTarget, routes int, now time.Time) (dockText, bool) {
-	switch {
-	case routes == 0:
+// dockRouteReading is one route's own reading, with the route's title.
+type dockRouteReading struct {
+	title string
+	usage dockUsageTarget
+}
+
+// dockAccountReading is an account's summary line. If any route's reading
+// has a window used up that has not ended, it says the newest such reading,
+// naming the route when the account has more than one; otherwise whether
+// the newest reading was out. Readings are never merged. routes counts
+// every route of the account, listed or not.
+func dockAccountReading(rs []dockRouteReading, routes int, now time.Time) (dockText, bool) {
+	if routes == 0 {
 		return nil, false
-	case u == nil:
+	}
+	var newest, out *dockRouteReading
+	var outWin *dockUsageWindow
+	for i := range rs {
+		r := &rs[i]
+		if r.usage.Availability == "unavailable" || r.usage.ObservedAt == nil {
+			continue
+		}
+		if newest == nil || r.usage.ObservedAt.After(*newest.usage.ObservedAt) {
+			newest = r
+		}
+		if w := dockUsedUpWindow(r.usage); (w != nil || len(r.usage.UsedUp) > 0) && (out == nil || r.usage.ObservedAt.After(*out.usage.ObservedAt)) {
+			out, outWin = r, w
+		}
+	}
+	switch {
+	case out != nil:
+		read := dockAgo(now, *out.usage.ObservedAt)
+		var s dockText
+		if routes > 1 {
+			s = txt(out.title + ": ")
+		}
+		if outWin == nil {
+			// The used-up window is past the cap of windows shown.
+			return txt(s, out.usage.UsedUp), true
+		}
+		s = txt(s, dockCapital(outWin.Name)+" allowance was out when read "+read)
+		if outWin.ResetsAt != nil {
+			return txt(s, " · resets ", dockUntil(now, *outWin.ResetsAt)), true
+		}
+		return txt(s, " · no reset time was reported"), true
+	case newest == nil:
 		if routes == 1 {
 			return txt("No usage reading is recorded for its route."), false
 		}
 		return txt("No usage reading is recorded for its routes."), false
+	case newest.usage.Availability == "stale":
+		return txt("Not out when read " + dockAgo(now, *newest.usage.ObservedAt) + "; every window it describes has ended since"), false
 	}
-	read := dockAgo(now, *u.ObservedAt)
-	for _, w := range u.Windows {
-		if w.Stale || w.UsedPercent < 100 {
-			continue
+	return txt("Not out when read " + dockAgo(now, *newest.usage.ObservedAt)), false
+}
+
+// dockUsedUpWindow is the first window of a reading that was used up and
+// has not ended since, or nil.
+func dockUsedUpWindow(u dockUsageTarget) *dockUsageWindow {
+	for i, w := range u.Windows {
+		if !w.Stale && w.UsedPercent >= 100 {
+			return &u.Windows[i]
 		}
-		s := txt(dockCapital(w.Name) + " allowance out since read " + read)
-		if w.ResetsAt != nil {
-			return txt(s, " · resets ", dockUntil(now, *w.ResetsAt)), true
-		}
-		return txt(s, " · no reset time was reported"), true
 	}
-	if len(u.UsedUp) > 0 {
-		// A used-up window past the cap of windows shown.
-		return u.UsedUp, true
-	}
-	if u.Availability == "stale" {
-		return txt("Not out when read " + read + "; every window it describes has ended since"), false
-	}
-	return txt("Not out when read " + read), false
+	return nil
 }
 
 // dockAccountAddCommand is the accounts add command that would name an
@@ -255,7 +295,7 @@ func dockMayBeSame(f *accounts.File, x dockAccountFacts) []string {
 		if e.Provider != x.provider || e.Mode != x.selection {
 			continue
 		}
-		if x.selection == "explicit_directory" && filepath.Clean(e.Directory) != x.dir {
+		if x.selection == "explicit_directory" && !accountSameDirectory(e.Directory, x.dir) {
 			continue
 		}
 		if x.selection != "inherited" && x.selection != "explicit_directory" {

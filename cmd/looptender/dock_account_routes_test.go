@@ -46,11 +46,16 @@ func TestDockAccountUses(t *testing.T) {
 		return dockLoop{Key: dockKey(name), Name: name, Chain: dockChain{Entries: entries}}
 	}
 	_, a1 := acctEntry("alpha", "rCodex", "gpt-example", codexBound, catalog, acctReading(2*time.Hour, 100, &reset))
-	_, a2 := acctEntry("alpha", "rCodexBB", "gpt-example", codexBB, catalog, acctReading(5*time.Hour, 20, nil))
+	_, a2 := acctEntry("alpha", "rCodexBB", "BB thread gpt-example", codexBB, catalog, acctReading(5*time.Hour, 20, nil))
+	// A route that names the Claude entry but is a Codex route: listed under
+	// the entry with its check, and its reading, though out and newest, is
+	// left out of the entry's summary.
+	codexOnSide := config.Agent{Provider: "codex", Group: "codex", Account: acctOther, Codex: &config.Codex{}}
+	_, d1 := acctEntry("delta", "rMismatch", "gpt-example", codexOnSide, catalog, acctReading(time.Minute, 100, &reset))
 	_, b1 := acctEntry("beta", "rCodex", "gpt-example", codexBound, catalog, dockUsageTarget{Availability: "unavailable"})
 	_, b2 := acctEntry("beta", "rSide", "sonnet-example", claudeUnnamed, catalog, dockUsageTarget{Availability: "unavailable"})
 	_, c1 := acctEntry("gamma", "rBB", "opus-example", bbUnnamed, catalog, dockUsageTarget{Availability: "unavailable"})
-	r := dockReport{Complete: true, Loops: []dockLoop{loop("alpha", a1, a2), loop("beta", b1, b2), loop("gamma", c1)},
+	r := dockReport{Complete: true, Loops: []dockLoop{loop("alpha", a1, a2), loop("beta", b1, b2), loop("gamma", c1), loop("delta", d1)},
 		Routes: []dockRoute{{Key: "rCodex", Usage: acctReading(2*time.Hour, 100, &reset)}, {Key: "rCodexBB", Usage: acctReading(5*time.Hour, 20, nil)}}}
 
 	for _, ids := range []bool{false, true} {
@@ -67,12 +72,16 @@ func TestDockAccountUses(t *testing.T) {
 			t.Errorf("work: %+v", work)
 		}
 		// Out, from the newest reading among its routes only.
-		if got := say(work.Reading, dockNow); !work.Out || got != "Five-hour allowance out since read 2 h ago · resets in 3 h (15:00)" {
+		if got := say(work.Reading, dockNow); !work.Out || got != "gpt-example: Five-hour allowance was out when read 2 h ago · resets in 3 h (15:00)" {
 			t.Errorf("work reading: %t %q", work.Out, got)
 		}
-		// A catalog entry no route uses: no routes and no reading line.
-		if side.Card != acctOther || len(side.Routes) != 0 || side.Reading != nil {
+		// A route whose check found a mismatch: listed under the entry it
+		// names, with what its check says, and kept out of the summary.
+		if side.Card != acctOther || len(side.Routes) != 1 || side.Routes[0].CheckText != accounts.RouteCheckText(accounts.RouteProviderMismatch) || work.Routes[0].CheckText != "" {
 			t.Errorf("side: %+v", side)
+		}
+		if got := say(side.Reading, dockNow); side.Out || got != "No usage reading is recorded for its route." {
+			t.Errorf("mismatch reading: %t %q", side.Out, got)
 		}
 		// An unnamed headless context: named for its provider, with the
 		// command that would name it and the entry with the same directory.
@@ -105,19 +114,31 @@ func TestDockAccountReading(t *testing.T) {
 	reset := dockNow.Add(90 * time.Minute)
 	ended := acctReading(30*time.Hour, 100, nil)
 	ended.Availability, ended.Windows[0].Stale = "stale", true
+	r := func(title string, u dockUsageTarget) dockRouteReading {
+		return dockRouteReading{title: title, usage: u}
+	}
 	for _, c := range []struct {
-		name string
-		u    *dockUsageTarget
-		want string
-		out  bool
+		name   string
+		rs     []dockRouteReading
+		routes int
+		want   string
+		out    bool
 	}{
-		{"out with reset", func() *dockUsageTarget { u := acctReading(10*time.Minute, 100, &reset); return &u }(), "Five-hour allowance out since read 10 min ago · resets in 1 h 30 min (13:30)", true},
-		{"out without reset", func() *dockUsageTarget { u := acctReading(time.Hour, 100, nil); return &u }(), "Five-hour allowance out since read 1 h ago · no reset time was reported", true},
-		{"not out", func() *dockUsageTarget { u := acctReading(time.Hour, 40, &reset); return &u }(), "Not out when read 1 h ago", false},
-		{"windows ended", &ended, "Not out when read 30 h ago; every window it describes has ended since", false},
-		{"no reading", nil, "No usage reading is recorded for its routes.", false},
+		{"out with reset, one route", []dockRouteReading{r("opus-example", acctReading(10*time.Minute, 100, &reset))}, 1, "Five-hour allowance was out when read 10 min ago · resets in 1 h 30 min (13:30)", true},
+		{"out without reset", []dockRouteReading{r("opus-example", acctReading(time.Hour, 100, nil))}, 1, "Five-hour allowance was out when read 1 h ago · no reset time was reported", true},
+		// A newer reading that is not out does not hide an older one that
+		// is, and the route that was out is named.
+		{"older out route not hidden", []dockRouteReading{r("sonnet-example", acctReading(10*time.Minute, 30, &reset)), r("opus-example", acctReading(time.Hour, 100, &reset))}, 2,
+			"opus-example: Five-hour allowance was out when read 1 h ago · resets in 1 h 30 min (13:30)", true},
+		// Of two out readings, the newest is said.
+		{"newest out", []dockRouteReading{r("opus-example", acctReading(3*time.Hour, 100, &reset)), r("haiku-example", acctReading(time.Hour, 100, nil))}, 2,
+			"haiku-example: Five-hour allowance was out when read 1 h ago · no reset time was reported", true},
+		{"not out", []dockRouteReading{r("opus-example", acctReading(2*time.Hour, 40, &reset)), r("haiku-example", acctReading(time.Hour, 40, &reset))}, 2, "Not out when read 1 h ago", false},
+		{"windows ended", []dockRouteReading{r("opus-example", ended)}, 2, "Not out when read 30 h ago; every window it describes has ended since", false},
+		{"no reading", []dockRouteReading{r("opus-example", dockUsageTarget{Availability: "unavailable"})}, 2, "No usage reading is recorded for its routes.", false},
+		{"no routes", nil, 0, "", false},
 	} {
-		got, out := dockAccountReading(c.u, 2, dockNow)
+		got, out := dockAccountReading(c.rs, c.routes, dockNow)
 		if s := say(got, dockNow); s != c.want || out != c.out {
 			t.Errorf("%s: %q %t", c.name, s, out)
 		}
