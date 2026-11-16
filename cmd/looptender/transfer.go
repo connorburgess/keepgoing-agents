@@ -227,19 +227,28 @@ func transferCommand(e env, args []string, run doctorRun) int {
 	return exitOK
 }
 
+// errRecordBusy is readTransferRecord's answer when the record could not be
+// looked at or opened, which on Windows includes a replacement that outlasted
+// snapshot's bounded wait. Its text is the same as every other failure's, so
+// what a person sees is unchanged; tests tell it apart.
+var errRecordBusy = errors.New("record unavailable")
+
 func readTransferRecord(dir, name string, dst any) error {
 	p := filepath.Join(dir, name)
 	info, err := snapshot.LstatRecord(p)
 	if errors.Is(err, os.ErrNotExist) {
 		return nil
 	}
-	if err != nil || !info.Mode().IsRegular() || info.Size() > 1<<20 {
+	if err != nil {
+		return errRecordBusy
+	}
+	if !info.Mode().IsRegular() || info.Size() > 1<<20 {
 		return errors.New("record unavailable")
 	}
 	// Never block a concurrent control or state save (Windows).
 	f, err := snapshot.OpenRecord(p)
 	if err != nil {
-		return errors.New("record unavailable")
+		return errRecordBusy
 	}
 	defer f.Close()
 	info, err = f.Stat()
