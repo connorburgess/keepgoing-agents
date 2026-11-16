@@ -399,7 +399,36 @@ type Evidence struct {
 	// a person who relies on it should check again to confirm it. It is a
 	// hint, not a warning.
 	CheckAgain bool `json:"checkAgain,omitempty"`
+	// Missing says why there is no value when that is by design and needs
+	// nothing from a person; Text then says it in words. See the Missing*
+	// constants.
+	Missing string `json:"missing,omitempty"`
 }
+
+// Why an Evidence holds no value, when nothing is wrong.
+const (
+	// MissingNotReported: the provider's status command does not report it
+	// (Codex's login status reports a login only, never a plan).
+	MissingNotReported = "not_reported"
+	// MissingNotRecognized: the status reported no plan among the broad
+	// subscription types a check keeps; other values are discarded.
+	MissingNotRecognized = "not_recognized"
+	// MissingNoLogin: a plan is read only with a reported login.
+	MissingNoLogin = "no_login"
+	// MissingNotChecked: no check has run for the entry.
+	MissingNotChecked = "not_checked"
+	// MissingNotRecorded: the catalog does not record it. Models belong to
+	// routes, and a check never calls a model.
+	MissingNotRecorded = "not_recorded"
+)
+
+// Route association of a card, set by LinkRoutes.
+const (
+	RoutesNamed   = "named"   // at least one route names the entry
+	RoutesNone    = "none"    // every route was read and none names it
+	RoutesUnknown = "unknown" // not every route could be read, and none read names it
+)
+
 type Card struct {
 	ID              string   `json:"id"`
 	Label           string   `json:"label"`
@@ -422,6 +451,9 @@ type Card struct {
 	// The age of an observation never sets it.
 	NeedsPerson bool   `json:"needsPerson"`
 	Attention   string `json:"attention,omitempty"`
+	// Routes is one of the Routes* values when the caller compared the
+	// card with the routes (LinkRoutes); empty when it did not.
+	Routes string `json:"routes,omitempty"`
 }
 type View struct {
 	State    string `json:"state"`
@@ -464,8 +496,9 @@ func attention(e Entry, c Card) string {
 func Project(f File, now time.Time) View {
 	v := View{State: "available", Complete: true, Cards: []Card{}}
 	unavailable := Evidence{Text: "Unavailable", State: "unavailable", Freshness: "unavailable"}
+	notRecorded := Evidence{Text: "Not recorded", State: "unavailable", Freshness: "unavailable", Missing: MissingNotRecorded}
 	for _, e := range f.Entries {
-		c := Card{ID: e.ID, Label: e.Label, Provider: e.Provider, Selection: e.Mode, Auth: Evidence{Text: "Not checked", State: "unchecked", Freshness: "unavailable"}, Plan: unavailable, ConfiguredModel: unavailable, ObservedModel: unavailable, Uses: "unavailable", Identity: "selected_context_only"}
+		c := Card{ID: e.ID, Label: e.Label, Provider: e.Provider, Selection: e.Mode, Auth: Evidence{Text: "Not checked", State: "unchecked", Freshness: "unavailable"}, Plan: unavailable, ConfiguredModel: notRecorded, ObservedModel: notRecorded, Uses: "unavailable", Identity: "selected_context_only"}
 		if !supported(e.Provider) {
 			c.Auth.State = "unavailable"
 			c.Auth.Text = "Externally managed or unsupported"
@@ -499,12 +532,63 @@ func Project(f File, now time.Time) View {
 				c.Plan.Freshness = "stale"
 			}
 		}
+		c.Plan = missingPlan(e.Provider, c.Auth.State, c.Plan)
 		c.Attention = attention(e, c)
 		c.NeedsPerson = c.Attention != ""
 		v.Cards = append(v.Cards, c)
 	}
 	return v
 }
+
+// missingPlan says why a card shows no plan, from what each provider's check
+// reads (cmd/looptender/accounts.go, accountLogin). A check that did not
+// establish a login leaves the plan unavailable.
+func missingPlan(provider, auth string, p Evidence) Evidence {
+	if p.Value != "" {
+		return p
+	}
+	why := ""
+	switch {
+	case provider == "codex":
+		why = MissingNotReported
+	case provider != "claude-code":
+	case auth == "unchecked":
+		why = MissingNotChecked
+	case auth == "reported_present":
+		why = MissingNotRecognized
+	case auth == "reported_absent":
+		why = MissingNoLogin
+	}
+	if why == "" {
+		return p
+	}
+	return Evidence{Text: missingText[why], State: "unavailable", Freshness: "unavailable", Missing: why}
+}
+
+var missingText = map[string]string{
+	MissingNotReported:   "Codex does not report a plan.",
+	MissingNotRecognized: "Claude Code's status reported no recognized plan.",
+	MissingNoLogin:       "No plan is read without a login.",
+	MissingNotChecked:    "Not checked",
+}
+
+// LinkRoutes sets each card's Routes from the catalog IDs that routes name.
+// complete is false when not every route could be read; a card that no
+// route read names is then unknown rather than none.
+func LinkRoutes(v *View, named map[string]bool, complete bool) {
+	for i := range v.Cards {
+		c := &v.Cards[i]
+		switch {
+		case named[c.ID]:
+			c.Routes = RoutesNamed
+		case complete:
+			c.Routes = RoutesNone
+		default:
+			c.Routes = RoutesUnknown
+		}
+	}
+}
+
 func ReadView(dir string, now time.Time) View {
 	f, err := Load(dir)
 	if err != nil {
