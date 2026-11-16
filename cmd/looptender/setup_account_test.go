@@ -143,7 +143,9 @@ func TestFallbacksAddRefusesAnAccountThatDoesNotMatch(t *testing.T) {
 	if err := os.Mkdir(setupAccountsDir, 0o700); err != nil {
 		t.Fatal(err)
 	}
-	write(t, filepath.Join(setupAccountsDir, accounts.FileName), "not a catalog", 0o600)
+	if err := os.WriteFile(filepath.Join(setupAccountsDir, accounts.FileName), []byte("not a catalog"), 0o600); err != nil {
+		t.Fatal(err)
+	}
 	if code, _, errOut := f.add(t, "", "--non-interactive", "--agent", "claude", "--account", claude); code != exitUsage || !strings.Contains(errOut, "could not be read") {
 		t.Errorf("unreadable catalog: %d %s", code, errOut)
 	}
