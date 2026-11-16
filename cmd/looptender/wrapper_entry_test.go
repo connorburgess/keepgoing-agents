@@ -41,8 +41,10 @@ func TestMain(m *testing.M) {
 	// Nor the person's standard route list: a test that needs one writes it
 	// here or names its own.
 	os.Setenv(config.RoutesFileEnv, filepath.Join(private, config.RoutesFileName))
-	// Nor the person's accounts catalog, which init and fallbacks add offer
-	// names from: a test that needs one sets setupAccountsDir itself.
+	// Nor the person's accounts catalog, which doctor reads, and which init
+	// and fallbacks add offer names from: a test that needs one sets
+	// doctorAccountsCatalog or setupAccountsDir itself.
+	doctorAccountsCatalog = filepath.Join(private, "accounts")
 	setupAccountsDir = filepath.Join(private, "accounts")
 	// Nor the panel's directory, where --client reports are kept, in this
 	// process: panelStateBase, a package variable, points at a private

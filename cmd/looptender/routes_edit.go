@@ -197,7 +197,7 @@ func routesEdit(e env, op string, args []string, input io.Reader) int {
 		e.errf("%s", usage)
 		return exitUsage
 	case op == "add" && *loopName != "":
-		e.errf("routes add --loop: add to a loop's own list with keepgoing fallbacks add -c looptender.yaml")
+		e.errf("routes add --loop: add to a loop's own list with keepgoing fallbacks add --loop NAME")
 		return exitUsage
 	case op != "move" && set["to"]:
 		e.errf("routes %s: --to applies only to routes move", op)

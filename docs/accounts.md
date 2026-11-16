@@ -42,6 +42,17 @@ login or a stable subscription identity. Explicit directory selects the existing
 CLAUDE_CONFIG_DIR or CODEX_HOME context. The environment can still supply other
 authentication inputs; selection does not override arbitrary credential sources.
 
+**Warning: the default Claude Code login is `inherited`, not an explicit
+directory.** Claude Code treats CLAUDE_CONFIG_DIR set to its default directory
+(`~/.claude`, `%USERPROFILE%\.claude` on Windows) as a different login context from the default login, with the
+variable unset. An explicit_directory entry for `~/.claude` can therefore report
+no login while you are signed in. `accounts add` and `accounts update` print a
+warning for such an entry (they still save it), and
+[doctor](diagnostics.md#stated-accounts) flags an existing one. Use
+`--selection inherited` for the default login. This was observed for Claude
+Code; it is not claimed for Codex, so a CODEX_HOME at `~/.codex` gets no
+warning.
+
 Only Claude Code and Codex have status checks in this slice. Cursor, BB and
 other providers may be selected as externally_managed entries, without CLI,
 account-directory or working-directory flags. Their cards say external or
@@ -101,6 +112,37 @@ loop or route could be read, it says the answer is not known rather than
 none. The panel data carries this as the card's `routes` (`named`, `none`,
 `unknown`); `accounts list` does not read routes and leaves it out.
 
+When routes name the entry, the Routes row lists each of them, the loops that
+use each, and each route's own recorded usage reading; readings of different
+routes are never merged. It says once "assigned by you · identity not
+verified", and under a BB thread route "assigned by you · not verified for BB
+threads (account set per project)". A route that names the entry but whose
+check found a mismatch is still listed, says what its check says in place of
+"assigned by you", and its reading is not counted for the entry. The card's
+summary is from those readings, never merged: if any route's reading had a
+window used up that has not ended, the newest such, naming its route when the
+card has more than one ("opus-example: Five-hour allowance was out when read
+2 h ago · resets in 3 h"); otherwise "Not out when read 2 h ago" from the
+newest reading, or that no reading is recorded.
+Being out is information, not a warning.
+
+### Accounts not named yet
+
+The page also lists each account context that a registered loop's routes use
+without naming a catalog entry, headed "Unnamed Codex account" (or Claude
+Code, Cursor, or the route's provider) with a quiet "not named yet" tag, the
+routes and loops that use it, and their readings. These come only from loop
+configurations and the catalog: nothing on the computer is searched, no
+provider is called, and nothing is adopted. Each gives the `accounts add`
+command that would name it, with the provider and selection its routes state
+and `ACCOUNT_LABEL` for your own label; a selected directory is filled in only
+under **Show identifiers**. Naming an account changes no route: to assign its
+routes, add `account: <ID>` to each. "May be the same account as" a catalog
+entry appears only when the provider and the selection match, the same
+directory or both inherited, as `validate` compares them; never by label, and
+never for a BB thread route. The panel data carries this as `accountUses`
+(catalog cards first, then unnamed contexts; route and loop keys only).
+
 A check's successful command exit means its minimized observation was saved;
 it does not mean login passed. Inspect auth state and reason. Missing/corrupt
 storage or a concurrent selection change refuses the operation. An overlapping
@@ -141,7 +183,11 @@ it, and it is not evidence of which account a context is signed in to.
 
 **Several Claude Code subscriptions.** Sign in to each one in its own config
 directory with the official Claude Code tool, then add one explicit_directory
-entry per directory. The directory is the CLAUDE_CONFIG_DIR that entry selects:
+entry per directory. The directory is the CLAUDE_CONFIG_DIR that entry selects.
+The default login (`~/.claude`, with CLAUDE_CONFIG_DIR unset) is an `inherited`
+entry: an explicit directory is for a second, separate config directory, and
+naming `~/.claude` explicitly selects a different login context (see the
+warning above):
 
     looptender accounts add --label "work" --provider claude-code \
       --selection explicit_directory --account-dir /private/example/claude-work \
@@ -251,8 +297,12 @@ provider, how the account is selected (its directory, `inherited`,
 identities are, so no path is included. Two routes with the same `context`
 select the same account context as configured; that does not make them the
 same account, and different contexts are not said to be different accounts.
-The label and ID are shown as they are in the Accounts view. The panel page
-does not show these fields yet.
+The label and ID are shown as they are in the Accounts view. A loop's page
+shows a route that names a consistent entry as "on *Label* · assigned by you ·
+identity not verified" (for a BB thread route, "not verified for BB threads"),
+and a route that names none as "Not assigned to an account." with its account
+group. The Allowances strip on the Routes page still groups by recorded usage
+identity and is not linked to account cards.
 
 ## Change a selection deliberately
 
