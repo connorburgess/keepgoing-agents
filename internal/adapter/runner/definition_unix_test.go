@@ -303,16 +303,9 @@ func TestDefinedAgentOutputBound(t *testing.T) {
 	if err := h.Send(context.Background(), "go", adapter.ModeAuto); err != nil {
 		t.Fatal(err)
 	}
-	deadline := time.Now().Add(10 * time.Second)
-	for {
-		if _, err := os.Stat(filepath.Join(string(h.dir), "exit")); err == nil {
-			break
-		}
-		if time.Now().After(deadline) {
-			t.Fatal("turn never finished")
-		}
-		time.Sleep(20 * time.Millisecond)
-	}
+	// Finished, not the exit file: the turn reads as running until the
+	// wrapper that published the code has let go of the turn.
+	waitPhase(t, h.dir, Finished)
 	obs, err := h.Observe(context.Background())
 	if err != nil || obs.State != decide.Error || obs.ErrorClass != decide.ErrUnknown || obs.Evidence.Source != "runner_exit" {
 		t.Fatalf("%+v %v", obs, err)
@@ -337,7 +330,9 @@ func TestDefinedAgentOutputBound(t *testing.T) {
 	if st, err := h.dir.Status(); err != nil || (st.Phase != Running && st.Phase != Finished) {
 		t.Fatalf("the turn after oversize output reads as %+v %v", st, err)
 	}
-	h.dir.Stop()
+	// Let that turn's wrapper finish before the directory is removed: one
+	// still publishing its exit code makes the removal fail.
+	waitPhase(t, h.dir, Finished)
 }
 
 // A saved session is checked again when it is read. One that is not a
