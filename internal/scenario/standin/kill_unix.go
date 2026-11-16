@@ -17,7 +17,9 @@ import (
 // on it, so it starts nothing more.
 func killParent() {
 	parent := os.Getppid()
-	syscall.Kill(parent, syscall.SIGKILL)
+	if syscall.Kill(parent, syscall.SIGKILL) != nil {
+		return // nothing was killed, so there is nothing to wait for
+	}
 	for deadline := time.Now().Add(10 * time.Second); os.Getppid() == parent && time.Now().Before(deadline); {
 		time.Sleep(time.Millisecond)
 	}
