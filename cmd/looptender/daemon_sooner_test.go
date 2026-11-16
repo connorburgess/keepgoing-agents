@@ -105,10 +105,13 @@ func TestDaemonChecksAtAKnownLimitReset(t *testing.T) {
 	// The reset is a time on the clock, so the wait is judged against it,
 	// not against when the wait began: on a busy machine saving the record
 	// takes part of the 100 ms. A save so slow that the reset has nearly
-	// passed is made again with a later reset, since a reset already past
-	// when the wait begins is ignored, as it should be.
+	// passed is made again with a later reset, up to 50 times, since a reset
+	// already past when the wait begins is ignored, as it should be.
 	var reset time.Time
-	for {
+	for try := 1; ; try++ {
+		if try > 50 {
+			t.Fatal("50 saves each left less than 20 ms before a reset 100 ms ahead")
+		}
 		reset = time.Now().Add(100 * time.Millisecond)
 		if err := state.Save(cfg.Loop.StateDir, state.File{LimitResetsAt: reset}); err != nil {
 			t.Fatal(err)
