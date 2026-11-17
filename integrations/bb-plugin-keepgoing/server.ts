@@ -12,6 +12,8 @@ import { transferInput, transferResult, moveIntentSchema } from "./transfer-cont
 import { createSetupController, MAX_SETUPS } from "./setup-controller.ts";
 import { createNewThreadController } from "./new-thread-controller.ts";
 import { newThreadInput, newThreadResult, startModeSchema, type Bounds } from "./new-thread-contract.ts";
+import { attachInput, attachResult } from "./attach-contract.ts";
+import { createAttachController } from "./attach-controller.ts";
 import { randomUUID } from "node:crypto";
 import { withClientFlag } from "./client-flag.ts";
 
@@ -27,6 +29,7 @@ const statusSchema = z.object({
   state: z
     .object({
       lastCheck: checkSchema.optional(),
+      failedChecks: z.number().int().nonnegative().optional(),
       lastState: z.string().optional(),
       lastWakeAt: z.string().optional(),
       checkedAt: z.string().optional(),
@@ -46,6 +49,7 @@ const loopSchema = z.object({
   details: detailsSchema.optional(),
   loop: z.string(),
   configPath: z.string(),
+  imported: z.boolean().optional(),
   managedId: z.string().optional(),
   managedThreadId: z.string().optional(),
   controlState: z.string(),
@@ -68,6 +72,7 @@ export const resumeByPerson = (configPath: string) =>
   `From an ordinary terminal, not one BB opened on this loop's thread, run keepgoing resume -c ${JSON.stringify(configPath)}, or start the looptender panel there with keepgoing panel --allow-changes.`;
 
 export const rpcContract = defineRpcContract({
+  attachment: { input: attachInput, output: attachResult },
   transfer: { input: transferInput, output: transferResult },
   setup: { input: setupInput, output: setupResult },
   newThread: { input: newThreadInput, output: newThreadResult },
@@ -176,6 +181,7 @@ export default async function plugin(bb: BbPluginApi) {
       readAt: new Date().toISOString(), completed: s.control.completed ?? false,
       targetThread: s.targetAgent.bbThread ?? null, targetAdapter: s.targetAgent.adapter,
       targetConfigured: s.targetConfigured ?? null, runtime: s.runtime ?? null,
+      failedChecks: s.state.failedChecks ?? 0,
       daemon: s.daemon ?? null, lastCheck: s.state.lastCheck ?? null,
       schedule: s.schedule ?? null,
     },
@@ -192,6 +198,13 @@ export default async function plugin(bb: BbPluginApi) {
     fallbacks: s.redundancy ? `${s.redundancy.healthy.length} healthy, need ${s.redundancy.min}` : null,
   });
 
+  const verifyImported = async (bin: string, record: z.infer<typeof recordSchema>) => {
+    if (!record.registryId) return;
+    const target = await resolveTarget(record.threadId);
+    if (JSON.stringify(target) !== JSON.stringify(targetOf(record))) throw new Error("Imported target changed");
+    const result = await host.call("attachment", { bin, target, registryId: record.registryId }, { hostId: record.hostId, signal: AbortSignal.timeout(30_000) });
+    if (result.snapshot?.entry.configPath !== record.configPath || result.snapshot?.entry.stateDir !== record.registryStateDir || result.snapshot?.entry.loop !== record.loop) throw new Error("Imported binding changed");
+  };
   const allLoops = async (threadId: string | null) => {
     const { bin, paths } = await configured();
     const loops: LoopView[] = [];
@@ -210,13 +223,14 @@ export default async function plugin(bb: BbPluginApi) {
       const move = moving.find(i => i.record.id === record.id);
       if (threadId !== null && record.threadId !== threadId && move?.destination.threadId !== threadId) continue;
       try {
+        await verifyImported(bin, record);
         const result = await hostCommand(bin, record, "status");
         if (result.code !== 0) throw new Error("status failed");
         const displayed = view(statusSchema.parse(result.data), record.configPath, threadId);
         // A partial move is not a normal Resume action, even if the host has
         // already committed but the plugin reference is not reconciled yet.
         if (move) { displayed.controlState = "move requires inspection"; displayed.note = `Move requested to ${move.destination.threadId}; check move status there before resuming.`; }
-        loops.push({ ...displayed, managedId: record.id, managedThreadId: record.threadId });
+        loops.push({ ...displayed, ...(record.registryId ? { imported: true } : {}), managedId: record.id, managedThreadId: record.threadId });
       } catch { errors.push(`${record.loop}: host status unavailable`); }
     }
     return { loops, errors };
@@ -235,6 +249,7 @@ export default async function plugin(bb: BbPluginApi) {
       const record = (await records()).find(r => r.id === managedId && r.configPath === configPath);
       if (!record) return { ok: false, message: "That setup is not registered with this plugin." };
       try {
+        await verifyImported(bin, record);
         const result = await hostCommand(bin, record, action);
         bb.realtime.publish(CHANGED, { at: Date.now() });
         return { ok: result.code === 0, message: result.code === 0 ? `${action} done` : `looptender ${action} failed; inspect host status` };
@@ -248,6 +263,21 @@ export default async function plugin(bb: BbPluginApi) {
       : { ok: false, message: `looptender ${action} exited ${result.code}` };
   };
 
+  const attachment = createAttachController({
+    target: resolveTarget, binary: async () => (await configured()).bin, records,
+    save: async value => { await bb.storage.kv.set("setups.v1", value); },
+    list: async (bin, target) => (await host.call("attachment", { bin, target }, { hostId: target.hostId, signal: AbortSignal.timeout(30_000) })).candidates ?? [],
+    inspect: async (bin, target, registryId) => {
+      const r = await host.call("attachment", { bin, target, registryId }, { hostId: target.hostId, signal: AbortSignal.timeout(30_000) });
+      if (!r.snapshot) throw new Error("Attachment snapshot unavailable");
+      return r.snapshot;
+    },
+    guard: async (target, snapshot, record) => {
+      if ((await configured()).paths.includes(snapshot.entry.configPath)) return "This configuration is already listed in Loop configs. Remove that manual reference before importing; attachment does not edit settings.";
+      if ((await intents()).some(i => i.record.id === record?.id || i.record.configPath === snapshot.entry.configPath || i.destination.threadId === target.threadId || i.record.threadId === target.threadId)) return "A saved move requires recovery before attachment. Inspect the move on its host; nothing was attached.";
+    },
+    changed: () => bb.realtime.publish(CHANGED, { at: Date.now() }),
+  });
   const setup = createSetupController({
     target: resolveTarget,
     binary: async () => (await configured()).bin,
@@ -351,8 +381,9 @@ export default async function plugin(bb: BbPluginApi) {
   bb.events.on("thread.failed", ({ thread }) => { void newThread.advance(thread.id); });
   bb.events.on("thread.archived", ({ thread }) => { newThread.forget(thread.id); });
   bb.events.on("thread.deleted", ({ thread }) => { newThread.forget(thread.id); });
-  bb.onDispose(() => { setup.dispose(); transfer.dispose(); newThread.dispose(); });
+  bb.onDispose(() => { setup.dispose(); transfer.dispose(); attachment.dispose(); newThread.dispose(); });
   bb.rpc.register(rpcContract, {
+    attachment: input => serialize(() => attachment.call(input)),
     transfer: input => serialize(() => transfer.call(input)),
     setup: input => setupCall(input),
     newThread: input => newThread.call(input),
