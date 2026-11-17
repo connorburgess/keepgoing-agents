@@ -69,6 +69,7 @@ This agreement does not apply retroactively. Do not assume that an earlier DCO s
 
 - Use fictional loops, thread IDs, hostnames, and `example.com` addresses.
 - Never include real transcripts, prompts from private projects, webhook URLs, or credentials in issues, PRs, fixtures, or docs.
+- Keep BB thread IDs and personal home paths out of pull request titles and descriptions. The contribution check refuses `thr_` followed by exactly ten lowercase letters or digits (fictional IDs containing `example`, such as `thr_example123`, pass) and an absolute `/Users/<name>/` or `/home/<name>/` path (`example`, `runner`, `linuxbrew` and `Shared` pass). Describe the thread, and write paths relative to the repository or with `~`.
 - Add tests for behavior and failure cases. Avoid tests that restate the code.
 - Do not commit built binaries or files larger than 1 MB. The contribution check refuses them; build outputs belong outside the checkout. A file that must be an exception is listed in `scripts/contribution-file-allowlist.txt` with the reason.
 - Resolve every merge before committing it. The contribution check refuses a text file with a line beginning `<<<<<<< ` or `>>>>>>> `, or a line that is exactly `=======`. A file that must contain such lines is listed in `scripts/conflict-marker-allowlist.txt` with the reason.
