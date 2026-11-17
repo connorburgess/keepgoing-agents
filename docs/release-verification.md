@@ -226,7 +226,7 @@ Ownership conflicts and takeover are covered by the binary smoke check using fic
 
 ## Publish a matching release
 
-Before tagging, review the selected version’s changelog, `docs/releases/<tag>.md` notes and limitations, run required checks on the chosen commit, build archives with `scripts/build-release.sh <version>`, and smoke-check unpacked native artifacts. Preserve the exact tested commit and archive checksums in release evidence. Cross-compilation alone is not a native run.
+Before tagging, gather the changelog with `scripts/changelog-release.sh <version> <date>` in the release-prep pull request (it moves the `changelog.d/` fragments and the Unreleased entries under the new version heading), then review the selected version’s changelog, `docs/releases/<tag>.md` notes and limitations, run required checks on the chosen commit, build archives with `scripts/build-release.sh <version>`, and smoke-check unpacked native artifacts. Preserve the exact tested commit and archive checksums in release evidence. Cross-compilation alone is not a native run.
 
 Publish the accumulated maintenance release separately from claims that the usability milestone is live-verified. Update the Homebrew formula's version, platform URLs and checksums to the actual published assets, then verify a fresh install and its `version` output. Update the README/setup version guidance in step with publication; `go install ...@latest` selects a tagged release, not `main`. Keep archived documentation and examples attached to their matching tag. The BB plugin has its own build/install path and is not installed by the core archive or Homebrew formula.
 
