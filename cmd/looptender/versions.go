@@ -5,7 +5,6 @@ import (
 	"crypto/sha256"
 	"os"
 	"path/filepath"
-	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -293,9 +292,9 @@ func dockVersionsSummary(v dockVersions, ref, refKind string) string {
 	case v.Behind > 0:
 		return dockPlural(v.Behind, "place needs", "places need") + " a look"
 	case v.different > 0:
-		return dockPlural(v.different, "runs", "run") + " a different build"
+		return dockPlural(v.different, "place", "places") + " on another build"
 	case v.uncompared > 0:
-		return strconv.Itoa(v.uncompared) + " cannot be compared"
+		return dockPlural(v.uncompared, "place", "places") + " cannot be compared"
 	case refKind == "newest_release":
 		return "All on " + ref
 	default:
