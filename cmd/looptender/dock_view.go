@@ -1195,7 +1195,7 @@ func dockLede(r dockReport) string {
 	if r.Unread > 0 {
 		s += fmt.Sprintf(", %d could not be read", r.Unread)
 	}
-	return s + ". Read from looptender's own records; nothing here is a live view of a conversation."
+	return s + ". Not live: this is what each loop's last check recorded."
 }
 
 // dockNeedsLine is the picker's first line.

@@ -517,7 +517,8 @@
   // sample, not a complete chronology or a persisted "while away" cursor.
   function recentAcrossLoops(d) {
     var p = panel("Recent activity across loops");
-    p.appendChild(el("p", "sub", "Newest recorded events from up to five retained entries per loop. This is a bounded sample, not a complete history."));
+    var intro = el("p", "sub", "The newest few events from each loop.");
+    p.appendChild(intro);
     var rows = [], missing = false, pruned = false;
     list(d.loops).forEach(function (l) {
       if (!l.events || l.events.availability === "unknown") missing = true;
@@ -545,9 +546,9 @@
     });
     if (rows.length) p.appendChild(ol);
     else p.appendChild(el("p", "sub", missing ? "Recent activity is unavailable for one or more loops." : "No recent activity is recorded in this read."));
-    if (rows.length > 8) p.appendChild(el("p", "more", "Showing the newest 8 of " + rows.length + " entries supplied by this read. Inspect a loop for its retained history."));
-    if (pruned) p.appendChild(el("p", "more history-pruned", "Older history has been pruned for at least one loop. This sample cannot reconstruct it and is not a complete chronology."));
-    if ((rows.length && missing) || !d.complete || d.registry.omitted) p.appendChild(el("p", "more", "Activity is incomplete: some loop history or registered loops could not be included."));
+    if (rows.length > 8) p.appendChild(el("p", "more", "Showing the newest 8 of " + rows.length + ". Open a loop for more."));
+    if (pruned) intro.textContent = "The newest few events from each loop; older ones are no longer kept.";
+    if ((rows.length && missing) || !d.complete || d.registry.omitted) p.appendChild(el("p", "more", "Some loops or their history could not be read, so this list is missing events."));
     return p;
   }
 
@@ -652,10 +653,7 @@
       ol.appendChild(li);
     });
     p.appendChild(ol);
-    var more = el("p", "more", (ev.footer ? ev.footer + " " : "") + "More with ");
-    more.appendChild(el("code", null, "keepgoing timeline"));
-    more.appendChild(document.createTextNode("."));
-    p.appendChild(more);
+    if (ev.footer) p.appendChild(el("p", "more", ev.footer));
     return p;
   }
 
