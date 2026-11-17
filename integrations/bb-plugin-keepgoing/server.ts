@@ -113,7 +113,7 @@ export default async function plugin(bb: BbPluginApi) {
     configs: {
       type: "string",
       label: "Loop configs",
-      description: "One loop configuration file (looptender.yaml or keepgoing.yaml) per line. Only these loops are shown and controlled.",
+      description: "One existing server-local loop configuration file (looptender.yaml or keepgoing.yaml) per line. Host-bound UI-created setups and explicitly attached registry loops are registered separately.",
       experimental_multiline: true,
       default: "",
     },
@@ -236,7 +236,7 @@ export default async function plugin(bb: BbPluginApi) {
     return { loops, errors };
   };
 
-  // Control only loops listed in settings: the path comes from the browser,
+  // Control only registered loops: the path comes from the browser,
   // so it must never choose an arbitrary config file.
   const control = async (configPath: string, action: z.infer<typeof actionSchema>, managedId?: string, expectedThreadId?: string) => {
     // A Resume click, an agent's `bb plugin rpc call` and `bb keepgoing

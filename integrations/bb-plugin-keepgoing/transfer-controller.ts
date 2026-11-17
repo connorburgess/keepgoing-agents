@@ -90,7 +90,7 @@ export function createTransferController(d: TransferDependencies) {
     const records = await d.records(), intents = await d.intents();
     if (input.action === "list") {
       const destination = await d.target(input.threadId);
-      return { ok: true, message: "Choose a plugin-created loop in this environment. Manually configured loops use the CLI transfer commands.", choices: records.filter(r => !r.registryId && compatible(r, destination) || intents.some(i => i.record.id === r.id && i.destination.threadId === input.threadId)).map(r => ({ id: r.id, loop: r.loop, from: intents.find(i => i.record.id === r.id)?.record.threadId ?? r.threadId, pending: intents.some(i => i.record.id === r.id) })) };
+      return { ok: true, message: "Choose a plugin-created loop in this environment. Manually configured loops use the CLI transfer commands.", choices: records.filter(r => (!r.registryId && compatible(r, destination)) || intents.some(i => i.record.id === r.id && i.destination.threadId === input.threadId)).map(r => ({ id: r.id, loop: r.loop, from: intents.find(i => i.record.id === r.id)?.record.threadId ?? r.threadId, pending: intents.some(i => i.record.id === r.id) })) };
     }
     const pending = intents.find(i => i.record.id === input.recordId);
     if (pending) {
