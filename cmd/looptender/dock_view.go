@@ -159,8 +159,11 @@ type dockAllowanceLine struct {
 	Route    string `json:"route"`
 	Title    string `json:"title"`
 	BBThread bool   `json:"bbThread,omitempty"`
-	// Reading is the route's own reading in the words of an account card:
-	// out when read, or not, with its age and reset.
+	// Reading says when the route's own reading was taken ("Read 18 min
+	// ago"), as an unassigned block does, when it has windows to draw: the
+	// windows then say whether it was out and when it resets, so the reset
+	// is said once. A route with no windows to draw has the account card's
+	// sentence instead ("No usage reading is recorded for its route.").
 	Reading dockText `json:"reading"`
 	// Notes are each loop that left this route on a usage limit.
 	Notes []dockNote `json:"notes,omitempty"`
@@ -961,6 +964,9 @@ func dockAllowances(routes []dockRoute, loops []dockLoop, now time.Time) ([]dock
 				}
 			}
 			ln.Reading, ln.out = dockAccountReading([]dockRouteReading{{title: ln.Title, usage: r.Usage}}, 1, now)
+			if u := r.Usage; u.Availability != "unavailable" && u.ObservedAt != nil && len(u.Windows) > 0 {
+				ln.Reading = txt("Read " + dockAgo(now, *u.ObservedAt))
+			}
 			ln.out = ln.out || len(ln.Notes) > 0
 			a.out = a.out || ln.out
 			a.Lines = append(a.Lines, ln)

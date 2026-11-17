@@ -80,7 +80,7 @@ func TestDockAllowancesHeadedByAssignedAccount(t *testing.T) {
 		want   []string
 	}{
 		{"bound to one label", []use{{"alpha", "rA", codexBound}}, []dockRoute{route("rA", "gpt-example", "", low)},
-			[]string{"Work Codex | 1 route | assigned by_you | gpt-example: Not out when read 20 min ago"}},
+			[]string{"Work Codex | 1 route | assigned by_you | gpt-example: Read 20 min ago"}},
 		{"unbound keeps its group", []use{{"alpha", "rA", codexUnbound}}, []dockRoute{route("rA", "gpt-example", "id-1", low)},
 			[]string{"codex | 1 route | Not assigned to an account. | own reading: "}},
 		{"a failed check is not under the label", []use{{"alpha", "rA", codexOnClaude}}, []dockRoute{route("rA", "gpt-example", "", low)},
@@ -88,11 +88,11 @@ func TestDockAllowancesHeadedByAssignedAccount(t *testing.T) {
 		{"an entry the catalog lacks is not under a label", []use{{"alpha", "rA", codexMissing}}, []dockRoute{route("rA", "gpt-example", "", none)},
 			[]string{"codex | 1 route · which account is not identified by a test | The accounts catalog has no entry with this ID. | own reading: No reading"}},
 		{"a BB thread route is under the label, not verified", []use{{"alpha", "rB", codexBB}}, []dockRoute{route("rB", "BB thread gpt-example", "", low)},
-			[]string{"Work Codex | 1 route | assigned by_you | BB thread gpt-example: Not out when read 20 min ago (BB thread)"}},
+			[]string{"Work Codex | 1 route | assigned by_you | BB thread gpt-example: Read 20 min ago (BB thread)"}},
 		{"two routes on one label keep their own readings, the one out first",
 			[]use{{"alpha", "rB", codexBB}, {"alpha", "rA", codexBound}, {"beta", "rA", codexBound}},
 			[]dockRoute{route("rB", "BB thread gpt-example", "", low), route("rA", "gpt-example", "id-1", out)},
-			[]string{"Work Codex | 2 routes | assigned by_you | gpt-example: Five-hour allowance was out when read 2 h ago · resets in 3 h (15:00) | BB thread gpt-example: Not out when read 20 min ago (BB thread)"}},
+			[]string{"Work Codex | 2 routes | assigned by_you | gpt-example: Read 2 h ago | BB thread gpt-example: Read 20 min ago (BB thread)"}},
 		{"no reading", []use{{"alpha", "rA", codexBound}}, []dockRoute{route("rA", "gpt-example", "", none)},
 			[]string{"Work Codex | 1 route | assigned by_you | gpt-example: No usage reading is recorded for its route."}},
 		{"loops that state different accounts are not under either", []use{{"alpha", "rA", codexBound}, {"beta", "rA", codexUnbound}}, []dockRoute{route("rA", "gpt-example", "", none)},
@@ -100,7 +100,7 @@ func TestDockAllowancesHeadedByAssignedAccount(t *testing.T) {
 		{"bound and unbound routes of one identity are two blocks, the one out first",
 			[]use{{"alpha", "rA", codexUnbound}, {"alpha", "rB", codexBound}},
 			[]dockRoute{route("rA", "gpt-small", "id-1", low), route("rB", "gpt-example", "id-1", out)},
-			[]string{"Work Codex | 1 route | assigned by_you | gpt-example: Five-hour allowance was out when read 2 h ago · resets in 3 h (15:00)",
+			[]string{"Work Codex | 1 route | assigned by_you | gpt-example: Read 2 h ago",
 				"codex | 1 route | Not assigned to an account. | own reading: "}},
 	} {
 		t.Run(c.name, func(t *testing.T) {
@@ -114,6 +114,13 @@ func TestDockAllowancesHeadedByAssignedAccount(t *testing.T) {
 					d = d[:i+len(" | own reading: ")]
 				}
 				got = append(got, d)
+				// The reset is said once per route: by its windows, never
+				// again in its line.
+				for _, l := range a.Lines {
+					if strings.Contains(say(l.Reading, dockNow), "reset") {
+						t.Errorf("%s says its reset in its line: %q", l.Title, say(l.Reading, dockNow))
+					}
+				}
 				if a.Assigned != "" && (a.Usage != nil || len(a.Notes) != 0 || len(a.Next) != 0) {
 					t.Errorf("an account block carries a figure of its own: %+v", a)
 				}
