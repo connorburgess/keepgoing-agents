@@ -111,7 +111,7 @@ details[open] > .work-summary .work-name::before { transform: rotate(45deg); }
 .work-body > p { max-width: 70ch; }
 .work-body > .sub { font-size: 0.8125rem; }
 .work-facts { margin-block: 1rem; }
-.work-inspect { display: inline-block; padding-block: 0.5rem; }
+.work-inspect { display: inline-block; max-width: 100%; padding-block: 0.5rem; overflow-wrap: anywhere; }
 .overview-events a { font-weight: 600; }
 @media (max-width: 650px) {
   .work-summary { grid-template-columns: minmax(0, 1fr); gap: 0.4rem; }
@@ -159,8 +159,15 @@ details[open] > .work-summary .work-name::before { transform: rotate(45deg); }
 .btn:hover { background: var(--sunk); border-color: var(--ink-2); }
 .btn:active { transform: translateY(0.5px); }
 .btn[aria-pressed="true"] { background: var(--limit-soft); border-color: var(--limit); }
-.btn[aria-busy="true"] svg { animation: spin 900ms linear infinite; }
+/* "Read now" turns while it reads. Motion is opted in; with reduced motion
+   it still turns, slowly, so the button visibly works. */
 @keyframes spin { to { transform: rotate(360deg); } }
+@media (prefers-reduced-motion: no-preference) {
+  .btn[aria-busy="true"] svg { animation: spin 900ms linear infinite; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .btn[aria-busy="true"] svg { animation: spin 6s linear infinite; }
+}
 /* A notice about reading sits over the foot of the window, so it never moves
    the page; the page gains room at its end so nothing stays hidden under it.
    Neutral while the page recovers by itself; a warning once a person is needed. */
@@ -191,11 +198,16 @@ body.has-banner { padding-bottom: 8rem; }
 .pick-needs .count { display: inline-grid; place-items: center; min-width: 1.5rem; height: 1.5rem; padding: 0 0.4rem; border-radius: 999px; background: var(--attn); color: var(--surface); font-size: 0.8rem; font-weight: 700; }
 
 .pane { min-width: 0; }
+/* What only the script can fill or make work keeps its place but stays out
+   of sight, and out of the tab order, until the script has run. */
+html:not(.has-script) .needs-script { visibility: hidden; }
 .pane:focus { outline: none; }
 .back { display: none; align-items: center; gap: 0.35rem; margin: 0 0 0.9rem -0.35rem; padding: 0.4rem 0.6rem 0.4rem 0.35rem; font-size: 0.875rem; font-weight: 550; color: var(--ink-2); text-decoration: none; border-radius: 8px; }
 .back svg { transform: rotate(180deg); }
 .back:hover { color: var(--ink); background: var(--sunk); }
 .pane-head { display: flex; flex-wrap: wrap; align-items: flex-start; justify-content: space-between; gap: 0.5rem 1rem; }
+.pane-pills { display: inline-flex; flex-wrap: wrap; align-items: center; gap: 0.4rem; }
+.pane-pills .tag { margin-left: 0; }
 .panel { margin-top: 1.25rem; background: var(--surface); border: 1px solid var(--line); border-radius: 14px; box-shadow: var(--shadow); padding: 1.1rem 1.25rem 1.2rem; }
 .panel > h2 { display: flex; flex-wrap: wrap; align-items: baseline; gap: 0.2rem 0.75rem; }
 .panel > h2 .sub, .panel > h2 .unknown { font-size: 0.8125rem; font-weight: 400; }
@@ -218,6 +230,10 @@ body.has-banner { padding-bottom: 8rem; }
 .need .reason { font-weight: 500; }
 .note { margin: 0.25rem 0; padding: 0.5rem 0.75rem; background: var(--sunk); border-radius: 8px; color: var(--ink); overflow-wrap: anywhere; }
 .note-label, .todo-label { display: block; font-size: 0.75rem; font-weight: 600; color: var(--ink-2); letter-spacing: 0.01em; }
+.need .resume-where { overflow-wrap: anywhere; }
+.need .resume-where code { font-family: var(--mono); }
+.need .resume-command { display: flex; flex-wrap: wrap; align-items: center; gap: 0.5rem; min-width: 0; }
+.need .resume-command .command { font-family: var(--mono); white-space: normal; overflow-wrap: anywhere; }
 .worth { list-style: none; margin: 0.6rem 0 0; padding: 0; display: grid; gap: 0.55rem; }
 .worth li { display: grid; grid-template-columns: 0.6rem minmax(0, 1fr); gap: 0.6rem; align-items: baseline; font-size: 0.9rem; }
 .worth .dot { align-self: center; }
@@ -358,6 +374,23 @@ body.has-banner { padding-bottom: 8rem; }
 .words dd { margin: 0; display: inline; }
 .words div { margin: 0; }
 
+/* Usage: what looptender did, as counted sentences and one table per loop. */
+.usage-lines { margin: 0.6rem 0 0; padding: 0; list-style: none; display: grid; gap: 0.45rem; max-width: 72ch; }
+.usage-how { margin: 0.75rem 0 0; max-width: 72ch; font-size: 0.875rem; color: var(--ink-2); }
+.usage-sub { margin: 1.1rem 0 0; font-size: 0.875rem; font-weight: 650; color: var(--ink-2); }
+.usage-loop > h2 { overflow-wrap: anywhere; }
+.usage-loop > h2 a { color: var(--ink); text-decoration: underline; text-decoration-color: var(--line-2); text-underline-offset: 0.2em; }
+.usage-loop > h2 a:hover, .usage-brief .work-inspect:hover { text-decoration-color: currentColor; }
+.usage-brief .work-inspect { margin-top: 0.35rem; color: var(--limit); text-underline-offset: 0.2em; }
+.table-wrap { margin-top: 0.75rem; max-inline-size: 100%; overflow-x: auto; }
+.usage-days { border-collapse: collapse; font-size: 0.8125rem; font-variant-numeric: tabular-nums; }
+.usage-days caption { padding-bottom: 0.35rem; text-align: start; color: var(--ink-2); }
+.usage-days th, .usage-days td { padding: 0.35rem 1rem 0.35rem 0; text-align: start; white-space: nowrap; border-bottom: 1px solid var(--line); }
+.usage-days thead th { font-weight: 600; color: var(--ink-2); }
+.usage-days tbody th { font-weight: 500; }
+.usage-days .num, .usage-days thead th:nth-child(n+2):nth-child(-n+5) { text-align: end; }
+.usage-days tr > :last-child { padding-right: 0; }
+
 /* Where the status line would be squeezed beside the buttons, it takes its own row. */
 @media (max-width: 60rem) {
   .bar-in { flex-wrap: wrap; }
@@ -389,9 +422,6 @@ body.has-banner { padding-bottom: 8rem; }
   .tools .btn span { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }
   .tools .btn { min-width: 2.75rem; justify-content: center; }
 }
-@media (prefers-reduced-motion: reduce) {
-  *, *::before, *::after { transition: none !important; animation: none !important; }
-}
 @media (forced-colors: active) {
   .state, .tag, .in-use, .pos, .meter, .now > div, .panel, .need, .lanes, .route-note.is-limit, .route-note.is-attn, .work-role { border: 1px solid CanvasText; }
   .account-card.is-attention { border: 3px double CanvasText; }
@@ -400,6 +430,8 @@ body.has-banner { padding-bottom: 8rem; }
   .dot-unknown { background: Canvas; border: 1px solid CanvasText; }
   .pick[aria-current="page"] { outline: 2px solid Highlight; outline-offset: -2px; }
   .tools .btn[aria-pressed="true"] { background: Highlight; color: HighlightText; border-color: Highlight; }
+  /* The route in use keeps its filled position badge. */
+  .route.is-active .pos { background: Highlight; color: HighlightText; border-color: Highlight; }
 }
 
 /* The page shown for a used or expired link. It has no session and no script. */
