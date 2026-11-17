@@ -44,7 +44,7 @@ internal/evidence           pure, allowlisted diagnostic source/code metadata
 internal/registry           explicit private local loop references; independent of loop controls
 internal/rundiscovery       pure run identity/boundary contract; no IO
 internal/rungraph           graph.json: persisted run references, attempts and links; diagnostic only
-internal/control            control.json and goal.json: holds, BB ownership/transfer fences, private goal revisions, serialized updates
+internal/control            control.json, goal.json and migration-review.json: holds, BB ownership/transfer fences, private goal revisions, serialized updates
 internal/state              state.json, sends.json, progress.json, runs.jsonl, the progress fingerprint, and read-only worktree listings
 internal/window             weekly time windows
 internal/lock               named advisory locks for ticks, daemon, controls, and services
@@ -358,4 +358,10 @@ Configuration validates optional ordered same-allowance steps after loading the 
 
 ## Selected account metadata
 
-The internal/accounts package stores one bounded private device-local catalog with revision-bound minimized observations. It imports existing private-file, lock and atomic-write primitives, never a provider adapter or transcript reader. The command layer owns fixed bounded status execution outside the writer lock and revalidates the selection before committing. The dock projection reads snapshots only. Catalog metadata and caller provenance grant no loop authority; route changes and panel startup authorization retain their existing boundaries. See [Accounts](accounts.md).
+The internal/accounts package stores one bounded private device-local catalog with revision-bound minimized observations. It imports existing private-file, lock and atomic-write primitives, never a provider adapter or transcript reader. The command layer owns fixed bounded status execution outside the writer lock and revalidates the selection before committing. The dock projection reads snapshots only. Legacy-compatible writes retain private catalog schema 1; new plan metadata/tiers promote it to schema 2, which older strict readers refuse in full. Promotion is retained on later writes; reads do not migrate data. Catalog metadata and caller provenance grant no loop authority; route changes and panel startup authorization retain their existing boundaries. See [Accounts](accounts.md).
+
+## Explicit migration review (unreleased)
+
+The command layer composes existing read-only transfer inventories into two compared typed observations, separate from caller-declared assignment state. It binds source/successor configuration identities, current local control/state/goal snapshots, the assignment plan and expected record revision into a preview digest. No transcript, run graph or task content decides coverage or permission. Both nonwaiting tick locks and the successor control lock guard final local validation and one bounded private publication through `internal/control.WriteMigrationReview`. BB/Git queries finish before those locks. Source records and supervisor authority are never written. Independent external reads cannot establish an atomic snapshot; post-read and ABA changes remain outside this cooperative guard.
+
+`migration-review.json` retains immutable loop/thread/config/runtime identities, up to 32 explicit revisions, dated direct-lane/worktree observations and declared assignments. The 1 MiB record and 100 KiB input use bounded regular-file snapshots and atomic private publication; invalid or incomplete metadata refuses replacement. Unfinished IDs survive revisions, including rows whose lane disappears; the same transition rule is checked while loading persisted history. Runtime binding is checked by the loader, and status additionally checks the loaded configuration path where available before projecting counts. Ordinary status projects counts only; no decision engine, prompt composer, run graph, adapter or control gate reads this record. It cannot grant reach, declare execution success or clear a hold. See [migration review](transfer.md#record-a-migration-review-unreleased).

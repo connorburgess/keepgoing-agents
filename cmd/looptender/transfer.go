@@ -57,6 +57,9 @@ type transferPreview struct {
 // The preview branch takes no locks and performs no provider commands, control
 // writes or environment changes. Apply/recover have their own guarded path.
 func transferCommand(e env, args []string, run doctorRun) int {
+	if len(args) > 0 && args[0] == "reconcile" {
+		return transferReconcileCommand(e, args, run, run)
+	}
 	if len(args) > 0 && args[0] == "supersede" {
 		return transferSupersede(e, args[1:])
 	}

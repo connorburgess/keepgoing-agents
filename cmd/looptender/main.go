@@ -55,6 +55,7 @@ Supervision (read -c FILE; default ./looptender.yaml, or ./keepgoing.yaml when o
 
 Transfer planning:
   transfer preview         Inspect a proposed BB move without changing it
+  transfer reconcile       Record an explicit private migration review checklist
   transfer inventory       List a loop's target, lanes and progress worktrees, read-only
   transfer apply|recover   Move a BB primary with an explicit recovery hold
   transfer supersede       Permanently hold an obsolete BB loop after a manual move
@@ -164,6 +165,9 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 	case "routes":
 		return routesCommand(e, rest)
 	case "transfer":
+		if len(rest) > 0 && rest[0] == "reconcile" {
+			return transferReconcileCommand(e, rest, doctorExec, doctorExecLimit(inventoryListLimit))
+		}
 		if len(rest) > 0 && rest[0] == "inventory" {
 			// A lane listing is about 1.5 KB per lane, so 200 lanes need
 			// more than doctor's 64 KiB.

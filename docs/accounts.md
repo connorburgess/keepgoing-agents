@@ -94,8 +94,9 @@ on `init` (the loop's first route), `fallbacks add` (a new fallback) and
 nothing about how the route runs.
 
 **Check an account again.** `looptender accounts check --id ID`, then
-`looptender accounts list`. This runs only the CLI's version and login-status
-commands (the provider's status command may contact its account service). It
+`looptender accounts list`. This runs the CLI's version and login-status
+commands, plus Codex's bounded plan read when login is reported (the provider's
+status command may contact its account service). It
 never signs in or calls a model, and it does not establish quota or which
 account a login really is.
 
@@ -154,25 +155,40 @@ it. CONNECTION_ID is the opaque ID that accounts add returned, also listed by
 accounts list.
 
 Check runs only the selected executable's version command, then Claude's
-auth status --json or Codex's login status. Each command has a five-second
-deadline and 64 KiB stdout limit; stderr is discarded. The commands do not
+auth status --json or Codex's login status. After Codex reports login, it also
+starts the selected `codex app-server`, sends `initialize`, `initialized`, and
+`account/read` with `{"refreshToken":false}`, then terminates that owned process.
+Each command has a five-second deadline and 64 KiB stdout limit; stderr is
+discarded. The commands do not
 receive the variables of the session that ran the check (the list below). Version output must
 match the existing diagnostic version format. A recognized version string is
-not a guarantee about every release's behavior. No login or model command runs.
+not a guarantee about every release's behavior. No sign-in, explicit token
+refresh or model request runs.
 The provider's own status command may contact its account service.
 
 Claude uses the existing diagnostic loggedIn/exit semantics; Codex exit zero
 reports credentials present and a nonzero exit is ambiguous. No account identity
-is inferred. Only allowlisted broad Claude subscriptionType strings, when
-actually supplied by structured status, become reported plan evidence.
+is inferred. Only allowlisted broad Claude subscriptionType strings and Codex
+ChatGPT planType values become reported plan evidence.
 Raw max displays as Max. Unknown plan values are discarded; no numeric tier,
-capacity or quota is inferred. Codex's login status reports no plan, so a
-Codex card says "Codex does not report a plan." A Claude card without a plan
-says why: "Claude Code's status reported no recognized plan." after a login,
+capacity or quota is inferred. Codex retains only the plan value, fixed
+`codex account/read` source and
+observation time, plus an allowlisted unavailable reason; email, account IDs,
+credentials and raw RPC/error data are discarded. Plus, Pro and other known
+tiers are labels, never capacity claims. Null accounts, API keys, unknown tiers,
+unsupported older CLIs, malformed responses and failed/timed-out reads have
+distinct unavailable reasons. Older login-only snapshots say to check again.
+A successful login check stays independent of a failed plan read. A transient
+plan failure preserves an earlier plan as stale with its original time and
+`plan.reason`; an authoritative null, API-key or unrecognized plan clears it.
+Unsupported or malformed responses withhold the plan as unavailable.
+A Claude card without a plan says why: "Claude Code's status reported no
+recognized plan." after a login,
 "No plan is read without a login." after none, and "Not checked" before any
-check. These are not failures and need nothing; the card's JSON carries the
-reason as `plan.missing` (`not_reported`, `not_recognized`, `no_login`,
-`not_checked`). A check that established no login leaves the plan Unavailable.
+check. Claude checks with no reported plan need no action; the card's JSON carries the
+reason as `plan.missing` (`not_recognized`, `no_login`, `not_checked`,
+or the specific Codex plan-read reason). A check that established no login
+leaves the plan Unavailable.
 
 The catalog records no model: a route chooses the model, and a check never
 calls one. The page says so in one line instead of showing configured and
@@ -289,9 +305,10 @@ warning above):
 one explicit_directory entry per home, in the same way. Codex keeps its
 credentials under that home ([fallbacks](fallbacks.md)), so separate homes are
 separate logins. The check reports only whether credentials are present: exit
-zero means present and any other exit is ambiguous. Not verified: whether any
-Codex status output names the account, or tells a ChatGPT sign-in from an
-API-key sign-in. looptender does not claim either.
+zero means present and any other exit is ambiguous. The separate structured
+`account/read` distinguishes a ChatGPT plan from an
+API-key account without retaining identity. Neither read verifies which
+provider account the owner meant; real-account acceptance remains unrun.
 
 **An API key beside a subscription.** Give the key its own entry with its own
 label, for example "api-team". If you use the key through the provider CLI, sign
@@ -512,3 +529,52 @@ and held-reader replacement is wired into the Windows storage/controls job:
 the whole internal/accounts package runs with race detection, followed by
 TestAccounts command fixtures. Local Windows cross-compilation is not native
 execution; native reproduction and acceptance remain pending CI.
+
+### Codex plan read verification
+
+The protocol follows [official app-server authentication documentation](https://learn.chatgpt.com/docs/app-server).
+The plan allowlist follows Codex CLI 0.163.0's generated `GetAccountResponse`
+`PlanType` enum, excluding `unknown`; future values stay unavailable until reviewed.
+No shared adapter/package boundary changes. Panel refresh remains snapshot-only.
+The updated reader accepts private catalog schemas 1 and 2. Schema 1 remains
+unchanged for legacy-compatible writes: no-op updates, Claude-only checks and
+observations with no plan omit absent `planObservedAt` and `planReason` fields.
+Reading a catalog never upgrades or rewrites it.
+
+A write that records either new field or a newly recognized plan tier promotes
+the entire catalog to schema 2. This includes a Codex `pro` timestamp even though
+old readers recognize the word `pro`, and a failed or no-plan Codex read that
+records only `planReason`. Schema 2 stays at version 2 if evidence is later
+cleared. Schema 1 containing new metadata or tiers, unsupported future schemas,
+and malformed catalogs are refused without rewriting them. The CLI/panel JSON
+projection retains its existing schema; this version change concerns private
+`accounts.json` storage only.
+
+All old strict readers reject the whole schema-2 catalog, not just Codex evidence.
+Mixed old/new readers are unsupported after promotion. Before the first production
+plan check, stop the old catalog readers (including running panels), preserve a
+private schema-1 metadata backup outside the checkout, upgrade every reader and
+writer, and restart readers with the updated binary. Keep acceptance checks in a
+private scratch catalog until that deployment is coordinated. No credentials
+need to be copied. A no-op update to a schema-1 Claude-only catalog does not
+require that migration.
+
+To roll back, stop the updated readers and writers, restore the matching private
+pre-upgrade schema-1 catalog backup, then restart the old binaries. Restoring it
+loses observations/catalog edits recorded after the backup. If no compatible
+backup exists, keep the new reader and review recovery; do not relabel a schema-2
+file or strip fields to make an old reader accept it. No production migration or
+rollback has been run for this change.
+
+After review, a person may explicitly check a selected catalog entry and print
+only its plan (substitute the catalog ID; this records an observation):
+
+```sh
+id=CONNECTION_ID
+looptender accounts check --id "$id" --json | jq -r --arg id "$id" '.accounts.cards[] | select(.id == $id) | (.plan.value // .plan.text)'
+```
+
+Coordinator acceptance of the earlier implementation read Plus through a private
+scratch metadata catalog with host access. The schema compatibility correction
+has fixture evidence only; production catalog/panel and live migration/rollback
+remain untested and unchanged.
