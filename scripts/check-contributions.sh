@@ -21,11 +21,13 @@
 # It also refuses a pull request title or body (PR_TEXT) that names a BB
 # thread ID or a person's home directory, which a public pull request should
 # not carry:
-#   - "thr_" and exactly ten lowercase letters or digits, the form of a BB
-#     thread ID, unless it contains "example" (the fictional IDs the docs use,
+#   - "thr_" and exactly ten lowercase letters or digits, not followed by a
+#     letter or digit (an underscore may follow, as in a file name), the form
+#     of a BB thread ID, unless it contains "example" (the fictional IDs the docs use,
 #     such as thr_example123);
-#   - an absolute home path, "/Users/<name>/" or "/home/<name>/" not preceded
-#     by a letter, digit, ".", "_", "-" or "~", unless the name is example
+#   - an absolute home path, "/Users/<name>" or "/home/<name>", with or
+#     without a trailing slash, not preceded by a letter, digit, ".", "_",
+#     "-" or "~", unless the name is example
 #     (the docs' fictional home), runner (a CI runner's home), linuxbrew
 #     (Homebrew's prefix on Linux) or Shared (macOS's shared folder).
 # The message gives the line number, title first, never the match itself.
@@ -128,8 +130,8 @@ if [ -n "${PR_TEXT:-}" ]; then
   if grep -qiE "$credit" <<<"$text"; then
     echo "the pull request text contains a tool attribution credit"; fail=1
   fi
-  thread='thr_[a-z0-9]{10}([^A-Za-z0-9_]|$)'
-  home='(^|[^A-Za-z0-9_.~-])/(Users|home)/[A-Za-z0-9_-][A-Za-z0-9._-]*/'
+  thread='thr_[a-z0-9]{10}([^A-Za-z0-9]|$)'
+  home='(^|[^A-Za-z0-9_.~-])/(Users|home)/[A-Za-z0-9_-][A-Za-z0-9._-]*([^A-Za-z0-9._-]|$)'
   lines=$(grep -nE "$thread" <<<"$text" | while IFS=: read -r n line; do
     grep -oE "$thread" <<<"$line" | grep -qv example && echo "$n"
   done | paste -sd, -) || true
@@ -137,10 +139,10 @@ if [ -n "${PR_TEXT:-}" ]; then
     echo "the pull request title and body name a BB thread ID (thr_ and ten letters or digits) at line $lines; describe the thread instead, or use a fictional ID such as thr_example123"; fail=1
   fi
   lines=$(grep -nE "$home" <<<"$text" | while IFS=: read -r n line; do
-    grep -oE "$home" <<<"$line" | grep -qvE '/(Users|home)/(example|runner|linuxbrew|Shared)/$' && echo "$n"
+    grep -oE "$home" <<<"$line" | grep -qvE '/(Users|home)/(example|runner|linuxbrew|Shared)([^A-Za-z0-9._-])?$' && echo "$n"
   done | paste -sd, -) || true
   if [ -n "$lines" ]; then
-    echo "the pull request title and body have an absolute home path (/Users/<name>/ or /home/<name>/) at line $lines; use a relative path, ~, or /Users/example/"; fail=1
+    echo "the pull request title and body have an absolute home path (/Users/<name> or /home/<name>) at line $lines; use a relative path, ~, or /Users/example/"; fail=1
   fi
 fi
 exit $fail
