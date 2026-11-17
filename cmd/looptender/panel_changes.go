@@ -398,6 +398,9 @@ func panelReviewForCaller(ctx context.Context, registryDir string, reader *dockR
 	if why != "" {
 		return panelReviewed{}, &panelResult{Outcome: "refused", Text: why, Retry: true}
 	}
+	if action == "resume" && control.CheckTransferReady(ctl) != nil {
+		return panelReviewed{}, &panelResult{Outcome: "refused", Text: "This loop is superseded or has a pending transfer. Resume is unavailable; inspect its status. Nothing was changed."}
+	}
 	if action == "resume" && control.CheckOwner(ctl, caller, false) != nil {
 		return panelReviewed{}, &panelResult{Outcome: "refused", Text: "This panel cannot resume the loop with its startup caller. Nothing was changed."}
 	}

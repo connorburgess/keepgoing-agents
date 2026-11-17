@@ -178,3 +178,19 @@ func TestTransferSupersedeHistoryFailureKeepsFence(t *testing.T) {
 		t.Fatalf("code=%d ctl=%+v err=%v output=%s", code, f, err, &out)
 	}
 }
+
+func TestSupersededResumeReviewIsRefused(t *testing.T) {
+	d, entries := clientReviewWorld(t)
+	entry := entries["mobile-onboarding"]
+	if _, err := control.Update(entry.StateDir, func(f *control.File) { f.SupersededBy = "thr_example_successor" }); err != nil {
+		t.Fatal(err)
+	}
+	got, code := clientReview(context.Background(), d.directory, dockKey(entry.ID), "resume", dockNow, time.UTC)
+	if code == exitOK || got.Preview != nil || got.Result == nil || got.Result.Outcome != "refused" {
+		t.Fatalf("impossible resume offered: %+v code=%d", got, code)
+	}
+	reviewed, refusal := panelReviewForCaller(context.Background(), d.directory, d, dockKey(entry.ID), "resume", "", dockNow)
+	if refusal == nil || refusal.Outcome != "refused" || reviewed.preview.Confirm != "" {
+		t.Fatalf("panel prepared impossible resume: %+v %+v", reviewed, refusal)
+	}
+}
