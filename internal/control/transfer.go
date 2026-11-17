@@ -24,11 +24,16 @@ func (p *PendingBBTransfer) Valid() bool {
 	return p != nil && p.Version == 1 && transferID.MatchString(p.ID) && ownerID.MatchString(p.From) && ownerID.MatchString(p.To) && p.From != p.To && digest.MatchString(p.Before) && digest.MatchString(p.After) && p.Before != p.After
 }
 func CheckTransferReady(f File) error {
+	if f.SupersededBy != "" {
+		return ErrSuperseded
+	}
 	if f.PendingTransfer != nil {
 		return ErrTransferPending
 	}
 	return nil
 }
+
+var ErrSuperseded = errors.New("loop is superseded; use the successor loop after explicitly reviewing its task and holds")
 
 // BindBBTarget permanently rejects stale config copies after a move. Ownership
 // generation changes even if the destination had already claimed this loop.

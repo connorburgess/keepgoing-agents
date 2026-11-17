@@ -120,6 +120,8 @@ Everything under [Access](#access) holds for the panel's process too, with a ses
 
 ## What the page shows
 
+In unreleased source, an explicitly superseded loop reads **Superseded** and offers no Resume action. Its retained source holds are not requests to continue it; stop remains available. The declared successor is not registered, activated or reconciled by this action. See [manual successor retirement](transfer.md#retire-an-obsolete-loop-after-a-manual-move-unreleased).
+
 The page has two levels, so opening it never starts with a list of facts. The page's own footer explains the words it uses (loop, lane, route, account group, check, test, hold).
 
 **Level 1, the picker.** A "needs you" line, a row for the **Routes** view, then one row per loop with its name, a status dot and its state in one phrase: supervising, waiting for you, waiting for a limit to reset, waiting for the network, checks are failing, outside its hours, paused, stopped, finished, off, not checked recently, or unknown. A loop that is on a later route says so in its row ("on its second choice"). Loops that want attention come first. The needs-you line and the Routes row stay in place and only the loop list scrolls, so neither can scroll out of reach. On a phone-width window the picker is the first screen and a pick replaces it, with a link back.

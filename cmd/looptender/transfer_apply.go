@@ -39,6 +39,9 @@ func checkTransferRecord(cfg *config.Config, allowStop bool) error {
 	if readTransferRecord(cfg.Loop.StateDir, control.FileName, &ctl) != nil {
 		return errors.New("control state unavailable")
 	}
+	if ctl.SupersededBy != "" && !(allowStop && ctl.Stop) {
+		return control.ErrSuperseded
+	}
 	if p := ctl.PendingTransfer; p != nil {
 		if !p.Valid() || !ctl.AwaitingUser || cfg.Loop.Adapter != "bb" || cfg.Loop.BB == nil || cfg.Loop.HasRouteList() {
 			return errors.New("transfer recovery record unavailable or inconsistent")
