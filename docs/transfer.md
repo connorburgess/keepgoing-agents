@@ -133,3 +133,62 @@ This protocol covers cooperating processes and atomic file replacement, not powe
 Offline command fixtures verify matching and incompatible metadata, missing/corrupt records, ownership/goal display, all holds, unchanged private files, query failures/timeouts, stale config and output privacy. Windows CI runs the preview, apply/recovery and config-edit fixtures; Unix CI additionally runs the process-crash journey and existing setup/recovery smoke gates. A Unix child-process fixture exits immediately after config replacement, then verifies blocked resume, pending stop, recovery, a wake only to the new fictional thread and rejection of a stale config copy. Other fixtures interrupt after hold/state writes and cover write/history failures, ownership conflicts and unchanged allowance/goal files. Inventory fixtures build a temporary repository with a recorded `origin/HEAD`, a lane worktree that is ahead and dirty, a merged one, a detached unattributed one and a stand-in for BB. They cover duplicate and over-limit child listings, malformed listings, unverifiable or deleted threads, an unlistable repository, explicit, missing and unsafe base names, no progress repositories, absent titles and messages, and an unchanged Git directory with no runtime state created, an untracked file that is not counted, a worktree whose changes cannot be counted, a configured path Git cannot list, and (on Unix, through the production runners) a listing over 64 KiB. Workspace fixtures build temporary Git repositories with a linked worktree outside the repository directory and cover inside, outside, a name-prefix sibling, a symlink, a missing directory, an unlistable repository and offline mode, each without changing compatibility or printing a path. No live transfer, model call, account change, timer change or installed-binary upgrade is part of this feature's verification.
 
 Provider-change command fixtures cover mandatory opt-in and explicit labels, source/destination provider mismatches, project/environment/host/path mismatches, label replacement/clearing, preserved holds and budgets, every durable interruption boundary, stale-source rejection and read-only BB queries only. These native fixtures are separate from live acceptance.
+
+## Retire an obsolete loop after a manual move (unreleased)
+
+A saved retirement marker also refuses transfer apply/recovery before BB queries or state/configuration replacement, including damaged metadata with a valid pending provider-change intent. Stop retains its existing separate path.
+
+A transfer keeps one loop and its state directory. Creating a successor thread
+with a separate loop does not transfer that state: both loops otherwise remain
+independently resumable. After explicitly identifying the successor, retire the
+obsolete source loop with:
+
+```sh
+keepgoing transfer supersede -c obsolete-loop.yaml \
+  --from thr_example_source --successor-thread thr_example_successor
+keepgoing status -c obsolete-loop.yaml
+```
+
+This is an operator declaration, not automatic migration detection. It supports
+a single BB primary without fallbacks, checks the expected source and existing
+ownership, and takes the check and control locks. It records `supersededBy` in
+one atomic source control update. No BB query or action runs; the successor
+reference does not prove that a successor loop exists, is registered, has the
+right task or is running. No authority passes to the successor.
+
+The source becomes **Superseded** in status and the panel; the panel omits
+Resume. Resume, enable, takeover, startup and same-loop transfer refuse the
+marker, including from a terminal. Checks send nothing and make no probes or
+ordinary observations. Stop remains available, including `stop --lanes` under
+its existing explicit rules. Superseding does not cancel a running agent turn,
+stop a daemon, modify a scheduler, or stop, move or recreate healthy lanes.
+A check already in progress finishes before the declaration takes its lock.
+Request a stop explicitly if work must be cancelled.
+
+Every existing hold, open question, note, goal revision, task, budget and target
+binding is retained. No hold is cleared because it is old, and no transcript
+is read. A resolved recording question is not authorization to spend, record,
+publish or lift an unrelated stop. Before activating the successor, explicitly
+review its configured task and current goal, resolve only authorized holds,
+inventory predecessor lanes and worktrees, and verify its registration and
+scheduler. This command does none of that reconciliation.
+
+There is no resume or unsupersede operation. Repeated declarations refuse rather
+than replacing the recorded reference. If the result is uncertain, inspect
+status/control before retrying. A diagnostic-history failure after the control
+save reports failure with the saved declaration intact. Repair damaged control
+records using the existing private-backup procedure with all controllers stopped;
+do not delete the marker to resume obsolete work. A mistaken retirement requires
+an explicitly reviewed fresh loop or operator recovery, not automatic rollback.
+
+All invokers must run a build that understands supersession. Older binaries
+ignore the marker and may overwrite it: mixed-version supervision and downgrades
+are unsupported. This source change does not replace installed binaries or the
+BB plugin. macOS fixture execution is separate from live provider acceptance,
+installed-service lifecycle and native Linux/Windows verification.
+
+Remaining acceptance gaps include atomic reconciliation across separate loops,
+explicit task/goal/hold reconciliation, lane assignment mapping, dormant-work
+surfacing and successor registration/attachment. Supersession alone does not
+complete a migration and establishes no duplicate-execution guarantee before
+its source declaration commits.

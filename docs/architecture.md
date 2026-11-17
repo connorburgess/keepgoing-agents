@@ -13,6 +13,8 @@ looptender is a supervisor, not an agent. It sits beside a running agent session
 - **Missing control means disabled.** A tick must never wake an agent nobody asked for.
 - **Pure decisions.** The decision engine is a function from inputs to one action, with a table test per rule. Side effects live in adapters and the tick orchestrator.
 
+A manually created successor with separate loop state has no inferred relationship to its predecessor. Unreleased `transfer supersede` records an explicit source-only fence: `supersededBy` disables the effective control gate and blocks resume/enable/takeover while retaining stop and every existing hold. It neither reconciles tasks nor acts on the successor or lanes; see [manual successor limits](transfer.md#retire-an-obsolete-loop-after-a-manual-move-unreleased).
+
 ## Packages
 
 ```

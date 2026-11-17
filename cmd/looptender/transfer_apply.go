@@ -39,6 +39,9 @@ func checkTransferRecord(cfg *config.Config, allowStop bool) error {
 	if readTransferRecord(cfg.Loop.StateDir, control.FileName, &ctl) != nil {
 		return errors.New("control state unavailable")
 	}
+	if ctl.SupersededBy != "" && !(allowStop && ctl.Stop) {
+		return control.ErrSuperseded
+	}
 	if p := ctl.PendingTransfer; p != nil {
 		if !p.Valid() || !ctl.AwaitingUser || cfg.Loop.Adapter != "bb" || cfg.Loop.BB == nil || cfg.Loop.HasRouteList() {
 			return errors.New("transfer recovery record unavailable or inconsistent")
@@ -137,6 +140,11 @@ func transferApply(e env, args []string, run doctorRun, afterStep func(string) e
 	var ctl control.File
 	if readTransferRecord(cfg.Loop.StateDir, control.FileName, &ctl) != nil {
 		return fail(errors.New("control record unavailable"))
+	}
+	// Retirement wins even if damaged metadata also carries a valid pending
+	// recovery intent. Refuse before either transfer path queries BB or writes.
+	if ctl.SupersededBy != "" {
+		return fail(control.ErrSuperseded)
 	}
 	var p control.PendingBBTransfer
 	var edit *config.BBTransferEdit
