@@ -535,9 +535,35 @@ The protocol follows [official app-server authentication documentation](https://
 The plan allowlist follows Codex CLI 0.163.0's generated `GetAccountResponse`
 `PlanType` enum, excluding `unknown`; future values stay unavailable until reviewed.
 No shared adapter/package boundary changes. Panel refresh remains snapshot-only.
-The private catalog adds optional `planObservedAt` and `planReason` fields;
-older builds may refuse newly recognized tiers and cannot interpret separate
-plan timing. Use the updated build to read this evidence.
+The updated reader accepts private catalog schemas 1 and 2. Schema 1 remains
+unchanged for legacy-compatible writes: no-op updates, Claude-only checks and
+observations with no plan omit absent `planObservedAt` and `planReason` fields.
+Reading a catalog never upgrades or rewrites it.
+
+A write that records either new field or a newly recognized plan tier promotes
+the entire catalog to schema 2. This includes a Codex `pro` timestamp even though
+old readers recognize the word `pro`, and a failed or no-plan Codex read that
+records only `planReason`. Schema 2 stays at version 2 if evidence is later
+cleared. Schema 1 containing new metadata or tiers, unsupported future schemas,
+and malformed catalogs are refused without rewriting them. The CLI/panel JSON
+projection retains its existing schema; this version change concerns private
+`accounts.json` storage only.
+
+All old strict readers reject the whole schema-2 catalog, not just Codex evidence.
+Mixed old/new readers are unsupported after promotion. Before the first production
+plan check, stop the old catalog readers (including running panels), preserve a
+private schema-1 metadata backup outside the checkout, upgrade every reader and
+writer, and restart readers with the updated binary. Keep acceptance checks in a
+private scratch catalog until that deployment is coordinated. No credentials
+need to be copied. A no-op update to a schema-1 Claude-only catalog does not
+require that migration.
+
+To roll back, stop the updated readers and writers, restore the matching private
+pre-upgrade schema-1 catalog backup, then restart the old binaries. Restoring it
+loses observations/catalog edits recorded after the backup. If no compatible
+backup exists, keep the new reader and review recovery; do not relabel a schema-2
+file or strip fields to make an old reader accept it. No production migration or
+rollback has been run for this change.
 
 After review, a person may explicitly check a selected catalog entry and print
 only its plan (substitute the catalog ID; this records an observation):
@@ -547,4 +573,7 @@ id=CONNECTION_ID
 looptender accounts check --id "$id" --json | jq -r --arg id "$id" '.accounts.cards[] | select(.id == $id) | (.plan.value // .plan.text)'
 ```
 
-This command has not been run against a real account for this change.
+Coordinator acceptance of the earlier implementation read Plus through a private
+scratch metadata catalog with host access. The schema compatibility correction
+has fixture evidence only; production catalog/panel and live migration/rollback
+remain untested and unchanged.

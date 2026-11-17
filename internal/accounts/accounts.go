@@ -36,16 +36,16 @@ var ErrInvalid = errors.New("accounts storage unavailable or invalid")
 var ErrChanged = errors.New("accounts selection changed; review again")
 
 type Observation struct {
-	PlanReason string    `json:"planReason,omitempty"`
-	PlanAt     time.Time `json:"planObservedAt,omitempty"`
-	Revision   string    `json:"revision"`
-	Context    string    `json:"context"`
-	At         time.Time `json:"observedAt"`
-	Auth       string    `json:"auth"`
-	Reason     string    `json:"reason"`
-	Version    string    `json:"cliVersion"`
-	Plan       string    `json:"plan"`
-	Caller     string    `json:"caller"` // private actual caller, never projected
+	PlanReason string     `json:"planReason,omitempty"`
+	PlanAt     *time.Time `json:"planObservedAt,omitempty"`
+	Revision   string     `json:"revision"`
+	Context    string     `json:"context"`
+	At         time.Time  `json:"observedAt"`
+	Auth       string     `json:"auth"`
+	Reason     string     `json:"reason"`
+	Version    string     `json:"cliVersion"`
+	Plan       string     `json:"plan"`
+	Caller     string     `json:"caller"` // private actual caller, never projected
 }
 type Entry struct {
 	ID        string       `json:"id"`
@@ -66,6 +66,28 @@ type File struct {
 	SchemaVersion int     `json:"schemaVersion"`
 	Salt          string  `json:"salt"`
 	Entries       []Entry `json:"entries"`
+}
+
+// Schema 1 remains writable for legacy-compatible catalogs. Schema 2 is a
+// one-way write promotion for new plan metadata or tiers; strict old readers
+// refuse the whole catalog. Reads never promote or rewrite a catalog.
+func needsPlanSchema(f File) bool {
+	for _, e := range f.Entries {
+		for _, o := range []*Observation{e.Last, e.Attempt} {
+			if o == nil {
+				continue
+			}
+			if o.PlanAt != nil || o.PlanReason != "" {
+				return true
+			}
+			switch o.Plan {
+			case "", "max", "pro", "team", "enterprise", "free":
+			default:
+				return true
+			}
+		}
+	}
+	return false
 }
 
 func token() string {
@@ -120,7 +142,7 @@ func validEntry(e Entry) bool {
 		if o == nil {
 			continue
 		}
-		if o.Revision != e.Revision || o.Context != e.Context || o.At.IsZero() || len(o.Caller) > 160 || !validAuth(o.Auth) || !validReason(o.Reason) || (o.Version != "" && !versionPattern.MatchString(o.Version)) || !validPlan(o.Plan) || !validPlanReason(o.PlanReason) || (!o.PlanAt.IsZero() && (o.Plan == "" || o.PlanAt.After(o.At))) {
+		if o.Revision != e.Revision || o.Context != e.Context || o.At.IsZero() || len(o.Caller) > 160 || !validAuth(o.Auth) || !validReason(o.Reason) || (o.Version != "" && !versionPattern.MatchString(o.Version)) || !validPlan(o.Plan) || !validPlanReason(o.PlanReason) || (o.PlanAt != nil && (o.PlanAt.IsZero() || o.Plan == "" || o.PlanAt.After(o.At))) {
 			return false
 		}
 	}
@@ -162,8 +184,8 @@ func planEvidence(provider string, o *Observation, now time.Time) Evidence {
 	source := observationSource(provider, o.Version)
 	if provider == "codex" {
 		source = "codex account/read"
-		if !o.PlanAt.IsZero() {
-			at = o.PlanAt
+		if o.PlanAt != nil {
+			at = *o.PlanAt
 		}
 	}
 	p := evidence("reported", o.Plan, source, at, now)
@@ -329,7 +351,7 @@ func Load(dir string) (File, error) {
 	var f File
 	d := json.NewDecoder(bytes.NewReader(raw))
 	d.DisallowUnknownFields()
-	if d.Decode(&f) != nil || d.Decode(new(any)) != io.EOF || f.SchemaVersion != 1 || !validToken(f.Salt) || f.Entries == nil || len(f.Entries) > MaxEntries {
+	if d.Decode(&f) != nil || d.Decode(new(any)) != io.EOF || (f.SchemaVersion != 1 && f.SchemaVersion != 2) || (f.SchemaVersion == 1 && needsPlanSchema(f)) || !validToken(f.Salt) || f.Entries == nil || len(f.Entries) > MaxEntries {
 		return File{}, ErrInvalid
 	}
 	ids := map[string]bool{}
@@ -363,13 +385,14 @@ func Update(dir string, fn func(*File) error) error {
 	if err != nil {
 		return err
 	}
+	loadedSchema := f.SchemaVersion
 	if f.Salt == "" {
 		f.Salt = token()
 	}
 	if err = fn(&f); err != nil {
 		return err
 	}
-	if len(f.Entries) > MaxEntries {
+	if (f.SchemaVersion != 1 && f.SchemaVersion != 2) || len(f.Entries) > MaxEntries {
 		return ErrInvalid
 	}
 	ids := map[string]bool{}
@@ -378,6 +401,9 @@ func Update(dir string, fn func(*File) error) error {
 			return ErrInvalid
 		}
 		ids[e.ID] = true
+	}
+	if loadedSchema == 2 || needsPlanSchema(f) {
+		f.SchemaVersion = 2
 	}
 	raw, err := json.Marshal(f)
 	if err != nil || len(raw) > MaxBytes {

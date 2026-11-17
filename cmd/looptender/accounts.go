@@ -268,11 +268,11 @@ func accountCheck(ctx context.Context, dir, id, caller string, run accountRun, n
 				raw, callErr = call("app-server")
 				o.Plan, o.PlanReason = accountCodexPlan(raw, callErr)
 				if o.Plan != "" {
-					o.PlanAt = now
+					o.PlanAt = &now
 				} else if (o.PlanReason == "timeout" || o.PlanReason == "cancelled" || o.PlanReason == "status_unavailable") && selected.Last != nil && selected.Last.Plan != "" {
 					o.Plan, o.PlanAt = selected.Last.Plan, selected.Last.PlanAt
-					if o.PlanAt.IsZero() {
-						o.PlanAt = selected.Last.At
+					if o.PlanAt == nil {
+						o.PlanAt = &selected.Last.At
 					}
 				}
 			}
