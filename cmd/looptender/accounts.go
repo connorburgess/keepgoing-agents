@@ -264,6 +264,18 @@ func accountCheck(ctx context.Context, dir, id, caller string, run accountRun, n
 				raw, callErr = call("login", "status")
 			}
 			o = accountLogin(selected, o, raw, callErr)
+			if selected.Provider == "codex" && o.Auth == "reported_present" {
+				raw, callErr = call("app-server")
+				o.Plan, o.PlanReason = accountCodexPlan(raw, callErr)
+				if o.Plan != "" {
+					o.PlanAt = &now
+				} else if (o.PlanReason == "timeout" || o.PlanReason == "cancelled" || o.PlanReason == "status_unavailable") && selected.Last != nil && selected.Last.Plan != "" {
+					o.Plan, o.PlanAt = selected.Last.Plan, selected.Last.PlanAt
+					if o.PlanAt == nil {
+						o.PlanAt = &selected.Last.At
+					}
+				}
+			}
 		}
 	}
 	return accounts.Update(dir, func(latest *accounts.File) error {
@@ -337,6 +349,9 @@ func accountLogin(e accounts.Entry, o accounts.Observation, raw []byte, err erro
 	return o
 }
 func accountExec(ctx context.Context, cli string, args []string, env []string, workdir string) ([]byte, error) {
+	if len(args) == 1 && args[0] == "app-server" {
+		return accountCodexRead(ctx, cli, env, workdir)
+	}
 	cmd := exec.CommandContext(ctx, cli, args...)
 	cmd.Env = env
 	cmd.Dir = workdir
