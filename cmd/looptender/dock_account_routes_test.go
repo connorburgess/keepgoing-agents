@@ -226,3 +226,20 @@ func TestDockUnknownAccountsStaySeparateFromSelectedCards(t *testing.T) {
 		t.Error("the selected-account count includes inferred route contexts")
 	}
 }
+
+// Unknown routes live outside account-body dd, so they must retain their
+// own reflow rule. Browser checks use an unbroken 80-character route title
+// and 120-character loop name at 320 px and verify the reading stays inside.
+func TestDockUnknownRouteNamesWrap(t *testing.T) {
+	css := dockUIText(t, "dock.css")
+	start := strings.Index(css, ".unknown-route-context {")
+	if start < 0 {
+		t.Fatal("unknown route context rule missing")
+	}
+	rule := strings.SplitN(css[start:], "}", 2)[0]
+	for _, property := range []string{"overflow-wrap: anywhere;", "min-width: 0;"} {
+		if !strings.Contains(rule, property) {
+			t.Errorf("unknown route context lost %s", property)
+		}
+	}
+}
