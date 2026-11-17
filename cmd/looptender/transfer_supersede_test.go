@@ -88,12 +88,6 @@ func TestTransferSupersedeRejectsWithoutChangingFiles(t *testing.T) {
 				if err != nil {
 					t.Fatal(err)
 				}
-			case "locked":
-				l, err := lock.Acquire(dir)
-				if err != nil {
-					t.Fatal(err)
-				}
-				defer l.Release()
 			case "repeat":
 				_, err := control.Update(dir, func(f *control.File) { f.SupersededBy = "thr_example_previous" })
 				if err != nil {
@@ -102,15 +96,32 @@ func TestTransferSupersedeRejectsWithoutChangingFiles(t *testing.T) {
 			}
 			// Lock-file creation is permitted even when the declaration is refused.
 			l, err := lock.Acquire(dir)
-			if err != nil && tc != "locked" {
+			if err != nil {
 				t.Fatal(err)
 			}
-			if l != nil {
-				l.Release()
+			if err := l.Release(); err != nil {
+				t.Fatal(err)
 			}
 			before := transferFiles(t, filepath.Dir(path))
+			// Windows refuses reads of the locked byte range. Snapshot before
+			// acquiring it and after release, while testing the command under it.
+			if tc == "locked" {
+				l, err = lock.Acquire(dir)
+				if err != nil {
+					t.Fatal(err)
+				}
+				t.Cleanup(func() { _ = l.Release() })
+			}
 			var out bytes.Buffer
 			code := transferCommand(env{ctx: context.Background(), stdout: &out, stderr: &out}, []string{"supersede", "-c", path, "--from", from, "--successor-thread", successor}, nil)
+			if tc == "locked" {
+				if err := l.Release(); err != nil {
+					t.Fatal(err)
+				}
+				if code != exitSkipped {
+					t.Fatalf("held check lock: got %d, want %d: %s", code, exitSkipped, &out)
+				}
+			}
 			if code == exitOK {
 				t.Fatal("invalid supersession succeeded")
 			}
