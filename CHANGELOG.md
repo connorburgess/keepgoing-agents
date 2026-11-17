@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Docs: [Add an account, a subscription or a model](docs/accounts.md#add-an-account-a-subscription-or-a-model) gives the commands in one place: naming a second subscription, another provider or an API key in the accounts catalog, putting it into a loop's order and reordering it, saying which account a route uses, and checking an account again, with what each never does.
+
 - The panel has a **Usage** page that says, in counted sentences, what looptender did for each loop over the last 7 UTC days: the checks that sent nothing and why, the wakes it withheld and how that saves a turn, the messages it sent by kind, spaced wakes (or "unavailable"), a labelled estimate with its baseline, and the context window (the latest reading and its age, the week's lowest and highest, each session reset with the size before and after). It says plainly when looptender did little, and states what looptender does and does not do about context today. Each loop's page has a short block of its own sentences and a link. The page reads a new read-only endpoint, `api/v1/usage`, filled by the same read as the report; it words the existing `savings` and `contextWindow` values and computes nothing of its own.
 
 - `init` and `fallbacks add` offer the accounts you named. `--account ID` names an accounts catalog entry for a loop's first route or a new fallback: a Claude Code or Codex entry's directory is used when no `--account-dir` is given, its name is the default quota group, and `account: ID` is written. The guided questions list the entries for the route's provider by name and take a number. A typed directory states no account, and an entry that `validate` would reject is refused. The catalog is only read.
