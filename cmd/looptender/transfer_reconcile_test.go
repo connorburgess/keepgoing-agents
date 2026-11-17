@@ -75,6 +75,14 @@ func (f *reconcileFixture) command(t *testing.T, cmd string, extra ...string) (i
 func TestTransferReconcileRecordsReviewWithoutActing(t *testing.T) {
 	t.Setenv("BB_THREAD_ID", "")
 	f := newReconcileFixture(t)
+	baseRun := f.run
+	f.run = func(ctx context.Context, cli string, args []string, env map[string]string, dir string) ([]byte, error) {
+		b, err := baseRun(ctx, cli, args, env, dir)
+		if len(args) == 4 && args[1] == "show" && args[2] == "thr_lane_a" {
+			b = bytes.ReplaceAll(b, []byte(`"status":"idle"`), []byte(`"status":"active"`))
+		}
+		return b, err
+	}
 	sourceControls, _ := os.ReadFile(filepath.Join(filepath.Dir(f.dest), "state", control.FileName))
 	destControls, _ := os.ReadFile(filepath.Join(filepath.Dir(f.dest), "successor-state", control.FileName))
 	gitBefore := gitSnapshot(t, f.f.repo)
@@ -89,6 +97,10 @@ func TestTransferReconcileRecordsReviewWithoutActing(t *testing.T) {
 	code, r, e := f.command(t, "apply", "--digest", digest)
 	if code != exitOK {
 		t.Fatalf("apply %d %s", code, e)
+	}
+	saved, err := control.LoadMigrationReview(filepath.Join(filepath.Dir(f.dest), "successor-state"))
+	if err != nil || saved.Revisions[0].Observation.Lanes[0].Status != "active" {
+		t.Fatal("healthy working lane not retained", err)
 	}
 	if r["unfinished"] != float64(2) || r["dormant"] != float64(1) || r["coverage"] != "direct_lanes_only" {
 		t.Fatalf("lost assignment evidence: %v", r)
