@@ -77,7 +77,7 @@ keepgoing init --non-interactive \
   --project /projects/example-app --task-file /private/example-task.md
 ```
 
-This records the supplied target; it does not verify the thread's identity, switch its model/login, or transfer another supervisor. Use [doctor](diagnostics.md) for target diagnostics. Existing loops can use the separate [BB transfer commands](transfer.md), released in v0.1.4 with fixture tests; live transfer verification remains open.
+This records the supplied target; it does not verify the thread's identity, switch its model/login, or transfer another supervisor. Use [doctor](diagnostics.md) for target diagnostics. Existing loops can use the separate [BB transfer commands](transfer.md), released in v0.1.4 with fixture tests; live transfer verification remains open. Unreleased source also supports an [explicit provider change](transfer.md#explicit-provider-change-unreleased-source) to an existing BB destination, preserving goal/history and budgets while adding awaiting-user. This CLI repair does not attach a manually created loop to the plugin, start supervision, migrate lanes or detect a handoff automatically. Review the destination labels/account settings before a person explicitly resumes and starts checks.
 
 <a id="cursor-setup-unreleased-source"></a>
 
