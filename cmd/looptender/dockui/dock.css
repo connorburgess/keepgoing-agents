@@ -286,6 +286,7 @@ body.has-banner { padding-bottom: 8rem; }
 
 /* The route component: a loop's preferred routes, and the view across loops */
 .chain-ready { font-size: 0.8125rem; font-weight: 600; color: var(--good); }
+.chain-ready.is-calm { color: var(--ink-2); font-size: 0.875rem; }
 .chain-ready.is-short { color: var(--warn); font-size: 0.875rem; }
 .chain-how { margin: 0.3rem 0 0; font-size: 0.8125rem; max-width: 70ch; }
 .route-list { list-style: none; margin: 0.75rem 0 0; padding: 0; }

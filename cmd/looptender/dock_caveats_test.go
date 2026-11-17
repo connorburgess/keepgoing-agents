@@ -63,3 +63,50 @@ func TestVersionsPickerLineFitsWithoutCutting(t *testing.T) {
 	}
 }
 
+// F10: the route brief that says a missing standby leaves the route in use
+// alone is drawn as a plain notice. The page matches the brief's ending.
+func TestNoStandbyBriefIsAPlainNoticeF10(t *testing.T) {
+	js, css := dockUIText(t, "dock.js"), dockUIText(t, "dock.css")
+	if !strings.Contains(js, `var CURRENT_UNAFFECTED = "`+dockCurrentUnaffected+`";`) {
+		t.Error("dock.js and dock_view.go disagree on the ending of the brief")
+	}
+	if r := cssRule(t, css, ".chain-ready.is-calm"); strings.Contains(r, "--warn") || !strings.Contains(r, "--ink-2") {
+		t.Errorf(".chain-ready.is-calm: %q", r)
+	}
+	if !strings.Contains(js, `c.brief.indexOf(CURRENT_UNAFFECTED) >= 0 ? " is-calm" : c.short ? " is-short"`) {
+		t.Error("the calm class must win over the warning class")
+	}
+}
+
+// N4a: the caveats the page keeps are each said once, in plain words. The
+// honesty statements survive, worded as what is true.
+func TestOverviewSaysEachCaveatOnce(t *testing.T) {
+	js := dockUIText(t, "dock.js")
+	for _, gone := range []string{
+		"Active does not prove progress", "do not establish completion", "This is a bounded sample",
+		"cannot reconstruct it", "keepgoing timeline", "Served to this computer",
+	} {
+		if strings.Contains(js, gone) {
+			t.Errorf("dock.js still says %q", gone)
+		}
+	}
+	html := dockUIText(t, "index.html")
+	foot := html[strings.Index(html, "<footer"):strings.Index(html, "<details")]
+	if strings.Contains(html, "keepgoing") || strings.Count(foot, "<p") != 2 {
+		t.Errorf("the footer is not two lines, or names the old product: %s", foot)
+	}
+	// The first loop is the first thing in the card: nothing is appended
+	// between the heading and the list.
+	i := strings.Index(js, `var p = panel("Loops and lanes");`)
+	if i < 0 || !strings.HasPrefix(strings.TrimSpace(js[i+len(`var p = panel("Loops and lanes");`):]), `var ul = el("ul", "work-tree");`) {
+		t.Error("something sits above the first loop in Loops and lanes")
+	}
+	if !strings.Contains(js, "as each last reported them") {
+		t.Error("the one line under the loop list is missing")
+	}
+	// The overview says once that it is not live.
+	r := dockReport{Loops: []dockLoop{{State: "supervising"}}}
+	if got := dockLede(r); !strings.Contains(got, "Not live") || strings.Contains(got, "nothing here is a live view") {
+		t.Errorf("lede: %q", got)
+	}
+}

@@ -11,6 +11,10 @@
   var FAIL_LONG_MS = 120000;
   var API = "api/v1/dock";
   var SERVER = "api/v1/server";
+  // The end of the route brief that says a missing standby does not touch the
+  // route in use; the line is then a plain notice, not a warning. Kept in step
+  // with dockCurrentUnaffected in dock_view.go (a test checks).
+  var CURRENT_UNAFFECTED = "its current route is unaffected";
   // What looptender did: worded by the same read as API, served on its own
   // for its size, and read only for the Usage page and a loop's page.
   var USAGE = "api/v1/usage";
@@ -690,7 +694,7 @@
     // The ordered preferred routes are the main structure.
     var c = l.chain, entries = list(c.entries);
     var brief = !c.brief ? null : c.availability !== "none_configured" && c.brief.indexOf("unknown") >= 0 ? unknown(c.brief) :
-      el("span", c.availability === "none_configured" ? "sub" : "chain-ready" + (c.short ? " is-short" : ""), c.brief);
+      el("span", c.availability === "none_configured" ? "sub" : "chain-ready" + (c.brief.indexOf(CURRENT_UNAFFECTED) >= 0 ? " is-calm" : c.short ? " is-short" : ""), c.brief);
     var routing = panel("Preferred routes", [brief]);
     routing.appendChild(el("p", "sub chain-how", c.how || "Unknown."));
     var ol = el("ol", "route-list is-ordered");
