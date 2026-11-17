@@ -142,6 +142,70 @@ func (f *reconcileFixture) record(t *testing.T) *control.MigrationReview {
 	}
 	return g
 }
+
+func TestTransferReconcileSupersessionBoundaries(t *testing.T) {
+	for _, kind := range []string{"retired-source", "retired-successor", "source-retires-after-preview"} {
+		t.Run(kind, func(t *testing.T) {
+			t.Setenv("BB_THREAD_ID", "")
+			f := newReconcileFixture(t)
+			g := f.record(t)
+			record := filepath.Join(g.Successor.StateDir, control.MigrationReviewName)
+			before, err := os.ReadFile(record)
+			if err != nil {
+				t.Fatal(err)
+			}
+			retire := func(dir string) {
+				t.Helper()
+				if _, err := control.Update(dir, func(c *control.File) { c.SupersededBy = "thr_example_successor" }); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if kind == "retired-source" {
+				retire(g.Source.StateDir)
+			} else if kind == "retired-successor" {
+				retire(g.Successor.StateDir)
+			}
+			revision := []string{"--id", g.ID, "--revision", "1"}
+			code, preview, diagnostic := f.command(t, "preview", revision...)
+			if code != exitOK {
+				t.Fatal(code, diagnostic)
+			}
+			if kind == "source-retires-after-preview" {
+				retire(g.Source.StateDir)
+			}
+			sourceBefore, _ := os.ReadFile(filepath.Join(g.Source.StateDir, control.FileName))
+			successorBefore, _ := os.ReadFile(filepath.Join(g.Successor.StateDir, control.FileName))
+			code, _, diagnostic = f.command(t, "apply", append(revision, "--digest", preview["digest"].(string))...)
+			after, err := os.ReadFile(record)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if kind == "retired-source" {
+				if code != exitOK || bytes.Equal(before, after) {
+					t.Fatalf("retired predecessor review was not recorded: %d %s", code, diagnostic)
+				}
+			} else {
+				wantCode := exitSkipped
+				if kind == "retired-successor" {
+					wantCode = exitFailed // Existing ownershipError mapping for ErrSuperseded.
+				}
+				if code != wantCode || !bytes.Equal(before, after) {
+					t.Fatalf("retirement refusal lost saved review: %d %s", code, diagnostic)
+				}
+			}
+			for dir, want := range map[string][]byte{g.Source.StateDir: sourceBefore, g.Successor.StateDir: successorBefore} {
+				got, err := os.ReadFile(filepath.Join(dir, control.FileName))
+				if err != nil || !bytes.Equal(want, got) {
+					t.Fatal("reconciliation changed controls or retirement", err)
+				}
+			}
+			if code, _, diagnostic := f.command(t, "show"); code != exitOK {
+				t.Fatal("retained review became undiscoverable", code, diagnostic)
+			}
+		})
+	}
+}
+
 func TestTransferReconcilePreservesRecordOnRefusal(t *testing.T) {
 	for _, kind := range []string{"omitted", "stale-digest", "stale-revision", "wrong-owner", "incomplete", "duplicate", "wrong-parent", "changed-snapshot", "cancelled", "corrupt-goal", "symlink-plan", "symlink-record", "nonregular-plan", "nonregular-record", "worktree-mismatch", "missing-control", "pending-transfer", "bounded-list"} {
 		t.Run(kind, func(t *testing.T) {
