@@ -14,6 +14,7 @@ fail=0
 repo="$tmp/repo"
 mkdir -p "$repo/scripts"
 cp "$root/scripts/check-contributions.sh" "$repo/scripts/"
+cp "$root/scripts/changelog-release.sh" "$repo/scripts/"
 printf '# test allowlist\nfixtures/allowed.bin\n' > "$repo/scripts/contribution-file-allowlist.txt"
 printf '# test allowlist\nfixtures/merge-example.txt\n' > "$repo/scripts/conflict-marker-allowlist.txt"
 cd "$repo" || exit 2
@@ -197,5 +198,70 @@ text_case "home inside a list of names is not a path" 0 "" 'fix: x\nfour entries
 text_case "a credit still fails beside the new rules" 1 "tool attribution credit" 'fix: x\nIntro.\nGenerated with Claude Code'
 text_case "a credit first in the body, after the joining backslash-n, fails" 1 "tool attribution credit" 'fix: x\nGenerated with Claude Code'
 
-[ "$fail" = 0 ] && echo "check-contributions: all file and text cases pass"
+# Changelog entries: a line under Unreleased is refused; a fragment in
+# changelog.d/ is the way, and must be well formed.
+mkdir -p changelog.d
+printf '# Changelog\n\n## Unreleased\n\n- An entry from before fragments.\n\n## 0.1.0 (2026-01-01)\n\n- The first release.\n' > CHANGELOG.md
+printf '# Fragments\n\nOne file per change.\n' > changelog.d/README.md
+git add -A && git commit -q -s -m "test: changelog on the base" && base=$(git rev-parse HEAD)
+mkdir -p docs fixtures bin changelog.d
+
+sed -i.bak 's/^## Unreleased$/## Unreleased\n\n- A new entry in the old place./' CHANGELOG.md && rm CHANGELOG.md.bak
+expect "a line added under Unreleased fails, with the way to move it" 1 "CHANGELOG.md gains an entry under Unreleased at line 5"
+sed -i.bak 's/^- An entry from before fragments\.$/- An entry from before fragments, reworded./' CHANGELOG.md && rm CHANGELOG.md.bak
+expect "a reworded Unreleased line fails too" 1 "restore CHANGELOG.md to main's version"
+sed -i.bak '/^- An entry from before fragments\.$/d' CHANGELOG.md && rm CHANGELOG.md.bak
+expect "removing an Unreleased line passes" 0 ""
+sed -i.bak 's/^- The first release\.$/- The first release, with a typo fixed./' CHANGELOG.md && rm CHANGELOG.md.bak
+expect "a correction under a released version passes" 0 ""
+echo "- A new entry as a fragment." > changelog.d/new-entry.md
+expect "a fragment passes" 0 ""
+printf '## Added\n\n- An entry.\n' > changelog.d/with-heading.md
+expect "a fragment with a heading fails" 1 "changelog.d/with-heading.md: a changelog fragment has no heading"
+printf '\n  \n' > changelog.d/empty.md
+expect "an empty fragment fails" 1 "changelog.d/empty.md: the changelog fragment is empty"
+mkdir -p changelog.d/sub && echo "- x" > changelog.d/sub/x.md
+expect "a fragment in a subdirectory fails" 1 "changelog.d/sub/x.md: a changelog fragment is one lower-case .md file"
+echo "- x" > changelog.d/Entry.md
+expect "an upper-case fragment name fails" 1 "changelog.d/Entry.md"
+echo "- x" > changelog.d/entry.txt
+expect "a fragment that is not .md fails" 1 "changelog.d/entry.txt"
+printf '# Fragments\n\nChanged.\n' > changelog.d/README.md
+expect "the README is not a fragment" 0 ""
+
+# The release script gathers fragments, newest first, above the old entries,
+# and its result passes the check.
+echo "- Older fragment." > changelog.d/older.md
+git add -A && git commit -q -s -m "test: older fragment"
+echo "- Newer fragment." > changelog.d/newer.md
+GIT_COMMITTER_DATE="2030-01-01T00:00:00Z" git add -A
+GIT_COMMITTER_DATE="2030-01-01T00:00:00Z" git commit -q -s -m "test: newer fragment"
+pre=$(git rev-parse HEAD)
+scripts/changelog-release.sh 0.2.0 2026-02-02 >/dev/null || { echo "FAIL: the release script failed"; fail=1; }
+want='# Changelog
+
+## Unreleased
+
+## 0.2.0 (2026-02-02)
+
+- Newer fragment.
+
+- Older fragment.
+
+- An entry from before fragments.
+
+## 0.1.0 (2026-01-01)
+
+- The first release.'
+if [ "$(cat CHANGELOG.md)" != "$want" ]; then echo "FAIL: release script output:"; cat CHANGELOG.md; fail=1; fi
+if [ -e changelog.d/older.md ] || [ -e changelog.d/newer.md ] || [ ! -e changelog.d/README.md ]; then
+	echo "FAIL: the release script should delete the fragments and keep the README"; fail=1
+fi
+git add -A && git commit -q -s -m "chore: release 0.2.0"
+out=$(scripts/check-contributions.sh "$pre" HEAD 2>&1) || { echo "FAIL: a release-prep change was refused: $out"; fail=1; }
+if scripts/changelog-release.sh 0.2.0 2026-02-03 >/dev/null 2>&1; then echo "FAIL: releasing a version twice should fail"; fail=1; fi
+if scripts/changelog-release.sh 0.3.0 2026-02-03 >/dev/null 2>&1; then echo "FAIL: a release with nothing in it should fail"; fail=1; fi
+git reset -q --hard "$base"
+
+[ "$fail" = 0 ] && echo "check-contributions: all file, text and changelog cases pass"
 exit "$fail"

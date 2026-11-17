@@ -34,6 +34,14 @@
 # There is no rule for a body pasted from another repository's pull request:
 # nothing in such a text reliably says where it came from.
 #
+# Changelog entries go in changelog.d/, one file per change, so pull requests
+# never edit the same lines (see changelog.d/README.md). It refuses a line
+# added under "## Unreleased" in CHANGELOG.md, and a changelog.d/ fragment
+# that is not a non-empty, lower-case-named .md file directly in that
+# directory, or that has a heading. A release-prep change from
+# scripts/changelog-release.sh adds its lines under a version heading, so it
+# passes.
+#
 #   check-contributions.sh BASE HEAD          the commits and files of BASE..HEAD
 #   check-contributions.sh --scan-tree REF    every file in REF, for auditing
 set -euo pipefail
@@ -93,6 +101,44 @@ check_file() {
   return 1
 }
 
+# check_unreleased BASE HEAD: prints and returns 1 when the change adds a
+# non-blank line under "## Unreleased" in CHANGELOG.md.
+check_unreleased() {
+  local base=$1 head=$2 range lines
+  git cat-file -e "$head:CHANGELOG.md" 2>/dev/null || return 0
+  # The Unreleased section is the lines strictly between its heading and the
+  # next "## " heading.
+  range=$(git show "$head:CHANGELOG.md" | awk '/^## /{ if (s && !e) e = NR; if ($0 == "## Unreleased") s = NR } END { print s + 0, (e ? e : 999999999) }')
+  lines=$(git diff -U0 --no-renames "$base...$head" -- CHANGELOG.md | awk -v r="$range" '
+    BEGIN { split(r, b, " ") }
+    /^@@/ { split($3, a, ","); n = substr(a[1], 2) + 0; next }
+    /^\+\+\+/ { next }
+    /^\+/ { if (b[1] && n > b[1] && n < b[2] && substr($0, 2) ~ /[^[:space:]]/) print n; n++ }
+  ' | paste -sd, -)
+  [ -z "$lines" ] && return 0
+  echo "CHANGELOG.md gains an entry under Unreleased at line $lines; put it in a file of its own under changelog.d/ instead. To move an open pull request: (1) merge main into it; (2) move your Unreleased entry into changelog.d/<topic>.md; (3) restore CHANGELOG.md to main's version (git checkout origin/main -- CHANGELOG.md). See changelog.d/README.md."
+  return 1
+}
+
+# check_fragment REF PATH: prints and returns 1 when a changelog.d/ file the
+# change adds or changes is not a well-formed fragment.
+check_fragment() {
+  local ref=$1 file=$2 text
+  case "$file" in changelog.d/*) ;; *) return 0 ;; esac
+  [ "$file" = changelog.d/README.md ] && return 0
+  if ! [[ "${file#changelog.d/}" =~ ^[a-z0-9][a-z0-9.-]*\.md$ ]]; then
+    echo "$file: a changelog fragment is one lower-case .md file directly in changelog.d/ (letters, digits, '.', '-')"; return 1
+  fi
+  text=$(git cat-file blob "$ref:$file" 2>/dev/null) || text=""
+  if ! grep -q '[^[:space:]]' <<<"$text"; then
+    echo "$file: the changelog fragment is empty"; return 1
+  fi
+  if grep -qE '^#' <<<"$text"; then
+    echo "$file: a changelog fragment has no heading; scripts/changelog-release.sh adds the version heading"; return 1
+  fi
+  return 0
+}
+
 if [ "${1:-}" = "--scan-tree" ]; then
   ref=${2:?a commit}
   found=0
@@ -116,12 +162,14 @@ for c in $(git rev-list --no-merges "$base..$head"); do
     echo "${c:0:12} contains a tool attribution credit"; fail=1
   fi
 done
+check_unreleased "$base" "$head" || fail=1
 # Files the change adds or changes, as they are at HEAD. The three dots
 # compare HEAD with where it left BASE, so files that only changed on BASE
 # are not charged to this change.
 while IFS= read -r -d '' file; do
   check_file "$head" "$file" || fail=1
   check_markers "$head" "$file" || fail=1
+  check_fragment "$head" "$file" || fail=1
 done < <(git diff --name-only --no-renames --diff-filter=AM -z "$base...$head")
 if [ -n "${PR_TEXT:-}" ]; then
   # The workflow joins the title and body with a literal backslash-n; read it
