@@ -2483,7 +2483,7 @@ type DaemonInfo struct {
 // supervisor and for everything that reads a loop's status, so they judge
 // alike.
 func ScheduleInput(loop *config.Loop, ctl control.File, d DaemonInfo) state.ScheduleInput {
-	in := state.ScheduleInput{DaemonInterval: loop.Daemon.Interval.Duration, Enabled: ctl.Enabled,
+	in := state.ScheduleInput{DaemonInterval: loop.Daemon.Interval.Duration, Enabled: ctl.Gate().Enabled,
 		Held: ctl.Paused || ctl.AwaitingUser || ctl.Completed, StopRequested: ctl.Stop, ControlChangedAt: ctl.UpdatedAt,
 		DaemonStartedAt: d.StartedAt, DaemonLastPassAt: d.LastPassAt, DaemonLastPassStartedAt: d.LastPassStartedAt, DaemonNextCheckAt: d.NextCheckAt,
 		TurnedAwayAt: state.TurnedAwayAt(loop.StateDir)}

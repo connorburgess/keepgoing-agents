@@ -13,6 +13,8 @@ looptender is a supervisor, not an agent. It sits beside a running agent session
 - **Missing control means disabled.** A tick must never wake an agent nobody asked for.
 - **Pure decisions.** The decision engine is a function from inputs to one action, with a table test per rule. Side effects live in adapters and the tick orchestrator.
 
+A manually created successor with separate loop state has no inferred relationship to its predecessor. Unreleased `transfer supersede` records an explicit source-only fence: `supersededBy` disables the effective control gate and blocks resume/enable/takeover while retaining stop and every existing hold. It neither reconciles tasks nor acts on the successor or lanes; see [manual successor limits](transfer.md#retire-an-obsolete-loop-after-a-manual-move-unreleased).
+
 ## Packages
 
 ```
@@ -213,6 +215,8 @@ The BB plugin resolves existing thread/environment/host metadata on its server a
 
 Creating a configuration, saving its reference, and starting a daemon are separate operations. The first two can fail independently and require inspection instead of automatic retries; startup is a separate explicit UI action with fresh metadata/status/doctor checks. Those observations are not atomic with manual configuration edits or external scheduling. Holds, competing daemon locks, and owner claims remain enforced by keepgoing. The plugin never spawns/re-parents threads or makes loop decisions.
 
+Unreleased registry attachment uses an explicit host-local registry ID. The host reads the registered config/runtime binding through CLI client/status commands, hashes the bounded private config and checks provider/target/owner metadata. The plugin revalidates the SDK target and selection inside its shared registration mutation queue and saves only `setups.v1`, merging unrelated records. Preview tickets bind config/identity/owner generation; recovery inspection only reads the saved identity and never repeats a write. Imported status revalidates the binding and keeps failed-check evidence distinct from daemon response. Attachment performs no lifecycle command or loop control write; external writers and independent snapshots remain outside the cooperative boundary. See [registry attachment](../integrations/bb-plugin-keepgoing/README.md#attach-an-existing-loop-unreleased-source).
+
 ## BB transfer integration
 
 The plugin routes preview/apply/recovery through the recorded host and the CLI transfer protocol. Browser input contains only a registered setup ID, destination thread ID and one-use preview ticket. The server resolves both identities through BB, checks known destination conflicts, revalidates CLI metadata/controls/goal/labels, and persists a private `moves.v1` request before mutation. Only operational references are stored; no task text, raw CLI output or control notes enter this record.
@@ -275,7 +279,7 @@ The command layer implements `transfer inventory` as a read-only listing for a p
 
 ## Applying a BB transfer
 
-The command layer serializes apply/recovery with ticks and performs bounded BB metadata checks before short control updates. `config.BBTransferEdit` retains private source/replacement bytes in memory, patches only a literal BB thread scalar, then checks and atomically replaces a regular private config. Checkout paths and YAML indirection are refused. `control.PendingBBTransfer` persists only identity, before/after digests and targets inside the first control save, alongside awaiting-user. A partial operation is held for explicit roll-forward recovery; no background retry or transaction coordinator is introduced.
+The command layer serializes apply/recovery with ticks and performs bounded BB metadata checks before short control updates. `config.BBTransferEdit` retains private source/replacement bytes in memory, patches a literal BB thread scalar (and, with the unreleased provider-change opt-in, explicit provider/group/model/reasoning labels while removing account/probe/timing settings), then checks and atomically replaces a regular private config. Checkout paths and YAML indirection are refused. `control.PendingBBTransfer` persists identity, before/after digests and targets inside the first control save, alongside awaiting-user. Version 2 additionally records the expected source/destination providers and explicit destination labels for roll-forward recovery; version 1 remains the same-provider contract. A partial operation is held for explicit roll-forward recovery; no background retry or transaction coordinator is introduced.
 
 The command guards combine source snapshots with the pending or final target binding. Pending records suppress automatic work and permissive controls; stop may use only an exact before/after config. Restrictive controls retain their short independent lock. Recovery repeats the primary observation reset without changing goal or allowance files, commits the config if still at the before version, and finishes with a new owner generation and persistent `bbTarget`. This fences old daemons and copied configs even after the pending record is cleared. Begin/finish use existing saved-control incident capture; diagnostic failure never undoes a control save. Existing bindings are checked before tick/poll, manual probes/retarget, enable/resume, validate and startup.
 

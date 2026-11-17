@@ -77,7 +77,7 @@ keepgoing init --non-interactive \
   --project /projects/example-app --task-file /private/example-task.md
 ```
 
-This records the supplied target; it does not verify the thread's identity, switch its model/login, or transfer another supervisor. Use [doctor](diagnostics.md) for target diagnostics. Existing loops can use the separate [BB transfer commands](transfer.md), released in v0.1.4 with fixture tests; live transfer verification remains open.
+This records the supplied target; it does not verify the thread's identity, switch its model/login, or transfer another supervisor. Use [doctor](diagnostics.md) for target diagnostics. Existing loops can use the separate [BB transfer commands](transfer.md), released in v0.1.4 with fixture tests; live transfer verification remains open. Unreleased source also supports an [explicit provider change](transfer.md#explicit-provider-change-unreleased-source) to an existing BB destination, preserving goal/history and budgets while adding awaiting-user. This CLI repair does not attach a manually created loop to the plugin, start supervision, migrate lanes or detect a handoff automatically. Review the destination labels/account settings before a person explicitly resumes and starts checks.
 
 <a id="cursor-setup-unreleased-source"></a>
 
@@ -134,7 +134,7 @@ The result omits task/prompt text, raw YAML, environment maps, and account-direc
 
 Validation, input, and setup-write failures exit nonzero with stderr diagnostics and no success JSON. A stdout failure may occur after successful file creation and may leave partial JSON: require both exit 0 and a complete supported result, inspect the destination before retrying, and never overwrite it automatically. Help retains the normal CLI help behavior.
 
-Offline fixtures cover preview/create consistency, BB identity fields, ordered account selections, omitted private input, bounded/cancelled stdin, failed writes, and unchanged existing setups. The separately distributed [BB setup UI](../integrations/bb-plugin-keepgoing/README.md#supervise-this-thread) uses this shared CLI contract and is fixture-tested; live deployment and install-to-completion verification remain open. CLI setup alone does not install the plugin or attach/transfer a thread.
+Offline fixtures cover preview/create consistency, BB identity fields, ordered account selections, omitted private input, bounded/cancelled stdin, failed writes, and unchanged existing setups. The separately distributed [BB setup UI](../integrations/bb-plugin-keepgoing/README.md#supervise-this-thread) uses this shared CLI contract and is fixture-tested; live deployment and install-to-completion verification remain open. CLI setup alone does not install the plugin or attach/transfer a thread. Unreleased plugin source adds an [explicit registry attachment flow](../integrations/bb-plugin-keepgoing/README.md#attach-an-existing-loop-unreleased-source) for an already-owned existing BB target; this imports only the plugin reference. It does not start/resume a loop or repair startup permissions. Inspect first-check evidence separately from daemon responsiveness.
 
 ## Existing accounts and ordered fallbacks
 
