@@ -460,9 +460,6 @@
   // parent's observation. No relationship is inferred from names or order.
   function workTree(d) {
     var p = panel("Loops and lanes");
-    p.appendChild(el("p", "sub", "Only conversations that looptender supervises are shown here, with their lanes. To see another coordinator here, create a loop for it."));
-    p.appendChild(el("p", "sub", "Supervision and agent observations are separate. Expand a loop to see its recorded direct lanes."));
-    p.appendChild(el("p", "sub work-evidence", "Active does not prove progress or connectivity. Only direct lanes are listed; absent lanes do not establish completion. Finished means declared, not verified."));
     var ul = el("ul", "work-tree");
     var retainedOpen = Object.create(null);
     list(d.loops).forEach(function (l) {
@@ -511,6 +508,7 @@
     });
     state.treeOpen = retainedOpen;
     p.appendChild(ul);
+    p.appendChild(el("p", "sub work-evidence", "Registered loops and their direct lanes, as each last reported them."));
     if (!d.complete || d.registry.omitted) p.appendChild(el("p", "more", "This read does not include every registered loop. Missing loops are not assumed stopped or clear."));
     return p;
   }
