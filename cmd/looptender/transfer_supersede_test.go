@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"context"
+	"fmt"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -242,6 +243,58 @@ func TestSupersessionDoesNotAdoptANewRun(t *testing.T) {
 			got, err := os.ReadFile(filepath.Join(dir, control.GoalName))
 			if err != nil || !bytes.Equal(got, goal) {
 				t.Fatal("retirement changed goal evidence")
+			}
+		})
+	}
+}
+
+func TestTransferSupersedeFencesExplicitProviderApplyAndRecovery(t *testing.T) {
+	t.Setenv("BB_THREAD_ID", "")
+	for _, command := range []string{"apply", "recover"} {
+		t.Run(command, func(t *testing.T) {
+			path, dir := crossProviderFixture(t)
+			args := append([]string{"apply", "--from", "thr_source", "--thread", "thr_destination"}, crossProviderArgs()...)
+			if command == "recover" {
+				// A damaged record may retain an otherwise valid provider-change intent
+				// beside retirement. Retirement must still win before any external read.
+				code, _ := callProviderTransfer(t, path, crossProviderRunner(t, nil), func(step string) error {
+					if step == "held" {
+						return fmt.Errorf("fixture interruption")
+					}
+					return nil
+				}, args...)
+				if code != exitFailed {
+					t.Fatal("fixture did not retain pending transfer")
+				}
+				ctl, err := control.Load(dir)
+				if err != nil || ctl.PendingTransfer == nil || !ctl.PendingTransfer.Valid() {
+					t.Fatal("missing valid pending intent", err)
+				}
+				args = []string{"recover", "--id", ctl.PendingTransfer.ID}
+			}
+			if _, err := control.Update(dir, func(c *control.File) { c.SupersededBy = "thr_example_successor" }); err != nil {
+				t.Fatal(err)
+			}
+			held, err := lock.Acquire(dir)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := held.Release(); err != nil {
+				t.Fatal(err)
+			}
+			before := transferFiles(t, filepath.Dir(path))
+			calls := 0
+			base := crossProviderRunner(t, nil)
+			runner := func(ctx context.Context, cli string, args []string, env map[string]string, workdir string) ([]byte, error) {
+				calls++
+				return base(ctx, cli, args, env, workdir)
+			}
+			code, out := callProviderTransfer(t, path, runner, nil, args...)
+			if code == exitOK || calls != 0 {
+				t.Fatalf("retired %s reached provider: code=%d calls=%d %s", command, code, calls, out)
+			}
+			if !reflect.DeepEqual(before, transferFiles(t, filepath.Dir(path))) {
+				t.Fatal("retired transfer changed private files")
 			}
 		})
 	}

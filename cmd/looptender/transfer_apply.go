@@ -141,6 +141,11 @@ func transferApply(e env, args []string, run doctorRun, afterStep func(string) e
 	if readTransferRecord(cfg.Loop.StateDir, control.FileName, &ctl) != nil {
 		return fail(errors.New("control record unavailable"))
 	}
+	// Retirement wins even if damaged metadata also carries a valid pending
+	// recovery intent. Refuse before either transfer path queries BB or writes.
+	if ctl.SupersededBy != "" {
+		return fail(control.ErrSuperseded)
+	}
 	var p control.PendingBBTransfer
 	var edit *config.BBTransferEdit
 	if cmd == "apply" {

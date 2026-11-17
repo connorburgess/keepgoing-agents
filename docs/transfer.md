@@ -136,6 +136,8 @@ Provider-change command fixtures cover mandatory opt-in and explicit labels, sou
 
 ## Retire an obsolete loop after a manual move (unreleased)
 
+A saved retirement marker also refuses transfer apply/recovery before BB queries or state/configuration replacement, including damaged metadata with a valid pending provider-change intent. Stop retains its existing separate path.
+
 A transfer keeps one loop and its state directory. Creating a successor thread
 with a separate loop does not transfer that state: both loops otherwise remain
 independently resumable. After explicitly identifying the successor, retire the
