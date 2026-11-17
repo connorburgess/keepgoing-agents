@@ -15,6 +15,7 @@ import { useCallback, useEffect, useState, useSyncExternalStore } from "react";
 import type { LoopView, rpcContract } from "./server";
 import { diagnosticLines, dateLabel } from "./status-details";
 import { SetupPanel } from "./setup-panel";
+import { AttachPanel } from "./attach-panel";
 import { TransferPanel } from "./transfer-panel";
 import { KeepGoingBanner, KeepGoingSwitch, turnOn } from "./new-thread-control";
 import { NewThreadOutcome, outcomeLabel, useOutcome } from "./new-thread-outcome";
@@ -59,6 +60,8 @@ function useLoop(threadId: string) {
 }
 
 function label(loop: LoopView): string {
+  if (loop.imported && loop.controlState === "enabled" && ((loop.details?.failedChecks ?? 0) > 0 || ["failed", "error"].includes(loop.details?.lastCheck?.outcome ?? ""))) return "looptender: checks failing";
+  if (loop.imported && loop.controlState === "enabled" && !loop.details?.lastCheck) return "looptender: no check recorded";
   if (loop.controlState === "enabled" && loop.details?.schedule?.overdue) return "looptender: checks have stopped";
   if (loop.controlState === "enabled") return loop.supervising ? "looptender: enabled" : `looptender: watching ${loop.details?.targetThread ?? loop.target}`;
   return `looptender: ${loop.controlState}`;
@@ -121,12 +124,18 @@ function ThreadSetup({ threadId, onChanged, hideStart = false }: { threadId: str
   const rpc = useRpc<typeof rpcContract>();
   const call = useCallback((input: Parameters<typeof rpc.call<"setup">>[1]) => rpc.call("setup", input), [rpc]);
   const [generation, setGeneration] = useState(0);
+  const attach = useCallback(async (input: Parameters<typeof rpc.call<"attachment">>[1]) => {
+    const result = await rpc.call("attachment", input);
+    if (result.attached) setGeneration(n => n + 1);
+    return result;
+  }, [rpc]);
   const transfer = useCallback(async (input: Parameters<typeof rpc.call<"transfer">>[1]) => {
     const result = await rpc.call("transfer", input);
     if (result.moved) setGeneration(n => n + 1);
     return result;
   }, [rpc]);
-  return <><SetupPanel key={`${threadId}-${generation}`} threadId={threadId} call={call} onChanged={onChanged} hideStart={hideStart} />
+  return <><AttachPanel key={`attach-${threadId}`} threadId={threadId} call={attach} onChanged={onChanged} />
+    <SetupPanel key={`${threadId}-${generation}`} threadId={threadId} call={call} onChanged={onChanged} hideStart={hideStart} />
     <TransferPanel key={`move-${threadId}`} threadId={threadId} call={transfer} onChanged={onChanged} /></>;
 }
 
