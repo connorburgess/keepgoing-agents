@@ -159,8 +159,15 @@ details[open] > .work-summary .work-name::before { transform: rotate(45deg); }
 .btn:hover { background: var(--sunk); border-color: var(--ink-2); }
 .btn:active { transform: translateY(0.5px); }
 .btn[aria-pressed="true"] { background: var(--limit-soft); border-color: var(--limit); }
-.btn[aria-busy="true"] svg { animation: spin 900ms linear infinite; }
+/* "Read now" turns while it reads. Motion is opted in; with reduced motion
+   it still turns, slowly, so the button visibly works. */
 @keyframes spin { to { transform: rotate(360deg); } }
+@media (prefers-reduced-motion: no-preference) {
+  .btn[aria-busy="true"] svg { animation: spin 900ms linear infinite; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .btn[aria-busy="true"] svg { animation: spin 6s linear infinite; }
+}
 /* A notice about reading sits over the foot of the window, so it never moves
    the page; the page gains room at its end so nothing stays hidden under it.
    Neutral while the page recovers by itself; a warning once a person is needed. */
@@ -191,6 +198,9 @@ body.has-banner { padding-bottom: 8rem; }
 .pick-needs .count { display: inline-grid; place-items: center; min-width: 1.5rem; height: 1.5rem; padding: 0 0.4rem; border-radius: 999px; background: var(--attn); color: var(--surface); font-size: 0.8rem; font-weight: 700; }
 
 .pane { min-width: 0; }
+/* What only the script can fill or make work keeps its place but stays out
+   of sight, and out of the tab order, until the script has run. */
+html:not(.has-script) .needs-script { visibility: hidden; }
 .pane:focus { outline: none; }
 .back { display: none; align-items: center; gap: 0.35rem; margin: 0 0 0.9rem -0.35rem; padding: 0.4rem 0.6rem 0.4rem 0.35rem; font-size: 0.875rem; font-weight: 550; color: var(--ink-2); text-decoration: none; border-radius: 8px; }
 .back svg { transform: rotate(180deg); }
@@ -412,9 +422,6 @@ body.has-banner { padding-bottom: 8rem; }
   .tools .btn span { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }
   .tools .btn { min-width: 2.75rem; justify-content: center; }
 }
-@media (prefers-reduced-motion: reduce) {
-  *, *::before, *::after { transition: none !important; animation: none !important; }
-}
 @media (forced-colors: active) {
   .state, .tag, .in-use, .pos, .meter, .now > div, .panel, .need, .lanes, .route-note.is-limit, .route-note.is-attn, .work-role { border: 1px solid CanvasText; }
   .account-card.is-attention { border: 3px double CanvasText; }
@@ -423,6 +430,8 @@ body.has-banner { padding-bottom: 8rem; }
   .dot-unknown { background: Canvas; border: 1px solid CanvasText; }
   .pick[aria-current="page"] { outline: 2px solid Highlight; outline-offset: -2px; }
   .tools .btn[aria-pressed="true"] { background: Highlight; color: HighlightText; border-color: Highlight; }
+  /* The route in use keeps its filled position badge. */
+  .route.is-active .pos { background: Highlight; color: HighlightText; border-color: Highlight; }
 }
 
 /* The page shown for a used or expired link. It has no session and no script. */

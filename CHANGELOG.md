@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Panel accessibility: with reduced motion the page no longer switches off every animation and transition at once; **Read now**'s icon still turns, slowly, while a read runs, and colour changes stay. Choosing another view, or the skip link, moves the keyboard focus to the view's heading, with the page's focus ring, instead of to the whole page area without one; a read moves no focus. Without JavaScript the page says that it needs it and shows no header buttons and no "Reading…" line. In forced colours the route in use keeps its filled position badge. See [the panel](docs/dock.md).
+
 - On a narrow window, a loop's "Inspect" link under "Loops and lanes" wraps a long loop name instead of running past the edge of the page.
 
 - The panel no longer puts an orange "Stale" badge beside a loop's last-check age on the "Loops and lanes" row and the loop's "Last check" card. The age is said in plain words, as usage readings' ages are; a loop that is on and not checked for longer than `--stale-after` keeps its own "Not checked recently" state.
