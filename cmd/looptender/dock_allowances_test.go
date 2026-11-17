@@ -31,6 +31,7 @@ func TestDockAllowancesHeadedByAssignedAccount(t *testing.T) {
 	route := func(key, title, identity string, u dockUsageTarget) dockRoute {
 		return dockRoute{Key: key, Provider: "codex", Account: "codex", Title: title, Tool: "Codex CLI", identity: identity, Usage: u}
 	}
+	grouped := func(r dockRoute, group string) dockRoute { r.TitleAccount = group; return r }
 	type use struct {
 		loop, route string
 		agent       config.Agent
@@ -102,6 +103,15 @@ func TestDockAllowancesHeadedByAssignedAccount(t *testing.T) {
 			[]dockRoute{route("rA", "gpt-small", "id-1", low), route("rB", "gpt-example", "id-1", out)},
 			[]string{"Work Codex | 1 route | assigned by_you | gpt-example: Read 2 h ago",
 				"codex | 1 route | Not assigned to an account. | own reading: "}},
+		{"under a label a route is named by its model alone",
+			[]use{{"alpha", "rA", codexBound}, {"alpha", "rB", codexBB}},
+			[]dockRoute{grouped(route("rA", "gpt-example", "", low), "team-account"), grouped(route("rB", "gpt-small", "", low), "team-second-account")},
+			[]string{"Work Codex | 2 routes | assigned by_you | gpt-example: Read 20 min ago | gpt-small: Read 20 min ago (BB thread)"}},
+		{"the group is added back only where two lines share a name",
+			[]use{{"alpha", "rA", codexBound}, {"alpha", "rB", codexBB}, {"alpha", "rC", codexBB}},
+			[]dockRoute{grouped(route("rA", "gpt-example", "", low), "team-account"), grouped(route("rB", "gpt-example", "", low), "team-second-account"),
+				grouped(route("rC", "gpt-small", "", low), "team-third-account")},
+			[]string{"Work Codex | 3 routes | assigned by_you | gpt-example on team-account: Read 20 min ago | gpt-example on team-second-account: Read 20 min ago (BB thread) | gpt-small: Read 20 min ago (BB thread)"}},
 	} {
 		t.Run(c.name, func(t *testing.T) {
 			allow, _ := build(c.uses, c.routes)

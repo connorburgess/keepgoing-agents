@@ -168,6 +168,7 @@ type dockAllowanceLine struct {
 	// Notes are each loop that left this route on a usage limit.
 	Notes []dockNote `json:"notes,omitempty"`
 	out   bool
+	group string
 }
 
 type dockRegistry struct {
@@ -949,11 +950,10 @@ func dockAllowances(routes []dockRoute, loops []dockLoop, now time.Time) ([]dock
 				a.LinesOmitted++
 				continue
 			}
-			title := r.Title
-			if r.TitleAccount != "" {
-				title += " on " + r.TitleAccount
-			}
-			ln := dockAllowanceLine{Route: r.Key, Title: clip(title, 80), BBThread: ra.Check == accounts.RouteNotVerified}
+			// Under the account's label a route is named by its model alone;
+			// its group is added back below only where two lines of the block
+			// would otherwise have the same name.
+			ln := dockAllowanceLine{Route: r.Key, Title: clip(r.Title, 80), BBThread: ra.Check == accounts.RouteNotVerified, group: r.TitleAccount}
 			for _, d := range r.LeftBy {
 				if d.atLimit() {
 					s := txt(d.loop + " hit a usage limit on this route")
@@ -1025,6 +1025,15 @@ func dockAllowances(routes []dockRoute, loops []dockLoop, now time.Time) ([]dock
 		a := &out[i]
 		if a.Assigned != "" {
 			a.Sub = dockPlural(a.Routes, "route", "routes")
+			same := map[string]int{}
+			for _, l := range a.Lines {
+				same[l.Title]++
+			}
+			for j := range a.Lines {
+				if l := &a.Lines[j]; same[l.Title] > 1 && l.group != "" {
+					l.Title = clip(l.Title+" on "+l.group, 80)
+				}
+			}
 			// Within the block, the routes that are out first.
 			sort.SliceStable(a.Lines, func(x, y int) bool { return a.Lines[x].out && !a.Lines[y].out })
 			continue
