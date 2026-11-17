@@ -45,12 +45,17 @@ func accountExplicitIsDefault(e accounts.Entry, home string) bool {
 	if resolved, err := filepath.EvalSymlinks(def); err == nil {
 		def = resolved
 	}
-	dir, def := filepath.Clean(e.Directory), filepath.Clean(def)
+	return accountSameDirectory(e.Directory, def)
+}
+
+// accountSameDirectory compares two directories after cleaning; Windows
+// paths compare without regard to case.
+func accountSameDirectory(a, b string) bool {
+	a, b = filepath.Clean(a), filepath.Clean(b)
 	if runtime.GOOS == "windows" {
-		// Windows paths compare without regard to case.
-		return strings.EqualFold(dir, def)
+		return strings.EqualFold(a, b)
 	}
-	return dir == def
+	return a == b
 }
 
 // doctorAccountsCatalog is the catalog directory doctor reads for

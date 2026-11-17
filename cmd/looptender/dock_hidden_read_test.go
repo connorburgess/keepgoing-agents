@@ -21,6 +21,9 @@ func TestDockHiddenTabReadsNothingG1(t *testing.T) {
 	if strings.Contains(load[:server], "schedule()") {
 		t.Error("a hidden tab must not keep a timer going")
 	}
+	if !strings.Contains(load[strings.Index(load, "getJSON(API"):], "loadUsage();") {
+		t.Error("the Usage read must follow a report read, never run from a hidden tab")
+	}
 	if !strings.Contains(js, "(state.missed || (state.lastOk && Date.now() - state.lastOk > 5000))) { clearTimeout(state.timer); load(true); }") {
 		t.Error("showing the tab must read once when a read was missed")
 	}
@@ -46,9 +49,11 @@ func TestDockReadsTimeOutG2(t *testing.T) {
 			t.Errorf("dock.js lacks %q", want)
 		}
 	}
-	// Reads go through getJSON only; fetch is called there and by post(),
-	// the changes, which are not retried and are not timed out.
-	if n := strings.Count(js, "fetch("); n != 2 {
+	// The report and server reads go through getJSON; fetch is otherwise
+	// called by post(), the changes, which are not retried and are not timed
+	// out, and by loadUsage(), which has its own timeout and runs only after
+	// a report read, so a hidden tab never starts it.
+	if n := strings.Count(js, "fetch("); n != 3 || !strings.Contains(jsFunction(t, js, "function loadUsage() {"), "signal: abort.signal") {
 		t.Errorf("fetch( appears %d times", n)
 	}
 	if !strings.Contains(jsFunction(t, js, "function loadServer() {"), "getJSON(SERVER)") {

@@ -89,6 +89,9 @@ type initReport struct {
 type initTarget struct {
 	Agent   agentRef `json:"agent"`
 	Account string   `json:"account"` // inherited or explicit_directory
+	// CatalogAccount is the accounts catalog ID the person named for this
+	// route, written as its account; absent when none was named.
+	CatalogAccount string `json:"catalogAccount,omitempty"`
 }
 type initFallbackRef struct {
 	ID     string     `json:"id"`
@@ -124,7 +127,7 @@ type initNextCommands struct {
 }
 
 func initTargetOf(a config.Agent) initTarget {
-	t := initTarget{Agent: refOf(a), Account: "inherited"}
+	t := initTarget{Agent: refOf(a), Account: "inherited", CatalogAccount: a.Account}
 	if (a.Claude != nil && len(a.Claude.Env) > 0) || (a.Codex != nil && len(a.Codex.Env) > 0) {
 		t.Account = "explicit_directory"
 	}

@@ -40,8 +40,13 @@ const (
 )
 
 type dockReport struct {
-	Accounts      *accounts.View `json:"accounts,omitempty"`
-	SchemaVersion int            `json:"schemaVersion"`
+	Accounts *accounts.View `json:"accounts,omitempty"`
+	// AccountUses is each account card, then each account context routes
+	// use with no catalog entry, with the routes and loops that use it
+	// (dock_account_routes.go). It is filled with Accounts.
+	AccountUses        []dockAccountUse `json:"accountUses,omitempty"`
+	AccountUsesOmitted int              `json:"accountUsesOmitted,omitempty"`
+	SchemaVersion      int              `json:"schemaVersion"`
 	// ReadOnly is true for every response of this schema: the page offers no
 	// control and there is no write endpoint.
 	ReadOnly          bool         `json:"readOnly"`
@@ -83,6 +88,12 @@ type dockReport struct {
 	// Versions is where each build on this computer runs, against the newest
 	// one seen here. Only the page's endpoint fills it.
 	Versions *dockVersions `json:"versions,omitempty"`
+	// UsagePicker is the Usage row's sub-line in the picker: the week's
+	// withheld wakes across loops, as a plain count. The page itself is
+	// served from dockUsagePath, worded by the same read.
+	UsagePicker string `json:"usagePicker"`
+	// usage is that page, kept out of this response for its size.
+	usage dockUsagePage
 }
 
 // dockRoutesLine is the count line of the routes view and the picker.
@@ -420,6 +431,7 @@ type dockChainEntry struct {
 	// CatalogAccount is the accounts-catalog entry the route names, or its
 	// derived account context (route_account.go).
 	CatalogAccount *accounts.RouteAccount `json:"catalogAccount,omitempty"`
+	acct           dockAccountFacts
 	identity       string
 	probeOK        bool
 }
@@ -1086,12 +1098,17 @@ func buildDockReport(inputs []dockInput, now time.Time, refresh, staleAfter time
 		NeedsLine: "Needs you: unknown"}
 	r.RoutesSummary = dockRoutesLine{Picker: "No routes", Total: "No routes", InUseT: "0 running now", Problem: "none at a limit or failing its test"}
 	if !registryOK {
+		r.UsagePicker = "Unavailable"
+		r.usage = buildDockUsagePage(nil, now, complete)
+		r.usage.Total = []string{"The list of loops could not be read, so nothing can be counted."}
 		return r
 	}
 	r.Registry = dockRegistry{Availability: "available", Count: len(inputs) + omitted, Omitted: omitted}
+	statuses := make(map[string]*statusOut, len(inputs))
 	for _, in := range inputs {
 		loop, need := projectDockLoop(in, now, staleAfter, identifiers)
 		r.Loops = append(r.Loops, loop)
+		statuses[loop.Key] = in.Status
 		if need != nil {
 			r.NeedsYou = append(r.NeedsYou, *need)
 			if need.Kind == "unreadable" {
@@ -1121,6 +1138,12 @@ func buildDockReport(inputs []dockInput, now time.Time, refresh, staleAfter time
 	r.NeedsLine = dockNeedsLine(r)
 	r.Lede = dockLede(r)
 	r.RoutesSummary = dockRoutesSummary(r)
+	usage := make([]dockUsageInput, 0, len(r.Loops))
+	for _, l := range r.Loops {
+		usage = append(usage, dockUsageInput{Key: l.Key, Name: l.Name, Status: statuses[l.Key]})
+	}
+	r.UsagePicker = dockUsagePicker(usage)
+	r.usage = buildDockUsagePage(usage, now, complete)
 	quiet := map[string]bool{"supervising": true, "paused": true, "off": true, "stopped": true, "finished": true, "waiting_for_you": true, "unknown": true}
 	for _, l := range r.Loops {
 		flagged := l.NoProgress != nil && l.NoProgress.Availability == "flagged"
@@ -2168,7 +2191,7 @@ func dockHandoffChain(in *dockChainInput, use dockRouteUse, test dockTesting, f 
 		main.Notes = append(main.Notes, dockNote{Tone: "limit", Text: main.Usage.UsedUp})
 	}
 	main.identity = dockAccountIdentity(in.Primary, main.Usage)
-	main.CatalogAccount = dockCatalogAccount(in, in.Primary.Agent)
+	main.CatalogAccount, main.acct = dockCatalogAccount(in, in.Primary.Agent), dockAccountFactsOf(in.Primary.Agent)
 	c.Entries = append(c.Entries, main)
 	if len(in.Candidates) == 0 {
 		c.Availability = "none_configured"
@@ -2256,7 +2279,7 @@ func dockHandoffChain(in *dockChainInput, use dockRouteUse, test dockTesting, f 
 			e.Notes = append(e.Notes, dockNote{Tone: "limit", Text: e.Usage.UsedUp})
 		}
 		e.identity = dockAccountIdentity(cand, e.Usage)
-		e.CatalogAccount = dockCatalogAccount(in, cand.Agent)
+		e.CatalogAccount, e.acct = dockCatalogAccount(in, cand.Agent), dockAccountFactsOf(cand.Agent)
 		c.Entries = append(c.Entries, e)
 	}
 	if c.Omitted > 0 {

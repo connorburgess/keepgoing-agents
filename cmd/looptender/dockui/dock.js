@@ -11,7 +11,10 @@
   var FAIL_LONG_MS = 120000;
   var API = "api/v1/dock";
   var SERVER = "api/v1/server";
-  var state = { data: null, identifiers: false, paused: false, timer: 0, busy: false, again: false, missed: false, lastOk: null, failed: false, failedSince: 0, failedLong: false, notice: "", pending: false, said: "", server: null, treeOpen: Object.create(null), accountOpen: Object.create(null) };
+  // What looptender did: worded by the same read as API, served on its own
+  // for its size, and read only for the Usage page and a loop's page.
+  var USAGE = "api/v1/usage";
+  var state = { data: null, identifiers: false, paused: false, timer: 0, busy: false, again: false, missed: false, lastOk: null, failed: false, failedSince: 0, failedLong: false, notice: "", pending: false, said: "", server: null, treeOpen: Object.create(null), accountOpen: Object.create(null), usage: null, usageText: "", usageFailed: false, usageBusy: false };
 
   var TONES = {
     supervising: "good", waiting_for_you: "attn", waiting_on_limit: "limit", waiting_on_network: "limit", checks_failing: "warn",
@@ -117,13 +120,15 @@
   }
 
   // Routing: "#/" is the overview, "#/loop/<key>" one loop, "#/routes" every
-  // route and "#/routes/<key>" every route, at that one.
+  // route and "#/routes/<key>" every route, at that one; "#/usage" is what
+  // looptender did.
   function route() {
     var h = location.hash.replace(/^#\/?/, "");
     var m = /^routes(?:\/(r[0-9a-f]+))?$/.exec(h);
     if (m) return { view: "routes", key: m[1] || "" };
     if (h === "accounts") return { view: "accounts" };
     if (h === "versions") return { view: "versions" };
+    if (h === "usage") return { view: "usage" };
     m = /^loop\/([a-z0-9]+)$/.exec(h);
     if (m) return { view: "loop", key: m[1] };
     return { view: "home" };
@@ -298,8 +303,12 @@
     // it cannot take. With changes allowed, the loop's own controls do it.
     if (n.resume && !changesOn()) {
       li.appendChild(el("p", "sub resume-where", "This page cannot resume a loop. In a terminal, run:"));
-      li.appendChild(copyCommand(el("p", "copy resume-command"), n.resume, "copy-resume-" + n.key));
+      // The page may hold several copy buttons; this one names its loop.
+      var cmd = copyCommand("p", n.resume, "copy-resume-" + n.key, "resume-where-" + n.key);
+      cmd.classList.add("resume-command");
+      li.appendChild(cmd);
       var where = el("p", "sub resume-where");
+      where.id = "resume-where-" + n.key;
       put(where, ["CONFIG is the path of " + n.loop + "'s configuration file; ", el("code", null, "keepgoing registry list --private"), " lists it."]);
       li.appendChild(where);
     }
@@ -346,9 +355,10 @@
     var rs = d.routesSummary || {};
     fixed.appendChild(pickRow("#/routes", rs.trouble ? "dot-limit" : "dot-calm", "Routes", rs.picker || "", r.view === "routes"));
     var ac = d.accounts || {};
-    fixed.appendChild(pickRow("#/accounts", "dot-calm", "Accounts", ac.complete ? list(ac.cards).length + " selected" : "Unavailable", r.view === "accounts"));
+    fixed.appendChild(pickRow("#/accounts", "dot-calm", "Accounts", ac.complete ? list(ac.cards).length + " selected" + (unnamedCount(d) ? " · " + unnamedCount(d) + " not named yet" : "") : "Unavailable", r.view === "accounts"));
     var vs = d.versions || {};
     fixed.appendChild(pickRow("#/versions", vs.behind ? "dot-limit" : "dot-calm", "Versions", vs.summary || "", r.view === "versions"));
+    fixed.appendChild(pickRow("#/usage", "dot-calm", "Usage", d.usagePicker || "", r.view === "usage"));
     nav.appendChild(fixed);
 
     var label = el("p", "pick-label", "Loops");
@@ -711,9 +721,11 @@
     routing.appendChild(el("p", "sub chain-how", c.how || "Unknown."));
     var ol = el("ol", "route-list is-ordered");
     entries.forEach(function (e) {
+      var bound = boundAccount(e.catalogAccount);
       var item = routeItem({
-        route: e.route, position: e.position, badge: String(e.position + 1), title: e.title, titleAccount: e.titleAccount, active: e.inUse, use: e.use, off: e.disabled,
-        readiness: e.position > 0 && e.readiness !== "current" ? e.readiness : "", phrase: e.phrase, notes: notesOf(e.notes), after: e.after,
+        route: e.route, position: e.position, badge: String(e.position + 1), title: e.title, titleAccount: bound || e.titleAccount, active: e.inUse, use: e.use, off: e.disabled,
+        readiness: e.position > 0 && e.readiness !== "current" ? e.readiness : "", phrase: e.phrase, notes: notesOf(e.notes),
+        after: list(e.after).concat(e.catalogAccount && e.catalogAccount.assigned === "none" ? ["Not assigned to an account."] : []),
         meta: e.meta, named: e.named, usage: e.usage, boxes: e.current ? [laneBox(l)] : []
       });
       item.setAttribute("aria-label", "Choice " + (e.position + 1) + ": " + e.title + (e.use ? ", " + e.use : ""));
@@ -769,6 +781,129 @@
       checks.appendChild(ids);
     }
     pane.appendChild(checks);
+    pane.appendChild(usageBrief(key));
+  }
+
+  // ---- Usage: what looptender did, in counted sentences ----
+  // The server words every sentence from the loop's recorded figures; the
+  // page only lays them out. Nothing here is a warning.
+  function usageFor(key) { return state.usage ? list(state.usage.loops).filter(function (x) { return x.key === key; })[0] : null; }
+  function usagePending() {
+    return state.usageFailed ? "What looptender did could not be read. It is read again with the next update." : "Reading what looptender did…";
+  }
+  function sentences(items, keys) {
+    var ul = el("ul", "usage-lines");
+    list(items).forEach(function (s) {
+      var li = el("li");
+      // A configuration key in the sentence is set as code.
+      if (keys) String(s).split(/\b([a-z]+(?:_[a-z]+)+(?:\.[a-z_]+)?)\b/).forEach(function (part, i) { li.appendChild(i % 2 ? el("code", null, part) : document.createTextNode(part)); });
+      else li.textContent = s;
+      ul.appendChild(li);
+    });
+    return ul;
+  }
+  function usageBrief(key) {
+    var p = panel("What looptender did this week");
+    p.classList.add("usage-brief");
+    var x = usageFor(key);
+    if (x) p.appendChild(sentences(x.brief));
+    else p.appendChild(el("p", "sub", state.usage ? "Not counted yet. It is read again with the next update." : usagePending()));
+    p.appendChild(link("#/usage", "Every count, on the Usage page", "work-inspect"));
+    return p;
+  }
+  var DAY_HEADS = ["Day (UTC)", "Lowest", "Highest", "Last", "Window", "Source"];
+  function daysTable(x) {
+    var id = "usage-days-" + x.key;
+    var wrap = el("div", "table-wrap");
+    // Keyboard users can scroll it when it is wider than the page.
+    wrap.tabIndex = 0;
+    wrap.setAttribute("role", "region");
+    wrap.setAttribute("aria-labelledby", id);
+    var t = el("table", "usage-days");
+    var cap = el("caption", null, "Context readings by day, in tokens");
+    cap.id = id;
+    t.appendChild(cap);
+    var head = el("thead"), hr = el("tr");
+    DAY_HEADS.forEach(function (h) { var th = el("th", null, h); th.scope = "col"; hr.appendChild(th); });
+    head.appendChild(hr);
+    t.appendChild(head);
+    var body = el("tbody");
+    list(x.days).forEach(function (day) {
+      var tr = el("tr");
+      var th = el("th", null, day.day);
+      th.scope = "row";
+      tr.appendChild(th);
+      [day.lowest, day.highest, day.last, day.window].forEach(function (v) { tr.appendChild(el("td", "num", v)); });
+      tr.appendChild(el("td", null, day.estimated ? "estimated by BB" : "reported by BB"));
+      body.appendChild(tr);
+    });
+    t.appendChild(body);
+    wrap.appendChild(t);
+    return wrap;
+  }
+  function renderUsage(d, pane) {
+    pane.appendChild(back());
+    pane.appendChild(paneHead("Usage"));
+    var u = state.usage;
+    if (!u) {
+      pane.appendChild(emptyBox(usagePending(), ""));
+      return;
+    }
+    pane.appendChild(el("p", "lede", u.lede));
+    pane.appendChild(el("p", "detail", u.period));
+    var all = panel("Across loops");
+    all.appendChild(sentences(u.total));
+    all.appendChild(el("p", "usage-how", u.mechanism));
+    pane.appendChild(all);
+    var ctx = panel("What looptender does about context");
+    ctx.appendChild(sentences(u.context, true));
+    ctx.appendChild(el("p", "usage-how", u.chat));
+    pane.appendChild(ctx);
+    list(u.loops).forEach(function (x) {
+      var p = el("section", "panel usage-loop");
+      var h = el("h2");
+      h.appendChild(link("#/loop/" + x.key, x.name));
+      p.appendChild(h);
+      p.appendChild(sentences(x.did));
+      p.appendChild(el("h3", "usage-sub", "Context window"));
+      p.appendChild(sentences(x.window));
+      if (list(x.days).length) p.appendChild(daysTable(x));
+      pane.appendChild(p);
+    });
+  }
+  function wantsUsage(r) { return r.view === "usage" || r.view === "loop"; }
+  // Read on its own after the report, at low priority on a loop's page
+  // where it is not the main content. A failure leaves the last answer.
+  // A read that does not answer within usageTimeout() is abandoned and
+  // counts as failed, so a stalled request never stops later reads. The
+  // page is drawn again only when the answer (apart from its readAt) or
+  // the failed state changed, so an unchanged answer does not redraw a
+  // loop's page a second time after each read.
+  function usageTimeout() { return Math.min(20000, Math.max(3000, refreshSeconds() * 1000 - 2000)); }
+  function loadUsage() {
+    if (state.usageBusy) return;
+    state.usageBusy = true;
+    var abort = new AbortController();
+    var timer = setTimeout(function () { abort.abort(); }, usageTimeout());
+    var wasText = state.usageText, wasFailed = state.usageFailed;
+    fetch(USAGE, { cache: "no-store", credentials: "same-origin", headers: { Accept: "application/json" }, priority: route().view === "usage" ? "auto" : "low", signal: abort.signal })
+      .then(function (r) { if (!r.ok) throw new Error("status " + r.status); return r.text(); })
+      .then(function (text) {
+        var u = JSON.parse(text);
+        if (!u || u.schemaVersion !== SCHEMA || !Array.isArray(u.loops)) throw new Error("schema");
+        // Every read has its own readAt, which the page does not show; the
+        // rest of the answer is what is compared.
+        var same = JSON.stringify(Object.assign({}, u, { readAt: null }));
+        if (same !== state.usageText) { state.usage = u; state.usageText = same; }
+        state.usageFailed = false;
+      })
+      .catch(function () { state.usageFailed = true; })
+      .then(function () {
+        clearTimeout(timer);
+        state.usageBusy = false;
+        var changed = state.usageText !== wasText || state.usageFailed !== wasFailed;
+        if (changed && state.data && wantsUsage(route())) render(false);
+      });
   }
 
   // The command that opens a loop's BB thread, to copy and run yourself.
@@ -778,16 +913,19 @@
   var THREAD_ID = /^thr_[A-Za-z0-9_]+$/;
   function threadCommand(id) {
     if (typeof id !== "string" || !THREAD_ID.test(id)) return null;
-    return copyCommand(el("dd", "copy"), "bb thread open " + id, "copy-thread-command");
+    return copyCommand("dd", "bb thread open " + id, "copy-thread-command");
   }
-  // A command to copy and run yourself, into box: the command, selectable,
-  // and a button only where the browser can copy.
-  function copyCommand(box, text, focus) {
-    box.appendChild(el("code", "command", text));
+  // A command to copy and run yourself, with a copy button where the
+  // browser can copy. The page runs nothing.
+  // describedBy names what the command is for when a page has several.
+  function copyCommand(tagName, text, focus, describedBy) {
+    var dd = el(tagName, "copy");
+    dd.appendChild(el("code", "command", text));
     if (navigator.clipboard && navigator.clipboard.writeText) {
       var b = el("button", "btn", "Copy the command");
       b.type = "button";
       b.dataset.focus = focus;
+      if (describedBy) b.setAttribute("aria-describedby", describedBy);
       b.addEventListener("click", function () {
         // Cleared first, so a second press is announced again.
         state.said = "";
@@ -798,9 +936,9 @@
           announce("Could not copy. Select the command instead.");
         });
       });
-      box.appendChild(b);
+      dd.appendChild(b);
     }
-    return box;
+    return dd;
   }
 
   // ---- Changes: pause, stop and resume, on a panel started with --allow-changes ----
@@ -1033,6 +1171,105 @@
     f.appendChild(document.createTextNode(" to a route to link it (see docs/accounts.md)."));
     return f;
   }
+  // A route bound to a catalog entry, as the loop page names it: the
+  // person's label and that the binding is theirs, never a verified identity.
+  var ASSIGNED = "assigned by you · identity not verified";
+  var ASSIGNED_BB = "assigned by you · not verified for BB threads (account set per project)";
+  function dockCapital(t) { return t ? t.charAt(0).toUpperCase() + t.slice(1) : t; }
+  function boundAccount(a) {
+    if (!a || a.assigned !== "by_you" || !a.label || (a.check !== "consistent" && a.check !== "not_verified")) return "";
+    return a.label + " · " + (a.check === "not_verified" ? ASSIGNED_BB : ASSIGNED);
+  }
+  var SELECTIONS = { inherited: "Inherited context", explicit_directory: "Selected directory", bb_thread: "BB thread (account set per project)", externally_managed: "External context" };
+  // The reading of a route by its key: the routes view's, else the first
+  // loop's chain entry on it (a route past the routes view's cap).
+  function routeUsage(d, key) {
+    var r = list(d.routes).filter(function (x) { return x.key === key; })[0];
+    if (r) return r.usage;
+    var u = null;
+    list(d.loops).some(function (l) {
+      return list(l.chain && l.chain.entries).some(function (e) { if (e.route === key) { u = e.usage; return true; } return false; });
+    });
+    return u;
+  }
+  // The routes that use an account, each with the loops that use it and its
+  // own reading. Readings are never merged.
+  function accountRouteList(d, use, named) {
+    var names = Object.create(null);
+    list(d.loops).forEach(function (l) { names[l.key] = l.name; });
+    var wrap = frag();
+    // A route whose check found a mismatch says what the check says in
+    // place of "assigned by you".
+    if (list(use.routes).some(function (r) { return !r.bbThread && !r.checkText; }) && named) wrap.appendChild(el("p", "sub", ASSIGNED));
+    var ul = el("ul", "account-routes");
+    list(use.routes).forEach(function (r) {
+      var li = el("li", "account-route");
+      var head = el("p", "account-route-name");
+      head.appendChild(link("#/routes/" + r.route, r.title));
+      li.appendChild(head);
+      if (r.checkText) li.appendChild(el("p", "sub", dockCapital(r.checkText) + ". Its reading is not counted for this account."));
+      else if (r.bbThread && named) li.appendChild(el("p", "sub", ASSIGNED_BB));
+      var used = el("p", "sub");
+      used.appendChild(document.createTextNode(list(r.loops).length === 1 && !r.omitted ? "Used by the loop " : "Used by the loops "));
+      list(r.loops).forEach(function (k, i) {
+        if (i) used.appendChild(document.createTextNode(", "));
+        used.appendChild(link("#/loop/" + k, names[k] || "a loop"));
+      });
+      if (r.omitted) used.appendChild(document.createTextNode(" and " + r.omitted + " more"));
+      li.appendChild(used);
+      li.appendChild(usageBlock(routeUsage(d, r.route)));
+      ul.appendChild(li);
+    });
+    wrap.appendChild(ul);
+    if (use.omitted) wrap.appendChild(el("p", "more", use.omitted + (use.omitted === 1 ? " more route is" : " more routes are") + " not shown."));
+    return wrap;
+  }
+  // The newest reading among an account's routes, in the summary. Being out
+  // is information here, not a warning.
+  function accountReading(use) {
+    return list(use && use.reading).length ? el("span", "sub account-reading", say(use.reading)) : null;
+  }
+  // An account context routes use with no catalog entry: neutral, with one
+  // quiet "not named yet" tag and the command that would name it.
+  function unnamedCard(d, u, cards) {
+    var li = el("li", "account-card is-unnamed"), details = el("details");
+    var k = "context-" + u.context;
+    details.open = !!state.accountOpen[k];
+    var summary = el("summary", "account-summary");
+    summary.setAttribute("data-focus", "account-" + k);
+    var identity = el("span", "account-title");
+    var name = el("span", "account-name", u.title);
+    name.id = "account-name-" + u.context;
+    name.appendChild(tag("calm", "not named yet"));
+    identity.appendChild(name);
+    identity.appendChild(el("span", "sub", SELECTIONS[u.selection] || "Context as configured"));
+    if (u.group && u.group !== u.provider) identity.appendChild(el("span", "sub", "Group " + u.group));
+    // Several unnamed accounts can share a heading; their first route tells
+    // them apart at a glance.
+    var rs = list(u.routes), more = rs.length - 1 + (u.omitted || 0);
+    if (rs.length) identity.appendChild(el("span", "sub", "Routes: " + rs[0].title + (more ? " and " + more + " more" : "")));
+    summary.appendChild(identity);
+    var status = el("span", "account-status");
+    var reading = accountReading(u);
+    if (reading) status.appendChild(reading);
+    summary.appendChild(status);
+    details.appendChild(summary);
+    var body = el("div", "account-body"), facts = el("dl", "work-facts");
+    if (u.directory) facts.appendChild(fact("Directory", u.directory));
+    var same = list(u.mayBeSame).map(function (id) { return list(cards).filter(function (c) { return c.id === id; })[0]; }).filter(Boolean);
+    if (same.length) facts.appendChild(fact("May be the same account as", same.map(function (c) { return c.label; }).join(", ") + " (same provider and selection; not verified)"));
+    facts.appendChild(fact("Routes", accountRouteList(d, u, false)));
+    body.appendChild(facts);
+    var nameIt = el("div", "account-name-it");
+    nameIt.appendChild(el("p", "sub", "To name it, run this with your own label" + (u.selection === "explicit_directory" && !u.directory ? " and its directory (Show identifiers to fill it in)" : "") + ". Naming it changes no route."));
+    nameIt.appendChild(copyCommand("div", u.add, "copy-add-" + u.context, "account-name-" + u.context));
+    body.appendChild(nameIt);
+    details.appendChild(body);
+    details.addEventListener("toggle", function () { if (details.isConnected) state.accountOpen[k] = details.open; });
+    li.appendChild(details);
+    return { li: li, key: k, open: details.open };
+  }
+  function unnamedCount(d) { return list(d.accountUses).filter(function (u) { return u.context; }).length; }
   function renderAccounts(d, pane) {
     var a = d.accounts || {};
     pane.appendChild(back());
@@ -1041,18 +1278,21 @@
     pane.appendChild(el("p", "sub", "Read-only. Reading this page never checks a login or calls a model."));
     var usage = el("p", "account-usage-link");
     usage.appendChild(link("#/routes", "View recorded usage", "work-inspect"));
-    usage.appendChild(el("span", "sub", ". Readings come from configured routes, are not live, and are not linked to these account cards."));
+    usage.appendChild(el("span", "sub", ". Readings come from configured routes and are not live. Each account shows the readings of the routes that use it."));
     pane.appendChild(usage);
     if (!a.complete || a.state !== "available") {
       pane.appendChild(emptyBox("Accounts unavailable", "The private account catalog could not be read completely. This does not mean no accounts are selected."));
       return;
     }
-    var cards = list(a.cards);
-    if (!cards.length) {
+    var cards = list(a.cards), uses = list(d.accountUses), byCard = Object.create(null);
+    uses.forEach(function (u) { if (u.card) byCard[u.card] = u; });
+    var unnamed = uses.filter(function (u) { return u.context; });
+    if (!cards.length && !unnamed.length) {
       pane.appendChild(emptyBox("No accounts selected here yet", "Select an existing account context with the accounts add command, then explicitly check it with accounts check. Provider sign-in stays in the official provider tool."));
       return;
     }
-    pane.appendChild(el("p", "account-count", cards.length + (cards.length === 1 ? " selected account" : " selected accounts")));
+    pane.appendChild(el("p", "account-count", cards.length + (cards.length === 1 ? " selected account" : " selected accounts") + (unnamed.length ? " · " + unnamed.length + " not named yet" : "")));
+    if (!d.complete || (d.registry || {}).availability !== "available") pane.appendChild(el("p", "sub", "Not every loop could be read, so an account its routes use may be missing here."));
     var ul = el("ul", "accounts-list"), retained = Object.create(null);
     cards.forEach(function (c) {
       var li = el("li", "account-card" + (c.needsPerson ? " is-attention" : "")), details = el("details");
@@ -1074,6 +1314,8 @@
         need.appendChild(el("span", null, failed ? failedCheckLine(c) : ACCOUNT_ATTENTION[c.attention] || "Something on this account needs a look."));
         status.appendChild(need);
       } else if (failed) status.appendChild(el("span", "sub", failedCheckLine(c)));
+      var reading = accountReading(byCard[c.id]);
+      if (reading) status.appendChild(reading);
       summary.appendChild(status);
       var plan = el("span", "account-plan");
       plan.appendChild(el("span", "sub", "Reported plan"));
@@ -1084,7 +1326,8 @@
       var facts = el("dl", "work-facts");
       if (state.identifiers) facts.appendChild(fact("Connection ID", c.id));
       facts.appendChild(fact("Account identity", "Not verified. The name is your selected label."));
-      facts.appendChild(fact("Routes", accountRoutes(c)));
+      var use = byCard[c.id];
+      facts.appendChild(fact("Routes", use && list(use.routes).length ? accountRouteList(d, use, true) : accountRoutes(c)));
       body.appendChild(facts);
       // The catalog records no model: a route chooses it, and a check never
       // calls one. Said once, quietly, in place of two empty rows.
@@ -1109,12 +1352,19 @@
       if (c.attention !== "context_changed" && (c.needsPerson || (c.auth && c.auth.checkAgain) || (c.plan && c.plan.checkAgain))) li.appendChild(accountCheckHint(c));
       ul.appendChild(li);
     });
+    unnamed.forEach(function (u) {
+      var x = unnamedCard(d, u, cards);
+      retained[x.key] = x.open;
+      ul.appendChild(x.li);
+    });
     state.accountOpen = retained;
     pane.appendChild(ul);
+    if (d.accountUsesOmitted) pane.appendChild(el("p", "more", d.accountUsesOmitted + (d.accountUsesOmitted === 1 ? " more account is" : " more accounts are") + " not shown."));
     // One footnote for the page, naming the command. With one card its ID
     // fills in as on the card's own hint.
     var note = el("p", "sub account-footnote");
     note.appendChild(document.createTextNode("Login and plan reports do not verify quota, model access or continuing availability. Nothing checks again on its own: the age shown is when the last explicit check ran, and after a day the card suggests checking again. To record another observation, run "));
+    if (!cards.length) return;
     note.appendChild(accountCheckCommand(cards.length === 1 ? cards[0] : null));
     note.appendChild(document.createTextNode(cards.length === 1 && state.identifiers ? "." : state.identifiers ? " with the card's connection ID." : " with the card's connection ID (Show identifiers to see it)."));
     pane.appendChild(note);
@@ -1296,6 +1546,7 @@
       if (r.view === "loop") renderLoop(d, pane, r.key);
       else if (r.view === "routes") renderRoutes(d, pane);
       else if (r.view === "versions") renderVersions(d, pane);
+      else if (r.view === "usage") renderUsage(d, pane);
       else if (r.view === "accounts") renderAccounts(d, pane);
       else renderHome(d, pane);
     } catch (err) {
@@ -1432,6 +1683,7 @@
         // reply is for the other view, so it is dropped and read again.
         if (asked !== state.identifiers) { state.again = true; return; }
         state.data = d; state.lastOk = Date.now(); state.failed = false; state.failedSince = 0; state.failedLong = false;
+        if (wantsUsage(route())) loadUsage();
         if (render(false) !== false) notice("cut", d.complete === false ? "This read was cut off before every loop was read. Loops that were not read are listed as could not be read; it reads again shortly." : "");
       })
       .catch(function (err) {
@@ -1484,7 +1736,10 @@
       ev.preventDefault();
       $("pane").focus();
     });
-    window.addEventListener("hashchange", function () { render(true); });
+    window.addEventListener("hashchange", function () {
+      render(true);
+      if (wantsUsage(route())) loadUsage();
+    });
     document.addEventListener("keydown", function (ev) {
       if (ev.key === "Escape" && state.change && state.change.preview && !state.change.busy) { ev.preventDefault(); cancelChange(); }
     });

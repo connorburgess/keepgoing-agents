@@ -53,12 +53,17 @@ func TestDockHeldNeedGivesTheResumeCommand(t *testing.T) {
 	js := dockUIText(t, "dock.js")
 	for _, want := range []string{
 		"if (n.resume && !changesOn()) {",
-		`copyCommand(el("p", "copy resume-command"), n.resume, "copy-resume-" + n.key)`,
+		// One copy helper; this button names its loop, since a page can
+		// hold several copy buttons.
+		`copyCommand("p", n.resume, "copy-resume-" + n.key, "resume-where-" + n.key)`,
+		`where.id = "resume-where-" + n.key;`,
 		`"keepgoing registry list --private"`,
-		`return copyCommand(el("dd", "copy"), "bb thread open " + id, "copy-thread-command");`,
 	} {
 		if !strings.Contains(js, want) {
 			t.Errorf("dock.js lacks %q", want)
 		}
+	}
+	if n := strings.Count(js, "function copyCommand("); n != 1 {
+		t.Errorf("function copyCommand( appears %d times", n)
 	}
 }
