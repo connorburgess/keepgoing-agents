@@ -80,6 +80,7 @@ func transferApply(e env, args []string, run doctorRun, afterStep func(string) e
 	cmd := args[0]
 	fs := flag.NewFlagSet("transfer "+cmd, flag.ContinueOnError)
 	fs.SetOutput(io.Discard)
+	providerFlags := providerTransferFlags(fs)
 	path := fs.String("c", "", configFlagHelp("configuration path"))
 	from := fs.String("from", "", "expected current BB primary (apply)")
 	to := fs.String("thread", "", "new existing BB primary (apply)")
@@ -98,6 +99,10 @@ func transferApply(e env, args []string, run doctorRun, afterStep func(string) e
 	}
 	if fs.NArg() != 0 || *timeout <= 0 || *timeout > 30*time.Second || (cmd == "apply" && (!transferThreadID.MatchString(*from) || !transferThreadID.MatchString(*to) || *from == *to || *id != "")) || (cmd == "recover" && (*id == "" || *from != "" || *to != "")) {
 		e.errf("transfer: apply requires distinct --from and --thread; recover requires --id; timeout must be greater than zero and at most 30s")
+		return exitUsage
+	}
+	if err := providerFlags.validate(fs, cmd == "recover"); err != nil {
+		e.errf("transfer: %v", err)
 		return exitUsage
 	}
 	fail := func(err error) int {
@@ -145,7 +150,11 @@ func transferApply(e env, args []string, run doctorRun, afterStep func(string) e
 		if err := transferCaller(ctl, *to, *takeOver); err != nil {
 			return fail(err)
 		}
-		edit, err = cfg.PrepareBBTransfer(*to)
+		route, routeErr := providerFlags.plan(cfg.Loop.Provider)
+		if routeErr != nil {
+			return fail(routeErr)
+		}
+		edit, err = cfg.PrepareBBProviderTransfer(*to, route)
 		if err != nil {
 			return fail(err)
 		}
@@ -154,6 +163,9 @@ func transferApply(e env, args []string, run doctorRun, afterStep func(string) e
 			return fail(errors.New("could not allocate transfer identity"))
 		}
 		p = control.PendingBBTransfer{Version: 1, ID: "move_" + hex.EncodeToString(random[:]), From: *from, To: *to, Before: cfg.SourceDigest(), After: edit.AfterDigest()}
+		if route != nil {
+			p.Version, p.FromProvider, p.ToProvider, p.Group, p.Model, p.Reasoning = 2, cfg.Loop.Provider, route.Provider, route.Group, route.Model, route.Reasoning
+		}
 	} else {
 		if ctl.PendingTransfer == nil || !ctl.PendingTransfer.Valid() || ctl.PendingTransfer.ID != *id || !ctl.AwaitingUser {
 			return fail(errors.New("pending transfer identity or recovery record does not match"))
@@ -163,7 +175,7 @@ func transferApply(e env, args []string, run doctorRun, afterStep func(string) e
 			return fail(err)
 		}
 		if cfg.SourceDigest() == p.Before && cfg.Loop.BB.Thread == p.From {
-			edit, err = cfg.PrepareBBTransfer(p.To)
+			edit, err = cfg.PrepareBBProviderTransfer(p.To, transferRecordedRoute(p))
 			if err != nil || edit.AfterDigest() != p.After {
 				return fail(errors.New("configuration no longer matches the planned replacement"))
 			}
@@ -184,7 +196,11 @@ func transferApply(e env, args []string, run doctorRun, afterStep func(string) e
 	if err != nil {
 		return fail(errors.New("destination BB identity unavailable"))
 	}
-	if source.Project != dest.Project || source.Environment != dest.Environment || source.Host != dest.Host || filepath.Clean(sourcePath) != filepath.Clean(destPath) || source.Provider != cfg.Loop.Provider || dest.Provider != cfg.Loop.Provider {
+	sourceProvider, destProvider := cfg.Loop.Provider, cfg.Loop.Provider
+	if p.Version == 2 {
+		sourceProvider, destProvider = p.FromProvider, p.ToProvider
+	}
+	if source.Project != dest.Project || source.Environment != dest.Environment || source.Host != dest.Host || filepath.Clean(sourcePath) != filepath.Clean(destPath) || source.Provider != sourceProvider || dest.Provider != destProvider {
 		return fail(errors.New("BB project, environment, host, working directory or provider differs; transfer refused"))
 	}
 	if e.ctx.Err() != nil {
@@ -236,7 +252,7 @@ func transferApply(e env, args []string, run doctorRun, afterStep func(string) e
 	if err := checkpoint("held"); err != nil {
 		return pendingFail(err)
 	}
-	if err := resetTransferState(cfg.Loop.StateDir); err != nil {
+	if err := resetTransferState(cfg.Loop.StateDir, p.Version == 2); err != nil {
 		return pendingFail(err)
 	}
 	if err := checkpoint("state"); err != nil {
@@ -288,7 +304,11 @@ func transferApply(e env, args []string, run doctorRun, afterStep func(string) e
 		}
 	} else {
 		fmt.Fprintf(e.stdout, "Transferred %s -> %s; awaiting explicit resume (owner generation %d).\n", p.From, p.To, f.Ownership.Generation)
-		fmt.Fprintln(e.stdout, "Model/reasoning and quota-group labels were retained; account and model identity remain unverified.")
+		if p.Version == 2 {
+			fmt.Fprintln(e.stdout, "Destination labels recorded; account annotation, probe and timing settings cleared. Account and model identity remain unverified.")
+		} else {
+			fmt.Fprintln(e.stdout, "Model/reasoning and quota-group labels were retained; account and model identity remain unverified.")
+		}
 	}
 	if err != nil {
 		return fail(err)
@@ -308,12 +328,19 @@ func checkTransferLocal(cfg *config.Config) error {
 	return nil
 }
 
-func resetTransferState(dir string) error {
+func resetTransferState(dir string, providerChange bool) error {
 	var st state.File
 	if readTransferRecord(dir, state.FileName, &st) != nil || st.Target() != state.Primary {
 		return errors.New("primary state unavailable; no reset performed")
 	}
-	// Retain progress/timing and spent counters. Clear only target observations.
+	if providerChange {
+		st.StartRefused = nil
+		st.Timing = nil
+		st.ReapplyRoute = false
+		st.TargetSetBy = ""
+	}
+	// Retain progress, send timing and spent counters. Clear target observations;
+	// provider changes also discard the old timing repair intent.
 	st.StallRetry = nil
 	st.LastState = ""
 	st.LastCheck = nil
