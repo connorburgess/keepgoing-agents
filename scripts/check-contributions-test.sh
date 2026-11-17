@@ -152,5 +152,46 @@ if [ "$code" != 1 ] || ! grep -qF "needs a sign-off matching its author" <<<"$ou
 fi
 git reset -q --hard "$base"
 
-[ "$fail" = 0 ] && echo "check-contributions: all file cases pass"
+# The pull request title and body: BB thread IDs and home paths. Each case
+# checks the text alone (no commits), as the workflow passes it: title, a
+# literal backslash-n, then the body.
+text_case() { # text_case NAME WANT_EXIT WANT_TEXT PR_TEXT
+	local name=$1 want=$2 text=$3 out code
+	out=$(PR_TEXT=$4 scripts/check-contributions.sh "$base" "$base" 2>&1)
+	code=$?
+	if [ "$code" != "$want" ] || { [ -n "$text" ] && ! grep -qF -- "$text" <<<"$out"; }; then
+		echo "FAIL: $name: exit $code, want $want; output: $out"
+		fail=1
+	fi
+	if grep -qE "k3m9x2q7wz|0a1b2c3d4e|a1b2c3d4e5|alice|bob" <<<"$out"; then
+		echo "FAIL: $name: the message repeats the match: $out"; fail=1
+	fi
+}
+tid="name a BB thread ID"
+hp="absolute home path"
+text_case "a plain title and body pass" 0 "" 'fix(bb): read status\nThe body.'
+text_case "a thread ID in the body fails, with its line" 1 "$tid (thr_ and ten letters or digits) at line 3" 'fix: x\nIntro.\nSee thr_k3m9x2q7wz for context.'
+text_case "a thread ID in the title fails" 1 "$tid (thr_ and ten letters or digits) at line 1" 'fix: as asked in thr_0a1b2c3d4e'
+text_case "a thread ID first in the body, after the joining backslash-n, is its own line" 1 "at line 2" 'fix: x\nthr_k3m9x2q7wz asked for this'
+text_case "a thread link with a message anchor fails" 1 "$tid" 'fix: x\nSee @thread:thr_k3m9x2q7wz#msg=42.'
+text_case "a thread ID inside a branch or path fails" 1 "$tid" 'fix: x\nbranch bb/ci-fast-pushes-thr_k3m9x2q7wz'
+text_case "two lines are both named" 1 "at line 2,4" 'fix: x\nthr_k3m9x2q7wz\nok\nand thr_a1b2c3d4e5.'
+text_case "the docs' fictional ten-character ID passes" 0 "" 'fix: x\nfor example thr_example123 and thr_example456'
+text_case "a fictional ID beside a real one still fails" 1 "at line 2" 'fix: x\nthr_example123 then thr_k3m9x2q7wz'
+text_case "longer and shorter fictional IDs pass" 0 "" 'fix: x\nthr_example_owner thr_destination thr_example0001 thr_abc123 thr_example'
+text_case "eleven characters is not a thread ID" 0 "" 'fix: x\nthr_k3m9x2q7wza'
+text_case "upper case is not a thread ID" 0 "" 'fix: x\nTHR_K3M9X2Q7WZ'
+text_case "a macOS home path fails, with its line" 1 "$hp (/Users/<name>/ or /home/<name>/) at line 2" 'fix: x\nRan in /Users/alice/src/repo.'
+text_case "a Linux home path fails" 1 "$hp" 'fix: x\nlog at /home/bob/.cache/x'
+text_case "a home path in a file URL fails" 1 "$hp" 'fix: x\nfile:///Users/alice/notes.md'
+text_case "the docs' fictional home passes" 0 "" 'fix: x\n/Users/example/repo and /home/example/repo'
+text_case "a CI runner, Homebrew and the shared folder pass" 0 "" 'fix: x\n/home/runner/work/x /Users/runner/work /home/linuxbrew/.linuxbrew /Users/Shared/x'
+text_case "placeholders, ~ and a bare /Users pass" 0 "" 'fix: x\n/Users/<name>/ /home/$USER/ ~/src /Users/ /home/./x'
+text_case "a home path without a trailing slash is not matched" 0 "" 'fix: x\nthe /Users/alice directory'
+text_case "a home path in backticks or brackets fails" 1 "$hp" 'fix: x\nsee `/Users/alice/x` (/home/bob/y)'
+text_case "home inside a list of names is not a path" 0 "" 'fix: x\nfour entries (studio/home/lab/spare) and ~/home/notes/'
+text_case "a credit still fails beside the new rules" 1 "tool attribution credit" 'fix: x\nIntro.\nGenerated with Claude Code'
+text_case "a credit first in the body, after the joining backslash-n, fails" 1 "tool attribution credit" 'fix: x\nGenerated with Claude Code'
+
+[ "$fail" = 0 ] && echo "check-contributions: all file and text cases pass"
 exit "$fail"
