@@ -4,6 +4,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"sync"
 	"testing"
 	"time"
 
@@ -225,7 +226,7 @@ func TestExitFromDeadPublisherBecomesFinishedAfterLockRelease(t *testing.T) {
 func TestPublicationDrainsWatcherBeforeAnyCompletionBoundary(t *testing.T) {
 	d, tmp := publicationFixture(t)
 	drained := false
-	drainStopWatcher = func() { drained = true }
+	drainStopWatcher = func() bool { drained = true; return false }
 	beforeExitRename = func() {
 		if !drained {
 			t.Error("exit published before watcher drain")
@@ -314,7 +315,7 @@ func TestEarlyTurnFailureDrainsWatcherBeforeReturn(t *testing.T) {
 	key, _ := randomStopID()
 	actual := startStopWatcher(d, key, func() error { t.Error("unexpected termination"); return nil })
 	drained := false
-	code := runOwnedTurn(string(d), []string{"fictional-never-started"}, "", func() { actual(); drained = true })
+	code := runOwnedTurn(string(d), []string{"fictional-never-started"}, "", func() bool { actual(); drained = true; return false })
 	if code != 2 || !drained {
 		t.Fatalf("early failure returned without drain: code=%d drained=%t", code, drained)
 	}
@@ -339,5 +340,81 @@ func TestCompletedStatusReadersDoNotInventRunningWork(t *testing.T) {
 	t.Cleanup(func() { beforeStatusFinished = nil })
 	if st, err := d.Status(); err != nil || st.Phase != Finished {
 		t.Fatalf("completed status: %+v %v", st, err)
+	}
+}
+
+// stoppablePublicationFixture is publicationFixture for a turn whose key the
+// stop channel accepts.
+func stoppablePublicationFixture(t *testing.T) (Dir, string, string) {
+	t.Helper()
+	d, tmp := publicationFixture(t)
+	key, err := randomStopID()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := d.saveRecord(Record{StopKey: key, Liveness: livenessLock}); err != nil {
+		t.Fatal(err)
+	}
+	turnKey = key
+	return d, tmp, key
+}
+
+func within(t *testing.T, c <-chan struct{}, what string) {
+	t.Helper()
+	select {
+	case <-c:
+	case <-time.After(10 * time.Second):
+		t.Fatal(what)
+	}
+}
+
+// A stop ends the wrapper's whole process group, the wrapper included, but the
+// signal does not reach every member at the same moment. A wrapper that sees
+// its agent die first must not publish an exit code for it: a stopped turn
+// reads as crashed every time, and its partial output is never read as a
+// finished turn. Here the termination is accepted but the wrapper is not
+// killed, which is the window in which it used to publish.
+func TestPublisherAfterAcceptedStopLeavesTheTurnCrashed(t *testing.T) {
+	d, tmp, key := stoppablePublicationFixture(t)
+	terminated := make(chan struct{})
+	drainStopWatcher = startStopWatcher(d, key, func() error { close(terminated); return nil })
+	if err := d.requestStop(key); err != nil {
+		t.Fatal(err)
+	}
+	within(t, terminated, "the watcher did not accept the stop")
+	if err := publishExit(string(d), tmp); err == nil {
+		t.Fatal("a stopped wrapper published an exit code")
+	}
+	if _, err := os.Stat(d.path("exit")); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("exit code published after an accepted stop: %v", err)
+	}
+	if _, err := os.Stat(tmp); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("stopped publisher left its staging file: %v", err)
+	}
+	if st, err := d.Status(); err != nil || st.Phase != Crashed {
+		t.Fatalf("stopped turn reads as %+v %v", st, err)
+	}
+}
+
+// A termination that failed was not a stop: the turn still ends on its own
+// and its exit code is published.
+func TestPublisherAfterFailedTerminationPublishes(t *testing.T) {
+	d, tmp, key := stoppablePublicationFixture(t)
+	tried := make(chan struct{})
+	var once sync.Once
+	drainStopWatcher = startStopWatcher(d, key, func() error {
+		once.Do(func() { close(tried) })
+		return errors.New("injected termination failure")
+	})
+	request, _ := randomStopID()
+	if err := writeStopMessage(d.path("stop-request.json"), stopMessage{Key: key, Request: request}); err != nil {
+		t.Fatal(err)
+	}
+	within(t, tried, "the watcher did not try the termination")
+	if err := publishExit(string(d), tmp); err != nil {
+		t.Fatal(err)
+	}
+	if st, err := d.Status(); err != nil || st.Phase != Finished || st.ExitCode != 11 {
+		t.Fatalf("turn after failed termination: %+v %v", st, err)
 	}
 }
