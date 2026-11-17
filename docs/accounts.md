@@ -219,6 +219,17 @@ directory or both inherited, as `validate` compares them; never by label, and
 never for a BB thread route. The panel data carries this as `accountUses`
 (catalog cards first, then unnamed contexts; route and loop keys only).
 
+Above the cards, **Add an account** gives the `accounts add` command to copy
+for three cases: another subscription of a provider you use (sign in with the
+provider's own tool in a new folder, then name that folder as an
+explicit_directory entry), a provider that manages its own login (Cursor, BB:
+externally_managed), and an API key (its own entry; the key is never taken).
+Values the page cannot know are placeholders (`ACCOUNT_LABEL`, `PROVIDER`,
+`FOLDER`), each explained in one line. It is open when there are no accounts,
+under three sentences on what an account, a route and a loop's order are, and
+closed otherwise. Unnamed contexts keep their own filled-in command; the block
+points to them in one line. The page runs none of these commands.
+
 A check's successful command exit means its minimized observation was saved;
 it does not mean login passed. Inspect auth state and reason. Missing/corrupt
 storage or a concurrent selection change refuses the operation. An overlapping

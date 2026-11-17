@@ -537,7 +537,7 @@ func (d *dockReader) readLoop(ctx context.Context, dir string, entry registry.En
 		return in
 	}
 	if cfg := validated[entry.ID]; cfg != nil {
-		in.Chain = &dockChainInput{Primary: cfg.Loop.PrimaryCandidate(), FailoverOn: cfg.Loop.Errors.FailoverOn, SwitchBack: cfg.Loop.SwitchBack.Enabled, TimingOn: cfg.Loop.TimingOn()}
+		in.Chain = &dockChainInput{Primary: cfg.Loop.PrimaryCandidate(), Standard: cfg.Loop.FollowsStandard(), FailoverOn: cfg.Loop.Errors.FailoverOn, SwitchBack: cfg.Loop.SwitchBack.Enabled, TimingOn: cfg.Loop.TimingOn()}
 		if cfg.Loop.Timing != nil {
 			in.Chain.TimingSteps = cfg.Loop.Timing.Steps
 		}

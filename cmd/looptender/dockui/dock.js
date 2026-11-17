@@ -6,6 +6,9 @@
 // route is sent by the report, which the Go tests check word for word; the
 // page only shows its times in this browser's time zone.
 (function () {
+  // The header buttons and the reading lines are shown only once this runs;
+  // without a script the page says so instead (index.html, noscript).
+  document.documentElement.classList.add("has-script");
   var SCHEMA = 1;
   // How long reads may fail before the page asks a person to look (G4).
   var FAIL_LONG_MS = 120000;
@@ -14,7 +17,7 @@
   // What looptender did: worded by the same read as API, served on its own
   // for its size, and read only for the Usage page and a loop's page.
   var USAGE = "api/v1/usage";
-  var state = { data: null, identifiers: false, paused: false, timer: 0, busy: false, again: false, lastOk: null, failed: false, failedSince: 0, failedLong: false, notice: "", pending: false, said: "", server: null, treeOpen: Object.create(null), accountOpen: Object.create(null), usage: null, usageText: "", usageFailed: false, usageBusy: false };
+  var state = { data: null, identifiers: false, paused: false, timer: 0, busy: false, again: false, missed: false, lastOk: null, failed: false, failedSince: 0, failedLong: false, notice: "", pending: false, said: "", server: null, treeOpen: Object.create(null), accountOpen: Object.create(null), usage: null, usageText: "", usageFailed: false, usageBusy: false };
 
   var TONES = {
     supervising: "good", waiting_for_you: "attn", waiting_on_limit: "limit", waiting_on_network: "limit", checks_failing: "warn",
@@ -141,8 +144,10 @@
   function lastCheck(c) {
     if (c.availability === "never" || c.availability === "unknown" || !c.text) return unknown(c.text);
     var f = frag();
+    // The age is said in plain words, with no badge: a loop that is on and
+    // not checked for longer than it should be has its own state, "Not
+    // checked recently"; for a paused or held loop an old check is expected.
     f.appendChild(document.createTextNode(c.text));
-    if (c.availability === "stale") f.appendChild(tag("stale", "Stale"));
     if (c.failed) f.appendChild(el("div", "sub", c.failed));
     return f;
   }
@@ -297,6 +302,19 @@
     todo.appendChild(el("span", "todo-label", "What to do"));
     todo.appendChild(document.createTextNode(n.action));
     li.appendChild(todo);
+    // A page that cannot resume says how to, rather than end on an action
+    // it cannot take. With changes allowed, the loop's own controls do it.
+    if (n.resume && !changesOn()) {
+      li.appendChild(el("p", "sub resume-where", "This page cannot resume a loop. In a terminal, run:"));
+      // The page may hold several copy buttons; this one names its loop.
+      var cmd = copyCommand("p", n.resume, "copy-resume-" + n.key, "resume-where-" + n.key);
+      cmd.classList.add("resume-command");
+      li.appendChild(cmd);
+      var where = el("p", "sub resume-where");
+      where.id = "resume-where-" + n.key;
+      put(where, ["CONFIG is the path of " + n.loop + "'s configuration file; ", el("code", null, "keepgoing registry list --private"), " lists it."]);
+      li.appendChild(where);
+    }
     return li;
   }
 
@@ -368,9 +386,15 @@
     var head = el("div", "pane-head");
     var h = el("h1", null, title);
     h.id = "pane-title";
+    // Focus lands here after a change of view or the skip link.
+    h.tabIndex = -1;
     head.appendChild(h);
     if (pill) head.appendChild(pill);
     return head;
+  }
+  // The view's heading takes focus; the pane only when there is none.
+  function focusPaneTitle(scroll) {
+    ($("pane-title") || $("pane")).focus({ preventScroll: !scroll });
   }
   function back() {
     var a = link("#/", "", "back");
@@ -442,7 +466,11 @@
       var ul = el("ul", "worth");
       worth.forEach(function (w) {
         var li = el("li");
-        li.appendChild(el("span", "dot dot-" + (TONES[w.state] || "unknown")));
+        // A failed lane is said in words; its dot is not the green of a
+        // loop with nothing to say.
+        var wl = loopByKey(w.key), tone = TONES[w.state] || "unknown";
+        if (wl && wl.lanesFailed && tone === "good") tone = "warn";
+        li.appendChild(el("span", "dot dot-" + tone));
         var t = el("div");
         t.appendChild(link("#/loop/" + w.key, w.loop));
         t.appendChild(el("span", "sub", say(w.text)));
@@ -480,11 +508,11 @@
       status.appendChild(el("span", "dot dot-" + (TONES[l.state] || "unknown")));
       status.appendChild(el("span", null, "Supervision: " + l.phrase));
       if (l.state === "finished") status.appendChild(tag("stale", "Unverified declaration"));
+      if (l.lanesFailed) status.appendChild(tag("needs", l.lanesFailed));
       summary.appendChild(status);
       summary.appendChild(el("span", "sub work-observation", l.lanes && l.lanes.summary ? "Lanes: " + l.lanes.summary : "Lane evidence: " + ((l.children && l.children.phrase) || "Unknown")));
-      var age = el("span", "sub work-age", (l.lastCheck && l.lastCheck.text) || "Last check unknown");
-      if (l.lastCheck && l.lastCheck.availability === "stale") age.appendChild(tag("stale", "Stale"));
-      summary.appendChild(age);
+      // Age in plain words, as for usage readings; see lastCheck().
+      summary.appendChild(el("span", "sub work-age", (l.lastCheck && l.lastCheck.text) || "Last check unknown"));
       details.appendChild(summary);
       var body = el("div", "work-body");
       body.appendChild(el("p", "detail", l.detail));
@@ -673,7 +701,14 @@
     var st = el("span", "state tone-" + (TONES[l.state] || "unknown"));
     st.appendChild(icon(STATE_ICON[l.state] || "unknown"));
     st.appendChild(document.createTextNode(l.phrase));
-    pane.appendChild(paneHead(l.name, st));
+    var pills = st;
+    // A failed lane is said beside the supervision state, in words.
+    if (l.lanesFailed) {
+      pills = el("span", "pane-pills");
+      pills.appendChild(st);
+      pills.appendChild(tag("needs", l.lanesFailed));
+    }
+    pane.appendChild(paneHead(l.name, pills));
     var need = needFor(key);
     if (!need) pane.appendChild(el("p", "detail", l.detail));
     if (need) {
@@ -708,6 +743,14 @@
     routing.appendChild(ol);
     if (c.more) routing.appendChild(el("p", "sub", c.more));
     if (!entries.some(function (e) { return e.current; })) routing.appendChild(laneBox(l));
+    // Beside the order: how to add a route and change the order, to copy.
+    if (c.availability !== "unknown") {
+      var how = el("div", "how-group");
+      how.appendChild(addRouteBox(l));
+      var order = reorderBox(l);
+      if (order) how.appendChild(order);
+      routing.appendChild(how);
+    }
     pane.appendChild(routing);
 
     pane.appendChild(eventsPanel(l.events));
@@ -1262,10 +1305,14 @@
     uses.forEach(function (u) { if (u.card) byCard[u.card] = u; });
     var unnamed = uses.filter(function (u) { return u.context; });
     if (!cards.length && !unnamed.length) {
-      pane.appendChild(emptyBox("No accounts selected here yet", "Select an existing account context with the accounts add command, then explicitly check it with accounts check. Provider sign-in stays in the official provider tool."));
+      pane.appendChild(emptyBox("No accounts selected here yet", FIRST_RUN));
+      pane.appendChild(addAccountBox(true));
       return;
     }
     pane.appendChild(el("p", "account-count", cards.length + (cards.length === 1 ? " selected account" : " selected accounts") + (unnamed.length ? " · " + unnamed.length + " not named yet" : "")));
+    // One way to add, said once; an account routes already use has its own
+    // filled-in command on its card below.
+    pane.appendChild(addAccountBox(false, unnamed.length > 0));
     if (!d.complete || (d.registry || {}).availability !== "available") pane.appendChild(el("p", "sub", "Not every loop could be read, so an account its routes use may be missing here."));
     var ul = el("ul", "accounts-list"), retained = Object.create(null);
     cards.forEach(function (c) {
@@ -1344,6 +1391,138 @@
     pane.appendChild(note);
   }
 
+  // ---- How to add an account, add a route and change the order ----
+  // Text and commands to copy, for a person to run in Terminal. The page
+  // runs nothing and changes nothing. A value the page does not know is a
+  // placeholder in capitals, with one line saying what to put there.
+  var IN_TERMINAL = "Run in Terminal, not in a BB agent thread.";
+  var NAMES_ONLY = "This names the account. It does not put it in any loop. To use it, add it to a loop's order.";
+  var FIRST_RUN = "An account is a sign-in you already have, with a name you choose. A route is one model on one of your accounts. Each loop works down its own order of routes: it uses the first that has room, moves to the next when one runs out, and moves back up when it can.";
+  var ROUTE_ADD_FIELDS = "Put a new ID in place of ROUTE_ID (lowercase letters, digits and hyphens), claude-code or codex for PROVIDER, the model for MODEL, the usage limit it draws on for GROUP, and same_conversation, new_conversation or headless for ENTER.";
+  // Whether each disclosure is open, by its key, kept across re-renders.
+  var howOpen = Object.create(null);
+  function howBox(key, title, open) {
+    var d = el("details", "how");
+    d.open = key in howOpen ? howOpen[key] : !!open;
+    var s = el("summary", "how-summary", title);
+    s.setAttribute("data-focus", key);
+    d.appendChild(s);
+    d.addEventListener("toggle", function () { if (d.isConnected) howOpen[key] = d.open; });
+    return d;
+  }
+  // One command: what it does, which also describes its copy button, the
+  // command, and the line that says what to put in place of a placeholder.
+  function howStep(focus, what, command, fill, describedBy) {
+    var w = el("div", "how-step");
+    var p = el("p", null, what);
+    p.id = focus + "-what";
+    w.appendChild(p);
+    w.appendChild(copyCommand("div", command, focus, (describedBy ? describedBy + " " : "") + p.id));
+    if (fill) w.appendChild(el("p", "sub", fill));
+    return w;
+  }
+  // Every block ends with where to run its commands.
+  function howEnd(box, body) {
+    body.appendChild(el("p", "how-terminal", IN_TERMINAL));
+    box.appendChild(body);
+    return box;
+  }
+  // "--loop NAME" with the name the server quoted for a shell, or a
+  // placeholder when the name is too long to put in a command.
+  function loopArg(l) { return l.loopArg || "--loop LOOP_NAME"; }
+  var LOOP_NAME_FILL = "Put this loop's name in place of LOOP_NAME, in quotes if it has a space.";
+  function withLoopFill(l, fill) { return l.loopArg ? fill : [fill, LOOP_NAME_FILL].filter(Boolean).join(" "); }
+  var ROUTE_ID = /^[a-z0-9-]+$/;
+
+  // unnamed: accounts routes already use without a name, which have their
+  // own filled-in command on their cards; said here once.
+  function addAccountBox(open, unnamed) {
+    var box = howBox("how-account", "Add an account", open), body = el("div", "how-body");
+    var cases = [
+      ["folder", "Another subscription of a provider you use",
+        "Sign in with the provider's own tool in a new folder, then name that folder here.",
+        "looptender accounts add --label ACCOUNT_LABEL --provider PROVIDER --selection explicit_directory --account-dir FOLDER",
+        "Put a name you choose in place of ACCOUNT_LABEL (in quotes if it has a space), claude-code or codex for PROVIDER, and the folder you signed in to for FOLDER."],
+      ["managed", "A provider that manages its own login",
+        "Cursor and BB keep their own login. Name the account here; looptender does not check it.",
+        "looptender accounts add --label ACCOUNT_LABEL --provider PROVIDER --selection externally_managed",
+        "Put a name you choose in place of ACCOUNT_LABEL, and cursor or bb for PROVIDER."],
+      ["key", "An API key",
+        "Give the key its own entry. If you use it through the provider's tool, sign in with it in its own folder and name that folder as above. Otherwise:",
+        "looptender accounts add --label ACCOUNT_LABEL --provider other --selection externally_managed",
+        "Put a name you choose in place of ACCOUNT_LABEL. looptender never takes the key."]
+    ];
+    cases.forEach(function (c) {
+      var h = el("h3", "how-case", c[1]);
+      h.id = "how-account-" + c[0];
+      body.appendChild(h);
+      body.appendChild(howStep("copy-account-" + c[0], c[2], c[3], c[4], h.id));
+    });
+    // Said once, after the three cases.
+    body.appendChild(el("p", null, NAMES_ONLY));
+    if (unnamed) body.appendChild(el("p", null, "An account your routes already use without a name is listed below as “not named yet”, with its own command to name it."));
+    return howEnd(box, body);
+  }
+
+  // The loop page: add a route to this loop, and change its order. A loop
+  // that follows the standard route list changes that list instead.
+  function addRouteBox(l) {
+    var c = l.chain || {}, arg = loopArg(l);
+    var box = howBox("how-route-" + l.key, "Add a route to this loop"), body = el("div", "how-body");
+    if (c.standard) {
+      body.appendChild(el("p", null, "This loop follows your standard route list, which every loop that follows it uses. Add the route to that list."));
+      body.appendChild(howStep("copy-route-add", "Add a route to the standard list.",
+        "looptender routes add --id ROUTE_ID --provider PROVIDER --model MODEL --group GROUP --enter ENTER", ROUTE_ADD_FIELDS));
+      body.appendChild(el("p", null, "A new route is used only after a check of it passes."));
+      body.appendChild(howStep("copy-route-check", "Check it. This is one real request and uses this account's quota.",
+        "looptender routes check ROUTE_ID --exact " + arg, withLoopFill(l, "Put the new route's ID in place of ROUTE_ID.")));
+      if (!list(c.handoffOn).length) body.appendChild(el("p", null, "Automatic handoff is off for this loop, so it does not move to another route by itself. For a loop that follows the standard list, it is set by errors.failover_on in the loop's configuration file."));
+    } else {
+      body.appendChild(howStep("copy-route-add", "Add a route. A guide asks for the provider, the account, the model and its place in the order, and shows a preview before it changes anything.",
+        "looptender fallbacks add " + arg, withLoopFill(l, "")));
+      body.appendChild(el("p", null, "A new route is used only after a check of it passes."));
+      body.appendChild(howStep("copy-route-check", "Check it. This is one real request and uses this account's quota.",
+        "looptender fallbacks check --id ROUTE_ID --exact " + arg, withLoopFill(l, "Put the new route's ID in place of ROUTE_ID; the guide shows it in its preview.")));
+      if (!list(c.handoffOn).length) body.appendChild(howStep("copy-route-handoff", "Automatic handoff is off for this loop, so it does not move to another route by itself. To turn it on:",
+        "looptender fallbacks handoff on " + arg, withLoopFill(l, "")));
+    }
+    return howEnd(box, body);
+  }
+  function reorderBox(l) {
+    var c = l.chain || {}, rest = list(c.entries).filter(function (e) { return e.position > 0; });
+    if (rest.length + (c.omitted || 0) < 2) return null;
+    var box = howBox("how-order-" + l.key, "Change the order"), body = el("div", "how-body");
+    var move = c.standard ? function (id) { return "looptender routes move " + id + " --to PLACE"; } :
+      function (id) { return "looptender fallbacks move " + id + " --to PLACE " + loopArg(l); };
+    body.appendChild(el("p", null, c.standard ?
+      "This loop follows your standard route list, so the order is that list's, and every loop that follows it gets the new order. Put the route's new place in the list in place of PLACE: 1 is the top." :
+      "The first choice stays first. Put the route's new place after it in place of PLACE: 1 is the next choice."));
+    var ids = rest.filter(function (e) { return e.id && ROUTE_ID.test(e.id); });
+    if (state.identifiers && ids.length === rest.length) {
+      rest.forEach(function (e) {
+        body.appendChild(howStep("copy-move-" + e.position, "Choice " + (e.position + 1) + ": " + e.title, move(e.id), ""));
+      });
+      if (!c.standard && !l.loopArg) body.appendChild(el("p", "sub", LOOP_NAME_FILL));
+    } else {
+      var fill = "Put the route's ID in place of ROUTE_ID.";
+      if (!state.identifiers) fill = "Put the route's ID in place of ROUTE_ID. Show identifiers to see each route's ID.";
+      body.appendChild(howStep("copy-move", "Move a route.", move("ROUTE_ID"), c.standard ? fill : withLoopFill(l, fill)));
+    }
+    return howEnd(box, body);
+  }
+  // The Routes page: add a route to the standard list, then have a loop
+  // follow it.
+  function standardRouteBox(open) {
+    var box = howBox("how-standard", "Add a route for every loop", open), body = el("div", "how-body");
+    body.appendChild(el("p", null, "Your standard route list is one order of routes that every loop following it uses."));
+    body.appendChild(howStep("copy-standard-add", "Add a route to the standard list.",
+      "looptender routes add --id ROUTE_ID --provider PROVIDER --model MODEL --group GROUP --enter ENTER --account ACCOUNT_ID",
+      ROUTE_ADD_FIELDS + " Put the account's ID in place of ACCOUNT_ID; the Accounts page shows it with Show identifiers."));
+    body.appendChild(howStep("copy-standard-follow", "Then have a loop follow the list.",
+      "looptender routes follow-standard --loop LOOP_NAME", "Put the loop's name in place of LOOP_NAME, in quotes if it has a space."));
+    return howEnd(box, body);
+  }
+
   function renderVersions(d, pane) {
     var v = d.versions || {};
     pane.appendChild(back());
@@ -1398,6 +1577,7 @@
     var routes = list(d.routes), rs = d.routesSummary || {};
     if (!routes.length) {
       pane.appendChild(emptyBox(d.registry.availability === "available" ? "No routes to show." : "Unknown: the registry could not be read.", ""));
+      if (d.registry.availability === "available") pane.appendChild(standardRouteBox(true));
       return;
     }
     var sum = el("p", "route-summary");
@@ -1406,6 +1586,7 @@
     if (rs.trouble && rs.first) sum.appendChild(link("#/routes/" + rs.first, rs.problem, "c-warn"));
     else if (rs.problem) sum.appendChild(el("span", "sub", rs.problem));
     pane.appendChild(sum);
+    pane.appendChild(standardRouteBox(false));
     pane.appendChild(allowancesPanel(d));
 
     var wrap = panel("All routes", [el("span", "sub", "those at a limit or not ready first")]);
@@ -1538,10 +1719,11 @@
     if (needsSaid !== state.needsSaid) { state.needsSaid = needsSaid; announce(needsSaid); }
     window.scrollTo(0, top);
     if (navigated) {
-      // A link to one route lands on that route; any other lands on the pane.
+      // A link to one route lands on that route; any other lands on the
+      // view's heading. A read that is not a change of view moves nothing.
       var at = r.view === "routes" && r.key ? $("route-" + r.key) : null;
       if (at) { at.focus({ preventScroll: true }); at.scrollIntoView({ block: "start" }); }
-      else pane.focus({ preventScroll: true });
+      else focusPaneTitle();
       var cur = $("picker").querySelector('.pick-scroll [aria-current="page"]');
       if (cur && cur.scrollIntoView) cur.scrollIntoView({ block: "nearest" });
     } else if (key) {
@@ -1606,9 +1788,20 @@
     }
   }
 
-  function loadServer() {
-    fetch(SERVER, { cache: "no-store", credentials: "same-origin", headers: { Accept: "application/json" } })
+  // How long one read may take: a little under the refresh interval, from 4
+  // to 30 seconds, so a read that never answers cannot stop the updates. A
+  // read that runs out of time fails like any other failed read.
+  function readTimeoutMs() { return Math.min(30, Math.max(4, refreshSeconds() - 2)) * 1000; }
+  function getJSON(url) {
+    var ctl = new AbortController();
+    var timer = setTimeout(function () { ctl.abort(); }, readTimeoutMs());
+    return fetch(url, { cache: "no-store", credentials: "same-origin", headers: { Accept: "application/json" }, signal: ctl.signal })
       .then(function (r) { if (!r.ok) throw new Error("status " + r.status); return r.json(); })
+      .finally(function () { clearTimeout(timer); });
+  }
+
+  function loadServer() {
+    getJSON(SERVER)
       .then(function (d) {
         if (!d || d.schemaVersion !== 1) return;
         var was = changesOn();
@@ -1627,18 +1820,24 @@
 
   function load(byHand) {
     if (state.busy) { state.again = true; return; }
+    // A hidden tab reads nothing, not even what serves the page: any read
+    // keeps the panel from stopping by itself when idle. It reads once when
+    // it is shown again.
+    if (document.hidden && !byHand) { state.missed = true; return; }
+    state.missed = false;
     // What serves the page and whether it allows changes, read again with
     // every read so the footer's ages stay current.
     if (state.data) loadServer();
-    // A hidden tab does not poll; it reads again when it is shown.
-    if (document.hidden && state.data && !byHand) { schedule(); return; }
     state.busy = true;
     var btn = $("refresh");
     btn.setAttribute("aria-busy", "true");
-    fetch(API + (state.identifiers ? "?identifiers=1" : ""), { cache: "no-store", credentials: "same-origin", headers: { Accept: "application/json" } })
-      .then(function (r) { if (!r.ok) throw new Error("status " + r.status); return r.json(); })
+    var asked = state.identifiers;
+    getJSON(API + (asked ? "?identifiers=1" : ""))
       .then(function (d) {
         if (!d || d.schemaVersion !== SCHEMA || !d.registry || !Array.isArray(d.loops)) throw new Error("schema");
+        // Identifiers were turned on or off while this read was out: the
+        // reply is for the other view, so it is dropped and read again.
+        if (asked !== state.identifiers) { state.again = true; return; }
         state.data = d; state.lastOk = Date.now(); state.failed = false; state.failedSince = 0; state.failedLong = false;
         if (wantsUsage(route())) loadUsage();
         if (render(false) !== false) notice("cut", d.complete === false ? "This read was cut off before every loop was read. Loops that were not read are listed as could not be read; it reads again shortly." : "");
@@ -1691,7 +1890,7 @@
     // The skip link moves focus to the details without changing the view.
     document.querySelector("a.skip").addEventListener("click", function (ev) {
       ev.preventDefault();
-      $("pane").focus();
+      focusPaneTitle(true);
     });
     window.addEventListener("hashchange", function () {
       render(true);
@@ -1704,7 +1903,7 @@
       if (state.pending && !selecting()) render(false);
     });
     document.addEventListener("visibilitychange", function () {
-      if (!document.hidden && !state.paused && state.lastOk && Date.now() - state.lastOk > 5000) { clearTimeout(state.timer); load(true); }
+      if (!document.hidden && !state.paused && (state.missed || (state.lastOk && Date.now() - state.lastOk > 5000))) { clearTimeout(state.timer); load(true); }
     });
     loadServer();
     load(true);
