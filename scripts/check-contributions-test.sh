@@ -153,6 +153,19 @@ if [ "$code" != 1 ] || ! grep -qF "needs a sign-off matching its author" <<<"$ou
 fi
 git reset -q --hard "$base"
 
+# Unknown revisions must fail before an empty commit/file list can pass.
+for args in "missing-base HEAD" "HEAD missing-head" "--scan-tree missing-tree"; do
+	out=$(scripts/check-contributions.sh $args 2>&1); code=$?
+	if [ "$code" != 1 ] || ! grep -qF "is not a commit" <<<"$out"; then
+		echo "FAIL: unknown revision ($args): exit $code: $out"; fail=1
+	fi
+done
+
+unrelated=$(printf 'test: unrelated history\n' | git commit-tree "HEAD^{tree}")
+if scripts/check-contributions.sh "$unrelated" HEAD >/dev/null 2>&1; then
+	echo "FAIL: revisions without a common ancestor passed"; fail=1
+fi
+
 # The pull request title and body: BB thread IDs and home paths. Each case
 # checks the text alone (no commits), as the workflow passes it: title, a
 # literal backslash-n, then the body.
@@ -208,6 +221,16 @@ mkdir -p docs fixtures bin changelog.d
 
 sed -i.bak 's/^## Unreleased$/## Unreleased\n\n- A new entry in the old place./' CHANGELOG.md && rm CHANGELOG.md.bak
 expect "a line added under Unreleased fails, with the way to move it" 1 "CHANGELOG.md gains an entry under Unreleased at line 5"
+sed -i.bak 's/^## Unreleased$/## Unreleased \n\n- A new entry behind a changed heading./' CHANGELOG.md && rm CHANGELOG.md.bak
+expect "a changed Unreleased heading fails" 1 "keep the exact ## Unreleased heading"
+sed -i.bak '/^## Unreleased$/d' CHANGELOG.md && rm CHANGELOG.md.bak
+expect "removing the Unreleased heading fails" 1 "keep the exact ## Unreleased heading"
+git rm -q CHANGELOG.md
+expect "removing the changelog fails" 1 "keep the exact ## Unreleased heading"
+sed -i.bak 's/^## Unreleased$/## Unreleased\n\n++ A new entry that resembles a diff header./' CHANGELOG.md && rm CHANGELOG.md.bak
+expect "added plus content alone fails" 1 "CHANGELOG.md gains an entry under Unreleased at line 5"
+sed -i.bak 's/^## Unreleased$/## Unreleased\n\n++ A new entry that resembles a diff header.\n- Another new entry./' CHANGELOG.md && rm CHANGELOG.md.bak
+expect "added plus content is checked and counted" 1 "CHANGELOG.md gains an entry under Unreleased at line 5,6"
 sed -i.bak 's/^- An entry from before fragments\.$/- An entry from before fragments, reworded./' CHANGELOG.md && rm CHANGELOG.md.bak
 expect "a reworded Unreleased line fails too" 1 "restore CHANGELOG.md to main's version"
 sed -i.bak '/^- An entry from before fragments\.$/d' CHANGELOG.md && rm CHANGELOG.md.bak
@@ -216,6 +239,13 @@ sed -i.bak 's/^- The first release\.$/- The first release, with a typo fixed./' 
 expect "a correction under a released version passes" 0 ""
 echo "- A new entry as a fragment." > changelog.d/new-entry.md
 expect "a fragment passes" 0 ""
+printf '#324 fixes an issue.\n' > changelog.d/issue-reference.md
+expect "a fragment starting with an issue reference passes" 0 ""
+ln -s ../README.md changelog.d/link.md
+expect "a symbolic link fragment fails" 1 "changelog.d/link.md: a changelog fragment must be a regular file with mode 100644"
+echo "- An executable fragment." > changelog.d/executable.md
+chmod +x changelog.d/executable.md
+expect "an executable fragment fails" 1 "changelog.d/executable.md: a changelog fragment must be a regular file with mode 100644"
 printf '## Added\n\n- An entry.\n' > changelog.d/with-heading.md
 expect "a fragment with a heading fails" 1 "changelog.d/with-heading.md: a changelog fragment has no heading"
 printf '\n  \n' > changelog.d/empty.md
@@ -237,7 +267,13 @@ echo "- Newer fragment." > changelog.d/newer.md
 GIT_COMMITTER_DATE="2030-01-01T00:00:00Z" git add -A
 GIT_COMMITTER_DATE="2030-01-01T00:00:00Z" git commit -q -s -m "test: newer fragment"
 pre=$(git rev-parse HEAD)
+# Use a non-default mode so restoring a hard-coded 0644 also fails.
+chmod 640 CHANGELOG.md
 scripts/changelog-release.sh 0.2.0 2026-02-02 >/dev/null || { echo "FAIL: the release script failed"; fail=1; }
+# -perm works with both BSD and GNU find.
+if [ "$(find CHANGELOG.md -perm 0640 -print)" != CHANGELOG.md ]; then
+	echo "FAIL: release script changed CHANGELOG.md permissions"; fail=1
+fi
 want='# Changelog
 
 ## Unreleased

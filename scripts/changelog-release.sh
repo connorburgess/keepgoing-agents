@@ -28,11 +28,12 @@ body=$( { for f in ${frags[@]+"${frags[@]}"}; do cat "$f"; printf '\n\n'; done
 [ -n "$body" ] || { echo "nothing to release: no fragments and no Unreleased entries" >&2; exit 1; }
 
 tmp=$(mktemp "${TMPDIR:-/tmp}/changelog.XXXXXX")
+trap 'rm -f "$tmp"' EXIT
 {
   awk '/^## /{exit} {print}' "$log"
   printf '## Unreleased\n\n## %s (%s)\n\n%s\n\n' "$version" "$date" "$body"
   awk '/^## /{n++} n>=2' "$log"
 } > "$tmp"
-mv "$tmp" "$log"
+cat "$tmp" > "$log"
 for f in ${frags[@]+"${frags[@]}"}; do git rm -q --cached --ignore-unmatch -- "$f"; rm -f -- "$f"; done
 echo "CHANGELOG.md: ${#frags[@]} fragments and the Unreleased entries are now under $version ($date)"
