@@ -14,6 +14,12 @@ type PendingBBTransfer struct {
 	To      string `json:"to"`
 	Before  string `json:"before,omitempty"`
 	After   string `json:"after,omitempty"`
+	// Version 2 explicitly records a provider change and destination labels.
+	FromProvider string `json:"fromProvider,omitempty"`
+	ToProvider   string `json:"toProvider,omitempty"`
+	Model        string `json:"model,omitempty"`
+	Reasoning    string `json:"reasoning,omitempty"`
+	Group        string `json:"group,omitempty"`
 }
 
 var transferID = regexp.MustCompile(`^move_[0-9a-f]{32}$`)
@@ -21,7 +27,7 @@ var digest = regexp.MustCompile(`^[0-9a-f]{64}$`)
 var ErrTransferPending = errors.New("BB transfer is pending; use transfer recover before enabling, resuming or changing goals")
 
 func (p *PendingBBTransfer) Valid() bool {
-	return p != nil && p.Version == 1 && transferID.MatchString(p.ID) && ownerID.MatchString(p.From) && ownerID.MatchString(p.To) && p.From != p.To && digest.MatchString(p.Before) && digest.MatchString(p.After) && p.Before != p.After
+	return p != nil && (p.Version == 1 || p.Version == 2) && p.validRoute() && transferID.MatchString(p.ID) && ownerID.MatchString(p.From) && ownerID.MatchString(p.To) && p.From != p.To && digest.MatchString(p.Before) && digest.MatchString(p.After) && p.Before != p.After
 }
 func CheckTransferReady(f File) error {
 	if f.SupersededBy != "" {
@@ -53,4 +59,13 @@ func BindBBTarget(f *File, to string) error {
 	}
 	f.BBTarget = to
 	return nil
+}
+
+var transferRouteLabel = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._:/-]{0,127}$`)
+
+func (p *PendingBBTransfer) validRoute() bool {
+	if p.Version == 1 {
+		return p.FromProvider == "" && p.ToProvider == "" && p.Model == "" && p.Reasoning == "" && p.Group == ""
+	}
+	return transferRouteLabel.MatchString(p.FromProvider) && transferRouteLabel.MatchString(p.ToProvider) && p.FromProvider != p.ToProvider && transferRouteLabel.MatchString(p.Group) && (p.Model == "" || transferRouteLabel.MatchString(p.Model)) && (p.Reasoning == "" || transferRouteLabel.MatchString(p.Reasoning))
 }
