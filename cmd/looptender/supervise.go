@@ -165,7 +165,8 @@ func daemonOf(ctx context.Context) supervise.DaemonInfo {
 // scheduler identity, and the daemon running it, when one is.
 func tickOptions(e env, cfg *config.Config, dryRun bool) supervise.Options {
 	return supervise.Options{Version: version, DryRun: dryRun, Reporter: reporter(e, cfg), Routine: suppliedRoutine(e.ctx),
-		RoutineIgnored: e.ctx.Value(routineIgnoredKey{}) != nil, Daemon: daemonOf(e.ctx), Executable: checkExecutable(), ExecutableImage: processExecutableImage}
+		RoutineIgnored: e.ctx.Value(routineIgnoredKey{}) != nil, Daemon: daemonOf(e.ctx), Executable: checkExecutable(), ExecutableImage: processExecutableImage,
+		CommandPrefix: initCommandPrefix()}
 }
 
 // Capture once during process initialization, before a command or check starts.
@@ -1099,6 +1100,9 @@ func readStatus(ctx context.Context, cfg *config.Config, now time.Time, staleAft
 		out.Goal = &summary
 	}
 	out.PromptSend = describePromptSend(st.LastPromptSend, out.Goal)
+	if st.GoalCopy != nil && st.GoalCopy.Valid() {
+		out.PromptSend.GoalCopy = st.GoalCopy
+	}
 	out.LimitWait = describeLimitWait(st.LimitWaitReport, l, now)
 	out.IdleSpacing = describeIdleSpacing(st, l.Progress)
 	out.TurnRetry = describeTurnRetry(st.LastTurnRetry)

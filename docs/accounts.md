@@ -19,9 +19,85 @@ or refresh provider measurements, including APIs whose refresh:false option
 may still contact a provider.
 
 The page is read-only. Refresh reads the catalog only, executes no provider
-command and sends no model request. The setup commands below do not start a
-loop, enroll a route, sign in or copy credentials. Complete provider sign-in in
+command and sends no model request. The `accounts` commands below do not start
+a loop, enroll a route, sign in or copy credentials. Complete provider sign-in in
 the official provider tool first.
+
+## Add an account, a subscription or a model
+
+The short version. Run these in a terminal of your own, not inside a BB agent
+thread: a BB thread is refused for the standard route list, and for a loop
+that has no recorded owner. Released builds name the command `keepgoing`;
+`looptender` is the same program. Names and paths are examples.
+
+Two lists are involved. The **accounts catalog** is the accounts you name
+(the panel's Accounts page). A **loop's routes** are the order it works
+through when the one it is on runs out. Adding an account to the catalog
+does not put it in any loop. The commands below name a loop by the name
+`looptender registry list` shows; `-c FILE` with its configuration file works
+in place of `--loop NAME` everywhere.
+
+**Another subscription of a provider you already use.** Sign in to it in a
+new, empty directory with the provider's own tool (for Claude Code, run it
+with `CLAUDE_CONFIG_DIR` set to that directory; for Codex, `CODEX_HOME`), then
+name it:
+
+    looptender accounts add --label "personal-pro" --provider claude-code \
+      --selection explicit_directory --account-dir /private/example/claude-personal
+
+This adds one entry and prints its ID. It never signs in, reads a credential,
+calls a model, or changes a loop or route.
+
+**Another provider.** The same, with `--provider codex` and its `CODEX_HOME`.
+A provider that manages its own login, such as Cursor or BB:
+
+    looptender accounts add --label "example-cursor" --provider cursor \
+      --selection externally_managed
+
+**An API key.** Give it its own entry and label. If a CLI uses it, sign in with
+the key in its own directory and add that directory as above. Otherwise:
+
+    looptender accounts add --label "api-team" --provider other \
+      --selection externally_managed
+
+The key is never a field; looptender never stores or reads it.
+
+**Put an account or model into a loop's order, and reorder it.**
+
+    looptender fallbacks add --loop example-loop          # guided questions
+    looptender fallbacks move claude-personal-pro --to 1 --loop example-loop
+    looptender fallbacks list --loop example-loop
+
+The guided questions list your named accounts for the provider; pick one by
+number. Each command previews and writes only after you answer yes; nothing
+runs. Two things to know. A new route counts as not healthy, and is not handed
+off to, until a check of it passes, either the loop's scheduled checks or one
+you run now:
+
+    looptender fallbacks check --id claude-personal-pro --exact --dry-run --loop example-loop   # free preview
+    looptender fallbacks check --id claude-personal-pro --exact --loop example-loop             # one real request
+
+The second sends one real request on that account, which uses its quota and
+may cost money. And automatic handoff stays off until you turn it on:
+
+    looptender fallbacks handoff on --loop example-loop
+
+To keep one order for every loop instead, use the [standard route list](routes.md):
+`routes add`, `routes move`, then `routes follow-standard --loop NAME`.
+
+**Say which account a route uses.** Picking a named account in the guided
+`init` or `fallbacks add` states it. With flags, `--account ID` does the same
+on `init` (the loop's first route), `fallbacks add` (a new fallback) and
+`routes add` (the standard list). For a route that already exists, add
+`account: ID` to it by hand, then run `looptender validate -c FILE`. See
+[below](#say-which-account-a-route-uses). It is your statement and changes
+nothing about how the route runs.
+
+**Check an account again.** `looptender accounts check --id ID`, then
+`looptender accounts list`. This runs only the CLI's version and login-status
+commands (the provider's status command may contact its account service). It
+never signs in or calls a model, and it does not establish quota or which
+account a login really is.
 
 ## Select an existing context
 
@@ -42,6 +118,17 @@ login or a stable subscription identity. Explicit directory selects the existing
 CLAUDE_CONFIG_DIR or CODEX_HOME context. The environment can still supply other
 authentication inputs; selection does not override arbitrary credential sources.
 
+**Warning: the default Claude Code login is `inherited`, not an explicit
+directory.** Claude Code treats CLAUDE_CONFIG_DIR set to its default directory
+(`~/.claude`, `%USERPROFILE%\.claude` on Windows) as a different login context from the default login, with the
+variable unset. An explicit_directory entry for `~/.claude` can therefore report
+no login while you are signed in. `accounts add` and `accounts update` print a
+warning for such an entry (they still save it), and
+[doctor](diagnostics.md#stated-accounts) flags an existing one. Use
+`--selection inherited` for the default login. This was observed for Claude
+Code; it is not claimed for Codex, so a CODEX_HOME at `~/.codex` gets no
+warning.
+
 Only Claude Code and Codex have status checks in this slice. Cursor, BB and
 other providers may be selected as externally_managed entries, without CLI,
 account-directory or working-directory flags. Their cards say external or
@@ -60,7 +147,8 @@ command in this slice.
     looptender accounts check --id CONNECTION_ID --json
     looptender accounts list --json
 
-This is the command the panel means by "the explicit accounts check command".
+The Accounts page names this command in its footnote and in a card's
+"To check again" line.
 Run it yourself to record a new observation for one entry; the panel never runs
 it. CONNECTION_ID is the opaque ID that accounts add returned, also listed by
 accounts list.
@@ -78,11 +166,69 @@ reports credentials present and a nonzero exit is ambiguous. No account identity
 is inferred. Only allowlisted broad Claude subscriptionType strings, when
 actually supplied by structured status, become reported plan evidence.
 Raw max displays as Max. Unknown plan values are discarded; no numeric tier,
-capacity or quota is inferred. Codex plan remains unavailable.
+capacity or quota is inferred. Codex's login status reports no plan, so a
+Codex card says "Codex does not report a plan." A Claude card without a plan
+says why: "Claude Code's status reported no recognized plan." after a login,
+"No plan is read without a login." after none, and "Not checked" before any
+check. These are not failures and need nothing; the card's JSON carries the
+reason as `plan.missing` (`not_reported`, `not_recognized`, `no_login`,
+`not_checked`). A check that established no login leaves the plan Unavailable.
 
-Configured model, actual response model and route associations are unavailable
-in this slice. A requested/probe model or configuration fingerprint is not an
-actual response model or verified account identity.
+The catalog records no model: a route chooses the model, and a check never
+calls one. The page says so in one line instead of showing configured and
+actual response model rows; `configuredModel` and `observedModel` stay in the
+JSON with `missing: not_recorded`. A requested/probe model or configuration
+fingerprint is not an actual response model or verified account identity.
+
+The page's Routes row says whether a route [names the entry](#say-which-account-a-route-uses),
+from the routes the panel read ("A route names this account."). When none
+does, it says "No route names this account yet. Add `account: <ID>` to a route
+to link it", with the ID filled in under **Show identifiers**. When not every
+loop or route could be read, it says the answer is not known rather than
+none. The panel data carries this as the card's `routes` (`named`, `none`,
+`unknown`); `accounts list` does not read routes and leaves it out.
+
+When routes name the entry, the Routes row lists each of them, the loops that
+use each, and each route's own recorded usage reading; readings of different
+routes are never merged. It says once "assigned by you · identity not
+verified", and under a BB thread route "assigned by you · not verified for BB
+threads (account set per project)". A route that names the entry but whose
+check found a mismatch is still listed, says what its check says in place of
+"assigned by you", and its reading is not counted for the entry. The card's
+summary is from those readings, never merged: if any route's reading had a
+window used up that has not ended, the newest such, naming its route when the
+card has more than one ("opus-example: Five-hour allowance was out when read
+2 h ago · resets in 3 h"); otherwise "Not out when read 2 h ago" from the
+newest reading, or that no reading is recorded.
+Being out is information, not a warning.
+
+### Accounts not named yet
+
+The page also lists each account context that a registered loop's routes use
+without naming a catalog entry, headed "Unnamed Codex account" (or Claude
+Code, Cursor, or the route's provider) with a quiet "not named yet" tag, the
+routes and loops that use it, and their readings. These come only from loop
+configurations and the catalog: nothing on the computer is searched, no
+provider is called, and nothing is adopted. Each gives the `accounts add`
+command that would name it, with the provider and selection its routes state
+and `ACCOUNT_LABEL` for your own label; a selected directory is filled in only
+under **Show identifiers**. Naming an account changes no route: to assign its
+routes, add `account: <ID>` to each. "May be the same account as" a catalog
+entry appears only when the provider and the selection match, the same
+directory or both inherited, as `validate` compares them; never by label, and
+never for a BB thread route. The panel data carries this as `accountUses`
+(catalog cards first, then unnamed contexts; route and loop keys only).
+
+Above the cards, **Add an account** gives the `accounts add` command to copy
+for three cases: another subscription of a provider you use (sign in with the
+provider's own tool in a new folder, then name that folder as an
+explicit_directory entry), a provider that manages its own login (Cursor, BB:
+externally_managed), and an API key (its own entry; the key is never taken).
+Values the page cannot know are placeholders (`ACCOUNT_LABEL`, `PROVIDER`,
+`FOLDER`), each explained in one line. It is open when there are no accounts,
+under three sentences on what an account, a route and a loop's order are, and
+closed otherwise. Unnamed contexts keep their own filled-in command; the block
+points to them in one line. The page runs none of these commands.
 
 A check's successful command exit means its minimized observation was saved;
 it does not mean login passed. Inspect auth state and reason. Missing/corrupt
@@ -124,7 +270,11 @@ it, and it is not evidence of which account a context is signed in to.
 
 **Several Claude Code subscriptions.** Sign in to each one in its own config
 directory with the official Claude Code tool, then add one explicit_directory
-entry per directory. The directory is the CLAUDE_CONFIG_DIR that entry selects:
+entry per directory. The directory is the CLAUDE_CONFIG_DIR that entry selects.
+The default login (`~/.claude`, with CLAUDE_CONFIG_DIR unset) is an `inherited`
+entry: an explicit directory is for a second, separate config directory, and
+naming `~/.claude` explicitly selects a different login context (see the
+warning above):
 
     looptender accounts add --label "work" --provider claude-code \
       --selection explicit_directory --account-dir /private/example/claude-work \
@@ -169,8 +319,17 @@ computer, which is BB's login only when they share it
 A route can state which catalog entry it uses, with an optional `account`
 field holding the entry's ID (the 32 hexadecimal characters `accounts add`
 prints). It goes on a loop's first route (`loop.account`), on a fallback in
-`fallbacks.yaml`, or on a route in the [standard list](routes.md) (also with
-`routes add --account ID`):
+`fallbacks.yaml`, or on a route in the [standard list](routes.md). Commands
+write it for you: `routes add --account ID` for the standard list, and
+`init --account ID` and `fallbacks add --account ID` for a loop's first route
+and its fallbacks (unreleased). The guided `init` and `fallbacks add` list the
+catalog's entries for the route's provider by name, and picking one by number
+uses its directory, suggests a group made from its name, and states it. A
+directory typed instead states nothing. Setup refuses an entry that `validate`
+would reject, and also one it cannot compare but that does not fit: an entry
+on the normal login for a route with its own directory, and, for a BB thread,
+an entry for neither BB nor the thread's provider. The refusal names the
+entries that fit.
 
     loop:
       adapter: claude
@@ -225,8 +384,12 @@ provider, how the account is selected (its directory, `inherited`,
 identities are, so no path is included. Two routes with the same `context`
 select the same account context as configured; that does not make them the
 same account, and different contexts are not said to be different accounts.
-The label and ID are shown as they are in the Accounts view. The panel page
-does not show these fields yet.
+The label and ID are shown as they are in the Accounts view. A loop's page
+shows a route that names a consistent entry as "on *Label* · assigned by you ·
+identity not verified" (for a BB thread route, "not verified for BB threads"),
+and a route that names none as "Not assigned to an account." with its account
+group. The Allowances strip on the Routes page still groups by recorded usage
+identity and is not linked to account cards.
 
 ## Change a selection deliberately
 

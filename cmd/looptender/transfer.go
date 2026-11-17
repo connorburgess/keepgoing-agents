@@ -59,8 +59,11 @@ func transferCommand(e env, args []string, run doctorRun) int {
 	if len(args) > 0 && (args[0] == "apply" || args[0] == "recover") {
 		return transferApply(e, args, run, nil)
 	}
+	if len(args) > 0 && args[0] == "inventory" {
+		return transferInventoryCommand(e, args, run, run)
+	}
 	if len(args) == 0 || args[0] != "preview" {
-		e.errf("usage: keepgoing transfer preview|apply|recover; see transfer preview --help, transfer apply --help or transfer recover --help")
+		e.errf("usage: keepgoing transfer preview|inventory|apply|recover; see transfer preview --help, transfer inventory --help, transfer apply --help or transfer recover --help")
 		return exitUsage
 	}
 	fs := flag.NewFlagSet("transfer preview", flag.ContinueOnError)
@@ -169,6 +172,16 @@ func transferCommand(e env, args []string, run doctorRun) int {
 				add("provider", "error", "A thread provider differs from the configured provider; automatic relabeling is not supported.")
 			} else {
 				add("provider", "ok", "Both thread provider IDs match the configured provider label.")
+			}
+			// Advisory only: appended directly so that it never changes
+			// compatibility, whatever its status.
+			for _, side := range []struct{ id, path string }{{"workspace.from", fromPath}, {"workspace.to", toPath}} {
+				status, message := workspaceVerdict(e.ctx, side.path, cfg.Loop.Progress.Repositories, *timeout)
+				fix := ""
+				if status == "warning" {
+					fix = workspaceFix
+				}
+				r.Checks = append(r.Checks, doctorCheck{ID: side.id, Status: status, Message: message, Fix: fix})
 			}
 		}
 	}

@@ -327,3 +327,46 @@ func TestFallbacksAddKeepsStatedAccounts(t *testing.T) {
 		t.Fatalf("after loop edit:\n%s", edited)
 	}
 }
+
+// The Accounts page says a route names an entry only from the chains the
+// report read, and says none only when every loop and route was read.
+func TestDockLinksAccountCardsToRoutes(t *testing.T) {
+	named, other := "0123456789abcdef0123456789abcdef", "fedcba9876543210fedcba9876543210"
+	loop := func(ids ...string) dockLoop {
+		l := dockLoop{Chain: dockChain{Availability: "known"}}
+		for _, id := range ids {
+			a := &accounts.RouteAccount{Assigned: "none", Context: "0123456789abcdef0123456789abcdef"}
+			if id != "" {
+				a = &accounts.RouteAccount{Account: id, Assigned: "by_you"}
+			}
+			l.Chain.Entries = append(l.Chain.Entries, dockChainEntry{CatalogAccount: a})
+		}
+		return l
+	}
+	read := dockRegistry{Availability: "available", Count: 2}
+	for _, tc := range []struct {
+		name   string
+		report dockReport
+		want   [2]string
+	}{
+		{"every route read", dockReport{Complete: true, Registry: read, Loops: []dockLoop{loop(named, ""), loop("")}}, [2]string{accounts.RoutesNamed, accounts.RoutesNone}},
+		{"no loops registered", dockReport{Complete: true, Registry: dockRegistry{Availability: "available"}}, [2]string{accounts.RoutesNone, accounts.RoutesNone}},
+		{"incomplete read", dockReport{Registry: read, Loops: []dockLoop{loop(named)}}, [2]string{accounts.RoutesNamed, accounts.RoutesUnknown}},
+		{"registry unavailable", dockReport{Complete: true, Registry: dockRegistry{Availability: "unavailable"}}, [2]string{accounts.RoutesUnknown, accounts.RoutesUnknown}},
+		{"loops omitted", dockReport{Complete: true, Registry: dockRegistry{Availability: "available", Omitted: 1}, Loops: []dockLoop{loop("")}}, [2]string{accounts.RoutesUnknown, accounts.RoutesUnknown}},
+		{"a chain not read", dockReport{Complete: true, Registry: read, Loops: []dockLoop{{Chain: dockChain{Availability: "unknown"}}}}, [2]string{accounts.RoutesUnknown, accounts.RoutesUnknown}},
+		{"fallbacks omitted", func() dockReport {
+			l := loop("")
+			l.Chain.Omitted = 1
+			return dockReport{Complete: true, Registry: read, Loops: []dockLoop{l}}
+		}(), [2]string{accounts.RoutesUnknown, accounts.RoutesUnknown}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			v := accounts.View{Cards: []accounts.Card{{ID: named}, {ID: other}}}
+			dockLinkAccountRoutes(&v, tc.report)
+			if got := [2]string{v.Cards[0].Routes, v.Cards[1].Routes}; got != tc.want {
+				t.Fatalf("routes %v, want %v", got, tc.want)
+			}
+		})
+	}
+}

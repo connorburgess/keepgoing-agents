@@ -225,7 +225,21 @@ func doctor(e env, args []string, run doctorRun) int {
 			}
 			r.add("agent."+id+".session", status, s.Message, "")
 		}
-		doctorAgent(e.ctx, &r, id, a, *offline, *timeout, run)
+		workspace := doctorAgent(e.ctx, &r, id, a, *offline, *timeout, run)
+		if a.BB != nil && a.BB.Thread != "" {
+			if *offline {
+				r.add("agent."+id+".workspace", "unavailable", "Working-directory comparison skipped in offline mode.", "")
+			} else if workspace == "" {
+				r.add("agent."+id+".workspace", "unavailable", "BB did not verify this thread or report its working directory, so it was not compared with the progress repositories.", "")
+			} else {
+				status, message := workspaceVerdict(e.ctx, workspace, cfg.Loop.Progress.Repositories, *timeout)
+				fix := ""
+				if status == "warning" {
+					fix = workspaceFix
+				}
+				r.add("agent."+id+".workspace", status, message, fix)
+			}
+		}
 		if a.Custom != nil {
 			// A defined agent's own mapping decides what moves work to a
 			// fallback, so every such mapping is said in words.
@@ -248,6 +262,9 @@ func doctor(e env, args []string, run doctorRun) int {
 		}
 	}
 	doctorRouteAccounts(&r, cfg, "")
+	if home, err := os.UserHomeDir(); err == nil {
+		doctorAccountDefaultDirectories(&r, doctorAccountsCatalog, home)
+	}
 	queryCtx, cancel := context.WithTimeout(e.ctx, *timeout)
 	d := inspectDaemon(queryCtx, cfg.Loop.StateDir, version, *offline)
 	cancel()
@@ -499,7 +516,10 @@ func doctorFile(r *doctorReport, id, path string, directory bool) {
 	}
 }
 
-func doctorAgent(ctx context.Context, r *doctorReport, id string, a config.Agent, offline bool, timeout time.Duration, run doctorRun) {
+// doctorAgent returns the working directory BB reported for a BB agent's
+// thread when its identity was verified, and "" otherwise. The path is for
+// the workspace comparison only and is never printed.
+func doctorAgent(ctx context.Context, r *doctorReport, id string, a config.Agent, offline bool, timeout time.Duration, run doctorRun) (workspace string) {
 	prefix := "agent." + id
 	var cli, accountKey, workdir string
 	var extraArgs []string
@@ -641,7 +661,7 @@ func doctorAgent(ctx context.Context, r *doctorReport, id string, a config.Agent
 			r.add(prefix+".target", "unavailable", "This fallback starts a new BB thread at handoff; there is no thread to inspect until then.", "")
 		} else {
 			out, err := call("thread", "show", a.BB.Thread, "--json")
-			doctorBB(r, prefix+".target", a.BB.Thread, out, err)
+			workspace = doctorBB(r, prefix+".target", a.BB.Thread, out, err)
 		}
 	} else if len(extraArgs) > 0 {
 		r.add(prefix+".login", "unavailable", "Login status skipped because extra_args may change the turn's authentication configuration.", "Verify the effective account with the provider's controls; doctor does not replay arbitrary turn arguments.")
@@ -659,6 +679,7 @@ func doctorAgent(ctx context.Context, r *doctorReport, id string, a config.Agent
 		_, err := call("login", "status")
 		doctorCodexLogin(r, prefix+".login", err)
 	}
+	return workspace
 }
 
 // Only a narrow version token is ever returned, never arbitrary CLI stdout.
@@ -672,7 +693,9 @@ func doctorVersion(raw []byte) string {
 	return m[1]
 }
 
-func doctorBB(r *doctorReport, id, expected string, raw []byte, cmdErr error) {
+// doctorBB returns the environment path BB reported for a verified, live
+// thread, or "". The path never enters the report.
+func doctorBB(r *doctorReport, id, expected string, raw []byte, cmdErr error) string {
 	var resp struct {
 		OK    *bool `json:"ok"`
 		Error *struct {
@@ -683,28 +706,47 @@ func doctorBB(r *doctorReport, id, expected string, raw []byte, cmdErr error) {
 			ArchivedAt any    `json:"archivedAt"`
 			DeletedAt  any    `json:"deletedAt"`
 		} `json:"thread"`
+		Environment *struct {
+			Path string `json:"path"`
+		} `json:"environment"`
 	}
 	if json.Unmarshal(raw, &resp) == nil {
 		if resp.Error != nil && resp.Error.Code == "thread_not_found" {
 			r.add(id, "error", "Configured BB thread does not exist.", "Select the intended existing thread; doctor does not create or transfer it.")
-			return
+			return ""
 		}
 		if cmdErr == nil && (resp.OK == nil || *resp.OK) && resp.Error == nil && resp.Thread != nil && resp.Thread.ID == expected {
 			if resp.Thread.ArchivedAt != nil || resp.Thread.DeletedAt != nil {
 				r.add(id, "error", "Configured BB thread is archived or deleted.", "Review the intended target before resuming.")
-			} else {
-				r.add(id, "ok", "BB returned the configured thread identity; conversation content was not inspected.", "")
+				return ""
 			}
-			return
+			r.add(id, "ok", "BB returned the configured thread identity; conversation content was not inspected.", "")
+			if resp.Environment != nil {
+				return resp.Environment.Path
+			}
+			return ""
 		}
 	}
 	r.add(id, "unavailable", "BB target identity could not be verified from the command's structured response.", "Check BB availability and the configured thread ID. Raw output and error text are withheld.")
+	return ""
 }
 
 // Bound both runtime and stdout. Stderr is discarded, never parsed or reported.
 // These are version/show/auth-status calls only; custom commands and probes are
 // deliberately outside this function's callers.
 func doctorExec(ctx context.Context, cli string, args []string, overrides map[string]string, workdir string) ([]byte, error) {
+	return doctorExecLimit(64*1024)(ctx, cli, args, overrides, workdir)
+}
+
+// doctorExecLimit is doctorExec with another stdout limit, for the few
+// read-only listings whose structured output is legitimately larger.
+func doctorExecLimit(limit int) doctorRun {
+	return func(ctx context.Context, cli string, args []string, overrides map[string]string, workdir string) ([]byte, error) {
+		return doctorExecBounded(ctx, cli, args, overrides, workdir, limit)
+	}
+}
+
+func doctorExecBounded(ctx context.Context, cli string, args []string, overrides map[string]string, workdir string, limit int) ([]byte, error) {
 	cmd := exec.CommandContext(ctx, cli, args...)
 	cmd.Dir = workdir
 	cmd.WaitDelay = time.Second
@@ -717,7 +759,7 @@ func doctorExec(ctx context.Context, cli string, args []string, overrides map[st
 	for _, k := range keys {
 		cmd.Env = append(cmd.Env, k+"="+overrides[k])
 	}
-	buf := &doctorBuffer{remaining: 64 * 1024}
+	buf := &doctorBuffer{remaining: limit}
 	cmd.Stdout = buf
 	cmd.Stderr = io.Discard
 	err := cmd.Run()

@@ -241,6 +241,15 @@ func MissingWorktrees(fingerprint string) int {
 	return p.missing
 }
 
+// Worktrees lists the readable registered worktrees of repo, the
+// repository itself first, with the same rules as the progress fingerprint:
+// a worktree Git marks prunable whose directory is gone is left out, and any
+// other unreadable entry is an error. It runs only read-only Git commands.
+func Worktrees(ctx context.Context, repo string) ([]string, error) {
+	trees, _, err := worktrees(ctx, repo)
+	return trees, err
+}
+
 // worktrees lists the registered worktrees of repo that can be read and
 // counts those Git marks prunable.
 func worktrees(ctx context.Context, repo string) (trees []string, missing int, err error) {

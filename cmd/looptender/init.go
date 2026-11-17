@@ -15,9 +15,11 @@ import (
 	"strings"
 	"time"
 
+	"github.com/looptender/looptender/internal/accounts"
 	"github.com/looptender/looptender/internal/config"
 	"github.com/looptender/looptender/internal/control"
 	"github.com/looptender/looptender/internal/lock"
+	"github.com/looptender/looptender/internal/loopcontext"
 	"github.com/looptender/looptender/internal/snapshot"
 	"github.com/looptender/looptender/internal/state"
 	"github.com/looptender/looptender/internal/userdir"
@@ -30,7 +32,9 @@ type initOptions struct {
 	name, project, directory, task, taskFile       string
 	deadline                                       string
 	agent, thread, provider, account, group, model string
-	routes                                         string // standard or own; "" is own
+	routes                                         string          // standard or own; "" is own
+	accountID                                      string          // --account: a catalog entry the person names for the first route
+	accountEntry                                   *accounts.Entry // the entry named or picked; nil for none
 	fallbacks                                      []initFallback
 	stall, wake, backoff, interval                 time.Duration
 	nudges, reprompts, probeCap                    int
@@ -39,6 +43,7 @@ type initOptions struct {
 
 type initFallback struct {
 	kind, group, account string
+	accountEntry         *accounts.Entry // picked by number in the wizard; nil for none
 }
 
 func initLoop(e env, args []string) int {
@@ -64,13 +69,14 @@ func setupLoop(e env, args []string, input io.Reader, lookPath func(string) (str
 	fs.StringVar(&o.thread, "thread", "", "existing BB thread ID; required for bb")
 	fs.StringVar(&o.provider, "provider", "", "existing BB thread provider label; required for bb")
 	fs.StringVar(&o.account, "account-dir", "", "existing Claude Code or Codex account configuration directory")
-	fs.StringVar(&o.group, "group", "", "primary quota pool label (default: provider)")
+	fs.StringVar(&o.accountID, "account", "", "accounts catalog ID of the account you name for the first route (keepgoing accounts list); fills --account-dir from it and writes account: ID")
+	fs.StringVar(&o.group, "group", "", "primary quota pool label (default: the named account's label, else provider)")
 	fs.StringVar(&o.model, "model", "", "headless model (default: CLI configuration)")
 	fs.StringVar(&o.routes, "routes", "", "standard: follow your standard route list for handoffs; own (the default without asking): only --fallback")
 	fs.Func("fallback", "ordered headless fallback: ADAPTER[:GROUP][=ACCOUNT_DIR]; repeatable", func(s string) error {
 		kindGroup, account, _ := strings.Cut(s, "=")
 		kind, group, _ := strings.Cut(kindGroup, ":")
-		o.fallbacks = append(o.fallbacks, initFallback{kind, group, account})
+		o.fallbacks = append(o.fallbacks, initFallback{kind: kind, group: group, account: account})
 		return nil
 	})
 	fs.DurationVar(&o.stall, "stall-after", config.DefaultStallAfter, "time without Git progress before nudging")
@@ -294,10 +300,22 @@ func collectInit(e env, o *initOptions, input io.Reader, lookPath func(string) (
 		if err := str("provider", "Existing thread provider label", &o.provider, ""); err != nil {
 			return err
 		}
+		if !visited["account"] {
+			entry, _, err := initPickAccount(e.stdout, ask, "bb", o.provider, false)
+			if err != nil {
+				return err
+			}
+			o.accountEntry = entry
+		}
 	} else {
 		if o.agent != "cursor" {
-			if err := str("account-dir", "Existing account directory (blank inherits current login)", &o.account, ""); err != nil {
-				return err
+			// A directory or an account given as a flag is not asked again.
+			if !visited["account"] && !visited["account-dir"] {
+				entry, dir, err := initPickAccount(e.stdout, ask, o.agent, "", true)
+				if err != nil {
+					return err
+				}
+				o.accountEntry, o.account = entry, dir
 			}
 		} else {
 			fmt.Fprintln(e.stdout, "Cursor uses the agent CLI and inherits its existing login. Separate account directories and fallbacks are unsupported.")
@@ -312,7 +330,13 @@ func collectInit(e env, o *initOptions, input io.Reader, lookPath func(string) (
 	} else if o.agent == "codex" || o.agent == "cursor" {
 		provider = o.agent
 	}
-	if err := str("group", "Primary quota pool label", &o.group, provider); err != nil {
+	groupDef := provider
+	if o.accountEntry != nil {
+		if g := setupGroupFromLabel(o.accountEntry.Label); g != "" {
+			groupDef = g
+		}
+	}
+	if err := str("group", "Primary quota pool label", &o.group, groupDef); err != nil {
 		return err
 	}
 	// The offer to follow the standard list: yes unless declined, and only
@@ -347,7 +371,7 @@ func collectInit(e env, o *initOptions, input io.Reader, lookPath func(string) (
 			if a == "" {
 				break
 			}
-			account, err := ask("Existing fallback account directory (blank inherits current login)", "")
+			entry, account, err := initPickAccount(e.stdout, ask, a, "", true)
 			if err != nil {
 				return err
 			}
@@ -355,11 +379,16 @@ func collectInit(e env, o *initOptions, input io.Reader, lookPath func(string) (
 			if a == "claude" {
 				pool = "claude-code"
 			}
+			if entry != nil {
+				if g := setupGroupFromLabel(entry.Label); g != "" {
+					pool = g
+				}
+			}
 			group, err := ask("Fallback quota pool label", pool)
 			if err != nil {
 				return err
 			}
-			o.fallbacks = append(o.fallbacks, initFallback{a, group, account})
+			o.fallbacks = append(o.fallbacks, initFallback{a, group, account, entry})
 		}
 	}
 	for _, q := range []struct {
@@ -475,6 +504,19 @@ func planInit(o *initOptions, lookPath func(string) (string, error)) (map[string
 	if o.nudges < 1 || o.reprompts < 1 || o.probeCap < 1 {
 		return fail(errors.New("max-nudges, max-reprompts, and probe-daily-cap must be positive"))
 	}
+	if o.accountEntry == nil && strings.TrimSpace(o.accountID) != "" {
+		entry, err := setupAccountEntry(o.accountID)
+		if err != nil {
+			return fail(err)
+		}
+		o.accountEntry = entry
+	}
+	if o.agent == "claude" || o.agent == "codex" {
+		o.account = setupAccountDir(o.accountEntry, o.account)
+	}
+	if strings.TrimSpace(o.group) == "" && o.accountEntry != nil {
+		o.group = setupGroupFromLabel(o.accountEntry.Label)
+	}
 	primary, err := initAgent(o.agent, o.account, o.group, o.model, o.project, lookPath)
 	if err != nil {
 		return fail(err)
@@ -493,6 +535,9 @@ func planInit(o *initOptions, lookPath func(string) (string, error)) (map[string
 		}
 	} else if o.thread != "" || o.provider != "" {
 		return fail(errors.New("--thread and --provider are only used with bb"))
+	}
+	if err := setupCheckAccount(&primary, o.accountEntry); err != nil {
+		return fail(err)
 	}
 	var standard *config.Routes
 	switch o.routes {
@@ -531,6 +576,9 @@ func planInit(o *initOptions, lookPath func(string) (string, error)) (map[string
 		if err != nil {
 			return fail(err)
 		}
+		if err := setupCheckAccount(&a, spec.accountEntry); err != nil {
+			return fail(fmt.Errorf("fallback %d: %w", i+1, err))
+		}
 		if groups[a.Group] {
 			return fail(fmt.Errorf("fallback %d shares quota group %q with an earlier target; choose an independent account and label, or omit it", i+1, a.Group))
 		}
@@ -542,6 +590,9 @@ func planInit(o *initOptions, lookPath func(string) (string, error)) (map[string
 	loop := map[string]any{"name": o.name, "state_dir": filepath.Join(o.directory, "state"), "adapter": primary.Adapter, "provider": primary.Provider, "group": primary.Group, "prompt_file": "prompt.md",
 		"progress": config.Progress{Repositories: []string{o.project}, StallAfter: config.Duration{Duration: o.stall}, MinWakeInterval: config.Duration{Duration: o.wake}, MaxNudges: o.nudges},
 		"errors":   map[string]any{"max_reprompts": o.reprompts, "backoff": o.backoff.String(), "failover_on": []string{}}, "daemon": config.Daemon{Interval: config.Duration{Duration: o.interval}}}
+	if primary.Account != "" {
+		loop["account"] = primary.Account
+	}
 	if o.deadline != "" || o.maxSends != 0 || o.noProgressTimeout != 0 {
 		loop["limits"] = config.Limits{Deadline: o.deadline, MaxSends: o.maxSends, NoProgressTimeout: config.Duration{Duration: o.noProgressTimeout}}
 	}
@@ -831,12 +882,7 @@ func keepgoingExecutable() string {
 
 // Single quoting avoids shell expansion of task-controlled paths. Windows
 // instructions use PowerShell's literal-string syntax.
-func commandQuote(s string) string {
-	if runtime.GOOS == "windows" {
-		return "'" + strings.ReplaceAll(s, "'", "''") + "'"
-	}
-	return "'" + strings.ReplaceAll(s, "'", "'\\''") + "'"
-}
+func commandQuote(s string) string { return loopcontext.Quote(s) }
 
 func initCommandPrefix() string {
 	prefix := commandQuote(keepgoingExecutable())
@@ -875,6 +921,60 @@ func printInitAccount(w io.Writer, a config.Agent) {
 	}
 	for _, path := range values {
 		fmt.Fprintf(w, "  Account directory: %s (existing configuration)\n", path)
+	}
+	if a.Account != "" {
+		label := a.Account
+		if f := setupCatalog(); f != nil {
+			if e := accounts.Find(f, a.Account); e != nil {
+				label = setupLabel(*e)
+			}
+		}
+		fmt.Fprintf(w, "  Named account: %s, stated by you (written as account: %s)\n", label, a.Account)
+	}
+}
+
+// initPickAccount offers the accounts catalog's entries for a route of this
+// kind by number. A headless route (withDir) may instead take a directory or
+// a blank answer for the current login; a BB thread route takes a number or
+// a blank answer for none. It returns the entry picked, if any, and the
+// account directory to use. With no entries to offer it asks only what it
+// asked before. The catalog is only read.
+func initPickAccount(w io.Writer, ask func(label, value string) (string, error), kind, bbProvider string, withDir bool) (*accounts.Entry, string, error) {
+	f := setupCatalog()
+	choices := setupAccountChoices(f, kind, bbProvider)
+	if len(choices) == 0 {
+		if !withDir {
+			return nil, "", nil
+		}
+		if f != nil {
+			fmt.Fprintln(w, "Name your accounts with keepgoing accounts add to pick them here.")
+		}
+		dir, err := ask("Existing account directory (blank inherits current login)", "")
+		return nil, dir, err
+	}
+	printSetupAccountChoices(w, choices)
+	label := "Which named account does this thread use? (number, blank for none)"
+	if withDir {
+		label = "Account (number, existing directory, blank inherits current login)"
+	}
+	for {
+		s, err := ask(label, "")
+		if err != nil {
+			return nil, "", err
+		}
+		entry, isNumber, err := setupPickNumber(s, choices)
+		switch {
+		case err != nil:
+			fmt.Fprintf(w, "  ! %v\n", err)
+		case entry != nil:
+			return entry, setupAccountDir(entry, ""), nil
+		case strings.TrimSpace(s) == "":
+			return nil, "", nil
+		case !isNumber && withDir:
+			return nil, s, nil
+		default:
+			fmt.Fprintf(w, "  ! Choose a number from 1 to %d, or leave it blank.\n", len(choices))
+		}
 	}
 }
 
