@@ -101,7 +101,7 @@ func TestOverviewSaysEachCaveatOnce(t *testing.T) {
 	if i < 0 || !strings.HasPrefix(strings.TrimSpace(js[i+len(`var p = panel("Loops and lanes");`):]), `var ul = el("ul", "work-tree");`) {
 		t.Error("something sits above the first loop in Loops and lanes")
 	}
-	if !strings.Contains(js, "as each last reported them") {
+	if !strings.Contains(js, "as of its last check") {
 		t.Error("the one line under the loop list is missing")
 	}
 	// The overview says once that it is not live.

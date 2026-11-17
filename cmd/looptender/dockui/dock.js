@@ -516,7 +516,7 @@
     });
     state.treeOpen = retainedOpen;
     p.appendChild(ul);
-    p.appendChild(el("p", "sub work-evidence", "Registered loops and their direct lanes, as each last reported them."));
+    p.appendChild(el("p", "sub work-evidence", "Each loop and its own lanes, as of its last check."));
     if (!d.complete || d.registry.omitted) p.appendChild(el("p", "more", "This read does not include every registered loop. Missing loops are not assumed stopped or clear."));
     return p;
   }
