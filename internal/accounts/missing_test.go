@@ -20,9 +20,9 @@ func TestProjectionSaysWhyDataIsMissing(t *testing.T) {
 		last, attempt *Observation
 		missing, text string
 	}{
-		{name: "codex never reports a plan", provider: "codex", last: obs("reported_present", "", ""), attempt: obs("reported_present", "", ""), missing: MissingNotReported, text: "Codex does not report a plan."},
-		{name: "codex unchecked still reports no plan", provider: "codex", missing: MissingNotReported, text: "Codex does not report a plan."},
-		{name: "codex with no login reports no plan", provider: "codex", last: obs("reported_absent", "", ""), attempt: obs("reported_absent", "", ""), missing: MissingNotReported, text: "Codex does not report a plan."},
+		{name: "older codex observation needs a plan read", provider: "codex", last: obs("reported_present", "", ""), attempt: obs("reported_present", "", ""), missing: MissingNotChecked, text: "Codex plan has not been read; check again."},
+		{name: "codex unchecked", provider: "codex", missing: MissingNotChecked, text: "Not checked"},
+		{name: "codex without login", provider: "codex", last: obs("reported_absent", "", ""), attempt: obs("reported_absent", "", ""), missing: MissingNoLogin, text: "No plan is read without a login."},
 		{name: "claude login without a recognized plan", provider: "claude-code", last: obs("reported_present", "", ""), attempt: obs("reported_present", "", ""), missing: MissingNotRecognized, text: "Claude Code's status reported no recognized plan."},
 		{name: "claude without a login reads no plan", provider: "claude-code", last: obs("reported_absent", "", ""), attempt: obs("reported_absent", "", ""), missing: MissingNoLogin, text: "No plan is read without a login."},
 		{name: "claude never checked", provider: "claude-code", missing: MissingNotChecked, text: "Not checked"},
@@ -84,7 +84,7 @@ func TestLinkRoutes(t *testing.T) {
 	if strings.Contains(s, `"routes"`) {
 		t.Errorf("routes present without a comparison: %s", s)
 	}
-	for _, want := range []string{`"configuredModel":{`, `"observedModel":{`, `"missing":"not_recorded"`, `"missing":"not_reported"`} {
+	for _, want := range []string{`"configuredModel":{`, `"observedModel":{`, `"missing":"not_recorded"`, `"missing":"not_checked"`} {
 		if !strings.Contains(s, want) {
 			t.Errorf("missing %s in %s", want, s)
 		}
