@@ -14,6 +14,7 @@ import (
 	"github.com/looptender/looptender/internal/config"
 	"github.com/looptender/looptender/internal/control"
 	"github.com/looptender/looptender/internal/lock"
+	"github.com/looptender/looptender/internal/rungraph"
 	"github.com/looptender/looptender/internal/state"
 )
 
@@ -192,5 +193,45 @@ func TestSupersededResumeReviewIsRefused(t *testing.T) {
 	reviewed, refusal := panelReviewForCaller(context.Background(), d.directory, d, dockKey(entry.ID), "resume", "", dockNow)
 	if refusal == nil || refusal.Outcome != "refused" || reviewed.preview.Confirm != "" {
 		t.Fatalf("panel prepared impossible resume: %+v %+v", reviewed, refusal)
+	}
+}
+
+func TestSupersessionDoesNotAdoptANewRun(t *testing.T) {
+	for _, existing := range []string{"missing", "current", "completed"} {
+		t.Run(existing, func(t *testing.T) {
+			path, dir := transferApplyFixture(t)
+			if _, err := control.Update(dir, func(f *control.File) {
+				f.Paused, f.Stop, f.Completed, f.AwaitingUser = false, false, false, false
+			}); err != nil {
+				t.Fatal(err)
+			}
+			if existing != "missing" {
+				recordRunBoundary(dir, "enable")
+				if existing == "completed" {
+					if _, err := control.Update(dir, func(f *control.File) { f.Completed = true }); err != nil {
+						t.Fatal(err)
+					}
+					recordRunBoundary(dir, "complete")
+				}
+			}
+			before, _ := rungraph.Load(dir)
+			goal, err := os.ReadFile(filepath.Join(dir, control.GoalName))
+			if err != nil {
+				t.Fatal(err)
+			}
+			var out bytes.Buffer
+			code := transferCommand(env{ctx: context.Background(), stdout: &out, stderr: &out}, []string{"supersede", "-c", path, "--from", "thr_source", "--successor-thread", "thr_example_successor"}, nil)
+			if code != exitOK {
+				t.Fatalf("supersede = %d: %s", code, &out)
+			}
+			after, availability := rungraph.Load(dir)
+			if (availability != rungraph.Available && availability != rungraph.Missing) || after.Completed != before.Completed || after.CurrentRun != before.CurrentRun || len(after.Runs) != len(before.Runs) || (len(before.Runs) > 0 && !reflect.DeepEqual(after.Runs, before.Runs)) || !reflect.DeepEqual(after.Attempts, before.Attempts) {
+				t.Fatalf("retirement changed run evidence: before=%+v after=%+v availability=%s", before, after, availability)
+			}
+			got, err := os.ReadFile(filepath.Join(dir, control.GoalName))
+			if err != nil || !bytes.Equal(got, goal) {
+				t.Fatal("retirement changed goal evidence")
+			}
+		})
 	}
 }
