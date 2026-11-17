@@ -236,6 +236,8 @@ func publishExit(dir, tmp string) (result error) {
 	// reads as crashed every time. Joining the watcher first settles whether
 	// a stop was accepted.
 	if drainStopWatcher != nil && drainStopWatcher() {
+		// The watcher is settled and turn.lock still excludes the next setup.
+		_ = os.Remove(tmp)
 		return errStoppedTurn
 	}
 	rec, err := Dir(dir).record()

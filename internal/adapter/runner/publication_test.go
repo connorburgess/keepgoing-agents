@@ -388,6 +388,9 @@ func TestPublisherAfterAcceptedStopLeavesTheTurnCrashed(t *testing.T) {
 	if _, err := os.Stat(d.path("exit")); !errors.Is(err, os.ErrNotExist) {
 		t.Fatalf("exit code published after an accepted stop: %v", err)
 	}
+	if _, err := os.Stat(tmp); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("stopped publisher left its staging file: %v", err)
+	}
 	if st, err := d.Status(); err != nil || st.Phase != Crashed {
 		t.Fatalf("stopped turn reads as %+v %v", st, err)
 	}
