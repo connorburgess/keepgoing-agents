@@ -557,13 +557,13 @@ func dockRecentEvents(tl *timelineReport, names dockRouteNames, now time.Time) d
 		out.Availability = "known"
 	}
 	if len(out.Events) > 0 {
-		entries := "events kept."
+		entries := "events."
 		if out.Retained == 1 {
-			entries = "event kept."
+			entries = "event."
 		}
-		out.Footer = fmt.Sprintf("Showing %d of %d %s", len(out.Events), out.Retained, entries)
+		out.Footer = fmt.Sprintf("Showing the newest %d of %d %s", len(out.Events), out.Retained, entries)
 		if out.Pruned {
-			out.Footer += " Older events are no longer kept."
+			out.Footer += " Older ones are no longer kept."
 		}
 	}
 	return out
