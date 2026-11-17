@@ -1109,8 +1109,11 @@ func readStatus(ctx context.Context, cfg *config.Config, now time.Time, staleAft
 	}
 	if review, err := control.LoadMigrationReview(l.StateDir); err != nil {
 		out.MigrationReviewError = "unavailable"
+		if errors.Is(err, control.ErrMigrationBinding) {
+			out.MigrationReviewError = "binding_changed"
+		}
 	} else if review != nil {
-		if review.Successor.Loop != l.Name || l.Agent.BB == nil || review.Successor.Thread != l.Agent.BB.Thread {
+		if !migrationReviewMatchesConfig(review, cfg) {
 			out.MigrationReviewError = "binding_changed"
 		} else {
 			summary := control.MigrationSummaryOf(review.ID, review.Revisions[len(review.Revisions)-1])

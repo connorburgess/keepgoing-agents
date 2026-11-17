@@ -408,3 +408,22 @@ func printReconcile(e env, s control.MigrationSummary, asJSON bool) int {
 	}
 	return exitOK
 }
+
+// Parsed in-memory configurations lack a source path; their runtime/loop/thread
+// binding is still checked. Loaded configurations additionally bind the path.
+func migrationReviewMatchesConfig(g *control.MigrationReview, cfg *config.Config) bool {
+	if cfg.Loop.Agent.BB == nil || g.Successor.Loop != cfg.Loop.Name || g.Successor.Thread != cfg.Loop.Agent.BB.Thread {
+		return false
+	}
+	dir, err := canonicalFuturePath(cfg.Loop.StateDir)
+	if err != nil || dir != g.Successor.StateDir {
+		return false
+	}
+	if cfg.Path() != "" {
+		path, err := canonicalFuturePath(cfg.Path())
+		if err != nil || path != g.Successor.Config {
+			return false
+		}
+	}
+	return true
+}

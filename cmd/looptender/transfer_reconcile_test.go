@@ -313,3 +313,43 @@ func reconcileWrite(t *testing.T, path, body string, mode os.FileMode) {
 		t.Fatal(err)
 	}
 }
+
+func TestTransferReconcileStatusRejectsCopiedBinding(t *testing.T) {
+	t.Setenv("BB_THREAD_ID", "")
+	f := newReconcileFixture(t)
+	g := f.record(t)
+	for _, kind := range []string{"runtime", "config"} {
+		t.Run(kind, func(t *testing.T) {
+			raw, err := os.ReadFile(f.dest)
+			if err != nil {
+				t.Fatal(err)
+			}
+			path := filepath.Join(filepath.Dir(f.dest), "copied-"+kind+".yaml")
+			if kind == "runtime" {
+				raw = bytes.ReplaceAll(raw, []byte("./successor-state"), []byte("./copied-state"))
+				dir := filepath.Join(filepath.Dir(f.dest), "copied-state")
+				if err := os.Mkdir(dir, 0700); err != nil {
+					t.Fatal(err)
+				}
+				record, err := os.ReadFile(filepath.Join(g.Successor.StateDir, control.MigrationReviewName))
+				if err != nil {
+					t.Fatal(err)
+				}
+				if err := os.WriteFile(filepath.Join(dir, control.MigrationReviewName), record, 0600); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if err := os.WriteFile(path, raw, 0600); err != nil {
+				t.Fatal(err)
+			}
+			cfg, err := config.Load(path)
+			if err != nil {
+				t.Fatal(err)
+			}
+			status, err := readStatus(context.Background(), cfg, time.Now(), 0, func(context.Context, string, string, bool) daemonStatus { return daemonStatus{State: "skipped"} })
+			if err != nil || status.MigrationReview != nil || status.MigrationReviewError != "binding_changed" {
+				t.Fatal("copied review projected as current", status.MigrationReview, status.MigrationReviewError, err)
+			}
+		})
+	}
+}

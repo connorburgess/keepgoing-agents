@@ -14,7 +14,10 @@ import (
 
 func migrationFixture(t *testing.T) (string, MigrationIdentity, MigrationIdentity, MigrationRevision) {
 	t.Helper()
-	root := t.TempDir()
+	root, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
 	source := MigrationIdentity{Loop: "example-source", Thread: "thr_example_source", Config: filepath.Join(root, "source.yaml"), StateDir: filepath.Join(root, "source")}
 	dest := MigrationIdentity{Loop: "example-successor", Thread: "thr_example_successor", Config: filepath.Join(root, "dest.yaml"), StateDir: filepath.Join(root, "dest")}
 	if _, err := Update(dest.StateDir, func(c *File) { c.Paused = true; c.AwaitingUser = true }); err != nil {
@@ -140,4 +143,29 @@ func TestMigrationReviewSizeRefusalDiscardsNothing(t *testing.T) {
 		g = next
 	}
 	t.Fatal("size bound was not enforced")
+}
+
+func TestMigrationReviewRejectsLostUnfinishedHistory(t *testing.T) {
+	dir, source, dest, r := migrationFixture(t)
+	g, err := WriteMigrationReview(dir, "", source, dest, r, "", 0, func() error { return nil })
+	if err != nil {
+		t.Fatal(err)
+	}
+	g, err = WriteMigrationReview(dir, "", source, dest, r, g.ID, 1, func() error { return nil })
+	if err != nil {
+		t.Fatal(err)
+	}
+	g.Revisions[1].Plan.Assignments = []MigrationAssignment{}
+	b, _ := json.Marshal(g)
+	path := filepath.Join(dir, MigrationReviewName)
+	if err := os.WriteFile(path, b, 0600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := LoadMigrationReview(dir); err == nil {
+		t.Fatal("persisted history lost unfinished assignment without refusing")
+	}
+	after, _ := os.ReadFile(path)
+	if string(b) != string(after) {
+		t.Fatal("damaged record rewritten")
+	}
 }

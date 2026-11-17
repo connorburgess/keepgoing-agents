@@ -21,6 +21,8 @@ const MigrationReviewLimit = 1 << 20
 const MigrationPlanLimit = 100 << 10
 const migrationRevisionLimit = 32
 
+var ErrMigrationBinding = errors.New("migration review belongs to another runtime directory")
+
 var ErrMigrationReview = errors.New("migration review unavailable or invalid; inspect the private record before retrying")
 var assignmentID = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$`)
 var migrationID = regexp.MustCompile(`^review_[0-9a-f]{32}$`)
@@ -220,7 +222,18 @@ func LoadMigrationReview(dir string) (*MigrationReview, error) {
 	if decodeGoalJSON(b, &g) != nil || g.Version != 1 || !migrationID.MatchString(g.ID) || !validMigrationIdentity(g.Source) || !validMigrationIdentity(g.Successor) || g.Source.StateDir == g.Successor.StateDir || len(g.Revisions) == 0 || len(g.Revisions) > migrationRevisionLimit {
 		return nil, ErrMigrationReview
 	}
+	canonical, err := filepath.EvalSymlinks(dir)
+	if err != nil {
+		return nil, ErrMigrationBinding
+	}
+	canonical, err = filepath.Abs(canonical)
+	if err != nil || filepath.Clean(g.Successor.StateDir) != canonical {
+		return nil, ErrMigrationBinding
+	}
 	for i, r := range g.Revisions {
+		if i > 0 && !retainsMigrationAssignments(g.Revisions[i-1].Plan, r.Plan) {
+			return nil, ErrMigrationReview
+		}
 		if r.Revision != uint64(i+1) || !validMigrationRevision(r) || r.Observation.Source.Thread != g.Source.Thread || r.Observation.Successor.Thread != g.Successor.Thread {
 			return nil, ErrMigrationReview
 		}
@@ -234,6 +247,14 @@ func LoadMigrationReview(dir string) (*MigrationReview, error) {
 func WriteMigrationReview(dir, caller string, source, successor MigrationIdentity, r MigrationRevision, id string, revision uint64, verify func() error) (*MigrationReview, error) {
 	if !validMigrationIdentity(source) || !validMigrationIdentity(successor) || source.StateDir == successor.StateDir || dir != successor.StateDir || !validMigrationRevision(r) || r.Observation.Source.Thread != source.Thread || r.Observation.Successor.Thread != successor.Thread {
 		return nil, ErrMigrationReview
+	}
+	canonical, err := filepath.EvalSymlinks(dir)
+	if err != nil {
+		return nil, ErrMigrationBinding
+	}
+	canonical, err = filepath.Abs(canonical)
+	if err != nil || canonical != successor.StateDir {
+		return nil, ErrMigrationBinding
 	}
 	l, err := lock.AcquireNamed(dir, lock.Control)
 	if err != nil {
@@ -275,17 +296,10 @@ func WriteMigrationReview(dir, caller string, source, successor MigrationIdentit
 	if len(g.Revisions) >= migrationRevisionLimit {
 		return nil, errors.New("migration review history full; no history discarded")
 	}
-	if len(g.Revisions) > 0 {
-		current := map[string]bool{}
-		for _, a := range r.Plan.Assignments {
-			current[a.ID] = true
-		}
-		for _, a := range g.Revisions[len(g.Revisions)-1].Plan.Assignments {
-			if a.DeclaredState != "complete" && !current[a.ID] {
-				return nil, errors.New("unfinished assignment missing; retain it and explicitly revise its declared state")
-			}
-		}
+	if len(g.Revisions) > 0 && !retainsMigrationAssignments(g.Revisions[len(g.Revisions)-1].Plan, r.Plan) {
+		return nil, errors.New("unfinished assignment missing; retain it and explicitly revise its declared state")
 	}
+
 	if verify == nil {
 		return nil, ErrMigrationReview
 	}
@@ -302,4 +316,18 @@ func WriteMigrationReview(dir, caller string, source, successor MigrationIdentit
 		return nil, errors.New("could not save migration review; inspect saved record before retrying")
 	}
 	return g, nil
+}
+
+// The same retention rule applies to writes and all persisted transitions.
+func retainsMigrationAssignments(before, after MigrationPlan) bool {
+	current := map[string]bool{}
+	for _, a := range after.Assignments {
+		current[a.ID] = true
+	}
+	for _, a := range before.Assignments {
+		if a.DeclaredState != "complete" && !current[a.ID] {
+			return false
+		}
+	}
+	return true
 }
