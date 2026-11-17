@@ -60,6 +60,9 @@ func transferCommand(e env, args []string, run doctorRun) int {
 	if len(args) > 0 && args[0] == "reconcile" {
 		return transferReconcileCommand(e, args, run, run)
 	}
+	if len(args) > 0 && args[0] == "supersede" {
+		return transferSupersede(e, args[1:])
+	}
 	if len(args) > 0 && (args[0] == "apply" || args[0] == "recover") {
 		return transferApply(e, args, run, nil)
 	}
@@ -67,7 +70,7 @@ func transferCommand(e env, args []string, run doctorRun) int {
 		return transferInventoryCommand(e, args, run, run)
 	}
 	if len(args) == 0 || args[0] != "preview" {
-		e.errf("usage: keepgoing transfer preview|inventory|apply|recover; see transfer preview --help, transfer inventory --help, transfer apply --help or transfer recover --help")
+		e.errf("usage: keepgoing transfer preview|inventory|apply|recover|supersede; see transfer <command> --help")
 		return exitUsage
 	}
 	fs := flag.NewFlagSet("transfer preview", flag.ContinueOnError)

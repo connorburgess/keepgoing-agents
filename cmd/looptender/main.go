@@ -58,6 +58,7 @@ Transfer planning:
   transfer reconcile       Record an explicit private migration review checklist
   transfer inventory       List a loop's target, lanes and progress worktrees, read-only
   transfer apply|recover   Move a BB primary with an explicit recovery hold
+  transfer supersede       Permanently hold an obsolete BB loop after a manual move
 
 Local client discovery:
   client status            Read a registered loop snapshot without controlling it

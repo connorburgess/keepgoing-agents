@@ -850,6 +850,9 @@ func status(e env, cfg *config.Config, now time.Time, asJSON bool, staleAfter ti
 		fmt.Fprintf(w, " (%s)", ctl.Note)
 	}
 	fmt.Fprintln(w)
+	if ctl.SupersededBy != "" {
+		fmt.Fprintln(w, "superseded: successor reference is recorded in control.json; resume and takeover are refused")
+	}
 	if q := ctl.OpenQuestion; q != nil {
 		fmt.Fprintf(w, "open question: the loop was awaiting a person when completion was declared at %s%s\n", when(q.At), noteSuffix(q.Note))
 	}
@@ -1477,6 +1480,9 @@ func controlCmdLanes(e env, cfg *config.Config, cmd, note string, lanes, dropQue
 			}
 		}
 		if cmd == "resume" {
+			if err := control.CheckTransferReady(*f); err != nil {
+				return err
+			}
 			if err := control.CheckOwner(*f, os.Getenv("BB_THREAD_ID"), false); err != nil {
 				return err
 			}

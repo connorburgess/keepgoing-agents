@@ -160,6 +160,8 @@ The [BB plugin](integrations/bb-plugin-keepgoing/README.md) offers a separate se
 
 Unreleased CLI source also provides [`transfer reconcile preview|apply|show`](docs/transfer.md#record-a-migration-review-unreleased), an explicit private checklist of predecessor direct lanes, worktrees and unfinished assignments. Status shows its unfinished, dormant and unresolved counts. This records a review; it does not move workers, change goals or holds, or verify migration execution.
 
+For a manually created successor that uses a separate loop, unreleased [`transfer supersede`](docs/transfer.md#retire-an-obsolete-loop-after-a-manual-move-unreleased) permanently fences the obsolete loop without changing the successor or clearing holds. This source fence remains fixture-tested rather than live-verified.
+
 <a id="the-keepgoing-panel-one-page-for-every-loop"></a>
 
 ### The looptender panel: one page for every loop
