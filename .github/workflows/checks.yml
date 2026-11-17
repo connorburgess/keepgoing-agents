@@ -10,11 +10,20 @@ name: Checks
 # longer starts these jobs by itself. Branch protection requires the branch to
 # be up to date with its base, so merging the new base in pushes a commit and
 # runs them; otherwise close and reopen the pull request.
+#
+# `merge_group` runs every job on a merge queue entry: the commit GitHub builds
+# from main plus the queued pull requests, which is exactly what lands. A
+# required check must report there under the same name as on the pull
+# request, or the queue waits for it until it times out. Every job here keeps
+# its name in the queue (it has no `base` input), and ci-scope.sh answers
+# "full" for this event, so the queue never skips the macOS or Windows work.
 on:
   push:
     branches: [main]
   pull_request:
     types: [opened, synchronize, reopened]
+  merge_group:
+    types: [checks_requested]
   workflow_dispatch:
     inputs:
       base:
@@ -34,17 +43,21 @@ on:
 # decide, and every later step has a condition. The jobs themselves always run
 # and keep their names, because branch protection requires "Build and test
 # (macos-15)" and "Build and test (ubuntu-24.04)" by name and a job that never
-# reported would block the pull request. Pushes to main and ordinary manual
-# runs always run everything. A change to this file or to the script is not
-# documentation, so it runs everything.
+# reported would block the pull request. Pushes to main, merge queue runs and
+# ordinary manual runs always run everything. A change to this file or to the
+# script is not documentation, so it runs everything.
 
 permissions:
   contents: read
 
 # A newer head supersedes an older run of this workflow. An edit to the pull
 # request does not start this workflow, so it cannot cancel a run in progress.
+# A merge queue run has a group of its own (its run ID), so nothing cancels it
+# or makes it wait: not a push to the pull request, not another queue entry,
+# and not the same pull request queued again. The queue decides when a run is
+# no longer needed.
 concurrency:
-  group: checks-${{ github.event.pull_request.number || github.ref }}
+  group: checks-${{ github.event_name == 'merge_group' && github.run_id || github.event.pull_request.number || github.ref }}
   cancel-in-progress: true
 
 jobs:

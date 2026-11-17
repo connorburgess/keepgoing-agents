@@ -735,6 +735,18 @@ func doctorBB(r *doctorReport, id, expected string, raw []byte, cmdErr error) st
 // These are version/show/auth-status calls only; custom commands and probes are
 // deliberately outside this function's callers.
 func doctorExec(ctx context.Context, cli string, args []string, overrides map[string]string, workdir string) ([]byte, error) {
+	return doctorExecLimit(64*1024)(ctx, cli, args, overrides, workdir)
+}
+
+// doctorExecLimit is doctorExec with another stdout limit, for the few
+// read-only listings whose structured output is legitimately larger.
+func doctorExecLimit(limit int) doctorRun {
+	return func(ctx context.Context, cli string, args []string, overrides map[string]string, workdir string) ([]byte, error) {
+		return doctorExecBounded(ctx, cli, args, overrides, workdir, limit)
+	}
+}
+
+func doctorExecBounded(ctx context.Context, cli string, args []string, overrides map[string]string, workdir string, limit int) ([]byte, error) {
 	cmd := exec.CommandContext(ctx, cli, args...)
 	cmd.Dir = workdir
 	cmd.WaitDelay = time.Second
@@ -747,7 +759,7 @@ func doctorExec(ctx context.Context, cli string, args []string, overrides map[st
 	for _, k := range keys {
 		cmd.Env = append(cmd.Env, k+"="+overrides[k])
 	}
-	buf := &doctorBuffer{remaining: 64 * 1024}
+	buf := &doctorBuffer{remaining: limit}
 	cmd.Stdout = buf
 	cmd.Stderr = io.Discard
 	err := cmd.Run()
