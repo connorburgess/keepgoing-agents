@@ -83,3 +83,23 @@ func dockCatalogAccount(in *dockChainInput, a config.Agent) *accounts.RouteAccou
 	r := accounts.CheckRoute(in.Catalog, a)
 	return &r
 }
+
+// dockLinkAccountRoutes says on each account card whether a route in the
+// report names it, from the catalogAccount of each loop's chain entries. A
+// card no route names reads none only when every loop and every route of
+// each was read; otherwise unknown.
+func dockLinkAccountRoutes(v *accounts.View, r dockReport) {
+	named := map[string]bool{}
+	complete := r.Complete && r.Registry.Availability == "available" && r.Registry.Omitted == 0
+	for _, l := range r.Loops {
+		if l.Chain.Availability == "unknown" || l.Chain.Omitted > 0 {
+			complete = false
+		}
+		for _, e := range l.Chain.Entries {
+			if a := e.CatalogAccount; a != nil && a.Assigned == "by_you" && a.Account != "" {
+				named[a.Account] = true
+			}
+		}
+	}
+	accounts.LinkRoutes(v, named, complete)
+}

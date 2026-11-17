@@ -278,9 +278,15 @@ func (s *dockServer) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	case dockServerPath:
 		w.Header().Set("Content-Type", "application/json")
 		_ = json.NewEncoder(w).Encode(s.served)
-	case dockAPIPath:
+	case dockAPIPath, dockUsagePath:
 		identifiers := r.URL.Query().Get("identifiers") == "1"
-		body, err := s.reader.json(identifiers)
+		var body []byte
+		var err error
+		if resource == dockUsagePath {
+			body, err = s.reader.usageJSON()
+		} else {
+			body, err = s.reader.json(identifiers)
+		}
 		if err != nil {
 			http.Error(w, "unavailable", http.StatusServiceUnavailable)
 			return
@@ -336,6 +342,8 @@ type dockReader struct {
 type dockCached struct {
 	at   time.Time
 	body []byte
+	// usage is the Usage page worded by the same read, encoded on its own.
+	usage []byte
 }
 
 // hostname is this computer's name, read once. It is an identifier and
@@ -357,10 +365,32 @@ func (d *dockReader) clock() time.Time {
 // cannot be served again as if they were the current picture. A read cut off
 // because the command is exiting is an error.
 func (d *dockReader) json(identifiers bool) ([]byte, error) {
+	c, err := d.bodies(identifiers)
+	return c.body, err
+}
+
+// usageJSON returns the Usage page from the newest read of the last two
+// seconds, either view's, or from a new read. It is the same read as the
+// main report's: no check, probe, usage refresh or model call, no write.
+func (d *dockReader) usageJSON() ([]byte, error) {
+	d.mu.Lock()
+	for _, identifiers := range []bool{false, true} {
+		if c, ok := d.cache[identifiers]; ok && c.usage != nil && time.Since(c.at) < 2*time.Second {
+			d.mu.Unlock()
+			return c.usage, nil
+		}
+	}
+	d.mu.Unlock()
+	c, err := d.bodies(false)
+	return c.usage, err
+}
+
+// bodies reads once and encodes both the report and the Usage page.
+func (d *dockReader) bodies(identifiers bool) (dockCached, error) {
 	d.mu.Lock()
 	defer d.mu.Unlock()
 	if c, ok := d.cache[identifiers]; ok && time.Since(c.at) < 2*time.Second {
-		return c.body, nil
+		return c, nil
 	}
 	base := d.ctx
 	if base == nil {
@@ -374,22 +404,29 @@ func (d *dockReader) json(identifiers bool) ([]byte, error) {
 	defer cancel()
 	report := d.read(ctx, identifiers)
 	if base.Err() != nil {
-		return nil, base.Err()
+		return dockCached{}, base.Err()
 	}
-	var buf bytes.Buffer
+	var buf, usage bytes.Buffer
 	if err := json.NewEncoder(&buf).Encode(report); err != nil {
-		return nil, err
+		return dockCached{}, err
 	}
 	if buf.Len() > dockMaxResponse {
-		return nil, errors.New("dock report exceeds its bound")
+		return dockCached{}, errors.New("dock report exceeds its bound")
 	}
+	if err := json.NewEncoder(&usage).Encode(report.usage); err != nil {
+		return dockCached{}, err
+	}
+	if usage.Len() > dockMaxUsageResponse {
+		return dockCached{}, errors.New("usage page exceeds its bound")
+	}
+	out := dockCached{at: time.Now(), body: buf.Bytes(), usage: usage.Bytes()}
 	if report.Complete {
 		if d.cache == nil {
 			d.cache = map[bool]dockCached{}
 		}
-		d.cache[identifiers] = dockCached{at: time.Now(), body: buf.Bytes()}
+		d.cache[identifiers] = out
 	}
-	return buf.Bytes(), nil
+	return out, nil
 }
 
 // read uses the same code paths as registry list, client status, status,
@@ -397,10 +434,15 @@ func (d *dockReader) json(identifiers bool) ([]byte, error) {
 func (d *dockReader) read(ctx context.Context, identifiers bool) (result dockReport) {
 	defer func() {
 		view := accounts.View{State: "unavailable", Complete: false, Cards: []accounts.Card{}}
+		var catalog *accounts.File
 		if dir, err := accountsDirectory(d.accountsDir); err == nil && ctx.Err() == nil {
-			view = accounts.ReadView(dir, d.clock())
+			if f, err := accounts.Load(dir); err == nil {
+				view, catalog = accounts.Project(f, d.clock()), &f
+			}
 		}
+		dockLinkAccountRoutes(&view, result)
 		result.Accounts = &view
+		result.AccountUses, result.AccountUsesOmitted = dockAccountUses(result, view, catalog, identifiers, d.clock())
 	}()
 
 	now := d.clock()
