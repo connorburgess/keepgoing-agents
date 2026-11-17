@@ -1580,6 +1580,10 @@
   // Which command serves this page: "dock" until the server says otherwise.
   function served() { return state.server && state.server.servedBy === "panel" ? "panel" : "dock"; }
 
+  function put(node, parts) {
+    parts.forEach(function (part) { node.appendChild(typeof part === "string" ? document.createTextNode(part) : part); });
+  }
+
   // The footer's first line: whether this page can change anything.
   function renderServed() {
     var m = $("changes");
