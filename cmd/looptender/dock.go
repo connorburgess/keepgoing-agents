@@ -213,7 +213,7 @@ type dockServed struct {
 func newDockServer(port int, auth dockAuth, reader *dockReader) *dockServer {
 	return &dockServer{port: port, guard: newDockGuard(port), auth: auth, reader: reader, served: dockServed{SchemaVersion: 1, ServedBy: "dock",
 		Version: dockBuildLabel(version), VersionText: dockPanelVersionText(version),
-		ChangesText: txt("Read-only. keepgoing dock never pauses, resumes, stops or starts anything; keepgoing panel --allow-changes can.")}}
+		ChangesText: txt("Read-only: this page cannot pause, resume, stop or start anything.")}}
 }
 
 func (s *dockServer) url(token string) string {

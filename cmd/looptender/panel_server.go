@@ -413,11 +413,11 @@ func (h *panelHandler) served(w http.ResponseWriter) func(session string) {
 		now := h.state.now().UTC()
 		if h.changes == nil {
 			out.Changes = "off"
-			out.ChangesText = txt("Read-only: started without --allow-changes. To pause, stop or resume from here, run keepgoing panel stop, then keepgoing panel --allow-changes.")
+			out.ChangesText = txt("Read-only: this page cannot pause, resume, stop or start anything.")
 		} else {
 			since := h.changes.since
 			out.Changes, out.ChangesSince, out.Form = "on", &since, h.changes.prepareValue(session)
-			out.ChangesText = txt("Changes allowed for "+dockSpan(now.Sub(since))+": started with keepgoing panel --allow-changes at ", tm(since, "clock"), ". "+panelExposure+" keepgoing panel stop turns them off.")
+			out.ChangesText = txt("Changes allowed for "+dockSpan(now.Sub(since))+": started with looptender panel --allow-changes at ", tm(since, "clock"), ". "+panelExposure+" looptender panel stop turns them off.")
 		}
 		w.Header().Set("Content-Type", "application/json")
 		_ = json.NewEncoder(w).Encode(out)

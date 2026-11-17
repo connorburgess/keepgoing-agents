@@ -1572,34 +1572,10 @@
   // Which command serves this page: "dock" until the server says otherwise.
   function served() { return state.server && state.server.servedBy === "panel" ? "panel" : "dock"; }
 
-  function idleSpan(seconds) {
-    if (seconds % 3600 === 0) return seconds === 3600 ? "1 hour" : seconds / 3600 + " hours";
-    if (seconds % 60 === 0) return seconds === 60 ? "1 minute" : seconds / 60 + " minutes";
-    return seconds + " seconds";
-  }
-
-  function put(node, parts) {
-    parts.forEach(function (part) { node.appendChild(typeof part === "string" ? document.createTextNode(part) : part); });
-  }
-
-  // One sentence under the footer: what serves the page and when it stops.
+  // The footer's first line: whether this page can change anything.
   function renderServed() {
     var m = $("changes");
     if (m && state.server && list(state.server.changesText).length) m.textContent = say(state.server.changesText);
-    var vt = $("version");
-    if (vt && state.server && state.server.versionText) {
-      vt.textContent = "";
-      put(vt, [state.server.versionText + " ", link("#/versions", "Where each build runs")]);
-    }
-    var p = $("served");
-    if (!p) return;
-    p.textContent = "";
-    if (!state.server) return;
-    if (served() === "panel") {
-      put(p, ["Served to this computer only by ", el("code", null, "keepgoing panel"), ", which stops by itself after " + idleSpan(state.server.idleSeconds || 1800) + " with no page reading from it. ", el("code", null, "keepgoing panel stop"), " ends it now."]);
-    } else {
-      put(p, ["Served to this computer only by ", el("code", null, "keepgoing dock"), ", until Ctrl-C in its terminal."]);
-    }
   }
 
   function loadServer() {
