@@ -308,11 +308,15 @@
     a.href = href;
     if (current) a.setAttribute("aria-current", "page");
     a.appendChild(el("span", "dot " + dotClass));
-    var n = el("span", "pick-name", name);
-    n.title = name;
+    // The full text stays in the link, so it is the accessible name and what
+    // find and copy see; the ellipsis is only how it is drawn. A cut name is
+    // read in full by focusing or hovering the row (see dock.css), and by
+    // opening it: the page heading shows it whole.
+    var n = el("span", "pick-name");
+    n.appendChild(el("span", null, name));
     a.appendChild(n);
-    var s = el("span", "pick-state", sub);
-    s.title = sub;
+    var s = el("span", "pick-state");
+    s.appendChild(el("span", null, sub));
     a.appendChild(s);
     var go = icon("chevron");
     go.setAttribute("class", "go");
