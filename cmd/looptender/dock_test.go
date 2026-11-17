@@ -1116,7 +1116,7 @@ func TestDockSharedLimitMatchesTheAccountNotTheGroupName(t *testing.T) {
 	if !shared["rC"] || shared["rD"] || shared["rB"] || shared["rA"] {
 		t.Errorf("%v", shared)
 	}
-	allow, _ := dockAllowances(routes)
+	allow, _ := dockAllowances(routes, nil, dockNow)
 	subs, limited := []string{}, 0
 	for _, x := range allow {
 		subs = append(subs, x.Sub)
@@ -1162,7 +1162,7 @@ func TestDockAllowancesTellApartLinesThatShareAName(t *testing.T) {
 			[]string{"1 route · which account is not identified by a test", "1 route"}},
 	} {
 		t.Run(c.name, func(t *testing.T) {
-			allow, _ := dockAllowances(c.routes)
+			allow, _ := dockAllowances(c.routes, nil, dockNow)
 			got := []string{}
 			for _, a := range allow {
 				got = append(got, a.Sub)
@@ -2036,7 +2036,7 @@ func TestDockLimitNotesTakeTheResetFromTheReading(t *testing.T) {
 			if shares != want {
 				t.Errorf("route note\n got %q\nwant %q", shares, want)
 			}
-			allow, _ := dockAllowances(routes)
+			allow, _ := dockAllowances(routes, nil, dockNow)
 			got := []string{}
 			for _, x := range allow {
 				for _, n := range x.Notes {

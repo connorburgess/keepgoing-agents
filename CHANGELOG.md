@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- The Routes page's **Allowances** strip is headed by the account you assigned each route to. Routes whose `account:` names a catalog entry, with a check that passed, sit in one block under its label, which says once "assigned by you · identity not verified" (or its BB-thread wording), with each route on a line of its own: its own reading in the words of an account card ("Five-hour allowance was out when read 16 min ago · resets in 2 h 10 min" or "Not out when read …") and its windows, the route that is out first. Readings of different routes are never merged, and the block shows no combined figure. A route with no `account:` keeps its group and says "Not assigned to an account."; one whose stated entry failed its check says what the check found and is not put under the label. Blocks with a route that is out come first, and where the strip is narrow the account's name sits above its routes. In the panel data an entry's block has `assigned`, `lines` (route keys, titles and readings) and no `usage`; other blocks add `assignment`.
+
 - On a narrow window, a loop's "Inspect" link under "Loops and lanes" wraps a long loop name instead of running past the edge of the page.
 
 - The panel no longer puts an orange "Stale" badge beside a loop's last-check age on the "Loops and lanes" row and the loop's "Last check" card. The age is said in plain words, as usage readings' ages are; a loop that is on and not checked for longer than `--stale-after` keeps its own "Not checked recently" state.

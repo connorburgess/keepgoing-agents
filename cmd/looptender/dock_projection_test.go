@@ -124,6 +124,9 @@ func TestDockShowsProjectionInRouteViewAndAllowances(t *testing.T) {
 	}
 	found := false
 	for _, a := range r.Allowances {
+		if a.Usage == nil {
+			continue
+		}
 		for _, w := range a.Usage.Windows {
 			if w.Name == "7-day" && say(w.Projection, dockNow) == wantWeek {
 				found = found || a.Usage.ReadingsNote == accountReadingsNote

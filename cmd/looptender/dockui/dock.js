@@ -1082,23 +1082,58 @@
   }
 
   // ---- Routes across loops ----
-  // One line per account: the newest recorded reading and its resets.
+  // One block per account. Routes the person assigned to one catalog entry
+  // sit under its label, each with its own reading, as on the Accounts
+  // page: readings are never merged and the block shows no figure of its
+  // own. Any other block keeps its group and its newest reading, and says
+  // why it is not under an account.
   function allowancesPanel(d) {
     var items = list(d.allowances);
-    var p = panel("Allowances", [el("span", "sub", "recorded readings for configured route groups; not live or linked to Accounts cards")]);
+    var p = panel("Allowances", [el("span", "sub", "recorded readings by account; not live")]);
     if (!items.length) { p.appendChild(el("p", "sub chain-how", "No accounts to show.")); return p; }
     var ul = el("ul", "allow-list");
     items.forEach(function (a) {
-      var li = el("li", "allow");
+      var li = el("li", "allow" + (a.assigned ? " is-account" : ""));
       var head = el("div", "allow-head");
       head.appendChild(el("h3", "allow-name", a.title));
+      var lines = list(a.lines);
+      // Said once per block: for BB threads in its own words when every
+      // route is one, else as for a headless route.
+      var bbOnly = lines.length > 0 && lines.every(function (r) { return r.bbThread; });
+      if (a.assigned) head.appendChild(el("span", "sub", bbOnly ? ASSIGNED_BB : ASSIGNED));
       head.appendChild(el("span", "sub", a.sub));
+      if (a.assignment) head.appendChild(el("span", "sub", a.assignment));
       li.appendChild(head);
       var body = el("div", "allow-body");
-      notesOf(a.notes).forEach(function (n) { body.appendChild(el("p", "route-note is-" + n.tone, n.text)); });
-      var blk = usageBlock(a.usage);
-      if (list(a.next).length) blk.appendChild(el("div", "sub allow-next", say(a.next)));
-      body.appendChild(blk);
+      if (a.assigned) {
+        var routes = el("ul", "account-routes allow-routes");
+        lines.forEach(function (r) {
+          var rl = el("li", "account-route");
+          var name = el("p", "account-route-name");
+          name.appendChild(link("#/routes/" + r.route, r.title));
+          rl.appendChild(name);
+          if (r.bbThread && !bbOnly) rl.appendChild(el("p", "sub", ASSIGNED_BB));
+          notesOf(r.notes).forEach(function (n) { rl.appendChild(el("p", "route-note is-" + n.tone, n.text)); });
+          // The route's own reading: one plain sentence with its age, then
+          // its windows. Being out is information here, not a warning.
+          rl.appendChild(el("p", "allow-reading", say(r.reading)));
+          var u = routeUsage(d, r.route);
+          if (u && u.availability !== "unavailable") {
+            var box = el("div", "route-usage");
+            if (u.needsPerson && u.ageNote) box.appendChild(el("p", "route-note is-attn usage-age", u.ageNote));
+            box.appendChild(meters(u));
+            rl.appendChild(box);
+          }
+          routes.appendChild(rl);
+        });
+        body.appendChild(routes);
+        if (a.linesOmitted) body.appendChild(el("p", "more", a.linesOmitted + (a.linesOmitted === 1 ? " more route is" : " more routes are") + " not shown."));
+      } else {
+        notesOf(a.notes).forEach(function (n) { body.appendChild(el("p", "route-note is-" + n.tone, n.text)); });
+        var blk = usageBlock(a.usage);
+        if (list(a.next).length) blk.appendChild(el("div", "sub allow-next", say(a.next)));
+        body.appendChild(blk);
+      }
       li.appendChild(body);
       ul.appendChild(li);
     });
