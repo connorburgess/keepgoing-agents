@@ -170,6 +170,12 @@ type dockNeed struct {
 	// Waited is how long, in words.
 	Waited string `json:"waited"`
 	Action string `json:"action"`
+	// Resume is the command that clears the hold from a terminal, set when
+	// resuming is the way out of it. A page that cannot resume (one served
+	// without --allow-changes) shows it to copy. The configuration path is
+	// not part of the report, so it stays the placeholder CONFIG and the
+	// page says where to find it.
+	Resume string `json:"resume,omitempty"`
 }
 
 type dockLoop struct {
@@ -227,6 +233,12 @@ type dockLoop struct {
 	// set. Empty when the flags could not be read. A page offers them only
 	// when the server that serves it allows changes.
 	Can []string `json:"can"`
+	// LanesFailed is "1 lane failed" when the last check's current lane
+	// listing has lanes in error, from their structured status only; empty
+	// otherwise. A failed lane does not hold the loop, so it is never a need,
+	// but the row, the page and "Worth knowing" say it in words, so a loop
+	// that is supervising does not read as all well.
+	LanesFailed string `json:"lanesFailed,omitempty"`
 }
 
 type dockTarget struct {
@@ -1138,12 +1150,22 @@ func buildDockReport(inputs []dockInput, now time.Time, refresh, staleAfter time
 		daemonBuild := l.Versions.Daemon != "" && dockBuildOf(l.Versions.Daemon, version).Availability == "different"
 		otherFile := l.Versions.Service == "different_file"
 		otherBuild := l.Build.Availability == "different" || daemonBuild || otherFile
-		if quiet[l.State] && l.Away == nil && !flagged && !otherBuild {
+		// A loop held for a person is under "Needs you" already.
+		lanesFailed := l.LanesFailed != "" && l.State != "waiting_for_you"
+		if quiet[l.State] && l.Away == nil && !flagged && !otherBuild && !lanesFailed {
 			continue
 		}
 		t := txt()
 		if !quiet[l.State] {
 			t = txt(l.Detail)
+		}
+		// The detail already says it when the loop is not quiet and no need
+		// took its place.
+		if lanesFailed && (quiet[l.State] || !strings.Contains(l.Detail, l.LanesFailed)) {
+			if len(t) > 0 {
+				t = txt(t, " ")
+			}
+			t = txt(t, dockLanesFailedText(l.LanesFailed))
 		}
 		if l.Away != nil {
 			if len(t) > 0 {
@@ -1178,6 +1200,13 @@ func buildDockReport(inputs []dockInput, now time.Time, refresh, staleAfter time
 		r.Worth = append(r.Worth, dockWorth{Key: l.Key, Loop: l.Name, State: l.State, Text: t})
 	}
 	return r
+}
+
+// dockLanesFailedText says what the last check found of the loop's lanes in
+// error and that the loop is not held for them (a child_error is reported, not
+// held). It is built from counts of structured lane status, never lane text.
+func dockLanesFailedText(lanesFailed string) string {
+	return lanesFailed + ", as of its last check; the loop is not held for a failed lane, so look at the lane if it should be working."
 }
 
 // dockLede is "10 loops, 4 supervising" and what the page reads from.
@@ -1346,6 +1375,9 @@ func projectDockLoop(in dockInput, now time.Time, staleAfter time.Duration, iden
 	}
 
 	l.Children = dockChildWork(in.Runs, in.RunsKnown)
+	if l.Children.Availability == "current" && l.Children.Failed > 0 {
+		l.LanesFailed = dockPlural(l.Children.Failed, "lane failed", "lanes failed")
+	}
 	l.Decision = dockLastDecision(st, in.Timeline, now)
 	l.Device = dockDeviceOf(st, in.Hostname, identifiers, now)
 	l.Events = dockRecentEvents(in.Timeline, dockRouteNamesOf(in.Chain), now)
@@ -1492,7 +1524,13 @@ func projectDockLoop(in dockInput, now time.Time, staleAfter time.Duration, iden
 	}
 	l.Versions.Service = in.ServiceFile
 	l.BuildChange = in.BuildChange
+	if l.LanesFailed != "" && need == nil {
+		l.Detail += " " + dockLanesFailedText(l.LanesFailed)
+	}
 	l.PickerState = l.Phrase
+	if l.LanesFailed != "" {
+		l.PickerState += " \u00B7 " + l.LanesFailed
+	}
 	if st != nil {
 		np := st.NoProgress
 		l.NoProgress = &np
@@ -1645,11 +1683,15 @@ const (
 	dockHoldAdviceNote = "See the note left with the hold, and the conversation. Resume the loop when what it is waiting for is done."
 )
 
+// dockResumeCommand is the command a person runs to resume a held loop, as
+// operations.md gives it: resume takes the loop's configuration with -c.
+const dockResumeCommand = "keepgoing resume -c CONFIG"
+
 // dockHoldNeed explains an awaiting-user hold from the fixed cause recorded
 // when it started. Nothing is inferred from the note's text. The note is
 // shown with its identifiers masked, or whole with identifiers.
 func dockHoldNeed(st *statusOut, hold *dockHold, identifiers bool) *dockNeed {
-	n := &dockNeed{Kind: "held", Reason: "It is held for a person.", Action: dockHoldAdvice}
+	n := &dockNeed{Kind: "held", Reason: "It is held for a person.", Action: dockHoldAdvice, Resume: dockResumeCommand}
 	cause := ""
 	switch {
 	case hold != nil && hold.Marked:

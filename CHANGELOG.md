@@ -2,6 +2,16 @@
 
 ## Unreleased
 
+- On a narrow window, a loop's "Inspect" link under "Loops and lanes" wraps a long loop name instead of running past the edge of the page.
+
+- The panel no longer puts an orange "Stale" badge beside a loop's last-check age on the "Loops and lanes" row and the loop's "Last check" card. The age is said in plain words, as usage readings' ages are; a loop that is on and not checked for longer than `--stale-after` keeps its own "Not checked recently" state.
+
+- A hidden panel tab no longer keeps `keepgoing panel` running past its idle limit: it makes no request while hidden, not even for the footer, and reads once when shown. Each read now times out a little under the refresh interval (4 to 30 seconds) and fails into the existing failed-read notice, so one read that never answers cannot stop the updates, and a reply read before identifiers were turned on or off is dropped.
+
+- A "Needs you" card for a held loop on a read-only panel no longer ends in an action the page cannot take. It gives the command that resumes the loop, `keepgoing resume -c CONFIG`, to copy, and says that `keepgoing registry list --private` lists the configuration path. A panel started with `--allow-changes` keeps its own resume control.
+
+- The panel no longer shows a loop with a failed lane as all well. A lane its last check found in error is said in words on the loop's picker row ("1 lane failed"), its "Loops and lanes" row and its page, and the loop is listed under "Worth knowing" (not "Needs you": a failed lane does not hold the loop). Only the lanes' recorded status is read.
+
 - Docs: [Add an account, a subscription or a model](docs/accounts.md#add-an-account-a-subscription-or-a-model) gives the commands in one place: naming a second subscription, another provider or an API key in the accounts catalog, putting it into a loop's order and reordering it, saying which account a route uses, and checking an account again, with what each never does.
 
 - The panel has a **Usage** page that says, in counted sentences, what looptender did for each loop over the last 7 UTC days: the checks that sent nothing and why, the wakes it withheld and how that saves a turn, the messages it sent by kind, spaced wakes (or "unavailable"), a labelled estimate with its baseline, and the context window (the latest reading and its age, the week's lowest and highest, each session reset with the size before and after). It says plainly when looptender did little, and states what looptender does and does not do about context today. Each loop's page has a short block of its own sentences and a link. The page reads a new read-only endpoint, `api/v1/usage`, filled by the same read as the report; it words the existing `savings` and `contextWindow` values and computes nothing of its own.

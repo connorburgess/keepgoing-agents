@@ -14,7 +14,7 @@
   // What looptender did: worded by the same read as API, served on its own
   // for its size, and read only for the Usage page and a loop's page.
   var USAGE = "api/v1/usage";
-  var state = { data: null, identifiers: false, paused: false, timer: 0, busy: false, again: false, lastOk: null, failed: false, failedSince: 0, failedLong: false, notice: "", pending: false, said: "", server: null, treeOpen: Object.create(null), accountOpen: Object.create(null), usage: null, usageText: "", usageFailed: false, usageBusy: false };
+  var state = { data: null, identifiers: false, paused: false, timer: 0, busy: false, again: false, missed: false, lastOk: null, failed: false, failedSince: 0, failedLong: false, notice: "", pending: false, said: "", server: null, treeOpen: Object.create(null), accountOpen: Object.create(null), usage: null, usageText: "", usageFailed: false, usageBusy: false };
 
   var TONES = {
     supervising: "good", waiting_for_you: "attn", waiting_on_limit: "limit", waiting_on_network: "limit", checks_failing: "warn",
@@ -141,8 +141,10 @@
   function lastCheck(c) {
     if (c.availability === "never" || c.availability === "unknown" || !c.text) return unknown(c.text);
     var f = frag();
+    // The age is said in plain words, with no badge: a loop that is on and
+    // not checked for longer than it should be has its own state, "Not
+    // checked recently"; for a paused or held loop an old check is expected.
     f.appendChild(document.createTextNode(c.text));
-    if (c.availability === "stale") f.appendChild(tag("stale", "Stale"));
     if (c.failed) f.appendChild(el("div", "sub", c.failed));
     return f;
   }
@@ -297,6 +299,19 @@
     todo.appendChild(el("span", "todo-label", "What to do"));
     todo.appendChild(document.createTextNode(n.action));
     li.appendChild(todo);
+    // A page that cannot resume says how to, rather than end on an action
+    // it cannot take. With changes allowed, the loop's own controls do it.
+    if (n.resume && !changesOn()) {
+      li.appendChild(el("p", "sub resume-where", "This page cannot resume a loop. In a terminal, run:"));
+      // The page may hold several copy buttons; this one names its loop.
+      var cmd = copyCommand("p", n.resume, "copy-resume-" + n.key, "resume-where-" + n.key);
+      cmd.classList.add("resume-command");
+      li.appendChild(cmd);
+      var where = el("p", "sub resume-where");
+      where.id = "resume-where-" + n.key;
+      put(where, ["CONFIG is the path of " + n.loop + "'s configuration file; ", el("code", null, "keepgoing registry list --private"), " lists it."]);
+      li.appendChild(where);
+    }
     return li;
   }
 
@@ -442,7 +457,11 @@
       var ul = el("ul", "worth");
       worth.forEach(function (w) {
         var li = el("li");
-        li.appendChild(el("span", "dot dot-" + (TONES[w.state] || "unknown")));
+        // A failed lane is said in words; its dot is not the green of a
+        // loop with nothing to say.
+        var wl = loopByKey(w.key), tone = TONES[w.state] || "unknown";
+        if (wl && wl.lanesFailed && tone === "good") tone = "warn";
+        li.appendChild(el("span", "dot dot-" + tone));
         var t = el("div");
         t.appendChild(link("#/loop/" + w.key, w.loop));
         t.appendChild(el("span", "sub", say(w.text)));
@@ -480,11 +499,11 @@
       status.appendChild(el("span", "dot dot-" + (TONES[l.state] || "unknown")));
       status.appendChild(el("span", null, "Supervision: " + l.phrase));
       if (l.state === "finished") status.appendChild(tag("stale", "Unverified declaration"));
+      if (l.lanesFailed) status.appendChild(tag("needs", l.lanesFailed));
       summary.appendChild(status);
       summary.appendChild(el("span", "sub work-observation", l.lanes && l.lanes.summary ? "Lanes: " + l.lanes.summary : "Lane evidence: " + ((l.children && l.children.phrase) || "Unknown")));
-      var age = el("span", "sub work-age", (l.lastCheck && l.lastCheck.text) || "Last check unknown");
-      if (l.lastCheck && l.lastCheck.availability === "stale") age.appendChild(tag("stale", "Stale"));
-      summary.appendChild(age);
+      // Age in plain words, as for usage readings; see lastCheck().
+      summary.appendChild(el("span", "sub work-age", (l.lastCheck && l.lastCheck.text) || "Last check unknown"));
       details.appendChild(summary);
       var body = el("div", "work-body");
       body.appendChild(el("p", "detail", l.detail));
@@ -673,7 +692,14 @@
     var st = el("span", "state tone-" + (TONES[l.state] || "unknown"));
     st.appendChild(icon(STATE_ICON[l.state] || "unknown"));
     st.appendChild(document.createTextNode(l.phrase));
-    pane.appendChild(paneHead(l.name, st));
+    var pills = st;
+    // A failed lane is said beside the supervision state, in words.
+    if (l.lanesFailed) {
+      pills = el("span", "pane-pills");
+      pills.appendChild(st);
+      pills.appendChild(tag("needs", l.lanesFailed));
+    }
+    pane.appendChild(paneHead(l.name, pills));
     var need = needFor(key);
     if (!need) pane.appendChild(el("p", "detail", l.detail));
     if (need) {
@@ -1606,9 +1632,20 @@
     }
   }
 
-  function loadServer() {
-    fetch(SERVER, { cache: "no-store", credentials: "same-origin", headers: { Accept: "application/json" } })
+  // How long one read may take: a little under the refresh interval, from 4
+  // to 30 seconds, so a read that never answers cannot stop the updates. A
+  // read that runs out of time fails like any other failed read.
+  function readTimeoutMs() { return Math.min(30, Math.max(4, refreshSeconds() - 2)) * 1000; }
+  function getJSON(url) {
+    var ctl = new AbortController();
+    var timer = setTimeout(function () { ctl.abort(); }, readTimeoutMs());
+    return fetch(url, { cache: "no-store", credentials: "same-origin", headers: { Accept: "application/json" }, signal: ctl.signal })
       .then(function (r) { if (!r.ok) throw new Error("status " + r.status); return r.json(); })
+      .finally(function () { clearTimeout(timer); });
+  }
+
+  function loadServer() {
+    getJSON(SERVER)
       .then(function (d) {
         if (!d || d.schemaVersion !== 1) return;
         var was = changesOn();
@@ -1627,18 +1664,24 @@
 
   function load(byHand) {
     if (state.busy) { state.again = true; return; }
+    // A hidden tab reads nothing, not even what serves the page: any read
+    // keeps the panel from stopping by itself when idle. It reads once when
+    // it is shown again.
+    if (document.hidden && !byHand) { state.missed = true; return; }
+    state.missed = false;
     // What serves the page and whether it allows changes, read again with
     // every read so the footer's ages stay current.
     if (state.data) loadServer();
-    // A hidden tab does not poll; it reads again when it is shown.
-    if (document.hidden && state.data && !byHand) { schedule(); return; }
     state.busy = true;
     var btn = $("refresh");
     btn.setAttribute("aria-busy", "true");
-    fetch(API + (state.identifiers ? "?identifiers=1" : ""), { cache: "no-store", credentials: "same-origin", headers: { Accept: "application/json" } })
-      .then(function (r) { if (!r.ok) throw new Error("status " + r.status); return r.json(); })
+    var asked = state.identifiers;
+    getJSON(API + (asked ? "?identifiers=1" : ""))
       .then(function (d) {
         if (!d || d.schemaVersion !== SCHEMA || !d.registry || !Array.isArray(d.loops)) throw new Error("schema");
+        // Identifiers were turned on or off while this read was out: the
+        // reply is for the other view, so it is dropped and read again.
+        if (asked !== state.identifiers) { state.again = true; return; }
         state.data = d; state.lastOk = Date.now(); state.failed = false; state.failedSince = 0; state.failedLong = false;
         if (wantsUsage(route())) loadUsage();
         if (render(false) !== false) notice("cut", d.complete === false ? "This read was cut off before every loop was read. Loops that were not read are listed as could not be read; it reads again shortly." : "");
@@ -1704,7 +1747,7 @@
       if (state.pending && !selecting()) render(false);
     });
     document.addEventListener("visibilitychange", function () {
-      if (!document.hidden && !state.paused && state.lastOk && Date.now() - state.lastOk > 5000) { clearTimeout(state.timer); load(true); }
+      if (!document.hidden && !state.paused && (state.missed || (state.lastOk && Date.now() - state.lastOk > 5000))) { clearTimeout(state.timer); load(true); }
     });
     loadServer();
     load(true);

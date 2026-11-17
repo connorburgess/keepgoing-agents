@@ -117,7 +117,8 @@ func TestDockReportCoversEveryStateFromFixtures(t *testing.T) {
 	if c := docs.Children; c.Availability != "current" || !c.Holding || c.Working != 3 || c.Stuck != 0 || c.Failed != 1 || c.Phrase != "3 working, 1 failed" {
 		t.Errorf("lanes %+v", c)
 	}
-	if docs.Detail != "On. Its last check sent nothing because lanes are working or waiting." {
+	// Its failed lane is said in words (design pass 2, new finding 1).
+	if docs.Detail != "On. Its last check sent nothing because lanes are working or waiting. 1 lane failed, as of its last check; the loop is not held for a failed lane, so look at the lane if it should be working." || docs.LanesFailed != "1 lane failed" {
 		t.Errorf("%q", docs.Detail)
 	}
 	if c := docs.LastCheck; c.Availability != "recent" || c.AgeSeconds == nil || *c.AgeSeconds != 180 || c.Phrase != "Checked; sent nothing" {

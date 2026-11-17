@@ -111,7 +111,7 @@ details[open] > .work-summary .work-name::before { transform: rotate(45deg); }
 .work-body > p { max-width: 70ch; }
 .work-body > .sub { font-size: 0.8125rem; }
 .work-facts { margin-block: 1rem; }
-.work-inspect { display: inline-block; padding-block: 0.5rem; }
+.work-inspect { display: inline-block; max-width: 100%; padding-block: 0.5rem; overflow-wrap: anywhere; }
 .overview-events a { font-weight: 600; }
 @media (max-width: 650px) {
   .work-summary { grid-template-columns: minmax(0, 1fr); gap: 0.4rem; }
@@ -196,6 +196,8 @@ body.has-banner { padding-bottom: 8rem; }
 .back svg { transform: rotate(180deg); }
 .back:hover { color: var(--ink); background: var(--sunk); }
 .pane-head { display: flex; flex-wrap: wrap; align-items: flex-start; justify-content: space-between; gap: 0.5rem 1rem; }
+.pane-pills { display: inline-flex; flex-wrap: wrap; align-items: center; gap: 0.4rem; }
+.pane-pills .tag { margin-left: 0; }
 .panel { margin-top: 1.25rem; background: var(--surface); border: 1px solid var(--line); border-radius: 14px; box-shadow: var(--shadow); padding: 1.1rem 1.25rem 1.2rem; }
 .panel > h2 { display: flex; flex-wrap: wrap; align-items: baseline; gap: 0.2rem 0.75rem; }
 .panel > h2 .sub, .panel > h2 .unknown { font-size: 0.8125rem; font-weight: 400; }
@@ -218,6 +220,10 @@ body.has-banner { padding-bottom: 8rem; }
 .need .reason { font-weight: 500; }
 .note { margin: 0.25rem 0; padding: 0.5rem 0.75rem; background: var(--sunk); border-radius: 8px; color: var(--ink); overflow-wrap: anywhere; }
 .note-label, .todo-label { display: block; font-size: 0.75rem; font-weight: 600; color: var(--ink-2); letter-spacing: 0.01em; }
+.need .resume-where { overflow-wrap: anywhere; }
+.need .resume-where code { font-family: var(--mono); }
+.need .resume-command { display: flex; flex-wrap: wrap; align-items: center; gap: 0.5rem; min-width: 0; }
+.need .resume-command .command { font-family: var(--mono); white-space: normal; overflow-wrap: anywhere; }
 .worth { list-style: none; margin: 0.6rem 0 0; padding: 0; display: grid; gap: 0.55rem; }
 .worth li { display: grid; grid-template-columns: 0.6rem minmax(0, 1fr); gap: 0.6rem; align-items: baseline; font-size: 0.9rem; }
 .worth .dot { align-self: center; }
