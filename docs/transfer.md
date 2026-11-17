@@ -73,6 +73,40 @@ Unlike preview, the inventory prints absolute paths: it is local operator output
 
 The JSON has `schemaVersion: 1`, `outcome: "inventory"`, `readAt`, `complete`, `loop`, `controls`, `owner`, `pendingTransfer`, `target`, `lanesListed`, `lanes`, `repositories` (each with `index`, `path`, `available`, `base` with `ref`, `commit`, `remoteTracking` and `refUpdatedAt`, and `worktrees`) and `notes`. Exit code 0 means every listing and count was complete. 1 means something could not be read or counted (including one worktree's changed files or commits beyond the base), the lane listing was not a bounded list of valid IDs, there were more than 200 lanes or 500 worktrees, or the two-minute overall deadline passed. The report is still printed and says what is missing. 2 means invalid arguments or a loop whose primary is not a BB thread.
 
+## Record a migration review (unreleased)
+
+A separately created successor does not inherit its predecessor's lane discovery or assignments. Use an explicit private review to account for existing work before making further coordination decisions. This command writes only `migration-review.json` in the successor's runtime directory. It never moves a thread, spawns or stops a lane, changes a worktree, sends a message, resumes supervision, or edits tasks, goals or holds. Existing recording, spending and stop gates still apply. The record grants no new authority and is not evidence that migration execution succeeded.
+
+Keep both configurations, runtime directories and the assignment file outside checkouts. Both configurations must describe distinct BB primaries with existing readable controls, no pending transfer, and a recorded primary target. The destination uses the existing ownership rules: an authorized owning BB thread or external terminal can explicitly revise the review. The command does not take over ownership. A source retirement marker, when supported by the installed build, is independent of this checklist.
+
+Put declarations in a private JSON file, for example:
+
+```json
+{"assignments":[
+  {"id":"website","summary":"Review the current implementation","declaredState":"active","laneThread":"thr_example_website"},
+  {"id":"rebrand","summary":"Finish the remaining acceptance review","declaredState":"dormant","laneThread":"thr_example_rebrand"},
+  {"id":"open-question","summary":"Clarify the unresolved acceptance criterion","declaredState":"unresolved"}
+]}
+```
+
+Every observed predecessor **direct** lane needs exactly one explicit row. Descendants are excluded; this command never claims coverage of the entire lane tree. `declaredState` is `active`, `dormant`, `unresolved` or `complete`, explicitly supplied by the caller. It is separate from BB's observed `idle`, `active` and other statuses. An active assignment observed idle is not shown as running or completed. `complete` is a declaration, not verified acceptance. An optional absolute `expectedWorktree` must match the worktree containing that lane's verified BB path; names are never matched heuristically.
+
+```sh
+keepgoing transfer reconcile preview -c successor.yaml --source-config predecessor.yaml --file assignments.json --json
+# Use the digest returned by this review. Revisions also require its existing ID/revision.
+keepgoing transfer reconcile apply -c successor.yaml --source-config predecessor.yaml --file assignments.json --digest <reviewed-digest> --json
+keepgoing transfer reconcile show -c successor.yaml
+keepgoing transfer reconcile show -c successor.yaml --private
+```
+
+To revise, pass `--id <review-id> --revision <current-revision>` to both preview and apply. Existing source/successor identities cannot be rebound. Previous unfinished assignment IDs cannot disappear: retain them and explicitly revise their declaration, even when a lane is absent or archived. A retained row can keep its missing lane reference, marked absent from the latest listing; it is never silently treated as finished. An unrelated unobserved lane cannot be added as a new mapping. All earlier declarations and observations remain in the bounded history. Each observation has a refresh timestamp independent of declaration state. `show --private` includes summaries, paths, lane identity/status and history; do not share it publicly. Default show/status expose counts and evidence time without assignment text or paths. Status reads the saved review only, without refreshing BB or Git.
+
+Preview and apply each take two independent typed BB/Git inventories within a two-minute deadline, compare them and bracket them with local configuration/control/state/goal snapshots. Duplicate, malformed, unknown, oversized, incomplete or changed evidence refuses publication. A bare listing reaching 200 lanes is treated as bounded/uncertain, never complete coverage; at most 500 worktrees are accepted. Apply requires the preview digest to match its new reads and rechecks local sources and ownership under both tick locks plus the destination control lock before atomically publishing one private record. Locks are nonwaiting; a healthy worker is not stopped to obtain them. No BB/Git query occurs under those publication locks. Source and successor must have the same verified project and device, but may have different environments and paths.
+
+These are independent reads, not an atomic BB/Git snapshot or a reservation. Changes seen between reads are visible as a refusal; changes after the last external read remain possible, including an ABA change that returns to the same metadata. Even successful recording establishes only the observed checklist at that time. Failure preserves an existing record; a publication error can be ambiguous, so inspect show before retrying. Missing/invalid input or a damaged record is refused, never replaced with a fresh empty checklist. Plan and record symlinks/nonregular files are rejected. Input is capped at 100 KiB, 200 assignments, 64-character IDs and 1,024-byte summaries; records retain at most 32 revisions and 1 MiB. Reaching a limit refuses without discarding history. Recovery requires a private valid backup, not deletion of unfinished work to bypass the bounds.
+
+This slice does not reconcile tasks/goals, resolve a recording hold, dispatch idle work, register/import a successor in BB, extend supervisor discovery to mapped lanes, or settle cross-loop retries/provider return. It adds CLI status discoverability only; panel/BB UI projection and live migration acceptance remain open. Source changes do not update an installed runtime binary. No transcript text or age-based inference determines a declaration, permission or completion.
+
 ## Apply explicitly
 
 ```sh
