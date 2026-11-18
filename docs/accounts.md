@@ -408,8 +408,12 @@ The label and ID are shown as they are in the Accounts view. A loop's page
 shows a route that names a consistent entry as "on *Label* · assigned by you ·
 identity not verified" (for a BB thread route, "not verified for BB threads"),
 and a route that names none as "Not assigned to an account." with its account
-group. The Allowances strip on the Routes page still groups by recorded usage
-identity and is not linked to account cards.
+group. The Allowances strip on Routes combines headings only for consistent explicit
+catalog assignments. Each route retains its own dated probe reading and windows;
+a shared context never selects one route's windows for another. Other routes
+keep their configured group and route labels and say why no account label is
+used. Selected-context subscription quota on Accounts is separate evidence,
+never a substitute for route readings.
 
 ## Change a selection deliberately
 

@@ -4,7 +4,6 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"fmt"
-	"slices"
 	"sort"
 	"strings"
 	"time"
@@ -36,7 +35,7 @@ const (
 	dockMaxChain      = 8   // fallbacks listed per loop; the rest are counted
 	dockMaxRoutes     = 64  // routes in the view across loops; the rest are counted
 	dockMaxRouteLoops = 16  // loops listed under one route, per list; the rest are counted
-	dockMaxAllowances = 32  // account lines in the allowances strip
+	dockMaxAllowances = 32  // blocks in the allowances strip
 )
 
 type dockReport struct {
@@ -80,9 +79,8 @@ type dockReport struct {
 	Routes        []dockRoute    `json:"routes"`
 	RoutesOmitted int            `json:"routesOmitted"`
 	RoutesSummary dockRoutesLine `json:"routesSummary"`
-	// Allowances is one line per account: the freshest usage reading
-	// recorded for any of its routes, and a usage limit a loop left one of
-	// them on whose reset has not passed.
+	// Allowances combines explicit consistent assignments under a label,
+	// with each route's own reading; other routes remain separate.
 	Allowances        []dockAllowance `json:"allowances"`
 	AllowancesOmitted int             `json:"allowancesOmitted"`
 	// Versions is where each build on this computer runs, against the newest
@@ -116,23 +114,51 @@ type dockWorth struct {
 	Text  dockText `json:"text"`
 }
 
-// dockAllowance is what is recorded about one account's usage: the newest
-// reading any loop holds for a route on it. An account is what selects the
-// account a test reads (the probe's usage identity), so two accounts under
-// one group name are two lines.
+// dockAllowance is one block of the allowances strip. Only explicit,
+// consistent catalog assignments combine routes beneath an account label.
+// Every route keeps its own reading; unassigned routes stay separate even
+// when their configured usage contexts match.
 type dockAllowance struct {
-	Title    string          `json:"title"`
-	Sub      string          `json:"sub"`
-	Provider string          `json:"provider,omitempty"`
-	Account  string          `json:"account,omitempty"`
-	Routes   int             `json:"routes"`
-	Usage    dockUsageTarget `json:"usage"`
-	Notes    []dockNote      `json:"notes"`
-	Next     dockText        `json:"next,omitempty"`
-	identity string
+	Title    string `json:"title"`
+	Sub      string `json:"sub"`
+	Provider string `json:"provider,omitempty"`
+	Account  string `json:"account,omitempty"`
+	Routes   int    `json:"routes"`
+	// Assigned is "by_you" for a block headed by a catalog entry's label.
+	Assigned string `json:"assigned,omitempty"`
+	// Assignment is why a block is not under a catalog entry: "Not assigned
+	// to an account." or the failed check of the account its routes state.
+	Assignment string `json:"assignment,omitempty"`
+	// Lines are the routes of a catalog entry's block, the route that is
+	// out first, each read from the report's routes by its key. LinesOmitted
+	// counts those past dockMaxAccountRoutes.
+	Lines        []dockAllowanceLine `json:"lines,omitempty"`
+	LinesOmitted int                 `json:"linesOmitted,omitempty"`
+	Usage        *dockUsageTarget    `json:"usage,omitempty"`
+	Notes        []dockNote          `json:"notes"`
+	Next         dockText            `json:"next,omitempty"`
 	// kinds says what each of its routes is, in route order and without
 	// repeats, for telling apart lines that share a name.
 	kinds []string
+	out   bool
+}
+
+// dockAllowanceLine is one route of a catalog entry's block. Its reading is
+// the route's own, in the report's routes under the same key.
+type dockAllowanceLine struct {
+	Route    string `json:"route"`
+	Title    string `json:"title"`
+	BBThread bool   `json:"bbThread,omitempty"`
+	// Reading says when the route's own reading was taken ("Read 18 min
+	// ago"), as an unassigned block does, when it has windows to draw: the
+	// windows then say whether it was out and when it resets, so the reset
+	// is said once. A route with no windows to draw has the account card's
+	// sentence instead ("No usage reading is recorded for its route.").
+	Reading dockText `json:"reading"`
+	// Notes are each loop that left this route on a usage limit.
+	Notes []dockNote `json:"notes,omitempty"`
+	out   bool
+	group string
 }
 
 type dockRegistry struct {
@@ -822,19 +848,67 @@ func anyAtLimit(ds []dockDeparture) bool {
 	return false
 }
 
-// dockAllowances groups routes by account (provider, group and usage
-// identity), in route order.
-func dockAllowances(routes []dockRoute) ([]dockAllowance, int) {
+// dockRouteAssignment is the account a route's loops state for it, from the
+// catalogAccount of its chain entries. Mixed is true when two loops state
+// different accounts, or one was checked differently, for the same route.
+type dockRouteAssignment struct {
+	account *accounts.RouteAccount
+	mixed   bool
+}
+
+func dockRouteAssignments(loops []dockLoop) map[string]*dockRouteAssignment {
+	out := map[string]*dockRouteAssignment{}
+	for _, l := range loops {
+		for _, e := range l.Chain.Entries {
+			x := out[e.Route]
+			switch {
+			case x == nil:
+				out[e.Route] = &dockRouteAssignment{account: e.CatalogAccount}
+			case x.account == nil || e.CatalogAccount == nil:
+				x.mixed = x.mixed || x.account != e.CatalogAccount
+			case x.account.Account != e.CatalogAccount.Account || x.account.Check != e.CatalogAccount.Check || x.account.Context != e.CatalogAccount.Context:
+				x.mixed = true
+			}
+		}
+	}
+	return out
+}
+
+// dockAllowanceAssignment is the catalog entry a route's block is headed by,
+// or "" and why the route is not under one. A route is under an entry only
+// when every loop states that entry and its check passed (consistent, or
+// not verified for a BB thread), as on the Accounts page.
+func dockAllowanceAssignment(x *dockRouteAssignment) (entry string, a *accounts.RouteAccount, why string) {
+	switch {
+	case x != nil && x.mixed:
+		return "", nil, "Its loops assign it to different accounts."
+	case x == nil || x.account == nil:
+		return "", nil, "Not assigned to an account."
+	}
+	a = x.account
+	if a.Assigned != "by_you" {
+		return "", a, "Not assigned to an account."
+	}
+	if a.Label != "" && (a.Check == accounts.RouteConsistent || a.Check == accounts.RouteNotVerified) {
+		return a.Account, a, ""
+	}
+	return "", a, dockCapital(accounts.RouteCheckText(a.Check)) + "."
+}
+
+// dockAllowances combines headings only for explicit consistent catalog
+// assignments. Shared usage context never identifies an account or selects
+// one route's reading for another. Out routes and blocks come first.
+func dockAllowances(routes []dockRoute, loops []dockLoop, now time.Time) ([]dockAllowance, int) {
+	assigned := dockRouteAssignments(loops)
 	index := map[string]int{}
 	out := []dockAllowance{}
 	omitted := 0
 	limits := map[int][]dockDeparture{}
 	for _, r := range routes {
-		// A route with no recorded account identity is a line of its own: it
-		// is not said to share an allowance with anything.
-		key := r.Provider + "\x00" + r.Account + "\x00" + r.identity
-		if r.identity == "" {
-			key = "route\x00" + r.Key
+		entry, ra, why := dockAllowanceAssignment(assigned[r.Key])
+		key := "route\x00" + r.Key
+		if entry != "" {
+			key = "card\x00" + entry
 		}
 		i, ok := index[key]
 		if !ok {
@@ -845,87 +919,116 @@ func dockAllowances(routes []dockRoute) ([]dockAllowance, int) {
 			}
 			i = len(out)
 			index[key] = i
-			title := r.Account
-			if title == "" {
-				title = r.Provider
+			a := dockAllowance{Provider: r.Provider, Account: r.Account, Assignment: why, Notes: []dockNote{}}
+			if entry != "" {
+				a = dockAllowance{Title: clip(ra.Label, dockMaxText), Assigned: "by_you", Lines: []dockAllowanceLine{}, Notes: []dockNote{}}
+			} else {
+				a.Title = r.Account
+				if a.Title == "" {
+					a.Title = r.Provider
+				}
+				if a.Title == "" {
+					a.Title = "Configured route"
+				}
+				u := r.Usage
+				if u.ReadLine == "" {
+					if u.ObservedAt != nil {
+						u.ReadLine = "Read " + dockAgo(now, *u.ObservedAt)
+					} else {
+						u.ReadLine = "No reading"
+					}
+				}
+				u.ReadLine = strings.Replace(u.ReadLine, "Usage read", "Read", 1)
+				a.Usage = &u
+				title := r.Title
+				if title == "" {
+					title = dockAllowanceRouteKind(r)
+				}
+				a.kinds = []string{clip(title, dockMaxText)}
 			}
-			if title == "" {
-				title = "Account not named"
-			}
-			out = append(out, dockAllowance{Title: title, Provider: r.Provider, Account: r.Account, identity: r.identity, Notes: []dockNote{},
-				Usage: dockUsageTarget{Availability: "unavailable", Windows: []dockUsageWindow{}, ReadLine: "No reading"}})
+			out = append(out, a)
 		}
 		if i < 0 {
 			continue
 		}
 		a := &out[i]
 		a.Routes++
-		if k := dockAllowanceRouteKind(r); !slices.Contains(a.kinds, k) {
-			a.kinds = append(a.kinds, k)
-		}
-		if u := r.Usage; u.AgeSeconds != nil && (a.Usage.AgeSeconds == nil || *u.AgeSeconds < *a.Usage.AgeSeconds) {
-			a.Usage = u
-			a.Usage.ReadLine = strings.Replace(u.ReadLine, "Usage read", "Read", 1)
-			if u.ReadingsNote != "" {
-				a.Usage.ReadingsNote = accountReadingsNote
+		if entry != "" {
+			// The route's own line, with its own notes, compared with its own
+			// reading.
+			if len(a.Lines) >= dockMaxAccountRoutes {
+				a.LinesOmitted++
+				continue
 			}
+			// Under the account's label a route is named by its model alone;
+			// its group is added back below only where two lines of the block
+			// would otherwise have the same name.
+			ln := dockAllowanceLine{Route: r.Key, Title: clip(r.Title, 80), BBThread: ra.Check == accounts.RouteNotVerified, group: r.TitleAccount}
+			for _, d := range r.LeftBy {
+				if d.atLimit() {
+					s := txt(d.loop + " hit a usage limit on this route")
+					if d.At != nil {
+						s = txt(s, " on ", tm(*d.At, "date"))
+					}
+					ln.Notes = append(ln.Notes, dockNote{Tone: "limit", Text: dockLimitReset(s, d, r.Usage, "datetime")})
+				}
+			}
+			ln.Reading, ln.out = dockAccountReading([]dockRouteReading{{title: ln.Title, usage: r.Usage}}, 1, now)
+			if u := r.Usage; u.Availability != "unavailable" && u.ObservedAt != nil && len(u.Windows) > 0 {
+				ln.Reading = txt("Read " + dockAgo(now, *u.ObservedAt))
+			}
+			ln.out = ln.out || len(ln.Notes) > 0
+			a.out = a.out || ln.out
+			a.Lines = append(a.Lines, ln)
+			continue
 		}
+
 		for _, d := range r.LeftBy {
 			if d.atLimit() {
 				limits[i] = append(limits[i], d)
 			}
 		}
 	}
-	// The notes are written once every route is in, so a limit without a
-	// reported reset is compared with the account's newest reading, the one
-	// shown under the note.
+	// Each unassigned block contains one route; compare its departure
+	// with that same route's reading.
 	for i, ds := range limits {
 		a := &out[i]
 		for _, d := range ds {
-			where := " hit a usage limit on a route on this account"
-			if a.identity == "" {
-				where = " hit a usage limit on this route"
-			}
+			where := " hit a usage limit on this route"
 			s := txt(d.loop + where)
 			if d.At != nil {
 				s = txt(s, " on ", tm(*d.At, "date"))
 			}
-			a.Notes = append(a.Notes, dockNote{Tone: "limit", Text: dockLimitReset(s, d, a.Usage, "datetime")})
+			a.Notes = append(a.Notes, dockNote{Tone: "limit", Text: dockLimitReset(s, d, *a.Usage, "datetime")})
 		}
 	}
-	// Lines that share a provider and title each say what their routes are.
-	// Only identified accounts are numbered: a line whose account is not
-	// identified is not said to be, or not to be, any other line's account.
-	names := map[string]int{}
-	shared := map[string]int{}
-	for _, a := range out {
-		shared[a.Provider+"\x00"+a.Title]++
-		if a.identity != "" {
-			names[a.Provider+"\x00"+a.Title]++
-		}
-	}
-	seen := map[string]int{}
 	for i := range out {
 		a := &out[i]
+		if a.Assigned != "" {
+			a.Sub = dockPlural(a.Routes, "route", "routes")
+			same := map[string]int{}
+			for _, l := range a.Lines {
+				same[l.Title]++
+			}
+			for j := range a.Lines {
+				if l := &a.Lines[j]; same[l.Title] > 1 && l.group != "" {
+					l.Title = clip(l.Title+" on "+l.group, 80)
+				}
+			}
+			// Within the block, the routes that are out first.
+			sort.SliceStable(a.Lines, func(x, y int) bool { return a.Lines[x].out && !a.Lines[y].out })
+			continue
+		}
 		parts := []string{}
 		if a.Provider != "" && a.Provider != a.Account {
 			parts = append(parts, "provider "+a.Provider)
 		}
-		count := dockPlural(a.Routes, "route", "routes")
-		if shared[a.Provider+"\x00"+a.Title] > 1 {
-			count = dockAllowanceKinds(count, a.kinds)
-		}
-		parts = append(parts, count)
-		if a.identity == "" {
-			parts = append(parts, "which account is not identified by a test")
-		} else if n := names[a.Provider+"\x00"+a.Title]; n > 1 {
-			seen[a.Provider+"\x00"+a.Title]++
-			parts = append(parts, fmt.Sprintf("account %d of %d named %s", seen[a.Provider+"\x00"+a.Title], n, a.Title))
-		}
+		parts = append(parts, dockAllowanceKinds("1 route", a.kinds), "account unknown")
 		a.Sub = strings.Join(parts, " · ")
 		if len(a.Notes) == 0 && len(a.Usage.UsedUp) > 0 {
 			a.Notes = append(a.Notes, dockNote{Tone: "limit", Text: a.Usage.UsedUp})
 		}
+		a.out = len(a.Notes) > 0 || dockUsedUpWindow(*a.Usage) != nil
 		var next *time.Time
 		future := 0
 		for _, w := range a.Usage.Windows {
@@ -940,6 +1043,8 @@ func dockAllowances(routes []dockRoute) ([]dockAllowance, int) {
 			a.Next = txt("Next reset ", tm(*next, "clock"))
 		}
 	}
+	// The blocks with a route that is out first, otherwise in route order.
+	sort.SliceStable(out, func(x, y int) bool { return out[x].out && !out[y].out })
 	return out, omitted
 }
 
@@ -1140,7 +1245,7 @@ func buildDockReport(inputs []dockInput, now time.Time, refresh, staleAfter time
 	})
 	r.Routes, r.RoutesOmitted = dockRoutes(r.Loops, now)
 	dockShareAcrossLoops(r.Loops, r.Routes, now)
-	r.Allowances, r.AllowancesOmitted = dockAllowances(r.Routes)
+	r.Allowances, r.AllowancesOmitted = dockAllowances(r.Routes, r.Loops, now)
 	dockMarkOldUsage(&r, staleAfter)
 	sort.SliceStable(r.NeedsYou, func(i, j int) bool {
 		a, b := r.NeedsYou[i].WaitedSeconds, r.NeedsYou[j].WaitedSeconds
@@ -2165,10 +2270,6 @@ func dockUsageOf(v usageView, now time.Time) dockUsageTarget {
 	}
 	return t
 }
-
-// accountReadingsNote is readingsNote for a line of the allowances strip,
-// which is an account, not a route.
-const accountReadingsNote = "Readings for this account come only from its routes' probes."
 
 // dockProjection words a window's projection as status does, with each
 // time as a part the page shows in its own time zone and each length of time
