@@ -202,6 +202,7 @@ type Result struct {
 }
 
 type tick struct {
+	assignment *assignmentDelivery
 	// ctl is the control record as this check loaded it.
 	ctl control.File
 	// contextBytes adds up the supervision context blocks this check's sends
@@ -1024,6 +1025,7 @@ func (t *tick) run() error {
 		SinceLastReprompt: sinceReprompt, Backoff: loop.Errors.Backoff.Duration,
 		SwitchBackReady: t.switchBackReady(target),
 	}
+	in.AssignmentReady = t.assignmentObservation(a, obs)
 	in.IdleSpacing = t.idleSpacingInput(obs, ctl)
 	// A loop held for a restricted turn runs no check until a person resumes
 	// it. Reaching this point with that same turn still showing therefore
@@ -1909,13 +1911,18 @@ func (t *tick) act(a adapter.Adapter, d decide.Decision) error {
 			text = prompt.WithChildErrorsRetried(text, childErrors, t.lanesRetried)
 		}
 		var backlogNotice *backlogDelivery
-		if d.Action == decide.Wake && !text.NoticeOnly && loop.PRBacklog != nil {
+		if d.Action == decide.Wake && !d.AssignmentWake && !text.NoticeOnly && loop.PRBacklog != nil {
 			var allowed bool
 			text, backlogNotice, allowed = t.withBacklog(a, text)
 			if !allowed {
 				t.res.Action, t.res.Reason = string(decide.None), "controls changed during backlog consultation; no wake sent"
 				return nil
 			}
+		}
+		var assignmentAllowed bool
+		text, assignmentAllowed = t.prepareAssignment(a, d, text)
+		if !assignmentAllowed {
+			return nil
 		}
 		if !reserved {
 			action := string(d.Action)
@@ -1925,6 +1932,9 @@ func (t *tick) act(a adapter.Adapter, d decide.Decision) error {
 			if _, err := t.reserveSend(action, t.res.Target); err != nil {
 				return err
 			}
+		}
+		if err := t.consumeAssignment(); err != nil {
+			return err
 		}
 		t.res.Recovery = ""
 		if d.Action == decide.Reprompt {

@@ -73,7 +73,7 @@ Local client discovery:
   panel                    Open the keepgoing panel in your browser, starting it when needed; also status, stop, list
 
 Goal metadata:
-  assignment inventory|review|handoff|acknowledge|show  Explicit BB assignment evidence (opt-in; no dispatch)
+  assignment inventory|review|handoff|acknowledge|ready|reconcile-wake|show  Explicit BB assignment evidence (opt-in; no dispatch)
   goal create|revise|show   Record private, revisioned goal metadata
 
 Control:
