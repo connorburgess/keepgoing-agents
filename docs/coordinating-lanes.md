@@ -66,3 +66,15 @@ looptender supervises the loop's own conversation. For a BB loop it also knows t
 - **Does not:** create, message or move a lane; read a lane's message text; keep a ledger or know about lanes not yet created; record or check approvals; choose a lane's model or effort; limit nesting or report size.
 
 Planned coordinator support, none of it built, is listed in the [roadmap](roadmap.md#coordinating-lanes-planned).
+
+## Finish work before expanding the backlog
+
+The unreleased opt-in [PR backlog safeguard](pr-backlog.md) consults structured GitHub evidence during an ordinary wake. Configure an explicit repository and WIP threshold; counts include held work and drafts. At the threshold, finish authorized reviews, fixes and integration before opening more branches. If more work is necessary, record the explicit reason and the authority already granted. A threshold notice is not permission to merge, combine PRs, dismiss reviews or change a hold. Unknown evidence is not an empty backlog. This feature supplies evidence and a fixed reminder; these coordination decisions remain the coordinator's.
+
+## Approval-dependent work
+
+Hold the action that needs approval and continue independent authorized tasks. Repeat an approval question only when material new information arrives or the decision changes. Enter awaiting-user only when all remaining authorized work requires a person. A recorded pending approval is neither an approval nor a reason to abandon unrelated work.
+
+For example, fictional PR42 awaits the owner's merge approval, while PR43 has an already-authorized independent review and PR44 has an already-authorized test fix. Keep PR42's merge held, perform the PR43 review and PR44 fix, then report their evidence. Do not repeatedly ask to merge PR42 without new information. Ask a person when only approval-dependent work remains. A runtime hold already in place still wins: the supervised session must never clear it or resume itself to perform this scenario.
+
+This is a separate coordination acceptance case. Observed coordinator stalling is not proof of a looptender runtime defect. The backlog safeguard does not inspect assignments or approval text, decide which work is independent, set awaiting-user based on this scenario, infer permission from transcripts, or bypass self-resume restrictions. Executable assignment/approval acceptance remains open beyond the fictional guidance here.

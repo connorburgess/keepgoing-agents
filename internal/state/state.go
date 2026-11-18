@@ -21,6 +21,7 @@ import (
 
 	"github.com/looptender/looptender/internal/config"
 	"github.com/looptender/looptender/internal/decide"
+	"github.com/looptender/looptender/internal/prbacklog"
 	"github.com/looptender/looptender/internal/snapshot"
 )
 
@@ -35,7 +36,9 @@ const Primary = "primary"
 
 // File is what one tick leaves for the next.
 type File struct {
-	LastPromptSend *PromptSend `json:"lastPromptSend,omitempty"`
+	// PRBacklog is optional diagnostic evidence and notice bookkeeping, never authority.
+	PRBacklog      *prbacklog.Cache `json:"prBacklog,omitempty"`
+	LastPromptSend *PromptSend      `json:"lastPromptSend,omitempty"`
 	// GoalCopy is the latest full goal copy sent; see GoalCopy.
 	GoalCopy   *GoalCopy   `json:"goalCopy,omitempty"`
 	StallRetry *StallRetry `json:"stallRetry,omitempty"`
