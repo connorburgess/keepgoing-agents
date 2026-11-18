@@ -1,5 +1,5 @@
 "use strict";
-// keepgoing panel page. Reads one versioned JSON endpoint relative to this
+// keepgoing panel page. Reads bounded versioned JSON relative to this
 // page and renders it with DOM text nodes only; no data is parsed as HTML.
 // Ages come from the report's read time, never this browser's clock, so the
 // page reads the same wherever it is opened. Every sentence about a loop or a
@@ -14,6 +14,8 @@
   var FAIL_LONG_MS = 120000;
   var API = "api/v1/dock";
   var SERVER = "api/v1/server";
+  var SAVED_ACCOUNTS = "api/v1/saved-accounts";
+  var savedAccounts = { reference: "", status: "", data: null, serial: 0, abort: null };
   // The end of the route brief that says a missing standby does not touch the
   // route in use; the line is then a plain notice, not a warning. Kept in step
   // with dockCurrentUnaffected in dock_view.go (a test checks).
@@ -366,7 +368,7 @@
     var rs = d.routesSummary || {};
     fixed.appendChild(pickRow("#/routes", rs.trouble ? "dot-limit" : "dot-calm", "Routes", rs.picker || "", r.view === "routes"));
     var ac = d.accounts || {};
-    fixed.appendChild(pickRow("#/accounts", "dot-calm", "Accounts", ac.complete ? list(ac.cards).length + " selected" : "Unavailable", r.view === "accounts"));
+    fixed.appendChild(pickRow("#/accounts", "dot-calm", "Accounts", ac.complete ? (d.accountsReference ? d.selectedAccounts || 0 : list(ac.cards).length) + " selected" : "Unavailable", r.view === "accounts"));
     var vs = d.versions || {};
     fixed.appendChild(pickRow("#/versions", vs.behind ? "dot-limit" : "dot-calm", "Versions", vs.summary || "", r.view === "versions"));
     fixed.appendChild(pickRow("#/usage", "dot-calm", "Usage", d.usagePicker || "", r.view === "usage"));
@@ -1449,6 +1451,11 @@
     usage.appendChild(link("#/routes", "View recorded usage", "work-inspect"));
     usage.appendChild(el("span", "sub", ". Readings come from configured routes and are not live. Each account shows the readings of the routes that use it."));
     pane.appendChild(usage);
+    if (d.accountsReference && (savedAccounts.reference !== d.accountsReference || savedAccounts.status !== "ready")) {
+      var failed = savedAccounts.reference === d.accountsReference && savedAccounts.status === "failed";
+      var pending = emptyBox(failed ? "Saved accounts unavailable" : "Reading saved accounts", failed ? "This saved snapshot could not be read. Use Read now to try the current panel snapshot. Missing quota is not zero; no provider refresh was made." : "Reading the saved selections and quota evidence for this panel snapshot. No provider is queried.");
+      pending.setAttribute("role", "status"); pane.appendChild(pending); return;
+    }
     if (!a.complete || a.state !== "available") {
       pane.appendChild(emptyBox("Accounts unavailable", "The private account catalog could not be read completely. This does not mean no accounts are selected."));
       return;
@@ -2113,6 +2120,38 @@
       .finally(function () { clearTimeout(timer); });
   }
 
+  // A bounded companion to the current main read, only on Accounts. No
+  // independent timer or provider refresh. A new snapshot or privacy view
+  // invalidates both successful and delayed replies from the previous read.
+  function loadSavedAccounts(retry) {
+    var d = state.data;
+    if (!d || !d.accountsReference || route().view !== "accounts") return;
+    var ref = d.accountsReference, asked = state.identifiers;
+    if (savedAccounts.reference === ref && savedAccounts.status === "ready") { d.accounts = savedAccounts.data; return; }
+    if (savedAccounts.reference === ref && (savedAccounts.status === "loading" || (!retry && savedAccounts.status === "failed"))) return;
+    if (savedAccounts.abort) savedAccounts.abort.abort();
+    var ctl = new AbortController(), seq = ++savedAccounts.serial;
+    savedAccounts.reference = ref; savedAccounts.status = "loading"; savedAccounts.data = null; savedAccounts.abort = ctl;
+    var timer = setTimeout(function () { ctl.abort(); }, readTimeoutMs());
+    function current() { return seq === savedAccounts.serial && state.data && state.data.accountsReference === ref && state.identifiers === asked; }
+    fetch(SAVED_ACCOUNTS + "?reference=" + encodeURIComponent(ref), { cache: "no-store", credentials: "same-origin", headers: { Accept: "application/json" }, signal: ctl.signal })
+      .then(function (r) { if (!r.ok) throw new Error("saved accounts unavailable"); return r.text(); })
+      .then(function (text) {
+        if (new TextEncoder().encode(text).length > 1048576) throw new Error("saved accounts bound");
+        var result = JSON.parse(text);
+        if (!result || result.schemaVersion !== SCHEMA || result.reference !== ref || !result.accounts || !Array.isArray(result.accounts.cards) || result.accounts.cards.length > 64) throw new Error("saved accounts schema");
+        if (!current()) return;
+        savedAccounts.status = "ready"; savedAccounts.data = result.accounts; state.data.accounts = result.accounts;
+      })
+      .catch(function () { if (current()) savedAccounts.status = "failed"; })
+      .finally(function () {
+        clearTimeout(timer);
+        if (!current()) return;
+        savedAccounts.abort = null;
+        if (route().view === "accounts") render(false, true);
+      });
+  }
+
   function loadServer() {
     getJSON(SERVER)
       .then(function (d) {
@@ -2151,9 +2190,12 @@
         // Identifiers were turned on or off while this read was out: the
         // reply is for the other view, so it is dropped and read again.
         if (asked !== state.identifiers) { state.again = true; return; }
+        if (savedAccounts.reference !== d.accountsReference && savedAccounts.abort) { savedAccounts.abort.abort(); ++savedAccounts.serial; }
+        if (d.accountsReference && savedAccounts.reference === d.accountsReference && savedAccounts.status === "ready") d.accounts = savedAccounts.data;
         state.data = d; state.lastOk = Date.now(); state.failed = false; state.failedSince = 0; state.failedLong = false;
         if (wantsUsage(route())) loadUsage();
         if (render(false) !== false) notice("cut", d.complete === false ? "This read was cut off before every loop was read. Loops that were not read are listed as could not be read; it reads again shortly." : "");
+        loadSavedAccounts(true);
       })
       .catch(function (err) {
         state.failed = true;
@@ -2207,6 +2249,7 @@
     });
     window.addEventListener("hashchange", function () {
       render(true);
+      loadSavedAccounts(false);
       if (wantsUsage(route())) loadUsage();
     });
     document.addEventListener("keydown", function (ev) {

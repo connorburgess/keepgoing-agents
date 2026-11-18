@@ -107,6 +107,33 @@ func TestQuotaSummaryAndNativeFixture(t *testing.T) {
 	if list.AccountQuotas == nil || len(list.AccountQuotas.Accounts) != 4 {
 		t.Fatal(list.AccountQuotas)
 	}
+	web, err := json.Marshal(r)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var public struct {
+		Accounts struct {
+			Cards []struct {
+				Quota map[string]json.RawMessage `json:"quota"`
+			} `json:"cards"`
+		} `json:"accounts"`
+	}
+	if json.Unmarshal(web, &public) != nil {
+		t.Fatal("public projection malformed")
+	}
+	for i, c := range cards {
+		fields := public.Accounts.Cards[i].Quota
+		if _, ok := fields["details"]; ok {
+			t.Fatal("raw evidence duplicates public summary")
+		}
+		want, _ := json.Marshal(c.Quota.Summary)
+		if string(fields["summary"]) != string(want) {
+			t.Fatal("summary lost rows/status/provenance")
+		}
+		if _, ok := fields["windows"]; !ok {
+			t.Fatal("legacy windows compatibility removed")
+		}
+	}
 	raw, _ := json.Marshal(list.AccountQuotas)
 	if strings.Contains(string(raw), "private@example") || strings.Contains(string(raw), "73") || strings.Contains(string(raw), "accountId") {
 		t.Fatalf("identity/route leak: %s", raw)
@@ -126,40 +153,57 @@ func TestQuotaSummaryAndNativeFixture(t *testing.T) {
 func TestQuotaMaximalWebAndNativeBounds(t *testing.T) {
 	inputs := make([]dockInput, dockMaxLoops)
 	for i := range inputs {
-		inputs[i] = dockMaximalInput(i)
+		in := dockMaximalInput(i)
+		wide := func(s string) string { return strings.Repeat("\U0001D4B3", 200) + s }
+		in.Entry.Loop = wide(in.Entry.Loop)
+		for j := range in.Chain.Candidates {
+			c := &in.Chain.Candidates[j]
+			c.Provider, c.Group, c.BB.Model = wide(c.Provider), wide(c.Group), wide(c.BB.Model)
+		}
+		in.Chain.Primary.Agent = in.Chain.Candidates[0].Agent
+		inputs[i] = in
 	}
 	r := buildDockReport(inputs, dockNow, time.Minute, defaultStaleAfter, true, true, 0, true)
-	d := &accounts.QuotaDetails{Buckets: []accounts.QuotaBucket{}}
+	r.AccountUses, r.AccountUsesOmitted = dockAccountUses(r, accounts.View{State: "available", Complete: true, Cards: []accounts.Card{}}, nil, true, dockNow)
+	d := &accounts.QuotaDetails{Buckets: []accounts.QuotaBucket{}, Partial: true, Omitted: 256}
 	balance := strings.Repeat("9", 24) + "." + strings.Repeat("9", 12)
 	reached := true
 	duration := int64(525600)
-	reset := dockNow.Add(time.Hour)
+	reset := time.Date(9999, 12, 31, 23, 59, 59, 999999999, time.UTC)
 	for i := range accounts.MaxQuotaBuckets {
-		d.Buckets = append(d.Buckets, accounts.QuotaBucket{Key: strings.Repeat("b", i+1), Windows: []accounts.QuotaMeter{{Name: "primary", UsedPercent: 99.9, DurationMinutes: &duration, ResetsAt: &reset}, {Name: "secondary", UsedPercent: 99.9, DurationMinutes: &duration, ResetsAt: &reset}}, Individual: &accounts.QuotaIndividual{Limit: balance, Used: balance, RemainingPercent: 0.1, ResetsAt: reset}, Credits: &accounts.QuotaCredit{HasCredits: true, Unlimited: false, Balance: &balance}, SpendControlReached: &reached})
+		d.Buckets = append(d.Buckets, accounts.QuotaBucket{Key: strings.Repeat("b", i+1), Windows: []accounts.QuotaMeter{{Name: "primary", UsedPercent: 99.99999999999999, DurationMinutes: &duration, ResetsAt: &reset}, {Name: "secondary", UsedPercent: 99.99999999999999, DurationMinutes: &duration, ResetsAt: &reset}}, Individual: &accounts.QuotaIndividual{Limit: balance, Used: balance, RemainingPercent: 0.00000000000001, ResetsAt: reset}, Credits: &accounts.QuotaCredit{HasCredits: true, Unlimited: false, Balance: &balance}, SpendControlReached: &reached})
 	}
 	if !accounts.ValidQuotaDetails(d) {
 		t.Fatal("invalid maximum fixture")
 	}
 	r.Accounts = &accounts.View{State: "available", Complete: true, Cards: []accounts.Card{}}
 	for i := range accounts.MaxEntries {
-		q := accounts.QuotaView{State: "reported", Source: accounts.QuotaSource, ObservedAt: &dockNow, Freshness: "fresh", Details: d}
+		q := accounts.QuotaView{State: "reported", Source: accounts.QuotaSource, ObservedAt: &dockNow, Freshness: "stale", Details: d, FailedRefreshAt: &reset, FailedRefreshReason: "schema_unavailable", Windows: []accounts.QuotaWindow{{Name: "primary", UsedPercent: 99, DurationMinutes: &duration, ResetsAt: &reset}, {Name: "secondary", UsedPercent: 99, DurationMinutes: &duration, ResetsAt: &reset}}}
 		summary := accounts.SummarizeQuota(q, dockNow)
 		q.Summary = &summary
 		r.Accounts.Cards = append(r.Accounts.Cards, accounts.Card{ID: fmt.Sprintf("%032x", i), Label: strings.Repeat("\U0001D4B3", 60), Provider: "codex", Quota: &q})
 	}
-	raw, err := json.Marshal(r)
+	web, saved, err := dockSplitAccounts(r, strings.Repeat("a", 32))
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(raw) > dockMaxResponse {
-		t.Fatalf("web response %d exceeds %d", len(raw), dockMaxResponse)
+	var snapshot dockAccountSnapshot
+	if json.Unmarshal(saved, &snapshot) != nil || len(snapshot.Accounts.Cards) != accounts.MaxEntries || len(snapshot.Accounts.Cards[0].Quota.Summary.Rows) != accounts.MaxQuotaBuckets*5+1 {
+		t.Fatal("separate snapshot lost quota rows")
+	}
+	raw, err := json.Marshal(web)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(raw) > dockMaxResponse*3/4 {
+		t.Fatalf("web response %d exceeds reserved-headroom threshold %d", len(raw), dockMaxResponse*3/4)
 	}
 	list := buildPanelList(r)
 	native, _ := json.Marshal(list)
 	if len(native) > 1<<20 || len(list.AccountQuotas.Accounts) != 16 || list.AccountQuotas.Omitted != 48 {
 		t.Fatalf("native%d bytes: %+v", len(native), list.AccountQuotas)
 	}
-	t.Logf("max registry +64 detailed quota selections: web%d/%d; native%d/%d bytes", len(raw), dockMaxResponse, len(native), 1<<20)
+	t.Logf("saved accounts %d/%d bytes; max registry +64 detailed quota selections: web%d/%d reserved-headroom threshold (%d hard ceiling); native%d/%d bytes", len(saved), dockMaxAccountsResponse, len(raw), dockMaxResponse*3/4, dockMaxResponse, len(native), 1<<20)
 }
 func TestAccountQuotaDetailsUnknownWindowKeepsRecognizedCredits(t *testing.T) {
 	d, reason := accountQuotaDetailsParse([]byte(`{"rateLimits":{"primary":{"future":7},"credits":{"hasCredits":true,"unlimited":false,"balance":"2.50"}}}`), nil)

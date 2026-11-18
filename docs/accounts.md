@@ -683,3 +683,32 @@ Fictional RPC/cache/panel fixtures cover correlation, bounds, timeout, selected
 environment, privacy, failed-refresh retention, concurrency and review fences.
 Native installed-panel and cross-platform process acceptance remain separate;
 platform compilation alone is not native execution evidence.
+
+The public quota view serializes the shared summary once; raw typed bucket
+storage stays private to the cache and Go projection. Legacy window fields
+remain for compatibility. Both interfaces retain the summary's independent
+rows, source, dates, missing/partial state and failed-read context.
+
+The main web report advertises saved account availability, selected count and
+an opaque snapshot reference, without full account cards or duplicate quota
+summaries. Only the Accounts page reads `GET api/v1/saved-accounts?reference=…`
+under the same token/session, origin and read-method safeguards. That endpoint
+returns only the already-projected snapshot, never reads provider files, starts
+a registry read, queries a provider or writes anything. It keeps at most the
+latest snapshot for each of the two identifier views, for 30 seconds, with a
+1 MiB response cap. Superseded, expired or unknown references return a conflict;
+the page says the saved read failed and offers the existing Read now action.
+There is no additional polling timer or automatic provider refresh.
+
+A new main report invalidates delayed replies for earlier references; changing
+the identifier view also prevents applying a reply for the previous view.
+Loading, missing and failed companion reads stay explicit and do not block
+the overview or imply zero quota. Reports without a reference retain the prior
+inline Accounts rendering. Native continues to project directly from the same
+Go evidence, with no dependency on this browser endpoint and unchanged old-CLI
+fallback.
+
+The web hard response ceiling remains the existing 8 MiB. The combined widest
+registry/route-list plus 64 detailed quota fixture requires the existing main
+6 MiB regression threshold; all quota rows remain obtainable in the separate
+1 MiB response. Native remains bounded to 1 MiB.

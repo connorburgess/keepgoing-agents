@@ -582,3 +582,12 @@ partial, ended and failed-refresh states remain visible. Claude selected-account
 quota is explicitly unavailable; dated route observations stay separate.
 Neither polling surface refreshes a provider. Only the existing reviewed Codex
 refresh path does so. See [source, cache and capability limits](accounts.md#read-selected-context-subscription-quota).
+
+Saved account cards and quota detail use a bounded companion snapshot in
+unreleased source. The main read carries only account availability/count and a
+snapshot reference; Accounts loads the matching saved cards without a provider
+query or additional polling timer. Loading/failure stays explicit and does not
+block other pages. Earlier-context replies are discarded. The existing main
+8 MiB hard ceiling and 6 MiB maximal-fixture guard are unchanged; the companion
+and native projections each have a 1 MiB cap. See the
+[saved-account read contract](accounts.md#read-selected-context-subscription-quota).

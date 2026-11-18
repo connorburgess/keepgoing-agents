@@ -39,7 +39,9 @@ const (
 )
 
 type dockReport struct {
-	Accounts *accounts.View `json:"accounts,omitempty"`
+	AccountsReference string         `json:"accountsReference,omitempty"`
+	SelectedAccounts  int            `json:"selectedAccounts,omitempty"`
+	Accounts          *accounts.View `json:"accounts,omitempty"`
 	// AccountUses is each account card, then each account context routes
 	// use with no catalog entry, with the routes and loops that use it
 	// (dock_account_routes.go). It is filled with Accounts.

@@ -67,7 +67,7 @@ type QuotaFile struct {
 	Entries       []QuotaEntry `json:"entries"`
 }
 type QuotaView struct {
-	Details             *QuotaDetails `json:"details,omitempty"`
+	Details             *QuotaDetails `json:"-"` // internal evidence; shared summary is the public projection
 	Summary             *QuotaSummary `json:"summary,omitempty"`
 	State               string        `json:"state"`
 	Reason              string        `json:"reason,omitempty"`

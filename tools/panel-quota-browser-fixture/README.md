@@ -27,3 +27,11 @@ locally. Browser automation here cannot emulate forced colors; that check is
 explicitly unrun. The native HTML meter is [Baseline Widely available](https://developer.mozilla.org/en-US/docs/Web/HTML/Reference/Elements/meter);
 text values do not rely on a meter's appearance. No custom meter pseudo-elements
 or accent-color support is required. No runtime data or screenshots are committed.
+
+The fixture now splits saved cards from the main reply using the actual companion
+shape. Checks include no companion read on Overview, selected counts, loading,
+endpoint failure without blocking Overview, inline legacy fallback, delayed
+older-reference replies, timeout/cancellation and Read now recovery. Its two
+second loading/error variants are fictional only. The browser test temporarily
+intercepts its own fictional GETs to deliver responses out of order; it records
+zero provider-refresh POSTs. No live endpoint or credential is used.
