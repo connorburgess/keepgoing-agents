@@ -1237,7 +1237,7 @@ func dockLede(r dockReport) string {
 	if r.Unread > 0 {
 		s += fmt.Sprintf(", %d could not be read", r.Unread)
 	}
-	return s + ". Read from looptender's own records; nothing here is a live view of a conversation."
+	return s + ". Not live: this is what each loop's last check recorded."
 }
 
 // dockNeedsLine is the picker's first line.
@@ -2337,7 +2337,7 @@ func dockHandoffChain(in *dockChainInput, use dockRouteUse, test dockTesting, f 
 		c.Brief, c.Short = "No standby route is ready", true
 		for _, e := range c.Entries {
 			if e.Current && e.Readiness == "current" {
-				c.Brief += "; its current route is unaffected"
+				c.Brief += "; " + dockCurrentUnaffected
 				break
 			}
 		}
@@ -2348,6 +2348,12 @@ func dockHandoffChain(in *dockChainInput, use dockRouteUse, test dockTesting, f 
 	}
 	return c
 }
+
+// dockCurrentUnaffected ends the chain's brief when no standby is ready but
+// the route in use is fine. The page matches this text (CURRENT_UNAFFECTED in
+// dock.js) to draw the line as a plain notice, not a warning: nothing needs a
+// person.
+const dockCurrentUnaffected = "its current route is unaffected"
 
 // dockAccountIdentity is the route's account identity when one is recorded:
 // the probe's usage identity, when its configuration selects an account (an
