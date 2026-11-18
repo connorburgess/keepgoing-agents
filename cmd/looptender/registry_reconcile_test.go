@@ -5,12 +5,14 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
 	"sync"
 	"testing"
 
+	"github.com/looptender/looptender/internal/config"
 	"github.com/looptender/looptender/internal/control"
 	"github.com/looptender/looptender/internal/lock"
 	"github.com/looptender/looptender/internal/registry"
@@ -304,7 +306,7 @@ func TestRegistryReconcileKeepsLocksThroughPublicationAndReleasesOnFailure(t *te
 			if fail {
 				return registry.Entry{}, errors.New("fictional storage failure")
 			}
-			return registry.Entry{}, nil
+			return registry.Entry{ConfigPath: b.path, StateDir: b.runtime}, nil
 		})
 		if !checked || (err != nil) != fail {
 			t.Fatal(checked, err)
@@ -316,5 +318,163 @@ func TestRegistryReconcileKeepsLocksThroughPublicationAndReleasesOnFailure(t *te
 			}
 			held.Release()
 		}
+	}
+}
+
+func TestRegistryReconcileAliasedParentPreservesRuntimeAndOwner(t *testing.T) {
+	for _, owner := range []string{"thr_other", "thr_example"} {
+		t.Run(owner, func(t *testing.T) {
+			root := t.TempDir()
+			physical, logical := filepath.Join(root, "physical", "config"), filepath.Join(root, "logical")
+			if err := os.MkdirAll(physical, 0700); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.MkdirAll(logical, 0700); err != nil {
+				t.Fatal(err)
+			}
+			alias := filepath.Join(logical, "link")
+			if err := os.Symlink(physical, alias); err != nil {
+				t.Skip("directory symlink unavailable")
+			}
+			path := filepath.Join(alias, "keepgoing.yaml")
+			raw := `version: 1
+loop:
+  name: example-loop
+  state_dir: ../state
+  adapter: bb
+  provider: example
+  bb: {thread: thr_example, cli: nonexistent-provider-fixture}
+  prompt_file: ../private-missing-task.txt
+`
+			if err := os.WriteFile(filepath.Join(physical, "keepgoing.yaml"), []byte(raw), 0600); err != nil {
+				t.Fatal(err)
+			}
+			ordinary, err := config.Load(path)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := os.MkdirAll(ordinary.Loop.StateDir, 0700); err != nil {
+				t.Fatal(err)
+			}
+			if err := control.Save(ordinary.Loop.StateDir, control.File{Enabled: true, Paused: true, Ownership: &control.Ownership{ThreadID: owner, Generation: 7}}); err != nil {
+				t.Fatal(err)
+			}
+			ctlPath := filepath.Join(ordinary.Loop.StateDir, control.FileName)
+			before, _ := os.ReadFile(ctlPath)
+			b, err := captureRegistryBinding(path, "thr_example", "thr_example")
+			if owner != "thr_example" {
+				if err == nil {
+					t.Fatal("aliased config bypassed the actual runtime owner")
+				}
+				after, _ := os.ReadFile(ctlPath)
+				if !bytes.Equal(before, after) {
+					t.Fatal("alias refusal changed controls")
+				}
+				return
+			}
+			if err != nil {
+				t.Fatal(err)
+			}
+			expected, err := canonicalFuturePath(ordinary.Loop.StateDir)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if b.path != path || b.runtime != expected || b.cfg.Loop.PromptFile != ordinary.Loop.PromptFile {
+				t.Fatal("relative config meaning changed")
+			}
+			dir := filepath.Join(t.TempDir(), "registry")
+			entry, err := registerBound(dir, b, "thr_example")
+			if err != nil {
+				t.Fatal(err)
+			}
+			if entry.ConfigPath != path || entry.StateDir != expected {
+				t.Fatal("published config/runtime differs from ordinary config.Load")
+			}
+			reloaded, err := config.Load(entry.ConfigPath)
+			if err != nil {
+				t.Fatal(err)
+			}
+			actual, err := canonicalFuturePath(reloaded.Loop.StateDir)
+			if err != nil || actual != entry.StateDir {
+				t.Fatal("registered client would load another runtime", err)
+			}
+			after, _ := os.ReadFile(ctlPath)
+			if !bytes.Equal(before, after) {
+				t.Fatal("alias publication changed controls")
+			}
+			if _, err := os.Stat(filepath.Join(root, "physical", "state")); !os.IsNotExist(err) {
+				t.Fatal("publication touched substituted runtime")
+			}
+		})
+	}
+}
+
+func TestRegistryReconcileHardlinkCannotReturnDifferentSourceReference(t *testing.T) {
+	root, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	one, two, runtime := filepath.Join(root, "one"), filepath.Join(root, "two"), filepath.Join(root, "state")
+	for _, dir := range []string{one, two, runtime} {
+		if err := os.Mkdir(dir, 0700); err != nil {
+			t.Fatal(err)
+		}
+	}
+	body := fmt.Sprintf("version: 1\nloop:\n  name: example-loop\n  state_dir: %s\n  adapter: bb\n  provider: example\n  bb: {thread: thr_primary, cli: nonexistent-provider-fixture}\n  fallbacks: fallbacks.yaml\n  prompt: Continue.\n", filepath.ToSlash(runtime))
+	first, second := filepath.Join(one, "keepgoing.yaml"), filepath.Join(two, "keepgoing.yaml")
+	if err := os.WriteFile(first, []byte(body), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Link(first, second); err != nil {
+		t.Skip("hardlink unavailable")
+	}
+	for _, x := range []struct{ dir, thread string }{{one, "thr_first"}, {two, "thr_second"}} {
+		fb := fmt.Sprintf("version: 1\ncandidates:\n  - id: backup\n    adapter: bb\n    provider: codex\n    bb: {thread: %s}\n", x.thread)
+		if err := os.WriteFile(filepath.Join(x.dir, "fallbacks.yaml"), []byte(fb), 0600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := control.Save(runtime, control.File{Ownership: &control.Ownership{ThreadID: "thr_second", Generation: 1}}); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(runtime, "state.json"), []byte(`{"activeTarget":"backup"}`), 0600); err != nil {
+		t.Fatal(err)
+	}
+	dir := filepath.Join(root, "registry")
+	old, err := registry.Add(dir, "example-loop", first, runtime)
+	if err != nil {
+		t.Fatal(err)
+	}
+	before, err := os.ReadFile(filepath.Join(dir, registry.FileName))
+	if err != nil {
+		t.Fatal(err)
+	}
+	b, err := captureRegistryBinding(second, "thr_second", "thr_second")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if b.provider != "codex" {
+		t.Fatal("bound primary rather than current provider")
+	}
+	if _, err := registerBound(dir, b, "thr_second"); err == nil {
+		t.Fatal("reported a stored reference with different relative fallback semantics")
+	}
+	after, _ := os.ReadFile(filepath.Join(dir, registry.FileName))
+	if !bytes.Equal(before, after) {
+		t.Fatal("alias refusal changed existing references")
+	}
+	f, err := registry.Load(dir)
+	if err != nil || len(f.Entries) != 1 || f.Entries[0] != old {
+		t.Fatal("existing identity changed", f, err)
+	}
+	// The existing original spelling remains usable when its own current target
+	// is explicitly selected. Never silently rewrite it to the requested alias.
+	original, err := captureRegistryBinding(first, "thr_first", "thr_second")
+	if err != nil {
+		t.Fatal(err)
+	}
+	same, err := registerBound(dir, original, "thr_second")
+	if err != nil || same.ID != old.ID {
+		t.Fatal("original identity no longer usable", same, err)
 	}
 }

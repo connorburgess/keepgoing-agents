@@ -28,9 +28,9 @@ type registryPublication struct {
 }
 
 type registryBinding struct {
-	cfg                           *config.Config
-	path, runtime, target, digest string
-	configInfo, runtimeInfo       os.FileInfo
+	cfg                                     *config.Config
+	path, runtime, target, provider, digest string
+	configInfo, runtimeInfo                 os.FileInfo
 }
 
 var errRegistryBinding = errors.New("loop registration binding unavailable or changed; inspect the private configuration and current owner")
@@ -41,25 +41,26 @@ func captureRegistryBinding(path, expectedThread, caller string) (registryBindin
 	if err != nil {
 		return b, errRegistryBinding
 	}
-	canonical, err := filepath.EvalSymlinks(abs)
-	if err != nil {
-		return b, errRegistryBinding
-	}
-	before, err := snapshot.Lstat(abs)
-	if err != nil || before.Mode()&os.ModeSymlink != 0 {
-		return b, errRegistryBinding
-	}
-	abs = canonical
+	// Preserve this spelling through Load. Cleaning an aliased parent into
+	// its physical config directory can rebase relative state/fallback paths
+	// and inspect a different owner. Match ordinary config.Load semantics.
 	info, err := snapshot.Lstat(abs)
-	if err != nil || !info.Mode().IsRegular() || info.Size() > 1<<20 {
+	if err != nil || !info.Mode().IsRegular() || info.Mode()&os.ModeSymlink != 0 || info.Size() > 1<<20 {
 		return b, errRegistryBinding
 	}
 	cfg, err := config.Load(abs)
 	if err != nil || cfg.Loop.BB == nil || !transferThreadID.MatchString(expectedThread) {
 		return b, errRegistryBinding
 	}
+	spelledRuntime, statErr := snapshot.Lstat(cfg.Loop.StateDir)
+	if statErr != nil && !errors.Is(statErr, os.ErrNotExist) {
+		return b, errRegistryBinding
+	}
+	if statErr == nil && (!spelledRuntime.IsDir() || spelledRuntime.Mode()&os.ModeSymlink != 0) {
+		return b, errRegistryBinding
+	}
 	runtime, err := canonicalFuturePath(cfg.Loop.StateDir)
-	if err != nil || runtime != cfg.Loop.StateDir {
+	if err != nil {
 		return b, errRegistryBinding
 	}
 	var ctl control.File
@@ -87,6 +88,9 @@ func captureRegistryBinding(path, expectedThread, caller string) (registryBindin
 		return b, errRegistryBinding
 	}
 	if err == nil && (!runtimeInfo.IsDir() || runtimeInfo.Mode()&os.ModeSymlink != 0) {
+		return b, errRegistryBinding
+	}
+	if (spelledRuntime == nil) != (runtimeInfo == nil) || (runtimeInfo != nil && !os.SameFile(spelledRuntime, runtimeInfo)) {
 		return b, errRegistryBinding
 	}
 	if cfg.CheckSources() != nil {
@@ -119,7 +123,7 @@ func captureRegistryBinding(path, expectedThread, caller string) (registryBindin
 	}
 	raw = append(raw, agentBytes...)
 	sum := sha256.Sum256(raw)
-	return registryBinding{cfg: cfg, path: abs, runtime: runtime, target: expectedThread, digest: hex.EncodeToString(sum[:]), configInfo: info, runtimeInfo: runtimeInfo}, nil
+	return registryBinding{cfg: cfg, path: abs, runtime: runtime, target: expectedThread, provider: agent.Provider, digest: hex.EncodeToString(sum[:]), configInfo: info, runtimeInfo: runtimeInfo}, nil
 }
 
 // registerBound keeps registry -> tick -> control lock order, all nonwaiting.
@@ -140,7 +144,7 @@ func registerBoundWith(dir string, b registryBinding, caller string, add func(st
 			_ = tick.Release()
 		}
 	}()
-	return add(dir, b.cfg.Loop.Name, b.path, b.runtime, func() error {
+	entry, err := add(dir, b.cfg.Loop.Name, b.path, b.runtime, func() error {
 		if b.runtimeInfo != nil {
 			var err error
 			tick, err = lock.Acquire(b.runtime)
@@ -161,6 +165,13 @@ func registerBoundWith(dir string, b registryBinding, caller string, add func(st
 		}
 		return nil
 	})
+	// Ordinary Add deduplicates aliases/hard links. Bound publication cannot
+	// reuse another spelling: relative sources may resolve differently there.
+	// An existing-alias match is a no-op in storage, so refusal preserves it.
+	if err == nil && (entry.ConfigPath != b.path || entry.StateDir != b.runtime) {
+		return registry.Entry{}, errRegistryBinding
+	}
+	return entry, err
 }
 
 func registryPublicationBinding(b registryBinding, dir string) string {
@@ -190,7 +201,7 @@ func registryReconcile(e env, args []string) int {
 	}
 	caller := os.Getenv("BB_THREAD_ID")
 	b, err := captureRegistryBinding(*path, *thread, caller)
-	if err != nil || (*provider != "" && b.cfg.Loop.Provider != *provider) {
+	if err != nil || (*provider != "" && b.provider != *provider) {
 		e.errf("registry reconcile: %v; nothing published", errRegistryBinding)
 		return exitFailed
 	}
