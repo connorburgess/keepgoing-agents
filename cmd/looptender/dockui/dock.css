@@ -523,3 +523,8 @@ details[open] > .how-summary::before { transform: rotate(45deg); }
 .how-group .how:last-child { border-bottom: 0; }
 .how-group .how-summary { padding-inline: 0.25rem; border-radius: 6px; }
 .how-group .how-body { padding-inline: 0.25rem; }
+
+/* Unbound route contexts are separate from selected-account cards. */
+.unknown-account-routes { margin-top: 2rem; }
+.unknown-route-context { padding-block: 1rem; border-top: 1px solid var(--line); overflow-wrap: anywhere; min-width: 0; }
+.unknown-route-context > p { margin: 0 0 .5rem; }

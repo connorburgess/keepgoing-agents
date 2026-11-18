@@ -218,22 +218,24 @@ card has more than one ("opus-example: Five-hour allowance was out when read
 newest reading, or that no reading is recorded.
 Being out is information, not a warning.
 
-### Accounts not named yet
+### Routes with unknown accounts
 
-The page also lists each account context that a registered loop's routes use
-without naming a catalog entry, headed "Unnamed Codex account" (or Claude
-Code, Cursor, or the route's provider) with a quiet "not named yet" tag, the
-routes and loops that use it, and their readings. These come only from loop
-configurations and the catalog: nothing on the computer is searched, no
-provider is called, and nothing is adopted. Each gives the `accounts add`
-command that would name it, with the provider and selection its routes state
-and `ACCOUNT_LABEL` for your own label; a selected directory is filled in only
-under **Show identifiers**. Naming an account changes no route: to assign its
-routes, add `account: <ID>` to each. "May be the same account as" a catalog
-entry appears only when the provider and the selection match, the same
-directory or both inherited, as `validate` compares them; never by label, and
-never for a BB thread route. The panel data carries this as `accountUses`
-(catalog cards first, then unnamed contexts; route and loop keys only).
+Only catalog entries count as selected accounts in the Accounts page and
+sidebar. Routes that do not explicitly name a catalog entry appear in a
+separate **Routes with unknown accounts** section, with their configured
+context, loops and each route's own recorded usage reading. Configuration
+contexts are not additional accounts: several routes may use one selected
+account, and the page cannot tell without an explicit binding. Provider,
+model, group and inherited or matching directories do not establish an
+account identity or a distinct subscription. The page offers no inferred
+account match or per-context command to register another account.
+
+These rows come only from loop configurations and the catalog. Nothing on
+the computer is searched, no provider is called, and nothing is adopted.
+After checking which account a route uses, assign it explicitly with
+`account: <ID>` in its loop configuration. The bounded panel data retains
+`accountUses` (catalog cards first, then configuration contexts; route and
+loop keys only); these contexts are presentation groups, not account counts.
 
 Above the cards, **Add an account** gives the `accounts add` command to copy
 for three cases: another subscription of a provider you use (sign in with the
@@ -243,8 +245,7 @@ externally_managed), and an API key (its own entry; the key is never taken).
 Values the page cannot know are placeholders (`ACCOUNT_LABEL`, `PROVIDER`,
 `FOLDER`), each explained in one line. It is open when there are no accounts,
 under three sentences on what an account, a route and a loop's order are, and
-closed otherwise. Unnamed contexts keep their own filled-in command; the block
-points to them in one line. The page runs none of these commands.
+closed otherwise. The page runs none of these commands.
 
 A check's successful command exit means its minimized observation was saved;
 it does not mean login passed. Inspect auth state and reason. Missing/corrupt
