@@ -70,6 +70,8 @@ function label(loop: LoopView): string {
 function describe(loop: LoopView): string[] {
   return [
     `Loop ${loop.loop}`,
+    loop.referenceSource === "plugin_setting" ? "Reference: plugin setting; CLI menu registration checked separately" : loop.referenceSource === "registry_attachment" ? "Reference: explicitly attached from CLI registry" : loop.referenceSource === "plugin_setup" ? "Reference: saved BB setup" : "Reference source: unavailable",
+    loop.publication?.state === "registered" ? "Last explicit CLI menu publication: registered; current health checked separately" : loop.referenceSource === "plugin_setup" ? "CLI menu publication: unverified; use explicit registry reconcile on the host" : null,
     ...diagnosticLines(loop.details, loop.target, loop.supervising),
     loop.note ? `Note: ${loop.note}` : null,
     loop.details?.schedule?.overdue ? `Needs you: ${loop.details.schedule.message ?? "no check has run for longer than usual"}` : null,

@@ -1,6 +1,7 @@
 // bb-plugin-keepgoing: shows keepgoing's state beside the threads it
 // supervises, and offers pause, resume, and stop. It only calls the keepgoing
 // CLI; every decision stays in keepgoing.
+import { publicationSchema } from "./registry-contract.ts";
 import { checkSchema, runtimeSchema, daemonSchema, detailsSchema, goalDetails, scheduleSchema } from "./status-details.ts";
 import { execFile } from "node:child_process";
 import { defineRpcContract, type BbPluginApi } from "@get-bb/plugin-sdk";
@@ -50,6 +51,8 @@ const loopSchema = z.object({
   loop: z.string(),
   configPath: z.string(),
   imported: z.boolean().optional(),
+  referenceSource: z.enum(["plugin_setting", "plugin_setup", "registry_attachment"]).optional(),
+  publication: publicationSchema.optional(),
   managedId: z.string().optional(),
   managedThreadId: z.string().optional(),
   controlState: z.string(),
@@ -213,9 +216,9 @@ export default async function plugin(bb: BbPluginApi) {
       try {
         const s = await status(bin, configPath);
         const matches = threadId === null || s.primaryAgent.bbThread === threadId || s.targetAgent.bbThread === threadId;
-        if (matches) loops.push(view(s, configPath, threadId));
-      } catch (error) {
-        errors.push(error instanceof Error ? error.message : String(error));
+        if (matches) loops.push({ ...view(s, configPath, threadId), referenceSource: "plugin_setting" });
+      } catch {
+        errors.push("A configured loop reference is unavailable; inspect the private Loop configs setting on its host.");
       }
     }
     const moving = await intents();
@@ -230,7 +233,7 @@ export default async function plugin(bb: BbPluginApi) {
         // A partial move is not a normal Resume action, even if the host has
         // already committed but the plugin reference is not reconciled yet.
         if (move) { displayed.controlState = "move requires inspection"; displayed.note = `Move requested to ${move.destination.threadId}; check move status there before resuming.`; }
-        loops.push({ ...displayed, ...(record.registryId ? { imported: true } : {}), managedId: record.id, managedThreadId: record.threadId });
+        loops.push({ ...displayed, referenceSource: record.registryId ? "registry_attachment" : "plugin_setup", ...(record.publication ? { publication: record.publication } : {}), ...(record.registryId ? { imported: true } : {}), managedId: record.id, managedThreadId: record.threadId });
       } catch { errors.push(`${record.loop}: host status unavailable`); }
     }
     return { loops, errors };
@@ -404,8 +407,8 @@ export default async function plugin(bb: BbPluginApi) {
       const [command, name, ...rest] = argv;
       if (command === "status" && name === undefined) {
         const { loops, errors } = await allLoops(null);
-        const lines = loops.map((l) => `${l.loop}\t${l.controlState}\ttarget=${l.target}\tlast=${l.lastState ?? "never"}${l.note ? `\t(${l.note})` : ""}`);
-        return { exitCode: errors.length > 0 ? 1 : 0, stdout: `${lines.join("\n")}\n`, stderr: errors.join("\n") };
+        const lines = loops.map((l) => `${l.loop}\t${l.controlState}\treference=${l.referenceSource ?? "unavailable"}\ttarget=${l.target}\tlast=${l.lastState ?? "never"}${l.note ? `\t(${l.note})` : ""}`);
+        return { exitCode: errors.length > 0 ? 1 : 0, stdout: `${lines.join("\n")}\nReferences: explicit plugin settings and saved host references; CLI registry/menu coverage is separate. This is not a complete process inventory.\n`, stderr: errors.join("\n") };
       }
       const parsed = actionSchema.safeParse(command);
       if (!parsed.success || !name || rest.length > 0) return { exitCode: 2, stderr: "Usage: bb keepgoing status | pause <loop> | resume <loop> | stop <loop>" };

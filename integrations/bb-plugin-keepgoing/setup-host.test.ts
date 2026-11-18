@@ -111,7 +111,7 @@ test("start passes --json only when told to, and no other command ever does from
   const record = { id: "record", threadId: "thr_example", environmentId: "env_example", projectId: "proj_example", hostId: "host_example", project: "/projects/example", provider: "codex", configPath: "/private/example/keepgoing.yaml", loop: "example-loop" };
   const argsOf = async (operation: "start" | "pause" | "resume" | "stop", json?: true) => {
     let got: string[] = [];
-    await commandOnHost({ bin: "keepgoing", record, operation, json }, undefined, async (_bin, args) => { got = args; return { code: 0, data: null }; });
+    await commandOnHost({ bin: "keepgoing", record, operation, json }, undefined, async (_bin, args) => { if (args[0] === operation) got = args; return { code: 0, data: null }; });
     return got;
   };
   assert.deepEqual(await argsOf("start"), ["start", "--background", "-c", record.configPath]);

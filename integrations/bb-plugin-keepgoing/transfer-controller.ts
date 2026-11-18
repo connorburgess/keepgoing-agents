@@ -1,3 +1,4 @@
+import { publicationMessage, type Publication } from "./registry-contract.ts";
 import { randomUUID } from "node:crypto";
 import { z } from "zod";
 import { targetOf, type SetupRecord, type SetupTarget } from "./setup-contract.ts";
@@ -12,7 +13,7 @@ export interface TransferDependencies {
   saveIntents(intents: MoveIntent[]): Promise<void>;
   guard(destination: string, record: SetupRecord): Promise<void>;
   command(bin: string, record: SetupRecord, operation: "status"): Promise<{ code: number; data: unknown }>;
-  transfer(intent: MoveIntent, operation: "preview" | "apply" | "recover", recoveryId?: string): Promise<{ code: number; data: unknown }>;
+  transfer(intent: MoveIntent, operation: "preview" | "apply" | "recover", recoveryId?: string): Promise<{ code: number; data: unknown; registration?: Publication }>;
   changed(): void;
 }
 const identity = z.object({ thread: z.string(), project: z.string(), environment: z.string(), host: z.string(), provider: z.string() });
@@ -55,7 +56,7 @@ export function createTransferController(d: TransferDependencies) {
     return p.data;
   };
   const summary = (i: MoveIntent, p: z.infer<typeof previewSchema>) => ({ loop: i.record.loop, from: i.record.threadId, to: i.destination.threadId, provider: i.destination.provider, holds: p.controls, ...(p.owner ? { owner: p.owner } : {}), ...(p.goal ? { goal: p.goal } : {}) });
-  const inspect = async (i: MoveIntent): Promise<TransferResult> => {
+  const inspect = async (i: MoveIntent, publication?: Publication): Promise<TransferResult> => {
     // A lost apply response may already have committed. Only verified held
     // destination state can repair the plugin reference; never infer success
     // from an exit code or repeat apply automatically.
@@ -74,8 +75,8 @@ export function createTransferController(d: TransferDependencies) {
       await d.guard(i.destination.threadId, i.record);
       const records = await d.records();
       const current = records.find(r => r.id === i.record.id);
-      const moved = { ...i.record, ...i.destination };
-      if (!current || (!equal(current, i.record) && !equal(current, moved))) throw new PolicyError("The saved setup reference changed. The loop remains held; reconcile its reference on the host.");
+      const moved = { ...i.record, ...i.destination, publication: publication ?? { state: "repair_needed" as const, source: "cli_registry" as const } };
+      if (!current || (!equal(current, i.record) && !equal({ ...current, publication: undefined }, { ...moved, publication: undefined }))) throw new PolicyError("The saved setup reference changed. The loop remains held; reconcile its reference on the host.");
       if (records.some(r => r.id !== moved.id && r.threadId === moved.threadId)) throw new PolicyError("Another saved setup now targets this thread. The move remains held for inspection.");
       await d.save(records.map(r => r.id === moved.id ? moved : r));
       await d.saveIntents((await d.intents()).filter(x => x.record.id !== i.record.id));
@@ -103,14 +104,16 @@ export function createTransferController(d: TransferDependencies) {
       const s = statusSchema.safeParse(status.data);
       if (status.code !== 0 || !s.success) throw new PolicyError("Recovery status unavailable; no command was sent.");
       const p = s.data.control.pendingTransfer;
+      let publication: Publication | undefined;
       if (p) {
         if (p.from !== pending.record.threadId || p.to !== pending.destination.threadId) throw new PolicyError("Pending move identity changed; inspect the host.");
-        await d.transfer(pending, "recover", p.id);
+        publication = (await d.transfer(pending, "recover", p.id)).registration;
       } else {
         await preview(pending);
-        await d.transfer(pending, "apply");
+        publication = (await d.transfer(pending, "apply")).registration;
       }
-      return inspect(pending);
+      const completed = await inspect(pending, publication);
+      return completed.moved ? { ...completed, message: completed.message + publicationMessage(publication) } : completed;
     }
     if (input.action === "inspect" || input.action === "recover") return { ok: false, message: "No saved move request. Refresh the list before previewing another move." };
     const record = records.find(r => r.id === input.recordId);
@@ -132,8 +135,9 @@ export function createTransferController(d: TransferDependencies) {
     // Persist first. Reload/lost responses must leave a visible recovery path.
     await d.saveIntents([...intents, intent]);
     d.changed();
-    await d.transfer(intent, "apply");
-    return inspect(intent);
+    const applied = await d.transfer(intent, "apply");
+    const completed = await inspect(intent, applied.registration);
+    return completed.moved ? { ...completed, message: completed.message + publicationMessage(applied.registration) } : completed;
   };
   return {
     call: async (input: z.infer<typeof transferInput>): Promise<TransferResult> => {

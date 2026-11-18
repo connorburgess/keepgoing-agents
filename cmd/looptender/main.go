@@ -66,7 +66,7 @@ Local client discovery:
   client prepare-resume    Prepare a short-lived snapshot/ticket for review
   client resume            Clear holds using an unchanged prepared ticket
   accounts list|add|update|check|usage  Select private account contexts; explicit status only, no model calls
-  registry add|list|remove  Register private loop references; never start supervision
+  registry add|list|remove|reconcile  Register private loop references; never start supervision
   migrate                  Say what moving the per-user directories from keepgoing/ to looptender/ would do;
                            --apply moves them and leaves a link, --undo --apply moves them back
   dock                     Serve the read-only keepgoing panel for every registered loop on 127.0.0.1
