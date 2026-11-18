@@ -358,7 +358,7 @@
     var rs = d.routesSummary || {};
     fixed.appendChild(pickRow("#/routes", rs.trouble ? "dot-limit" : "dot-calm", "Routes", rs.picker || "", r.view === "routes"));
     var ac = d.accounts || {};
-    fixed.appendChild(pickRow("#/accounts", "dot-calm", "Accounts", ac.complete ? list(ac.cards).length + " selected" + (unnamedCount(d) ? " · " + unnamedCount(d) + " not named yet" : "") : "Unavailable", r.view === "accounts"));
+    fixed.appendChild(pickRow("#/accounts", "dot-calm", "Accounts", ac.complete ? list(ac.cards).length + " selected" : "Unavailable", r.view === "accounts"));
     var vs = d.versions || {};
     fixed.appendChild(pickRow("#/versions", vs.behind ? "dot-limit" : "dot-calm", "Versions", vs.summary || "", r.view === "versions"));
     fixed.appendChild(pickRow("#/usage", "dot-calm", "Usage", d.usagePicker || "", r.view === "usage"));
@@ -1246,47 +1246,23 @@
   function accountReading(use) {
     return list(use && use.reading).length ? el("span", "sub account-reading", say(use.reading)) : null;
   }
-  // An account context routes use with no catalog entry: neutral, with one
-  // quiet "not named yet" tag and the command that would name it.
-  function unnamedCard(d, u, cards) {
-    var li = el("li", "account-card is-unnamed"), details = el("details");
-    var k = "context-" + u.context;
-    details.open = !!state.accountOpen[k];
-    var summary = el("summary", "account-summary");
-    summary.setAttribute("data-focus", "account-" + k);
-    var identity = el("span", "account-title");
-    var name = el("span", "account-name", u.title);
-    name.id = "account-name-" + u.context;
-    name.appendChild(tag("calm", "not named yet"));
-    identity.appendChild(name);
-    identity.appendChild(el("span", "sub", SELECTIONS[u.selection] || "Context as configured"));
-    if (u.group && u.group !== u.provider) identity.appendChild(el("span", "sub", "Group " + u.group));
-    // Several unnamed accounts can share a heading; their first route tells
-    // them apart at a glance.
-    var rs = list(u.routes), more = rs.length - 1 + (u.omitted || 0);
-    if (rs.length) identity.appendChild(el("span", "sub", "Routes: " + rs[0].title + (more ? " and " + more + " more" : "")));
-    summary.appendChild(identity);
-    var status = el("span", "account-status");
-    var reading = accountReading(u);
-    if (reading) status.appendChild(reading);
-    summary.appendChild(status);
-    details.appendChild(summary);
-    var body = el("div", "account-body"), facts = el("dl", "work-facts");
-    if (u.directory) facts.appendChild(fact("Directory", u.directory));
-    var same = list(u.mayBeSame).map(function (id) { return list(cards).filter(function (c) { return c.id === id; })[0]; }).filter(Boolean);
-    if (same.length) facts.appendChild(fact("May be the same account as", same.map(function (c) { return c.label; }).join(", ") + " (same provider and selection; not verified)"));
-    facts.appendChild(fact("Routes", accountRouteList(d, u, false)));
-    body.appendChild(facts);
-    var nameIt = el("div", "account-name-it");
-    nameIt.appendChild(el("p", "sub", "To name it, run this with your own label" + (u.selection === "explicit_directory" && !u.directory ? " and its directory (Show identifiers to fill it in)" : "") + ". Naming it changes no route."));
-    nameIt.appendChild(copyCommand("div", u.add, "copy-add-" + u.context, "account-name-" + u.context));
-    body.appendChild(nameIt);
-    details.appendChild(body);
-    details.addEventListener("toggle", function () { if (details.isConnected) state.accountOpen[k] = details.open; });
-    li.appendChild(details);
-    return { li: li, key: k, open: details.open };
+  // Missing route bindings are not evidence of additional accounts.
+  function unknownAccountSection(d, contexts) {
+    var section = el("section", "unknown-account-routes");
+    var heading = el("h2", null, "Routes with unknown accounts");
+    heading.id = "unknown-account-routes";
+    section.setAttribute("aria-labelledby", heading.id);
+    section.appendChild(heading);
+    section.appendChild(el("p", "sub", "These routes do not name a selected account. They may use an account above; separate routes do not mean separate subscriptions. Check which account each route uses before assigning it."));
+    contexts.forEach(function (u) {
+      var context = el("div", "unknown-route-context");
+      context.appendChild(el("p", "sub", SELECTIONS[u.selection] || "Context as configured"));
+      if (u.directory) context.appendChild(el("p", "sub command", u.directory));
+      context.appendChild(accountRouteList(d, u, false));
+      section.appendChild(context);
+    });
+    return section;
   }
-  function unnamedCount(d) { return list(d.accountUses).filter(function (u) { return u.context; }).length; }
   function renderAccounts(d, pane) {
     var a = d.accounts || {};
     pane.appendChild(back());
@@ -1309,11 +1285,9 @@
       pane.appendChild(addAccountBox(true));
       return;
     }
-    pane.appendChild(el("p", "account-count", cards.length + (cards.length === 1 ? " selected account" : " selected accounts") + (unnamed.length ? " · " + unnamed.length + " not named yet" : "")));
-    // One way to add, said once; an account routes already use has its own
-    // filled-in command on its card below.
-    pane.appendChild(addAccountBox(false, unnamed.length > 0));
-    if (!d.complete || (d.registry || {}).availability !== "available") pane.appendChild(el("p", "sub", "Not every loop could be read, so an account its routes use may be missing here."));
+    pane.appendChild(el("p", "account-count", cards.length + (cards.length === 1 ? " selected account" : " selected accounts")));
+    pane.appendChild(addAccountBox(!cards.length));
+    if (!d.complete || (d.registry || {}).availability !== "available") pane.appendChild(el("p", "sub", "Not every loop could be read, so some routes may be missing here."));
     var ul = el("ul", "accounts-list"), retained = Object.create(null);
     cards.forEach(function (c) {
       var li = el("li", "account-card" + (c.needsPerson ? " is-attention" : "")), details = el("details");
@@ -1373,14 +1347,10 @@
       if (c.attention !== "context_changed" && (c.needsPerson || (c.auth && c.auth.checkAgain) || (c.plan && c.plan.checkAgain))) li.appendChild(accountCheckHint(c));
       ul.appendChild(li);
     });
-    unnamed.forEach(function (u) {
-      var x = unnamedCard(d, u, cards);
-      retained[x.key] = x.open;
-      ul.appendChild(x.li);
-    });
     state.accountOpen = retained;
-    pane.appendChild(ul);
-    if (d.accountUsesOmitted) pane.appendChild(el("p", "more", d.accountUsesOmitted + (d.accountUsesOmitted === 1 ? " more account is" : " more accounts are") + " not shown."));
+    if (cards.length) pane.appendChild(ul);
+    if (unnamed.length) pane.appendChild(unknownAccountSection(d, unnamed));
+    if (d.accountUsesOmitted) pane.appendChild(el("p", "more", d.accountUsesOmitted + " more account entries or route contexts are not shown."));
     // One footnote for the page, naming the command. With one card its ID
     // fills in as on the card's own hint.
     var note = el("p", "sub account-footnote");
@@ -1434,9 +1404,7 @@
   function withLoopFill(l, fill) { return l.loopArg ? fill : [fill, LOOP_NAME_FILL].filter(Boolean).join(" "); }
   var ROUTE_ID = /^[a-z0-9-]+$/;
 
-  // unnamed: accounts routes already use without a name, which have their
-  // own filled-in command on their cards; said here once.
-  function addAccountBox(open, unnamed) {
+  function addAccountBox(open) {
     var box = howBox("how-account", "Add an account", open), body = el("div", "how-body");
     var cases = [
       ["folder", "Another subscription of a provider you use",
@@ -1460,7 +1428,6 @@
     });
     // Said once, after the three cases.
     body.appendChild(el("p", null, NAMES_ONLY));
-    if (unnamed) body.appendChild(el("p", null, "An account your routes already use without a name is listed below as “not named yet”, with its own command to name it."));
     return howEnd(box, body);
   }
 
