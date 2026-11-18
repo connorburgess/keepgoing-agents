@@ -44,11 +44,13 @@ test("a following setup is offered, created, paused, resumed and inspected throu
     assert.equal(followSeen, 3, "preview, the fresh check and the creation all followed the list");
     // Inspected while on a standard route: verifiable.
     assert.ok(created.checks?.length, created.message);
-    // Pause, stop and resume all reach the CLI with the target moved.
-    for (const action of ["pause", "stop", "resume"] as const) {
+    // Pause and stop reach the CLI with the target moved; resume never does.
+    for (const action of ["pause", "stop"] as const) {
       const r = await harness.behavior.callRpc("control", { configPath: created.record!.configPath, managedId: created.record!.id, action, expectedThreadId: thread.id }) as { ok: boolean; message: string };
       assert.equal(r.ok, true, `${action}: ${r.message}`); assert.ok(operations.includes(action), action);
     }
+    const resumed = await harness.behavior.callRpc("control", { configPath: created.record!.configPath, managedId: created.record!.id, action: "resume", expectedThreadId: thread.id }) as { ok: boolean; message: string };
+    assert.equal(resumed.ok, false); assert.ok(!operations.includes("resume"));
     // An older plugin build dropped the flag; this one restores it from status.
     const saved = await bb.storage.kv.get("setups.v1") as Record<string, unknown>[];
     await bb.storage.kv.set("setups.v1", saved.map(({ followsStandard: _f, ...r }) => r));

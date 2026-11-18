@@ -60,7 +60,8 @@ type Route struct {
 	Provider string `yaml:"provider"` // claude-code or codex
 	Model    string `yaml:"model"`
 	Effort   string `yaml:"effort,omitempty"`
-	Group    string `yaml:"group"` // the usage limit this route draws on
+	Group    string `yaml:"group"`             // the usage limit this route draws on
+	Account  string `yaml:"account,omitempty"` // accounts catalog ID a person states; see Agent.Account
 	Enter    string `yaml:"enter"`
 	// PermissionMode applies to a conversation started for a
 	// new_conversation route.
@@ -365,6 +366,9 @@ func (r *Routes) Validate() error {
 		if strings.TrimSpace(rt.Group) == "" || routeText(rt.Group) {
 			add("%sgroup is required: the usage limit this route draws on", where)
 		}
+		if rt.Account != "" && !ValidAccountID(rt.Account) {
+			add("%saccount must be an accounts catalog ID: the 32 lowercase hexadecimal characters accounts add prints", where)
+		}
 		switch rt.Enter {
 		case EnterSameConversation, EnterNewConversation, EnterHeadless:
 		default:
@@ -467,7 +471,7 @@ func resolveRoute(l Loop, rt Route, red Redundancy, probe ProbePolicy) (Candidat
 		return Candidate{}, "draws on the same usage limit as this loop's first route"
 	}
 	c := Candidate{ID: rt.ID}
-	c.Agent = Agent{Provider: rt.Provider, Group: rt.Group}
+	c.Agent = Agent{Provider: rt.Provider, Group: rt.Group, Account: rt.Account}
 	c.Probe = Probe{Model: rt.Probe.Model}
 	if rt.Probe.AccountDir != "" {
 		c.Probe.Env = map[string]string{accountEnv(rt.Provider): rt.Probe.AccountDir}
@@ -558,7 +562,7 @@ func resolveRoute(l Loop, rt Route, red Redundancy, probe ProbePolicy) (Candidat
 // candidate and the loop: what the record of a route a loop is on holds. It
 // carries no environment or executable of the loop's own.
 func RouteOf(l Loop, c Candidate) (Route, bool) {
-	rt := Route{ID: c.ID, Provider: c.Provider, Group: c.Group, Probe: RouteProbe{Model: c.Probe.Model}}
+	rt := Route{ID: c.ID, Provider: c.Provider, Group: c.Group, Account: c.Account, Probe: RouteProbe{Model: c.Probe.Model}}
 	if len(c.Probe.Env) > 1 {
 		return Route{}, false
 	}

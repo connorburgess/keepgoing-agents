@@ -33,9 +33,14 @@ type fakeAdapter struct {
 	onObserve   func() // runs when the fake is observed
 	onActivate  func() // runs before the fake's model is changed
 	observed    int
+	// convKey and convKnown are what ConversationKey reports; the zero
+	// value is an adapter that cannot say.
+	convKey   string
+	convKnown bool
 }
 
-func (f *fakeAdapter) Name() string { return "fake" }
+func (f *fakeAdapter) Name() string                    { return "fake" }
+func (f *fakeAdapter) ConversationKey() (string, bool) { return f.convKey, f.convKnown }
 func (f *fakeAdapter) Observe(context.Context) (decide.Observation, error) {
 	f.observed++
 	if f.onObserve != nil {

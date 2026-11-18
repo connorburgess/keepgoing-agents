@@ -244,7 +244,7 @@ func TestNoProgressLinesAndHeldTime(t *testing.T) {
 		atLeast bool
 		line    string
 	}{
-		{"never held", nil, npOn, incident.Pruned{}, 0, false, "Held for a person for no time of the last 3 h."},
+		{"never held", nil, npOn, incident.Pruned{}, 0, false, "Not held for a person in the last 3 h; a pause is a different hold and is not counted here."},
 		{"held throughout, no change recorded", nil, control.File{Enabled: true, AwaitingUser: true}, incident.Pruned{}, 3 * time.Hour, false, "Held for a person for 3 h of the last 3 h."},
 		{"held since before the change, released", []incident.Record{change(npSince.Add(time.Hour), held, off)}, npOn, incident.Pruned{}, time.Hour, false, "Held for a person for 1 h of the last 3 h."},
 		{"held now, since an hour ago", []incident.Record{change(npSince.Add(2*time.Hour), off, held)}, control.File{Enabled: true, AwaitingUser: true}, incident.Pruned{}, time.Hour, false, "Held for a person for 1 h of the last 3 h."},
@@ -252,11 +252,11 @@ func TestNoProgressLinesAndHeldTime(t *testing.T) {
 		// the half hour after the newest pruned change is covered.
 		{"hold changes pruned: only the covered time counts", nil, npOn,
 			incident.Pruned{Key: incident.TierPruned{Count: 2, NewestAt: dockPtr(npSince.Add(2*time.Hour + 30*time.Minute))}}, 0, true,
-			"Held for a person for no time of the last 30 min, which is as far back as its history covers."},
+			"Not held for a person in the last 30 min, which is as far back as its history covers; a pause is a different hold and is not counted here."},
 		{"a hold that began after the pruned changes", []incident.Record{change(npSince.Add(2*time.Hour+40*time.Minute), off, held)}, control.File{Enabled: true, AwaitingUser: true},
 			incident.Pruned{Key: incident.TierPruned{Count: 2, NewestAt: dockPtr(npSince.Add(2*time.Hour + 30*time.Minute))}}, 20 * time.Minute, true,
 			"Held for a person for 20 min of the last 30 min, which is as far back as its history covers."},
-		{"an operation that did not change the hold", []incident.Record{change(npSince.Add(time.Hour), off, off)}, npOn, incident.Pruned{}, 0, false, "Held for a person for no time of the last 3 h."},
+		{"an operation that did not change the hold", []incident.Record{change(npSince.Add(time.Hour), off, off)}, npOn, incident.Pruned{}, 0, false, "Not held for a person in the last 3 h; a pause is a different hold and is not counted here."},
 	} {
 		v := noProgressOf(npConfig(nil, nil), npState(), c.now, &incident.Journal{Records: c.records, Pruned: c.pruned}, &rungraph.Graph{}, dockNow)
 		if v.Held == nil || v.Held.Seconds != int64(c.held/time.Second) || v.Held.AtLeast != c.atLeast || v.Lines[3] != c.line {
@@ -399,5 +399,42 @@ func TestNoProgressSaysWhenTheGraphNoLongerCoversTheWindow(t *testing.T) {
 	v := noProgressOf(npConfig(nil, nil), npState(), npOn, &incident.Journal{}, &g, dockNow)
 	if v.Availability != "not_enough_history" || !strings.HasPrefix(v.Text, "Not enough history to tell: the retained history covers only the last ") || v.Messages.Count != 0 || !v.Messages.AtLeast {
 		t.Fatalf("%s %q %+v", v.Availability, v.Text, v.Messages)
+	}
+}
+
+// The flag counts from a record written only by a check that looks at the
+// session; the no-progress limit keeps its own, written earlier in the
+// check. When the flag has no record yet, it says why, and points to the
+// limit's figure, so the two never contradict each other.
+func TestNoProgressNoCheckAgreesWithTheLimit(t *testing.T) {
+	changed := time.Date(2026, 3, 2, 9, 0, 0, 0, time.UTC)
+	const fromLimit = " The time without Git progress under its limits comes from the limit's own record."
+	noCheck := "Not available: no check has recorded its progress repositories yet."
+	for _, c := range []struct {
+		name  string
+		v     noProgressView
+		ctl   control.File
+		limit *progressAllowanceStatus
+		want  string
+	}{
+		{"no limit, not held", noProgressView{Availability: "not_available", Reason: "no_check", Text: noCheck}, control.File{Enabled: true}, nil, noCheck},
+		{"held, no limit", noProgressView{Availability: "not_available", Reason: "no_check", Text: noCheck}, control.File{Enabled: true, Paused: true}, nil,
+			"Not counted yet: checks start this count only once they look at the session, and they do not while the loop is held."},
+		{"held by its reached limit", noProgressView{Availability: "not_available", Reason: "no_check", Text: noCheck}, control.File{Enabled: true, AwaitingUser: true}, &progressAllowanceStatus{Timeout: "24h0m0s", ChangedAt: &changed, Due: true},
+			"Not counted yet: checks start this count only once they look at the session, and they do not while the loop is held." + fromLimit},
+		{"limit reached, hold not yet applied", noProgressView{Availability: "not_available", Reason: "no_check", Text: noCheck}, control.File{Enabled: true}, &progressAllowanceStatus{Timeout: "24h0m0s", ChangedAt: &changed, Due: true},
+			"Not counted yet: checks start this count only once they look at the session, and they stop before that while its no-progress limit is reached." + fromLimit},
+		{"limit recorded, not reached", noProgressView{Availability: "not_available", Reason: "no_check", Text: noCheck}, control.File{Enabled: true}, &progressAllowanceStatus{Timeout: "24h0m0s", ChangedAt: &changed},
+			"Not counted yet: no check has looked at the session since this count began." + fromLimit},
+		{"limit record unreadable", noProgressView{Availability: "not_available", Reason: "no_check", Text: noCheck}, control.File{Enabled: true}, &progressAllowanceStatus{Timeout: "24h0m0s", Error: "unreadable"}, noCheck},
+		{"limit baseline pending", noProgressView{Availability: "not_available", Reason: "no_check", Text: noCheck}, control.File{Enabled: true}, &progressAllowanceStatus{Timeout: "24h0m0s", BaselinePending: true}, noCheck},
+		{"another reason is left alone", noProgressView{Availability: "not_available", Reason: "history_unavailable", Text: "Not available: its history could not be read."}, control.File{Enabled: true, Paused: true}, &progressAllowanceStatus{ChangedAt: &changed, Due: true}, "Not available: its history could not be read."},
+		{"a counted flag is left alone", noProgressView{Availability: "clear", Text: "No progress flag."}, control.File{Enabled: true, Paused: true}, &progressAllowanceStatus{ChangedAt: &changed, Due: true}, "No progress flag."},
+	} {
+		v := c.v
+		v.explainNoCheck(c.ctl, c.limit)
+		if v.Text != c.want || v.Reason != c.v.Reason || v.Availability != c.v.Availability {
+			t.Errorf("%s: %+v", c.name, v)
+		}
 	}
 }

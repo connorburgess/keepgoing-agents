@@ -32,7 +32,7 @@ func accountsDirectory(path string) (string, error) {
 }
 func accountsCommand(e env, args []string, run accountRun) int {
 	if len(args) == 0 {
-		e.errf("usage: accounts list|add|update|check [flags]")
+		e.errf("usage: accounts list|add|update|check|usage [flags]")
 		return exitUsage
 	}
 	op := args[0]
@@ -57,20 +57,23 @@ func accountsCommand(e env, args []string, run accountRun) int {
 	supplied := map[string]bool{}
 	fs.Visit(func(f *flag.Flag) { supplied[f.Name] = true })
 	for k := range supplied {
-		allowed := k == "directory" || k == "json" || ((op == "check" || op == "update") && k == "id") ||
+		allowed := k == "directory" || k == "json" || ((op == "check" || op == "update" || op == "usage") && k == "id") ||
 			((op == "add" || op == "update") && (k == "label" || k == "provider" || k == "selection" || k == "cli" || k == "account-dir" || k == "workdir" || (op == "update" && k == "expect")))
 		if !allowed {
 			e.errf("accounts: flag not allowed for this operation")
 			return exitUsage
 		}
 	}
-	if op != "list" && op != "add" && op != "update" && op != "check" {
+	if op != "list" && op != "add" && op != "update" && op != "check" && op != "usage" {
 		return exitUsage
 	}
 	path, err := accountsDirectory(*dir)
 	if err != nil {
 		e.errf("accounts: private catalog directory unavailable")
 		return exitFailed
+	}
+	if op == "usage" {
+		return accountsUsage(e, path, *id, *asJSON)
 	}
 	now := time.Now().UTC()
 	caller := os.Getenv("BB_THREAD_ID")
@@ -147,6 +150,9 @@ func accountsCommand(e env, args []string, run accountRun) int {
 			resultID, revision = selected.ID, selected.Revision
 			return nil
 		})
+		if home, herr := os.UserHomeDir(); err == nil && herr == nil && accountExplicitIsDefault(selected, home) {
+			e.errf("warning: %s. %s", accountDefaultDirWarning, accountDefaultDirFix)
+		}
 	case "check":
 		err = accountCheck(e.ctx, path, *id, caller, run, now)
 	}
@@ -224,11 +230,15 @@ func accountCheck(ctx context.Context, dir, id, caller string, run accountRun, n
 	}
 	effective := os.Environ()
 	o := accounts.Observation{Revision: selected.Revision, Context: selected.Context, At: now, Auth: "unavailable", Caller: caller}
-	if !accountContextExists(selected) || accounts.Context(f, selected, effective) != selected.Context {
+	bound, accepted := accounts.Bound(f, selected, effective)
+	if !accountContextExists(selected) || !accepted {
 		o.Reason = "context_changed"
 	} else if selected.Provider != "claude-code" && selected.Provider != "codex" {
 		o.Reason = "unsupported"
 	} else {
+		// Recorded under the current definition; this replaces a binding
+		// recorded by an earlier build (accounts.Bound).
+		o.Context = bound
 		effective = accounts.ExecutionEnvironment(selected, effective)
 		call := func(args ...string) ([]byte, error) {
 			c, cancel := context.WithTimeout(ctx, 5*time.Second)
@@ -257,6 +267,18 @@ func accountCheck(ctx context.Context, dir, id, caller string, run accountRun, n
 				raw, callErr = call("login", "status")
 			}
 			o = accountLogin(selected, o, raw, callErr)
+			if selected.Provider == "codex" && o.Auth == "reported_present" {
+				raw, callErr = call("app-server")
+				o.Plan, o.PlanReason = accountCodexPlan(raw, callErr)
+				if o.Plan != "" {
+					o.PlanAt = &now
+				} else if (o.PlanReason == "timeout" || o.PlanReason == "cancelled" || o.PlanReason == "status_unavailable") && selected.Last != nil && selected.Last.Plan != "" {
+					o.Plan, o.PlanAt = selected.Last.Plan, selected.Last.PlanAt
+					if o.PlanAt == nil {
+						o.PlanAt = &selected.Last.At
+					}
+				}
+			}
 		}
 	}
 	return accounts.Update(dir, func(latest *accounts.File) error {
@@ -264,8 +286,20 @@ func accountCheck(ctx context.Context, dir, id, caller string, run accountRun, n
 		if e == nil || e.Revision != selected.Revision || e.Context != selected.Context {
 			return accounts.ErrChanged
 		}
-		if (!accountContextExists(*e) || accounts.Context(*latest, *e, os.Environ()) != selected.Context) && o.Reason != "context_changed" {
-			return accounts.ErrChanged
+		if o.Reason != "context_changed" {
+			if now, ok := accounts.Bound(*latest, *e, os.Environ()); !accountContextExists(*e) || !ok || now != o.Context {
+				return accounts.ErrChanged
+			}
+		}
+		if o.Context != e.Context {
+			// One-time rebinding of an earlier build's digest. The previous
+			// observation belongs to the same accepted context.
+			e.Context = o.Context
+			if e.Last != nil {
+				last := *e.Last
+				last.Context = o.Context
+				e.Last = &last
+			}
 		}
 		e.Attempt = &o
 		if o.Auth == "reported_present" || o.Auth == "reported_absent" {
@@ -318,6 +352,9 @@ func accountLogin(e accounts.Entry, o accounts.Observation, raw []byte, err erro
 	return o
 }
 func accountExec(ctx context.Context, cli string, args []string, env []string, workdir string) ([]byte, error) {
+	if len(args) == 1 && args[0] == "app-server" {
+		return accountCodexRead(ctx, cli, env, workdir)
+	}
 	cmd := exec.CommandContext(ctx, cli, args...)
 	cmd.Env = env
 	cmd.Dir = workdir

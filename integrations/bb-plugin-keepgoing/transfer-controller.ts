@@ -90,7 +90,7 @@ export function createTransferController(d: TransferDependencies) {
     const records = await d.records(), intents = await d.intents();
     if (input.action === "list") {
       const destination = await d.target(input.threadId);
-      return { ok: true, message: "Choose a plugin-created loop in this environment. Manually configured loops use the CLI transfer commands.", choices: records.filter(r => compatible(r, destination) || intents.some(i => i.record.id === r.id && i.destination.threadId === input.threadId)).map(r => ({ id: r.id, loop: r.loop, from: intents.find(i => i.record.id === r.id)?.record.threadId ?? r.threadId, pending: intents.some(i => i.record.id === r.id) })) };
+      return { ok: true, message: "Choose a plugin-created loop in this environment. Manually configured loops use the CLI transfer commands.", choices: records.filter(r => (!r.registryId && compatible(r, destination)) || intents.some(i => i.record.id === r.id && i.destination.threadId === input.threadId)).map(r => ({ id: r.id, loop: r.loop, from: intents.find(i => i.record.id === r.id)?.record.threadId ?? r.threadId, pending: intents.some(i => i.record.id === r.id) })) };
     }
     const pending = intents.find(i => i.record.id === input.recordId);
     if (pending) {
@@ -115,6 +115,7 @@ export function createTransferController(d: TransferDependencies) {
     if (input.action === "inspect" || input.action === "recover") return { ok: false, message: "No saved move request. Refresh the list before previewing another move." };
     const record = records.find(r => r.id === input.recordId);
     if (!record) throw new PolicyError("That setup is not registered with this plugin.");
+    if (record.registryId) throw new PolicyError("Imported registry loops use CLI transfer and explicit reference attachment afterwards. No move was performed.");
     const intent: MoveIntent = { record, destination: await d.target(input.threadId), bin: await d.binary() };
     if (input.action === "preview") {
       for (const [k, t] of tickets) if (t.expires < Date.now()) tickets.delete(k);

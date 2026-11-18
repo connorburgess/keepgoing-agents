@@ -303,13 +303,20 @@ func TestDefinedAgentOutputBound(t *testing.T) {
 	if err := h.Send(context.Background(), "go", adapter.ModeAuto); err != nil {
 		t.Fatal(err)
 	}
+	// The exit file appears before the publisher releases turn.lock. Wait for
+	// finalized publication without loading the deliberately oversized output.
+	// Status() would read it and fail before Observe can classify the turn.
 	deadline := time.Now().Add(10 * time.Second)
 	for {
-		if _, err := os.Stat(filepath.Join(string(h.dir), "exit")); err == nil {
+		st, err := h.dir.statusWithOutputLimit(skipOutput)
+		if err != nil {
+			t.Fatalf("waiting for output publication: %+v: %v", st, err)
+		}
+		if st.Phase == Finished {
 			break
 		}
 		if time.Now().After(deadline) {
-			t.Fatal("turn never finished")
+			t.Fatalf("turn publication never finished: %+v", st)
 		}
 		time.Sleep(20 * time.Millisecond)
 	}
@@ -337,7 +344,9 @@ func TestDefinedAgentOutputBound(t *testing.T) {
 	if st, err := h.dir.Status(); err != nil || (st.Phase != Running && st.Phase != Finished) {
 		t.Fatalf("the turn after oversize output reads as %+v %v", st, err)
 	}
-	h.dir.Stop()
+	// Let that turn's wrapper finish before the directory is removed: one
+	// still publishing its exit code makes the removal fail.
+	waitPhase(t, h.dir, Finished)
 }
 
 // A saved session is checked again when it is read. One that is not a
@@ -433,9 +442,16 @@ func TestSessionResetStartsANewConversationOnPurpose(t *testing.T) {
 	if obs, _ := h.Observe(ctx); obs.State != decide.Idle || h.dir.Session() != exampleSessionToken {
 		t.Fatalf("%+v session %q", obs, h.dir.Session())
 	}
+	if key, known := h.ConversationKey(); key != exampleSessionToken || !known {
+		t.Fatalf("conversation key before the reset: %q %v", key, known)
+	}
 	had, err := h.ResetSession()
 	if !had || err != nil || h.dir.Session() != "" {
 		t.Fatalf("had=%v %v session %q", had, err, h.dir.Session())
+	}
+	// The next send starts a new conversation, so a goal copy goes in full.
+	if key, known := h.ConversationKey(); key != "" || !known {
+		t.Fatalf("conversation key after the reset: %q %v", key, known)
 	}
 	// The finished turn still says which session it was; observing it, any
 	// number of times, does not save it again.

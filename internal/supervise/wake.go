@@ -19,7 +19,7 @@ import (
 // acting; a notification does not authorize an action by itself.
 func PollWake(ctx context.Context, cfg *config.Config, newAdapter factory.Func) bool {
 	ctl, err := control.Load(cfg.Loop.StateDir)
-	if err != nil || !ctl.Enabled || ctl.Stop || ctl.Paused || ctl.Completed || ctl.AwaitingUser {
+	if err != nil || !ctl.Gate().Enabled || ctl.Stop || ctl.Paused || ctl.Completed || ctl.AwaitingUser {
 		return false
 	}
 	// Leave the deadline hold to the next ordinary tick without consuming child

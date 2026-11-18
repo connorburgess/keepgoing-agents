@@ -40,6 +40,11 @@ Supervision (read -c FILE; default ./looptender.yaml, or ./keepgoing.yaml when o
   service install|remove|status  Manage a macOS/Linux user service
   daemon                   Run passes on an interval; control changes act within seconds
   status                   Show control, active target, window, and fallback health
+  context                  Show what a supervised session may know about its loop: owner, holds,
+                           bounds used and remaining, lane policy, session commands and retained
+                           authority (text or --json); read-only, no provider or daemon queries.
+                           --here finds the loop whose active target is the calling session
+                           (BB_THREAD_ID, else the working directory) instead of reading -c
                            Opt-in timing preview only, not acted on; multi-step previews need
                            the loop's own fallbacks file (standard routes exclude its allowance)
   validate                 Check the configuration file and its fallbacks file
@@ -50,14 +55,17 @@ Supervision (read -c FILE; default ./looptender.yaml, or ./keepgoing.yaml when o
 
 Transfer planning:
   transfer preview         Inspect a proposed BB move without changing it
+  transfer reconcile       Record an explicit private migration review checklist
+  transfer inventory       List a loop's target, lanes and progress worktrees, read-only
   transfer apply|recover   Move a BB primary with an explicit recovery hold
+  transfer supersede       Permanently hold an obsolete BB loop after a manual move
 
 Local client discovery:
   client status            Read a registered loop snapshot without controlling it
   client pause|stop        Save a restrictive hold for a registered loop
   client prepare-resume    Prepare a short-lived snapshot/ticket for review
   client resume            Clear holds using an unchanged prepared ticket
-  accounts list|add|update|check  Select private account contexts; explicit status only, no model calls
+  accounts list|add|update|check|usage  Select private account contexts; explicit status only, no model calls
   registry add|list|remove  Register private loop references; never start supervision
   migrate                  Say what moving the per-user directories from keepgoing/ to looptender/ would do;
                            --apply moves them and leaves a link, --undo --apply moves them back
@@ -87,6 +95,7 @@ Fallbacks:
   fallbacks move ID --to N Change a fallback's place in the handoff order
   fallbacks check          Probe candidates now (--dry-run previews; --id ID, --exact)
   fallbacks list           Show recorded health and the redundancy picture
+                           Every fallbacks command takes --loop NAME in place of -c
   routes list              Show the standard route list and each registered loop's routes
   routes add|move|remove|off|on
                            Change the standard route list (a person only), or with
@@ -156,6 +165,14 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 	case "routes":
 		return routesCommand(e, rest)
 	case "transfer":
+		if len(rest) > 0 && rest[0] == "reconcile" {
+			return transferReconcileCommand(e, rest, doctorExec, doctorExecLimit(inventoryListLimit))
+		}
+		if len(rest) > 0 && rest[0] == "inventory" {
+			// A lane listing is about 1.5 KB per lane, so 200 lanes need
+			// more than doctor's 64 KiB.
+			return transferInventoryCommand(e, rest, doctorExec, doctorExecLimit(inventoryListLimit))
+		}
 		return transferCommand(e, rest, doctorExec)
 	case "goal":
 		return goalCommand(e, rest)
@@ -196,12 +213,17 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 			return exitUsage
 		}
 		if cmd == "fallbacks" {
+			args, code, ok := fallbacksByLoop(e, rest[0], rest[1:])
+			if !ok {
+				return code
+			}
 			switch rest[0] {
 			case "add":
-				return fallbacksAddCommand(e, rest[1:])
+				return fallbacksAddCommand(e, args)
 			case "handoff", "remove", "move":
-				return fallbacksManageCommand(e, rest[0], rest[1:])
+				return fallbacksManageCommand(e, rest[0], args)
 			}
+			rest = append([]string{rest[0]}, args...)
 		}
 		cmd, rest = cmd+" "+rest[0], rest[1:]
 	}
@@ -227,6 +249,7 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 		immediately: fs.Bool("immediately", false, "stop: carry the stop out in this command instead of leaving it to the next check"),
 		dropQueued:  fs.Bool("drop-queued", false, "stop --lanes: also delete the messages queued in lanes that have not started or are idle; their text is not kept"),
 		target:      fs.String("target", "", "session reset: the target whose saved session is forgotten (default: the active target)"),
+		here:        fs.Bool("here", false, "context: show the loop whose active target is the calling session (BB_THREAD_ID, else the working directory) instead of reading -c"),
 	}
 	if err := fs.Parse(rest); err != nil {
 		return exitUsage
@@ -259,6 +282,26 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 	if *f.discard && cmd != "retarget" {
 		e.errf("--discard-pending-thread is only supported by retarget")
 		return exitUsage
+	}
+	if *f.here && cmd != "context" {
+		e.errf("--here is only supported by context")
+		return exitUsage
+	}
+	if *f.here {
+		// The caller, not a configuration, says which loop: -c is not read.
+		if len(positional) != 0 || *f.cfgPath != "" {
+			e.errf("usage: keepgoing context --here [--json]")
+			return exitUsage
+		}
+		now := time.Now()
+		if *f.now != "" {
+			var err error
+			if now, err = time.Parse(time.RFC3339, *f.now); err != nil {
+				e.errf("-now: %v", err)
+				return exitUsage
+			}
+		}
+		return contextHereCmd(e, now, *f.asJSON)
 	}
 	if *f.target != "" && cmd != "session reset" {
 		e.errf("--target is only supported by session reset")
@@ -319,6 +362,12 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 		code := status(e, cfg, now, *f.asJSON, *f.staleAfter)
 		noteClient(*f.client, "")
 		return code
+	case "context":
+		if len(positional) != 0 {
+			e.errf("usage: keepgoing context [-c looptender.yaml | --here] [--json]")
+			return exitUsage
+		}
+		return contextCmd(e, cfg, *f.cfgPath, now, *f.asJSON)
 	case "enable":
 		// A second loop on a session another enabled loop supervises would
 		// prompt it too: refused unless asked for.
@@ -370,6 +419,7 @@ type cliFlags struct {
 	cfgPath, now, note, id, routine *string
 	client                          *string
 	target                          *string
+	here                            *bool
 	asJSON, dryRun, exact, takeOver *bool
 	discard, allowShare, keepStop   *bool
 	lanes, immediately, dropQueued  *bool
