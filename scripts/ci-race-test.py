@@ -78,6 +78,34 @@ class PartitionTests(unittest.TestCase):
             self.assertIsNotNone(job.process.poll())
             self.assertIn('fixture started', job.log.read_text())
 
+    def test_cleanup_escalates_for_descendant_even_after_leader_exit(self):
+        # A child in our owned group ignores TERM; do not signal its recorded PID.
+        for parent_waits in [True, False]:
+            with self.subTest(parent_waits=parent_waits), tempfile.TemporaryDirectory() as temp:
+                root = Path(temp)
+                child = ("import signal,time; from pathlib import Path; "
+                         "signal.signal(signal.SIGTERM, signal.SIG_IGN); "
+                         "Path('ready').touch(); time.sleep(1); Path('survived').touch()")
+                parent = ("import subprocess,sys,time; from pathlib import Path; "
+                          f"subprocess.Popen([sys.executable, '-c', {child!r}]); "
+                          "\nwhile not Path('ready').exists(): time.sleep(.01)\n" +
+                          ("time.sleep(30)" if parent_waits else "sys.exit(0)"))
+                job = race.Job([sys.executable, '-c', parent], root, root / 'tree.log')
+                try:
+                    deadline = time.monotonic() + 5
+                    while not (root / 'ready').exists() and time.monotonic() < deadline:
+                        time.sleep(.01)
+                    self.assertTrue((root / 'ready').exists())
+                    if not parent_waits:
+                        self.assertEqual(job.process.wait(timeout=5), 0)
+                    job.stop(grace=.1)
+                    time.sleep(1.1)
+                    self.assertFalse((root / 'survived').exists())
+                    self.assertIsNotNone(job.process.poll())
+                    job.stop()  # must not signal a group again after releasing it
+                finally:
+                    job.stop(grace=.1)
+
     def test_native_go_examples_fuzz_and_test2json_failure(self):
         # A tiny standalone module verifies Go's real -list/-run/test2json contract.
         with tempfile.TemporaryDirectory() as temp:
@@ -102,6 +130,9 @@ func BenchmarkCost(b *testing.B) { b.Fatal("benchmarks must not run") }
                     race.wait_jobs([job], time.monotonic() + 30)
                 finally:
                     job.stop()
+            events = [json.loads(line) for line in (root / '1.jsonl').read_text().splitlines()]
+            self.assertTrue(any(e.get('Test') == 'FuzzSeed/seed#0' and e['Action'] == 'pass'
+                                for e in events), 'fuzz seeds must execute, not merely list')
             result = subprocess.run(['go', 'tool', 'test2json', binary, '-test.run=^TestNew$'],
                                     env={**race.os.environ, 'CI_FIXTURE_FAIL': '1'}, capture_output=True)
             self.assertNotEqual(result.returncode, 0)

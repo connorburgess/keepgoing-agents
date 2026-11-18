@@ -24,8 +24,9 @@ measurement. A job with no runner and no steps is not suite execution evidence.
 | [44385632629](https://github.com/looptender/looptender/actions/runs/44385632629), `165bef4812`, merge group | macOS (canceled, no runner or steps) | 1 | 902 | no execution |
 
 The command package is the observed execution bottleneck; runner scarcity is an
-additional, independently visible delay. A faster suite cannot guarantee faster
-macOS acquisition. Disabling matrix fail-fast keeps an Ubuntu failure from
+additional, independently visible delay. Run 44385632629 explicitly reports that
+the hosted runner was not acquired after multiple attempts, with macOS arm64
+capacity-constraint notices. A faster suite cannot guarantee faster macOS acquisition. Disabling matrix fail-fast keeps an Ubuntu failure from
 canceling macOS evidence; it can use more runner time on a failing change.
 
 The sampled Ubuntu and macOS setup-go logs report primary-key cache hits. Keys

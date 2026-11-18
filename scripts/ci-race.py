@@ -72,6 +72,7 @@ class Job:
     def __init__(self, argv, cwd, log, names=None):
         self.log, self.names = log, names
         self.started = time.monotonic()
+        self.stopped = False
         self.output = open(log, 'w')
         try:
             self.process = subprocess.Popen(argv, cwd=cwd, stdout=self.output,
@@ -90,16 +91,40 @@ class Job:
         if self.names is not None:
             verify_execution(self.log, self.names)
 
-    def stop(self):
-        if self.process.poll() is None:
-            # Includes test2json and its child binary; never signal saved fixture PIDs.
-            os.killpg(self.process.pid, signal.SIGTERM)
+    def stop(self, grace=5):
+        if self.stopped:
+            return
+        # The leader can exit while a descendant still owns this process group.
+        # Check the group itself, never a PID supplied by a test fixture.
+        def group_alive():
+            # Reap a dead leader before probing: Darwin can return EPERM for
+            # a process group containing only that unreaped zombie.
+            self.process.poll()
             try:
-                self.process.wait(timeout=5)
-            except subprocess.TimeoutExpired:
-                os.killpg(self.process.pid, signal.SIGKILL)
-                self.process.wait()
-        self.output.close()
+                os.killpg(self.process.pid, 0)
+                return True
+            except ProcessLookupError:
+                return False
+
+        try:
+            if group_alive():
+                try:
+                    os.killpg(self.process.pid, signal.SIGTERM)
+                except ProcessLookupError:
+                    pass
+                until = time.monotonic() + grace
+                while group_alive() and time.monotonic() < until:
+                    self.process.poll()  # reap the leader, independently of descendants
+                    time.sleep(0.02)
+                if group_alive():
+                    try:
+                        os.killpg(self.process.pid, signal.SIGKILL)
+                    except ProcessLookupError:
+                        pass
+            self.process.wait()
+        finally:
+            self.output.close()
+            self.stopped = True
 
 
 def wait_jobs(jobs, deadline):
@@ -113,6 +138,10 @@ def wait_jobs(jobs, deadline):
                     job.finish()
                 except Exception as error:
                     errors.append(str(error))
+                finally:
+                    # Release ownership now; a later idempotent cleanup must not
+                    # signal a recycled group identifier from an earlier guard.
+                    job.stop()
         # Only the command partitions share the package's original 10m budget.
         # Other packages retain go test's own default per-package timeout.
         if any(j.names is not None for j in pending) and time.monotonic() >= deadline:
