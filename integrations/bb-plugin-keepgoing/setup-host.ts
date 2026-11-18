@@ -1,3 +1,5 @@
+import { publishReference } from "./registry-host.ts";
+import type { Publication } from "./registry-contract.ts";
 import { execFile } from "node:child_process";
 import { basename, dirname, isAbsolute, join } from "node:path";
 import { realpath } from "node:fs/promises";
@@ -78,7 +80,7 @@ export async function standardRoutesOnHost(input: { bin: string; target: SetupTa
     return { available: false };
   }
 }
-export async function setupOnHost(input: { bin: string; target: SetupTarget; name: string; task: string; dryRun: boolean; withGoal?: boolean; bounds?: Bounds; followStandard?: true }, signal?: AbortSignal, run: Execute = execute): Promise<{ plan: z.infer<typeof planSchema> } | { refused: Refusal } | { noRoutes: true }> {
+export async function setupOnHost(input: { bin: string; target: SetupTarget; name: string; task: string; dryRun: boolean; withGoal?: boolean; bounds?: Bounds; followStandard?: true }, signal?: AbortSignal, run: Execute = execute): Promise<{ plan: z.infer<typeof planSchema>; registration?: Publication } | { refused: Refusal } | { noRoutes: true }> {
   const { bin, target, name, task, dryRun, withGoal = false, bounds, followStandard } = input;
   const project = await realpath(target.project);
   const args = ["init", "--non-interactive", "--json", "--name", name, "--agent", "bb", "--thread", target.threadId, "--provider", target.provider, "--project", project, "--task-file", "-"];
@@ -109,9 +111,9 @@ export async function setupOnHost(input: { bin: string; target: SetupTarget; nam
   const { startJson, fallbacks, routes: _routes, ...plan } = p as typeof p & { routes?: string };
   const routes = following?.success ? { list: "standard" as const, handoffOn: "rate_limit" as const, apply: following.data.fallbacks.map(f => ({ id: f.id, model: f.target.agent.model ?? "", group: f.target.agent.group ?? "" })) } : undefined;
   void fallbacks;
-  return { plan: planSchema.parse({ ...plan, ...(startJson === true ? { startJson: true } : {}), ...(withGoal ? { withGoal: true } : {}), ...(routes ? { routes } : {}), threadId: target.threadId, provider: target.provider }) };
+  return { ...(dryRun ? {} : { registration: await publishReference(bin, p.configPath, target.threadId, target.provider, signal, run) }), plan: planSchema.parse({ ...plan, ...(startJson === true ? { startJson: true } : {}), ...(withGoal ? { withGoal: true } : {}), ...(routes ? { routes } : {}), threadId: target.threadId, provider: target.provider }) };
 }
-export function commandOnHost(input: { bin: string; record: SetupRecord; operation: "status" | "doctor" | "start" | "pause" | "resume" | "stop"; json?: true }, signal?: AbortSignal, run: Execute = execute) {
+export async function commandOnHost(input: { bin: string; record: SetupRecord; operation: "status" | "doctor" | "start" | "pause" | "resume" | "stop"; json?: true }, signal?: AbortSignal, run: Execute = execute) {
   const { bin, record, operation } = input;
   const args: string[] = [operation];
   if (operation === "status" || operation === "doctor") args.push("--json");
@@ -122,5 +124,8 @@ export function commandOnHost(input: { bin: string; record: SetupRecord; operati
     return withClientFlag(bin, (extra) => run(bin, [...args, ...extra, "-c", record.configPath], "", record.threadId, signal), (r) => ({ code: r.code, emptyStdout: r.emptyStdout ?? false, timedOut: r.timedOut ?? false }));
   }
   args.push("-c", record.configPath);
-  return run(bin, args, "", record.threadId, signal);
+  const result = await run(bin, args, "", record.threadId, signal);
+  // Only a confirmed start gets publication; failures and reads do not.
+  const started = result.code === 0 && (input.json !== true || z.object({ schemaVersion: z.literal(1), outcome: z.literal("started") }).safeParse(result.data).success);
+  return operation === "start" && started ? { ...result, registration: await publishReference(bin, record.configPath, record.threadId, record.provider, signal, run) } : result;
 }

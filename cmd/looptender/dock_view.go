@@ -224,6 +224,7 @@ type dockLoop struct {
 	// MigrationReview describes historical declarations, never execution,
 	// current lane activity, permission or a reason to change supervision.
 	MigrationReview dockMigrationReview `json:"migrationReview"`
+	Assignments     dockAssignments     `json:"assignments"`
 	// Refusals is the refusal gauge and any open question about refusals or
 	// a restriction, as status shows them; nil before the first refusal.
 	Refusals *refusalStatus `json:"refusals,omitempty"`
@@ -1388,6 +1389,7 @@ func projectDockLoop(in dockInput, now time.Time, staleAfter time.Duration, iden
 	}
 	st := in.Status
 	l.MigrationReview = dockMigrationReviewOf(st)
+	l.Assignments = dockAssignmentsOf(st)
 	if snap != nil && st == nil && len(l.Issues) < dockMaxIssues {
 		l.Issues = append(l.Issues, "Its full status could not be read; some details are unknown.")
 	}
