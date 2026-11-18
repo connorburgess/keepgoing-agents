@@ -5,7 +5,7 @@ import (
 	"time"
 )
 
-func TestAssignmentCompletionLocalEvidence(t *testing.T) {
+func TestAssignmentLifecycleCompletionLocalEvidence(t *testing.T) {
 	b := AssignmentBinding{Loop: "example", Goal: "goal_example", GoalRevision: 1}
 	complete := AssignmentRow{Spec: AssignmentSpec{ID: "docs", Lane: "thr_example_docs"}, HandoffRevision: 1, Acknowledged: 1, Handoff: &AssignmentHandoff{Outcome: "complete"}}
 	for _, tc := range []struct {

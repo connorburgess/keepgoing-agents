@@ -6,7 +6,7 @@ import (
 	"testing"
 )
 
-func TestAssignmentCompletionOptIn(t *testing.T) {
+func TestAssignmentLifecycleCompletionOptIn(t *testing.T) {
 	var old struct {
 		Loop struct {
 			AssignmentLifecycle bool `yaml:"assignment_lifecycle"`
