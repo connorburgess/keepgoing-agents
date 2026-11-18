@@ -252,3 +252,9 @@ See the [licensing guide](LICENSING.md) for examples, prior-version rights, and 
 In **unreleased source**, a person-started panel with changes allowed can replace a loop's own binary inside its configuration directory. Shared installations, agents, running daemons/services and Windows are refused. It retains the running source handle/hash, checks target identity, and keeps private backups. Undo lasts seven days and restores only the binary while record formats remain compatible. Existing loops on older builds need one manual binary replacement before executable identity is recorded. See [build replacement and manual recovery](docs/dock.md#changes-from-the-page-keepgoing-panel---allow-changes).
 
 Unreleased source adds opt-in [Sessionpipe reporting](docs/sessionpipe.md): tier-0 loop events to a receiver you configure, with opaque identities and bounded best-effort delivery. This is fixture-tested OUT reporting only; it adds no supervision adapter, session intake, send/stop or hold-answer capability. Live receiver, board and phone acceptance remain open.
+
+Unreleased: an opted-in BB coordinator can keep [explicit assignment handoffs](docs/assignments.md),
+including an initial review of existing direct children, exact-revision acknowledgements and
+dated status/panel counts. Missing evidence stays unknown. Its explicit awaiting-user check
+rejects declared independent work; it does not schedule lanes, mandate turn-end handoffs or
+clear existing holds.

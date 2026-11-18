@@ -612,3 +612,12 @@ Each tick prints one JSON line:
 ```
 
 `action` is one of `none`, `wake`, `nudge`, `reprompt`, `await_user`, `stop`, `handoff`, or `switch_back`. Optional fields include `resetsAt`, `redundancy`, `probes`, `yielded`, `dryRun`, `warnings`, `outcome` (`succeeded`, `failed` or `dry_run`; absent when the check could not be recorded) and `missingWorktrees`. A probe entry with `skipped` produced no result. With `--dry-run`, the tick decides and records but sends nothing and runs no probes.
+
+### Assignment lifecycle (unreleased)
+
+`loop.assignment_lifecycle: true` opts a BB coordinator into explicit assignment reviews,
+handoff imports/acknowledgements and an explicit `await-user` contradiction check. Default
+is false. A current private goal and existing BB ownership are required before writing.
+Older strict readers reject this key, so verify associated instances before activation.
+No new ordinary queries, automatic lane actions or hold clearing occur. See the full
+[initial review and handoff workflow](assignments.md), limits and remaining acceptance.

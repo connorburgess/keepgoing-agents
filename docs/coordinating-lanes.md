@@ -66,3 +66,13 @@ looptender supervises the loop's own conversation. For a BB loop it also knows t
 - **Does not:** create, message or move a lane; read a lane's message text; keep a ledger or know about lanes not yet created; record or check approvals; choose a lane's model or effort; limit nesting or report size.
 
 Planned coordinator support, none of it built, is listed in the [roadmap](roadmap.md#coordinating-lanes-planned).
+
+## Explicit assignment lifecycle (unreleased)
+
+For an opted-in BB coordinator, use the [assignment lifecycle commands](assignments.md)
+for an initial direct-child review and subsequent lane handoff imports and acknowledgements.
+Keep BB execution separate from outcome and declared availability. Missing or unacknowledged
+handoffs require reconciliation, even for an idle lane. A pending merge approval holds that
+action; continue independent authorized review/fix work and repeat the question only with
+material new information. Automatic scheduling and mandatory end-of-turn handoffs remain
+unverified host/runtime acceptance; the explicit awaiting-user guard does not supply them.
