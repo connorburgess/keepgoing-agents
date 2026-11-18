@@ -303,13 +303,20 @@ func TestDefinedAgentOutputBound(t *testing.T) {
 	if err := h.Send(context.Background(), "go", adapter.ModeAuto); err != nil {
 		t.Fatal(err)
 	}
+	// The exit file appears before the publisher releases turn.lock. Wait for
+	// finalized publication without loading the deliberately oversized output.
+	// Status() would read it and fail before Observe can classify the turn.
 	deadline := time.Now().Add(10 * time.Second)
 	for {
-		if _, err := os.Stat(filepath.Join(string(h.dir), "exit")); err == nil {
+		st, err := h.dir.statusWithOutputLimit(skipOutput)
+		if err != nil {
+			t.Fatalf("waiting for output publication: %+v: %v", st, err)
+		}
+		if st.Phase == Finished {
 			break
 		}
 		if time.Now().After(deadline) {
-			t.Fatal("turn never finished")
+			t.Fatalf("turn publication never finished: %+v", st)
 		}
 		time.Sleep(20 * time.Millisecond)
 	}

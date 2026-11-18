@@ -7,18 +7,30 @@ name: Contribution metadata
 # replaces their real result on that commit, and the edit would cancel a build
 # still in progress through the shared concurrency group.
 #
+# In a merge queue (`merge_group`) there is no pull request in the event. The
+# job then checks the commits and files between the queue's base and the
+# commit that will land (GitHub's merge commits are exempt, as on a pull
+# request), and the title and body of the queued pull request as they are
+# now, read from the API by the number in the queue branch's name. If that
+# number or text cannot be read, the job fails rather than check less. The
+# job summary says which range and which pull request it checked.
+#
 # The job name is the check name branch protection requires. Keep it.
 on:
   pull_request:
     types: [opened, synchronize, reopened, edited]
+  merge_group:
+    types: [checks_requested]
 
 permissions:
   contents: read
+  pull-requests: read # a queued run reads the pull request's title and body
 
 # Its own group: the newest title, body and head win here, and nothing in
-# checks.yml is cancelled.
+# checks.yml is cancelled. A merge queue run has a group of its own (its run
+# ID), so it is never cancelled by a pull request edit or by another entry.
 concurrency:
-  group: contributions-${{ github.event.pull_request.number }}
+  group: contributions-${{ github.event_name == 'merge_group' && github.run_id || github.event.pull_request.number }}
   cancel-in-progress: true
 
 jobs:
@@ -31,9 +43,41 @@ jobs:
         with:
           fetch-depth: 0
           persist-credentials: false
+      - name: Read the queued pull request's title and body
+        if: github.event_name == 'merge_group'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          HEAD_REF: ${{ github.event.merge_group.head_ref }}
+        # GitHub names a queue branch gh-readonly-queue/<base>/pr-<number>-<sha>.
+        run: |
+          number=$(sed -nE 's#^refs/heads/gh-readonly-queue/.+/pr-([0-9]+)-[0-9a-f]+$#\1#p' <<<"$HEAD_REF")
+          if [ -z "$number" ]; then
+            echo "::error::No pull request number in the queue branch $HEAD_REF, so its title and body cannot be checked."
+            echo "**Not checked:** the queue branch \`$HEAD_REF\` names no pull request, so its title and body could not be read. The check fails rather than pass on less." >> "$GITHUB_STEP_SUMMARY"
+            exit 1
+          fi
+          gh api "repos/$GITHUB_REPOSITORY/pulls/$number" --jq '.title + "\n" + (.body // "")' > "$RUNNER_TEMP/pr-text"
+          echo "PR_NUMBER=$number" >> "$GITHUB_ENV"
       - name: Check sign-offs and attribution
         env:
-          BASE: ${{ github.event.pull_request.base.sha }}
-          HEAD: ${{ github.event.pull_request.head.sha }}
+          EVENT: ${{ github.event_name }}
+          BASE: ${{ github.event.pull_request.base.sha || github.event.merge_group.base_sha }}
+          HEAD: ${{ github.event.pull_request.head.sha || github.event.merge_group.head_sha }}
           PR_TEXT: ${{ github.event.pull_request.title }}${{ '\n' }}${{ github.event.pull_request.body }}
-        run: ./scripts/check-contributions.sh "$BASE" "$HEAD"
+        run: |
+          if [ "$EVENT" != merge_group ]; then
+            exec ./scripts/check-contributions.sh "$BASE" "$HEAD"
+          fi
+          PR_TEXT=$(cat "$RUNNER_TEMP/pr-text")
+          commits=$(git rev-list --no-merges --count "$BASE..$HEAD")
+          files=$(git diff --name-only --no-renames --diff-filter=AM "$BASE...$HEAD" | wc -l | tr -d ' ')
+          status=0
+          ./scripts/check-contributions.sh "$BASE" "$HEAD" || status=$?
+          {
+            echo "Merge queue run: checked the commits and files between the queue base \`${BASE:0:12}\` and the commit that lands, \`${HEAD:0:12}\`, and the title and body of pull request #$PR_NUMBER as read from GitHub during this run."
+            echo
+            echo "- Commits checked for sign-off and attribution: $commits (GitHub's merge commits are exempt)"
+            echo "- Added or changed files checked: $files"
+            if [ "$status" = 0 ]; then echo "- Result: passed"; else echo "- Result: failed; the reasons are in the step log"; fi
+          } >> "$GITHUB_STEP_SUMMARY"
+          exit "$status"

@@ -35,6 +35,7 @@ export function goalLabel(goal: z.infer<typeof goalSummarySchema> | null | undef
 }
 export const detailsSchema = z.object({
   goal: goalSummarySchema.nullable().optional(), goalState: goalStateSchema.optional(),
+  failedChecks: z.number().int().nonnegative().optional(),
   readAt: z.string(), completed: z.boolean(),
   targetThread: z.string().nullable(), targetAdapter: z.string(), targetConfigured: z.boolean().nullable(),
   runtime: runtimeSchema.nullable(), daemon: daemonSchema.nullable(), lastCheck: checkSchema.nullable(),
@@ -68,6 +69,7 @@ export function diagnosticLines(d: StatusDetails | undefined, target: string, su
   // Only a judged loop whose usual interval is known is said to be on time.
   else if (d.schedule?.judging && d.schedule.basis === "usual" && !d.schedule.slept) lines.push("Schedule: checks are running at their usual interval");
   else if (!d.schedule) lines.push("External scheduler health: not inspected; a daemon reply does not establish agent health");
+  if ((d.failedChecks ?? 0) > 0) lines.push(`Checks failing: ${d.failedChecks} failed checks recorded; a responsive daemon does not establish operational supervision`);
   const check = d.lastCheck;
   lines.push(check
     ? `Last recorded action: ${check.action} · ${check.outcome}${check.dryRun ? " · dry run" : ""} · target ${check.target} · ${dateLabel(check.at)}`

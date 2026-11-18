@@ -430,5 +430,6 @@ func TestDockScratchForScreenshots(t *testing.T) {
 	if err != nil || len(f.Entries) != len(dockLoops) {
 		t.Fatal(err)
 	}
+	dockUsageScratch(t, f.Entries[0].StateDir, time.Now().UTC())
 	t.Log("registry:", dir)
 }

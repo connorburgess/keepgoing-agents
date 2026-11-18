@@ -33,6 +33,21 @@ func (e *BBTransferEdit) AfterDigest() string {
 // PrepareBBTransfer changes only the literal primary BB thread scalar. Aliases,
 // merged mappings, multiple documents and non-regular config files are refused.
 func (c *Config) PrepareBBTransfer(thread string) (*BBTransferEdit, error) {
+	return c.PrepareBBProviderTransfer(thread, nil)
+}
+
+// BBTransferRoute contains only operator-supplied destination labels. Empty
+// model/reasoning clear the old labels; no account identity is inferred.
+type BBTransferRoute struct {
+	Provider  string `json:"provider"`
+	Group     string `json:"quotaGroup"`
+	Model     string `json:"model"`
+	Reasoning string `json:"reasoning"`
+}
+
+// PrepareBBProviderTransfer additionally replaces provider-specific labels and
+// removes account, probe and timing settings when the provider changes.
+func (c *Config) PrepareBBProviderTransfer(thread string, route *BBTransferRoute) (*BBTransferEdit, error) {
 	bad := errors.New("configuration cannot be safely rewritten for transfer")
 	if c.source.path == "" || c.Loop.Adapter != "bb" || c.Loop.BB == nil || c.Loop.HasRouteList() || c.source.size > 1<<20 || c.CheckSources() != nil {
 		return nil, bad
@@ -88,6 +103,37 @@ func (c *Config) PrepareBBTransfer(thread string) (*BBTransferEdit, error) {
 		return nil, bad
 	}
 	n.Value = thread
+	if route != nil {
+		if route.Provider == "" || route.Provider == c.Loop.Provider || route.Group == "" {
+			return nil, bad
+		}
+		loop := field(doc.Content[0], "loop")
+		bb := field(loop, "bb")
+		set := func(parent *yaml.Node, key, value string) {
+			n := field(parent, key)
+			if n == nil {
+				n = &yaml.Node{}
+				parent.Content = append(parent.Content, &yaml.Node{Kind: yaml.ScalarNode, Tag: "!!str", Value: key}, n)
+			}
+			n.Kind, n.Tag, n.Value = yaml.ScalarNode, "!!str", value
+			n.Content = nil
+		}
+		remove := func(parent *yaml.Node, key string) {
+			for i := 0; i+1 < len(parent.Content); i += 2 {
+				if parent.Content[i].Value == key {
+					parent.Content = append(parent.Content[:i], parent.Content[i+2:]...)
+					return
+				}
+			}
+		}
+		set(loop, "provider", route.Provider)
+		set(loop, "group", route.Group)
+		set(bb, "model", route.Model)
+		set(bb, "reasoning", route.Reasoning)
+		for _, key := range []string{"account", "probe", "timing"} {
+			remove(loop, key)
+		}
+	}
 	after, err := yaml.Marshal(&doc)
 	if err != nil || len(after) > 1<<20 {
 		return nil, bad
