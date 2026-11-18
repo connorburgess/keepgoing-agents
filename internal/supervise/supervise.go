@@ -354,28 +354,30 @@ func (t *tick) warn(format string, a ...any) {
 }
 
 func (t *tick) report(typ, text string, data map[string]any) {
-	_ = t.reportSent(typ, text, data)
+	_, _ = t.reportSent(typ, text, data)
 }
 
-// reportSent sends a report and says whether it was delivered.
-func (t *tick) reportSent(typ, text string, data map[string]any) bool {
+// reportSent reports acceptance separately from a prohibition on retry.
+// Uncertain delivery stays unsent; it never becomes provider evidence.
+func (t *tick) reportSent(typ, text string, data map[string]any) (sent, retryStopped bool) {
 	if t.opts.DryRun {
-		return false
+		return false, false
 	}
 	ctx, cancel, ok := t.reportContext(typ, text)
 	if !ok {
-		return false
+		return false, false
 	}
 	defer cancel()
 	if err := t.opts.Reporter.Report(ctx, report.Event{Type: typ, Loop: t.loop.Name, Text: text, At: t.now, Data: data}); err != nil {
 		t.warn("report %s: %v", typ, err)
-		return false
+		return false, errors.Is(err, report.ErrNoRetry)
 	}
-	return true
+	return true, false
 }
 
 // reportOnce sends the report of an episode, named by key, until it has been
-// delivered, at most state.MaxOnceAttempts times. A new key starts again.
+// accepted, at most state.MaxOnceAttempts times, unless the reporter forbids
+// retry of an uncertain delivery. A new key starts again.
 func (t *tick) reportOnce(slot **state.OnceReport, key, typ, text string, data map[string]any) {
 	if t.opts.DryRun {
 		return
@@ -384,11 +386,11 @@ func (t *tick) reportOnce(slot **state.OnceReport, key, typ, text string, data m
 		*slot = &state.OnceReport{Key: key}
 	}
 	r := *slot
-	if r.Sent || r.Attempts >= state.MaxOnceAttempts {
+	if r.Sent || r.RetryStopped || r.Attempts >= state.MaxOnceAttempts {
 		return
 	}
 	r.Attempts++
-	r.Sent = t.reportSent(typ, text, data)
+	r.Sent, r.RetryStopped = t.reportSent(typ, text, data)
 }
 
 // Tick performs one supervision pass. The caller holds the lock.
