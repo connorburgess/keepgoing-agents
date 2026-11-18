@@ -18,7 +18,7 @@ type assignmentDelivery struct {
 	binding     control.AssignmentBinding
 	count       int
 	disposition string
-	started     time.Time
+	expiresAt   time.Time
 }
 
 // No opt-in means no assignment read or added acquisition in supervision.
@@ -39,7 +39,7 @@ func (t *tick) assignmentObservation(a adapter.Adapter, obs decide.Observation) 
 	if err != nil {
 		return 0
 	}
-	n, s := control.AssignmentWakeLocal(r, b, t.now, p.MaxEvidenceAge.Duration)
+	n, s := control.AssignmentWakeLocal(r, b, t.assignmentNow(), p.MaxEvidenceAge.Duration)
 	if r == nil || len(r.Revisions) == 0 {
 		return 0
 	}
@@ -48,11 +48,24 @@ func (t *tick) assignmentObservation(a adapter.Adapter, obs decide.Observation) 
 	if !control.AssignmentWakeRetirable(r, b) {
 		return 0
 	}
-	t.assignment = &assignmentDelivery{record: r, binding: b, started: t.opts.Clock()}
+	t.assignment = &assignmentDelivery{record: r, binding: b}
 	if s != "declared_ready" {
 		return 0
 	}
 	t.assignment.count = n
+	latest := r.Revisions[len(r.Revisions)-1]
+	t.assignment.expiresAt = latest.Wake.DeclaredAt.Add(p.MaxEvidenceAge.Duration)
+	dates := []time.Time{latest.Inventory.ObservedAt}
+	for _, row := range latest.Rows {
+		dates = append(dates, row.Handoff.DeclaredAt)
+	}
+	for _, at := range dates {
+		expiry := at.Add(p.MaxEvidenceAge.Duration)
+		if expiry.Before(t.assignment.expiresAt) {
+			t.assignment.expiresAt = expiry
+		}
+	}
+
 	if !assignmentChildrenMatch(r, obs.DirectChildren) {
 		return 0
 	}
@@ -105,6 +118,10 @@ func (t *tick) prepareAssignment(a adapter.Adapter, d decide.Decision, m prompt.
 		verified = ctx.Err() == nil && fresh != nil && fresh.Complete && reflect.DeepEqual(fresh, t.decisionInput.Obs.DirectChildren) && assignmentChildrenMatch(t.assignment.record, fresh)
 		cancel()
 		reason = "assignment child evidence changed or unavailable"
+		if verified && (t.assignment.expiresAt.IsZero() || t.assignmentNow().After(t.assignment.expiresAt)) {
+			verified = false
+			reason = "assignment readiness expired during revalidation"
+		}
 	}
 	if t.ctx.Err() != nil || !t.routeChangeAllowed() || t.cfg.CheckSources() != nil {
 		t.res.Action, t.res.Reason = string(decide.None), "assignment controls or sources changed; no wake sent"
@@ -146,5 +163,11 @@ func (t *tick) consumeAssignment() error {
 		return control.ErrAssignment
 	}
 	r := x.record
-	return control.ConsumeAssignmentWake(t.loop.StateDir, t.opts.CallerThread, b, r.ID, uint64(len(r.Revisions)), r.Revisions[len(r.Revisions)-1].Wake.ID, x.disposition, t.now.Add(t.opts.Clock().Sub(x.started)), t.loop.AssignmentCoordination.MaxEvidenceAge.Duration)
+	return control.ConsumeAssignmentWake(t.loop.StateDir, t.opts.CallerThread, b, r.ID, uint64(len(r.Revisions)), r.Revisions[len(r.Revisions)-1].Wake.ID, x.disposition, t.assignmentNow(), t.loop.AssignmentCoordination.MaxEvidenceAge.Duration)
+}
+
+// All acquisition time counts toward freshness, including the initial Observe
+// before assignment eligibility. Clock is monotonic elapsed, Now is check time.
+func (t *tick) assignmentNow() time.Time {
+	return t.now.Add(max(0, t.opts.Clock().Sub(t.startClock)))
 }

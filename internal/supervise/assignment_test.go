@@ -47,7 +47,7 @@ func TestAssignmentRevalidationChangesAndBudget(t *testing.T) {
 			fresh := &decide.DirectChildren{Complete: true, States: map[string]decide.ChildState{"thr_example_docs": {Execution: "idle"}}}
 			tc.change(fresh)
 			r := &control.AssignmentRecord{Revisions: []control.AssignmentRevision{{Inventory: control.AssignmentInventory{Lanes: []control.AssignmentLane{{Thread: "thr_example_docs"}}}, Rows: []control.AssignmentRow{{Spec: control.AssignmentSpec{ID: "docs", Lane: "thr_example_docs"}}}, Wake: &control.AssignmentWake{Selections: []control.AssignmentWakeSelection{{Assignment: "docs"}}}}}}
-			check := tick{ctx: context.Background(), cfg: w.cfg, loop: w.cfg.Loop, opts: Options{Clock: func() time.Time { return t0 }}, res: &Result{}, deadline: t0.Add(reserveSend + reserveReports + 10*time.Second), reserve: reserveSend + reserveReports, assignment: &assignmentDelivery{record: r, count: 1}}
+			check := tick{now: t0, startClock: t0, ctx: context.Background(), cfg: w.cfg, loop: w.cfg.Loop, opts: Options{Clock: func() time.Time { return t0 }}, res: &Result{}, deadline: t0.Add(reserveSend + reserveReports + 10*time.Second), reserve: reserveSend + reserveReports, assignment: &assignmentDelivery{record: r, count: 1, expiresAt: t0.Add(time.Hour)}}
 			if !tc.budget {
 				check.deadline = t0.Add(check.reserve + time.Second)
 			}
@@ -69,7 +69,7 @@ func TestAssignmentRevalidationChangesAndBudget(t *testing.T) {
 
 func TestAssignmentOrdinaryWakeBudgetDoesNotBlockOrClaimFreshness(t *testing.T) {
 	w := newWorld(t, true, false)
-	check := tick{ctx: context.Background(), cfg: w.cfg, loop: w.cfg.Loop, opts: Options{Clock: func() time.Time { return t0 }}, res: &Result{}, deadline: t0, reserve: reserveSend + reserveReports, assignment: &assignmentDelivery{count: 2}}
+	check := tick{now: t0, startClock: t0, ctx: context.Background(), cfg: w.cfg, loop: w.cfg.Loop, opts: Options{Clock: func() time.Time { return t0 }}, res: &Result{}, deadline: t0, reserve: reserveSend + reserveReports, assignment: &assignmentDelivery{count: 2}}
 	a := &assignmentScanAdapter{}
 	m, allowed := check.prepareAssignment(a, decide.Decision{IdleWake: true}, prompt.Message{Text: "original task"})
 	if !allowed || m.Text != "original task" || m.NoticeOnly || a.scans != 0 || check.assignment.disposition != "superseded_by_ordinary_wake_attempt" {
@@ -79,7 +79,7 @@ func TestAssignmentOrdinaryWakeBudgetDoesNotBlockOrClaimFreshness(t *testing.T) 
 
 func TestAssignmentRevalidationRespectsNewPause(t *testing.T) {
 	w := newWorld(t, true, false)
-	check := tick{ctx: context.Background(), cfg: w.cfg, loop: w.cfg.Loop, opts: Options{Clock: func() time.Time { return t0 }}, res: &Result{}, deadline: t0.Add(reserveSend + reserveReports + 10*time.Second), reserve: reserveSend + reserveReports, assignment: &assignmentDelivery{count: 1}}
+	check := tick{now: t0, startClock: t0, ctx: context.Background(), cfg: w.cfg, loop: w.cfg.Loop, opts: Options{Clock: func() time.Time { return t0 }}, res: &Result{}, deadline: t0.Add(reserveSend + reserveReports + 10*time.Second), reserve: reserveSend + reserveReports, assignment: &assignmentDelivery{count: 1}}
 	a := &assignmentScanAdapter{onScan: func() {
 		if _, err := control.Update(w.dir, func(c *control.File) { c.Paused = true }); err != nil {
 			t.Fatal(err)
@@ -90,5 +90,30 @@ func TestAssignmentRevalidationRespectsNewPause(t *testing.T) {
 	}
 	if check.assignment.disposition != "" {
 		t.Fatal("new pause consumed grant")
+	}
+}
+
+func TestAssignmentAgeIncludesInitialAndOptionalObservation(t *testing.T) {
+	for _, exception := range []bool{true, false} {
+		t.Run(map[bool]string{true: "busy-exception", false: "ordinary-task"}[exception], func(t *testing.T) {
+			w := newWorld(t, true, false)
+			clock := t0.Add(55 * time.Second) // initial observation, before ready expiry
+			children := &decide.DirectChildren{Complete: true, States: map[string]decide.ChildState{"thr_example_docs": {Execution: "idle"}, "thr_example_ci": {Execution: "active"}}}
+			r := &control.AssignmentRecord{Revisions: []control.AssignmentRevision{{Inventory: control.AssignmentInventory{Lanes: []control.AssignmentLane{{Thread: "thr_example_docs"}, {Thread: "thr_example_ci"}}}, Rows: []control.AssignmentRow{{Spec: control.AssignmentSpec{ID: "docs", Lane: "thr_example_docs"}}}, Wake: &control.AssignmentWake{Selections: []control.AssignmentWakeSelection{{Assignment: "docs"}}}}}}
+			check := tick{now: t0, startClock: t0, ctx: context.Background(), cfg: w.cfg, loop: w.cfg.Loop, opts: Options{Clock: func() time.Time { return clock }}, res: &Result{}, deadline: t0.Add(reserveSend + reserveReports + 2*time.Minute), reserve: reserveSend + reserveReports, assignment: &assignmentDelivery{record: r, count: 1, expiresAt: t0.Add(time.Minute)}}
+			check.decisionInput.Obs.DirectChildren = children
+			a := &assignmentScanAdapter{fresh: children, onScan: func() { clock = clock.Add(10 * time.Second) }}
+			m, allowed := check.prepareAssignment(a, decide.Decision{IdleWake: true, AssignmentWake: exception}, prompt.Message{Text: "configured task"})
+			if allowed == exception || m.Text != "configured task" || a.scans != 1 {
+				t.Fatal(m, allowed, a.scans)
+			}
+			if exception {
+				if check.res.Reason != "assignment readiness expired during revalidation" || check.assignment.disposition != "" {
+					t.Fatal(check.res, check.assignment)
+				}
+			} else if check.assignment.disposition != "superseded_by_ordinary_wake_attempt" {
+				t.Fatal(check.assignment)
+			}
+		})
 	}
 }

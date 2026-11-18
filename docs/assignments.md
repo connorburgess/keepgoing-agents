@@ -93,7 +93,7 @@ loop:
     max_evidence_age: 30m
 ```
 
-The age defaults to 30 minutes and must be between 1 minute and 24 hours. It only withholds scheduling when evidence is too old; it never clears a hold or discards obligations. Missing configuration adds no supervision reads or queries. A disabled object also preserves the ordinary prompt and query sequence. Configuration requires a BB primary; this exception does not operate on a fallback.
+The age defaults to 30 minutes and must be between 1 minute and 24 hours. Freshness counts the entire check, including initial observation and optional revalidation. Expiry during revalidation withholds the busy-child exception; a baseline ordinary wake retires its valid local grant without a stale-evidence notice. It only withholds scheduling when evidence is too old; it never clears a hold or discards obligations. Missing configuration adds no supervision reads or queries. A disabled object also preserves the ordinary prompt and query sequence. Configuration requires a BB primary; this exception does not operate on a fallback.
 
 First complete the initial review, import each lane's explicit handoff, and acknowledge its exact revision using the preceding workflow. Include the busy CI assignment as well as the idle docs and transfer-preview assignments. Missing, stale, unacknowledged, absent or partial evidence anywhere withholds this first exception: it does not automatically recover missing handoffs. Execution alone never supplies a declaration. A person-blocked merge does not block independently authorized review work, but the coordinator must explicitly declare that independence.
 
