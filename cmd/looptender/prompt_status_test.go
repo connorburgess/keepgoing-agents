@@ -95,3 +95,22 @@ func TestStatusReloadsPromptHistoryWithoutPrivateGoalText(t *testing.T) {
 		t.Fatal("status changed prompt history", err)
 	}
 }
+
+func TestPromptSendStatusShowsSizeAndGoalCopy(t *testing.T) {
+	const id = "goal_0123456789abcdef0123456789abcdef"
+	at := time.Date(2026, 3, 4, 12, 0, 0, 0, time.UTC)
+	p := &state.PromptSend{Version: 1, CheckAt: at, Target: "primary", Action: "wake", Mode: "auto", Outcome: "adapter_returned", GoalID: id, GoalRevision: 2, Bytes: 640, GoalForm: "short"}
+	r := describePromptSend(p, &control.GoalSummary{ID: id, Revision: 2})
+	r.GoalCopy = &state.GoalCopy{Version: 1, At: at, Target: "primary", GoalID: id, GoalRevision: 2, ShortSends: 3}
+	var out bytes.Buffer
+	printPromptSend(&out, r)
+	for _, want := range []string{"size: 640 bytes, goal named as unchanged (bytes measured, tokens not)", "last full goal copy: " + id + " revision 2 to primary", "3 short send(s) since"} {
+		if !strings.Contains(out.String(), want) {
+			t.Fatalf("missing %q in %s", want, out.String())
+		}
+	}
+	b, _ := json.Marshal(r)
+	if !strings.Contains(string(b), `"bytes":640`) || !strings.Contains(string(b), `"goalForm":"short"`) || !strings.Contains(string(b), `"shortSends":3`) {
+		t.Fatal(string(b))
+	}
+}

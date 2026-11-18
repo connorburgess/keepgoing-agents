@@ -29,7 +29,9 @@ const FileName = "incidents.json"
 // and the question IDs on control records.
 // Version 13 (returns and manual probes) adds the return to the primary on
 // tick records and the probe records of a manual `fallbacks check`.
-const SchemaVersion = 13
+// Version 14 (supervision context in sends) adds the length of the
+// supervision context a check's sends carried on tick records.
+const SchemaVersion = 14
 
 // Retention bounds the journal at MaxRecords and MaxBytes. Each tier has
 // reserved room, and MaxRecords is the sum of the reservations. A tier may
@@ -195,6 +197,10 @@ func Load(dir string) (Journal, error) {
 		}
 		if j.SchemaVersion < 10 {
 			r.Lanes = LaneWork{}
+		}
+		if j.SchemaVersion < 14 {
+			// Older writers sent no supervision context.
+			r.ContextBytes = 0
 		}
 		if j.SchemaVersion < 13 {
 			// Older writers recorded no return and no manual probes.

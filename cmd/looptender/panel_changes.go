@@ -44,23 +44,26 @@ const (
 	panelChangeOrigin   = "panel"
 	panelPrepareContext = "keepgoing-panel-prepare\x00"
 	// panelExposure is said wherever changes are turned on.
-	panelExposure = "While changes are allowed, anyone who can use this browser window can pause, stop and resume loops, and replace the file that runs a loop's checks with this panel's build."
+	panelExposure = "While changes are allowed, anyone using this window can pause, stop or resume loops, replace their check builds with this panel's build, edit routes within the startup caller's authority, and read selected Codex subscription quota."
 )
 
 // panelChanges is the change half of a panel server started with changes
 // allowed. A server without it routes no write request at all.
 type panelChanges struct {
-	ctx      context.Context // the server's lifetime; changes never run on a request's
-	registry string          // the --directory value, as given
-	caller   string          // immutable startup BB caller; never supplied by the page or a later opening
-	reader   *dockReader
-	since    time.Time
-	now      func() time.Time
-	secret   []byte // keys the per-session prepare value; never leaves the process
+	ctx          context.Context // the server's lifetime; changes never run on a request's
+	registry     string          // the --directory value, as given
+	routeCatalog string          // optional catalog directory for isolated fixtures
+	caller       string          // immutable startup BB caller; never supplied by the page or a later opening
+	reader       *dockReader
+	since        time.Time
+	now          func() time.Time
+	secret       []byte // keys the per-session prepare value; never leaves the process
 
-	mu    sync.Mutex
-	forms map[string]panelForm
-	order []string // form values, oldest first
+	mu       sync.Mutex
+	forms    map[string]panelForm
+	order    []string        // form values, oldest first
+	quotaEnv []string        // immutable startup context, never browser supplied
+	quotaRun accountQuotaRun // tests may substitute a fictional RPC
 }
 
 // panelForm is one prepared change waiting for its confirmation. The value
@@ -75,6 +78,8 @@ type panelForm struct {
 	// record reviewed for it; names, for the result.
 	group []panelGroupTarget
 	names map[string]string
+	route *panelRouteReview
+	quota *accountQuotaSelection
 }
 
 func newPanelChanges(ctx context.Context, registryDir string, reader *dockReader, since time.Time, now func() time.Time) (*panelChanges, error) {
@@ -82,7 +87,7 @@ func newPanelChanges(ctx context.Context, registryDir string, reader *dockReader
 	if err != nil {
 		return nil, err
 	}
-	return &panelChanges{ctx: ctx, registry: registryDir, caller: os.Getenv("BB_THREAD_ID"), reader: reader, since: since, now: now, secret: []byte(secret), forms: map[string]panelForm{}}, nil
+	return &panelChanges{ctx: ctx, registry: registryDir, caller: os.Getenv("BB_THREAD_ID"), reader: reader, since: since, now: now, secret: []byte(secret), forms: map[string]panelForm{}, quotaEnv: os.Environ()}, nil
 }
 
 // prepareValue is the anti-forgery value a session sends with a prepare
@@ -181,7 +186,7 @@ func panelReadAction(body io.Reader) (panelChangeRequest, bool) {
 	if (req.Action != "stop" && (req.Lanes || req.Immediately || req.DropQueued)) || (req.DropQueued && !req.Lanes) {
 		return req, false
 	}
-	return req, panelActions[req.Action] != "" || panelBuildActions[req.Action] != ""
+	return req, panelActions[req.Action] != "" || panelBuildActions[req.Action] != "" || req.Action == panelAccountQuotaAction
 }
 
 // panelPreview is what the page shows before the person confirms. Every
@@ -231,6 +236,14 @@ var panelDone = map[string]string{"pause": "paused", "stop": "stopped", "resume"
 
 // serve answers one change request. rest is the path under the session.
 func (c *panelChanges) serve(w http.ResponseWriter, r *http.Request, rest, session string) {
+	if strings.HasPrefix(rest, panelRoutesPrefix) {
+		c.serveRoutes(w, r, rest, session)
+		return
+	}
+	if strings.HasPrefix(rest, panelAccountQuotaPrefix) {
+		c.serveAccountQuota(w, r, rest, session)
+		return
+	}
 	key, step, ok := strings.Cut(strings.TrimPrefix(rest, panelChangesPrefix), "/")
 	if !strings.HasPrefix(rest, panelChangesPrefix) || !ok || !(panelKeyPattern.MatchString(key) || key == panelGroupKey) || (step != "prepare" && step != "confirm") {
 		http.NotFound(w, r)
@@ -238,7 +251,7 @@ func (c *panelChanges) serve(w http.ResponseWriter, r *http.Request, rest, sessi
 	}
 	req, ok := panelReadAction(http.MaxBytesReader(w, r.Body, panelMaxBody))
 	// A build change is for one loop only, never for every loop at once.
-	if !ok || (step == "prepare" && (req.Lanes || req.Immediately || req.DropQueued)) || (key == panelGroupKey && panelBuildActions[req.Action] != "") {
+	if !ok || req.Action == panelAccountQuotaAction || (step == "prepare" && (req.Lanes || req.Immediately || req.DropQueued)) || (key == panelGroupKey && panelBuildActions[req.Action] != "") {
 		http.Error(w, "refused", http.StatusBadRequest)
 		return
 	}
@@ -398,8 +411,14 @@ func panelReviewForCaller(ctx context.Context, registryDir string, reader *dockR
 	if why != "" {
 		return panelReviewed{}, &panelResult{Outcome: "refused", Text: why, Retry: true}
 	}
+	if action == "resume" && control.CheckTransferReady(ctl) != nil {
+		return panelReviewed{}, &panelResult{Outcome: "refused", Text: "This loop is superseded or has a pending transfer. Resume is unavailable; inspect its status. Nothing was changed."}
+	}
 	if action == "resume" && control.CheckOwner(ctl, caller, false) != nil {
 		return panelReviewed{}, &panelResult{Outcome: "refused", Text: "This panel cannot resume the loop with its startup caller. Nothing was changed."}
+	}
+	if action == "resume" && entryHoldClearer(entry, caller) != nil {
+		return panelReviewed{}, &panelResult{Outcome: "refused", Text: panelSupervisedSession + " Nothing was changed."}
 	}
 	// The rest of the loop as it is now, read the way the page reads it.
 	loop := panelLoopNow(ctx, reader, dir, entry, all, now)
@@ -676,6 +695,8 @@ func panelOutcome(action string, r clientHoldReport) panelResult {
 		switch code := r.Issues[0]; code {
 		case "resume_evidence_unavailable":
 			why = "Its records could not be read and checked the way a resume requires."
+		case "supervised_session":
+			why = panelSupervisedSession
 		case "ticket_unavailable":
 			why = "A review could not be prepared."
 		case "cancelled":
@@ -696,4 +717,18 @@ func (d *dockReader) forget() {
 	d.mu.Lock()
 	defer d.mu.Unlock()
 	d.cache = nil
+}
+
+// panelSupervisedSession is said when the session a loop supervises, or a
+// process its supervisor started, asks to resume it.
+const panelSupervisedSession = "This was asked from the session the loop supervises, and supervision never clears its own hold. A person resumes it from an ordinary terminal or a panel started there."
+
+// entryHoldClearer is checkHoldClearer for a registered loop. A configuration
+// that cannot be loaded refuses nothing here: the resume itself then fails.
+func entryHoldClearer(entry registry.Entry, caller string) error {
+	cfg, ok := clientConfig(entry)
+	if !ok {
+		return nil
+	}
+	return checkHoldClearer(cfg, caller)
 }

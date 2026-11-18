@@ -3,7 +3,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { fileURLToPath } from "node:url";
 import { createFakePluginHost, makeThreadResponse, makeHostResponse, experimental_scanPublicSdkOnly } from "@get-bb/plugin-sdk/testing";
-import plugin from "./server.ts";
+import plugin, { resumeByPerson } from "./server.ts";
 import { setupResult } from "./setup-contract.ts";
 
 test("plugin uses public SDK surfaces only", () => {
@@ -49,6 +49,17 @@ test("SDK RPC resolves host metadata, persists references, and routes controls w
     assert.equal(wrong.ok, false); assert.ok(!operations.includes("resume"));
     await harness.behavior.callRpc("control", { configPath: created.record.configPath, managedId: created.record.id, action: "pause" });
     assert.ok(operations.includes("pause"));
+    // Neither the Resume button's RPC nor `bb keepgoing resume` resumes:
+    // the plugin cannot tell a person from the supervised session, so it
+    // says where a person resumes and never runs the CLI.
+    const clicked = await harness.behavior.callRpc("control", { configPath: created.record.configPath, managedId: created.record.id, action: "resume", expectedThreadId: thread.id }) as { ok: boolean; message: string };
+    assert.equal(clicked.ok, false); assert.equal(clicked.message, resumeByPerson(created.record.configPath));
+    assert.match(clicked.message, /keepgoing panel --allow-changes/); assert.match(clicked.message, /keepgoing resume -c /);
+    const listed = await harness.behavior.callRpc("control", { configPath: "/private/listed/keepgoing.yaml", action: "resume" }) as { ok: boolean; message: string };
+    assert.equal(listed.ok, false); assert.equal(listed.message, resumeByPerson("/private/listed/keepgoing.yaml"));
+    const typed = await harness.behavior.runCli(["resume", "example-loop"]);
+    assert.equal(typed.exitCode, 1, JSON.stringify(typed)); assert.ok(String(typed.stdout ?? "").includes("keepgoing resume -c "), JSON.stringify(typed));
+    assert.ok(!operations.includes("resume"));
     await harness.behavior.callRpc("setup", { action: "start", threadId: thread.id });
     assert.equal(operations.filter(o => o === "start").length, 1);
     assert.deepEqual(harness.inspection.sdk.callsTo("threads.spawn"), []);

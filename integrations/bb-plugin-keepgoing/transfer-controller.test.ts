@@ -119,3 +119,10 @@ test("unsupported post-state cannot change registration; another destination can
   assert.equal((await f.controller.call({ action: "recover", threadId: "thr_other", recordId: record.id })).ok, false);
   assert.ok(!f.calls.includes("recover")); assert.ok(!JSON.stringify(r).includes("PRIVATE"));
 });
+
+test("registry imports use CLI transfer and explicit reconciliation rather than inheriting plugin move actions",async()=>{
+  const f=fixture(); const imported={...record,registryId:"loop_0123456789abcdef0123456789abcdef",registryStateDir:"/private/example/state"};
+  f.d.records=async()=>[imported];
+  const listed=await f.call("list");assert.deepEqual(listed.choices,[]);
+  const refused=await f.call("preview");assert.equal(refused.ok,false);assert.match(refused.message,/Imported registry loops/);assert.equal(f.calls.length,0);
+});

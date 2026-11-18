@@ -50,7 +50,10 @@ type dockVersions struct {
 	// Clients says whether the plugin's and menu's reports could be read.
 	Clients string `json:"clients"` // available, none, unavailable
 
-	unordered bool // a row whose order against Newest is not known
+	// different counts rows on a different build whose order against Newest
+	// is not known; uncompared counts rows that cannot be compared at all (no
+	// version, a shared -dirty label, nothing recorded, an unreadable file).
+	different, uncompared int
 }
 
 // dockVersionRow is one place a build runs. It carries no path.
@@ -188,8 +191,11 @@ func dockVersionsOf(loops []dockLoop, clients *clientsFile, clientsErr error, no
 		if r.Availability != "older" && r.Availability != "different_file" {
 			r.Update = ""
 		}
-		if r.Availability == "different" || r.Availability == "unknown" {
-			v.unordered = true
+		switch r.Availability {
+		case "different":
+			v.different++
+		case "unknown", "not_recorded":
+			v.uncompared++
 		}
 		v.Rows = append(v.Rows, r)
 	}
@@ -261,19 +267,39 @@ func dockVersionsOf(loops []dockLoop, clients *clientsFile, clientsErr error, no
 			add(dockVersionRow{Kind: "client_cli", Title: name + ": the " + productName + " it runs", Label: dockBuildLabel(c.CLIVersion), Availability: a, Text: t, Update: cliUpdate, Seen: seen})
 		}
 	}
-	switch {
-	case v.Behind == 0 && refKind == "newest_release" && !v.unordered:
-		v.Summary = "All on " + ref
-	case v.Behind == 0:
-		v.Summary = "Nothing known to be older"
-	default:
-		v.Summary = dockPlural(v.Behind, "place needs", "places need") + " a look, against " + ref
-	}
+	v.Summary = dockVersionsSummary(v, ref, refKind)
 	v.Lede = "Where each " + productName + " build on this computer runs, as its records say, against " + map[string]string{"newest_release": "the newest release seen here, " + ref, "this_panel": "this panel's own build, " + ref}[refKind] + ". Nothing is run to ask a version, and nothing is fetched from the network."
 	if v.Clients == "none" {
 		v.Lede += " The BB plugin and the macOS menu are listed once keepgoing panel has run once on this computer and they have reported, with a build that knows --client."
 	}
 	return v
+}
+
+// dockVersionsSummary is the picker's line, short enough for the narrowest
+// sidebar without being cut. It says all is on one build only when every row
+// was compared; a row that could not be ordered or compared is counted, never
+// read as current or as nothing older. The page's lede and rows hold the why.
+func dockVersionsSummary(v dockVersions, ref, refKind string) string {
+	kinds, n := 0, v.Behind+v.different+v.uncompared
+	for _, c := range []int{v.Behind, v.different, v.uncompared} {
+		if c > 0 {
+			kinds++
+		}
+	}
+	switch {
+	case kinds > 1:
+		return dockPlural(n, "place needs", "places need") + " a look"
+	case v.Behind > 0:
+		return dockPlural(v.Behind, "place needs", "places need") + " a look"
+	case v.different > 0:
+		return dockPlural(v.different, "place", "places") + " on another build"
+	case v.uncompared > 0:
+		return dockPlural(v.uncompared, "place", "places") + " cannot be compared"
+	case refKind == "newest_release":
+		return "All on " + ref
+	default:
+		return "All on this build"
+	}
 }
 
 // dockServiceFiles compares a loop's service file with this panel's binary

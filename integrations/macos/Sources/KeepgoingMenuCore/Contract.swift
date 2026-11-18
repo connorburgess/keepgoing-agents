@@ -97,6 +97,16 @@ public enum Contract {
         return all.count <= 180 ? all : all.prefix(179) + "…"
     }
 
+    // Permission disclosures must be complete: a truncated action list can
+    // hide authority being granted. Keep this bound separate from compact
+    // menu metadata, and refuse invalid authority rather than editing it.
+    static func panelAuthority(_ value: String) -> String? {
+        guard value.utf8.count <= 1024,
+              !value.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+              value.unicodeScalars.allSatisfy({ !CharacterSet.controlCharacters.contains($0) && !CharacterSet.newlines.contains($0) }) else { return nil }
+        return value
+    }
+
     static func date(_ value: String?) -> Date? {
         guard let value else { return nil }
         let parser = ISO8601DateFormatter()

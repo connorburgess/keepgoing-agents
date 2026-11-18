@@ -18,6 +18,7 @@ import (
 	"github.com/looptender/looptender/internal/health"
 	"github.com/looptender/looptender/internal/incident"
 	"github.com/looptender/looptender/internal/probe"
+	"github.com/looptender/looptender/internal/prompt"
 	"github.com/looptender/looptender/internal/report"
 	"github.com/looptender/looptender/internal/state"
 	"github.com/looptender/looptender/internal/testexec"
@@ -245,7 +246,7 @@ func TestOfflineForAnyLengthThenRecoversOnce(t *testing.T) {
 				t.Fatalf("first check after connectivity: %+v reprompts=%d sends=%d held=%t (down since %v)", r, st.Reprompts, sends(), ctl.AwaitingUser, downSince)
 			}
 			told, _ := os.ReadFile(filepath.Join(dir, "told"))
-			if !strings.HasPrefix(string(told), "[keepgoing:child-errors count=2 ") || strings.Contains(string(told), "keep going") {
+			if !strings.HasPrefix(string(told), prompt.WakeHeader(w.cfg.Loop.Name)+"\n\n[keepgoing:child-errors count=2 ") || strings.Contains(string(told), "keep going") {
 				t.Fatalf("not the notice-only message about the failed children: %q", told)
 			}
 			// The thread runs again; nothing more is sent.

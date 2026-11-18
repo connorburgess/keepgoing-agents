@@ -81,6 +81,7 @@ extension Contract {
         guard let result = try? JSONDecoder().decode(PanelStatus.self, from: data) else { throw ClientFailure.invalidResponse }
         guard result.schemaVersion == 1 else { throw ClientFailure.unsupported }
         guard (result.idleRemainingSeconds ?? 0) >= 0 else { throw ClientFailure.invalidResponse }
+        if let exposure = result.exposure, panelAuthority(exposure) == nil { throw ClientFailure.invalidResponse }
         return result
     }
 

@@ -23,14 +23,16 @@ test("card shows completion and evidence; failed refresh labels retained data an
     assert.match(title, /Task completion: declared; not independently verified/);
     assert.match(title, /Current target: thr_example/); assert.match(title, /Last recorded action: wake · failed/);
     assert.match(title, /running supervisor not confirmed/); assert.match(title, /Last sent: unavailable/);
-    assert.ok(ui.getByRole("button", { name: "Resume" }));
+    // A held loop says where a person resumes it; the plugin offers no Resume.
+    assert.ok(ui.getByText(/A person resumes this from an ordinary terminal/)); assert.equal(ui.queryByRole("button", { name: "Resume" }), null);
+    assert.ok(ui.getByText('keepgoing resume -c "/private/example/keepgoing.yaml"'));
     phase = "lost"; await ui.behavior.emitRealtime("changed", {});
     await ui.findByRole("alert"); assert.ok(ui.getByText(/previous snapshot/));
-    assert.equal(ui.queryByRole("button", { name: "Resume" }), null);
+    assert.equal(ui.queryByText(/A person resumes this from an ordinary terminal/), null);
     assert.equal(ui.queryByRole("button", { name: "Supervise this thread" }), null);
     assert.ok(!ui.container.textContent?.includes("PRIVATE"));
     phase = "ready"; fireEvent.click(ui.getByRole("button", { name: "Refresh status" }));
-    await ui.findByRole("button", { name: "Resume" }); assert.equal(ui.queryByRole("alert"), null);
+    await ui.findByText(/A person resumes this from an ordinary terminal/); assert.equal(ui.queryByRole("alert"), null);
   } finally { ui.lifecycle.unmount(); cleanup(); }
 });
 
@@ -60,4 +62,25 @@ test("banner names a different target and expands historical evidence with expli
     assert.ok(details.getByText(/External scheduler health: not inspected/));
     assert.ok(details.getByText(/Status read:.*snapshot/));
   } finally { summary.lifecycle.unmount(); details.lifecycle.unmount(); cleanup(); }
+});
+
+test("an imported loop with a responsive daemon and failed checks is visibly failed, not operational",async()=>{
+  const failed={...loop,imported:true,controlState:"enabled",details:{...loop.details,completed:false,failedChecks:3,daemon:{state:"responsive"},lastCheck:{at:"2030-01-01T00:00:00Z",target:"primary",action:"none",outcome:"failed"}}};
+  const ui=renderSlot(app.threadContextCardRows[0]!,{threadId:"thr_imported_failure",projectId:"proj_example",environment:null},{rpc:{forThread:()=>({loops:[failed],errors:[]})}});
+  try{const label=await ui.findByText("looptender: checks failing");const text=label.closest("[title]")?.getAttribute("title")??"";assert.match(text,/Checks failing: 3/);assert.match(text,/responsive daemon does not establish operational supervision/);}finally{ui.lifecycle.unmount();cleanup();}
+});
+
+test("thread setup exposes registry attachment through the typed RPC without creating a setup",async()=>{
+  const calls:string[]=[];
+  const ui=renderSlot(app.threadContextCardRows[0]!,{threadId:"thr_attach_flow",projectId:"proj_example",environment:null},{rpc:{
+    forThread:()=>({loops:[],errors:[]}),setup:()=>({ok:true,message:"No saved setup"}),transfer:()=>({ok:true,message:"No moves",choices:[]}),
+    attachment:(raw:unknown)=>{const input=raw as {action:string;threadId:string}; calls.push(input.action);assert.equal(input.threadId,"thr_attach_flow");return {ok:true,candidates:[],message:"Registry read"};},
+  }});
+  try{fireEvent.click(await ui.findByRole("button",{name:"Supervise this thread"}));fireEvent.click(await ui.findByRole("button",{name:"Find registered loops"}));await ui.findByText("Registry read");assert.deepEqual(calls,["list"]);}finally{ui.lifecycle.unmount();cleanup();}
+});
+
+test("responsive imported startup with no recorded first check stays unverified",async()=>{
+  const waiting={...loop,imported:true,controlState:"enabled",details:{...loop.details,completed:false,failedChecks:0,daemon:{state:"responsive"},lastCheck:null}};
+  const ui=renderSlot(app.threadContextCardRows[0]!,{threadId:"thr_imported_first_check",projectId:"proj_example",environment:null},{rpc:{forThread:()=>({loops:[waiting],errors:[]})}});
+  try{await ui.findByText("looptender: no check recorded");assert.equal(ui.queryByText("looptender: enabled"),null);}finally{ui.lifecycle.unmount();cleanup();}
 });

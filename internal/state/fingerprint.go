@@ -6,6 +6,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"github.com/looptender/looptender/internal/envvar"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -240,6 +241,15 @@ func MissingWorktrees(fingerprint string) int {
 	return p.missing
 }
 
+// Worktrees lists the readable registered worktrees of repo, the
+// repository itself first, with the same rules as the progress fingerprint:
+// a worktree Git marks prunable whose directory is gone is left out, and any
+// other unreadable entry is an error. It runs only read-only Git commands.
+func Worktrees(ctx context.Context, repo string) ([]string, error) {
+	trees, _, err := worktrees(ctx, repo)
+	return trees, err
+}
+
 // worktrees lists the registered worktrees of repo that can be read and
 // counts those Git marks prunable.
 func worktrees(ctx context.Context, repo string) (trees []string, missing int, err error) {
@@ -305,7 +315,9 @@ func git(ctx context.Context, dir string, args ...string) (string, error) {
 	defer cancel()
 	cmd := exec.CommandContext(ctx, "git", args...)
 	cmd.Dir = dir
-	cmd.Env = append(os.Environ(), "GIT_OPTIONAL_LOCKS=0")
+	// A repository's configuration can name programs git runs: not the
+	// session the supervisor was started from.
+	cmd.Env = append(envvar.WithoutSupervisorSession(os.Environ()), "GIT_OPTIONAL_LOCKS=0")
 	cmd.WaitDelay = gitWaitDelay
 	out, err := cmd.Output()
 	if err != nil {

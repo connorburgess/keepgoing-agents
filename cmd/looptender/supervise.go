@@ -15,6 +15,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/looptender/looptender/internal/accounts"
 	"github.com/looptender/looptender/internal/adapter"
 	"github.com/looptender/looptender/internal/adapter/bb"
 	"github.com/looptender/looptender/internal/adapter/factory"
@@ -111,7 +112,34 @@ func validate(e env, cfg *config.Config, path string, takeOver ...bool) int {
 	if l.Report != nil {
 		fmt.Fprintf(e.stdout, "report: %s format, %s, events %s\n", l.Report.Format, l.Report.Scheme, strings.Join(l.Report.Events, ","))
 	}
+	if !validateRouteAccounts(e, cfg, "") {
+		return exitFailed
+	}
 	return exitOK
+}
+
+// validateRouteAccounts says what each route that names an account was found
+// to be. It is false when a route other than a BB thread names an entry that
+// does not match; an unreadable catalog is only a warning.
+func validateRouteAccounts(e env, cfg *config.Config, catalogDir string) bool {
+	results, readable := routeAccountChecks(cfg, catalogDir)
+	if !readable {
+		e.errf("warning: %s; nothing stops supervision", accounts.RouteCheckText(accounts.RouteCatalogUnavailable))
+	}
+	ok := true
+	for _, r := range results {
+		switch {
+		case r.Refused:
+			ok = false
+			e.errf("error: route %s: account %s: %s; fix the account in the configuration or the catalog (keepgoing accounts list)", r.ID, r.Account, accounts.RouteCheckText(r.Check))
+		case r.Check == accounts.RouteCatalogUnavailable:
+		case r.Check == accounts.RouteNotInCatalog:
+			e.errf("warning: route %s: account %s: %s; assigned by you; not verified", r.ID, r.Account, accounts.RouteCheckText(r.Check))
+		default:
+			fmt.Fprintf(e.stdout, "account (%s): %s, %s\n", r.ID, r.Label, accounts.RouteCheckText(r.Check))
+		}
+	}
+	return ok
 }
 
 // daemonKey carries what is known of the daemon running a pass.
@@ -137,7 +165,8 @@ func daemonOf(ctx context.Context) supervise.DaemonInfo {
 // scheduler identity, and the daemon running it, when one is.
 func tickOptions(e env, cfg *config.Config, dryRun bool) supervise.Options {
 	return supervise.Options{Version: version, DryRun: dryRun, Reporter: reporter(e, cfg), Routine: suppliedRoutine(e.ctx),
-		RoutineIgnored: e.ctx.Value(routineIgnoredKey{}) != nil, Daemon: daemonOf(e.ctx), Executable: checkExecutable(), ExecutableImage: processExecutableImage}
+		RoutineIgnored: e.ctx.Value(routineIgnoredKey{}) != nil, Daemon: daemonOf(e.ctx), Executable: checkExecutable(), ExecutableImage: processExecutableImage,
+		CommandPrefix: initCommandPrefix()}
 }
 
 // Capture once during process initialization, before a command or check starts.
@@ -165,6 +194,9 @@ func tickOnce(e env, cfg *config.Config, now time.Time, dryRun, fixedNow bool, l
 		return exitFailed
 	}
 	defer l.Release()
+	// Everything this check starts is the supervised session's, not a
+	// person's: it inherits the marker that keeps it from clearing a hold.
+	defer markSupervised(cfg.Loop.StateDir)()
 	if err := checkOwnership(cfg.Loop.StateDir, firstLease(leases)); err != nil {
 		return ownershipError(e, err)
 	}
@@ -219,6 +251,7 @@ func daemon(e env, cfg *config.Config, cfgPath string, dryRun bool, takeOver ...
 		return exitFailed
 	}
 	defer l.Release()
+	defer markSupervised(cfg.Loop.StateDir)()
 	lease, err := bindDaemonOwner(cfg.Loop.StateDir, len(takeOver) > 0 && takeOver[0])
 	if err != nil {
 		return ownershipError(e, err)
@@ -471,6 +504,8 @@ func controlSignatureWithOpen(stateDir string, open func(string) (*os.File, erro
 }
 
 type statusOut struct {
+	MigrationReview      *control.MigrationSummary `json:"migrationReview,omitempty"`
+	MigrationReviewError string                    `json:"migrationReviewError,omitempty"`
 	// NoProgress is the no-progress flag, the same value the panel shows.
 	NoProgress noProgressView `json:"noProgress"`
 	// SharedWith lists, in words, other enabled loops that share this loop's
@@ -482,6 +517,18 @@ type statusOut struct {
 	PromptSend   promptSendStatus `json:"promptSend"`
 	LimitWait    limitWaitStatus  `json:"limitWait"`
 	TurnRetry    turnRetryStatus  `json:"turnRetry"`
+	// ContextWindow is the active target's latest context window reading.
+	ContextWindow contextStatus `json:"contextWindow"`
+	// ContextWindowReset previews the context-threshold reset.
+	ContextWindowReset contextWindowWould `json:"contextWindowReset"`
+	// TurnUsage is the token counts the active target's agent reported for
+	// its finished turns.
+	TurnUsage turnUsageStatus `json:"turnUsage"`
+	// Savings is the loop's measured savings figures over the last seven UTC
+	// days, and one labelled estimate.
+	Savings savingsStatus `json:"savings"`
+	// IdleSpacing is loop.progress.idle_spacing and its history.
+	IdleSpacing idleSpacingStatus `json:"idleSpacing"`
 	// Refusals is the refusal gauge in words and counts.
 	Refusals          refusalStatus            `json:"refusals"`
 	Lanes             lanesStatus              `json:"laneRecovery"`
@@ -543,7 +590,7 @@ type statusOut struct {
 // stateFields are the keys of status --json taken from state.json. They are
 // left out when it cannot be read.
 var stateFields = []string{"state", "targetAgent", "targetSession", "newThreads", "redundancy", "promptSend",
-	"limitWait", "turnRetry", "refusals", "laneRecovery", "childErrorReport", "takeoverBriefs"}
+	"limitWait", "turnRetry", "contextWindow", "contextWindowReset", "turnUsage", "savings", "refusals", "laneRecovery", "childErrorReport", "takeoverBriefs"}
 
 // MarshalJSON is the ordinary encoding, without what an unreadable record
 // would have filled in: "control" when control.json cannot be read, and the
@@ -644,6 +691,10 @@ type agentRef struct {
 	BBThread string `json:"bbThread,omitempty"`
 	Workdir  string `json:"workdir,omitempty"`
 	Model    string `json:"model,omitempty"`
+	// Account is the accounts-catalog entry the route names, as stated by
+	// a person, or the derived account context of one that names none. Only
+	// status sets it.
+	Account *accounts.RouteAccount `json:"account,omitempty"`
 }
 
 func refOf(a config.Agent) agentRef {
@@ -710,6 +761,12 @@ func status(e env, cfg *config.Config, now time.Time, asJSON bool, staleAfter ti
 	if ctl.BBTarget != "" {
 		fmt.Fprintf(w, "bound BB target: %s\n", ctl.BBTarget)
 	}
+	if out.MigrationReview != nil {
+		printReconcile(e, *out.MigrationReview, false)
+	}
+	if out.MigrationReviewError != "" {
+		fmt.Fprintln(w, "Migration review: unavailable; inspect transfer reconcile show privately")
+	}
 	if out.Goal != nil {
 		printGoal(e, *out.Goal, false)
 	}
@@ -731,10 +788,15 @@ func status(e env, cfg *config.Config, now time.Time, asJSON bool, staleAfter ti
 	}
 	if !out.stateUnreadable {
 		printLimitWait(w, out.LimitWait)
+		printIdleSpacing(w, out.IdleSpacing, now)
 	}
 	fmt.Fprintf(w, "progress flag: %s\n", out.NoProgress.Text)
 	if !out.stateUnreadable {
 		printTurnRetry(w, out.TurnRetry)
+		printContext(w, out.ContextWindow)
+		printContextWindowWould(w, out.ContextWindowReset)
+		printTurnUsage(w, out.TurnUsage)
+		printSavings(w, out.Savings)
 	}
 	if out.Refusals.Text != "" && !out.stateUnreadable {
 		fmt.Fprintf(w, "refusals:  %s\n", out.Refusals.Text)
@@ -788,6 +850,9 @@ func status(e env, cfg *config.Config, now time.Time, asJSON bool, staleAfter ti
 		fmt.Fprintf(w, " (%s)", ctl.Note)
 	}
 	fmt.Fprintln(w)
+	if ctl.SupersededBy != "" {
+		fmt.Fprintln(w, "superseded: successor reference is recorded in control.json; resume and takeover are refused")
+	}
 	if q := ctl.OpenQuestion; q != nil {
 		fmt.Fprintf(w, "open question: the loop was awaiting a person when completion was declared at %s%s\n", when(q.At), noteSuffix(q.Note))
 	}
@@ -1045,9 +1110,31 @@ func readStatus(ctx context.Context, cfg *config.Config, now time.Time, staleAft
 		summary := g.Summary()
 		out.Goal = &summary
 	}
+	if review, err := control.LoadMigrationReview(l.StateDir); err != nil {
+		out.MigrationReviewError = "unavailable"
+		if errors.Is(err, control.ErrMigrationBinding) {
+			out.MigrationReviewError = "binding_changed"
+		}
+	} else if review != nil {
+		if !migrationReviewMatchesConfig(review, cfg) {
+			out.MigrationReviewError = "binding_changed"
+		} else {
+			summary := control.MigrationSummaryOf(review.ID, review.Revisions[len(review.Revisions)-1])
+			summary.Digest = ""
+			out.MigrationReview = &summary
+		}
+	}
 	out.PromptSend = describePromptSend(st.LastPromptSend, out.Goal)
+	if st.GoalCopy != nil && st.GoalCopy.Valid() {
+		out.PromptSend.GoalCopy = st.GoalCopy
+	}
 	out.LimitWait = describeLimitWait(st.LimitWaitReport, l, now)
+	out.IdleSpacing = describeIdleSpacing(st, l.Progress)
 	out.TurnRetry = describeTurnRetry(st.LastTurnRetry)
+	out.ContextWindow = describeContext(st.Context, st.Target(), activeBB(cfg, st.Target()) != nil, now)
+	out.ContextWindowReset = contextWindowWouldOf(cfg, st, ctl, out.controlUnreadable, graph, now)
+	out.TurnUsage = describeTurnUsage(st.TurnUsage, st.Target(), targetReportsTurnUsage(cfg, st), now)
+	out.Savings = describeSavings(journal, loadSavingsSpaced(l.StateDir), st.Context, out.ContextWindow, now)
 	out.Refusals = describeRefusals(st.Refusals, ctl.Question, now)
 	out.Lanes = describeLanes(st.Lanes, activeBB(cfg, st.Target()))
 	// The lane record is per-lane hashes and their key. Status shows its
@@ -1085,6 +1172,7 @@ func readStatus(ctx context.Context, cfg *config.Config, now time.Time, staleAft
 			a.ChangedAt, a.ObservedAt, a.Due = &p.ChangedAt, &p.ObservedAt, p.Reached(now, timeout)
 		}
 	}
+	out.NoProgress.explainNoCheck(ctl, out.ProgressAllowance)
 	out.Deadline, out.DeadlineReached = l.Limits.Deadline, l.Limits.DeadlineReached(now)
 	out.TakeoverBriefs = takeoverBriefsStatus{Cap: l.Errors.MaxReprompts, Capped: []string{}, SwitchBackRejected: st.SwitchBackRejected,
 		SwitchBackStopped: l.SwitchBack.Enabled && st.Target() != state.Primary && st.SwitchBackRejected >= l.Errors.MaxReprompts}
@@ -1100,13 +1188,15 @@ func readStatus(ctx context.Context, cfg *config.Config, now time.Time, staleAft
 		out.WorkBounds.Unbounded, out.WorkBounds.Warning = true, config.UnboundedWarning
 	}
 	out.PrimaryAgent = refOf(l.Agent)
+	out.PrimaryAgent.Account = routeAccountOf(l.Agent, "")
 	if st.Target() == state.Primary {
-		out.TargetAgent, out.TargetConfigured = refOf(l.Agent), true
+		out.TargetAgent, out.TargetConfigured = out.PrimaryAgent, true
 	} else if c, ok := effectiveRoutes(cfg, st).Find(st.Target()); ok && !c.Disabled {
 		// A fallback that starts a new thread at handoff is a target only
 		// once its thread exists.
 		if a, known := st.CandidateAgent(c); known {
 			out.TargetAgent = refOf(a)
+			out.TargetAgent.Account = routeAccountOf(a, "")
 			out.TargetConfigured = true
 		}
 	}
@@ -1390,7 +1480,13 @@ func controlCmdLanes(e env, cfg *config.Config, cmd, note string, lanes, dropQue
 			}
 		}
 		if cmd == "resume" {
+			if err := control.CheckTransferReady(*f); err != nil {
+				return err
+			}
 			if err := control.CheckOwner(*f, os.Getenv("BB_THREAD_ID"), false); err != nil {
+				return err
+			}
+			if err := checkHoldClearer(cfg, os.Getenv("BB_THREAD_ID")); err != nil {
 				return err
 			}
 			if err := resumeEpisode(cfg.Loop.StateDir, f.EpisodeHold, time.Now().UTC(), cfg.Loop.Errors.MaxReprompts, f.BriefHold...); err != nil {
@@ -1517,6 +1613,10 @@ func retarget(e env, cfg *config.Config, id, note string, discardPending bool) i
 	defer l.Release()
 	if err := checkOwnership(cfg.Loop.StateDir, nil); err != nil {
 		return ownershipError(e, err)
+	}
+	if err := checkHoldClearer(cfg, os.Getenv("BB_THREAD_ID")); err != nil {
+		e.errf("%v; no retarget performed", err)
+		return exitFailed
 	}
 	if err := checkTransferSources(cfg, false); err != nil {
 		e.errf("%v; no retarget performed; reload and retry", err)

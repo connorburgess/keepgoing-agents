@@ -23,6 +23,7 @@ import (
 
 	"github.com/looptender/looptender/internal/config"
 	"github.com/looptender/looptender/internal/control"
+	"github.com/looptender/looptender/internal/envvar"
 	"github.com/looptender/looptender/internal/lock"
 	"github.com/looptender/looptender/internal/snapshot"
 )
@@ -35,14 +36,16 @@ var ErrInvalid = errors.New("accounts storage unavailable or invalid")
 var ErrChanged = errors.New("accounts selection changed; review again")
 
 type Observation struct {
-	Revision string    `json:"revision"`
-	Context  string    `json:"context"`
-	At       time.Time `json:"observedAt"`
-	Auth     string    `json:"auth"`
-	Reason   string    `json:"reason"`
-	Version  string    `json:"cliVersion"`
-	Plan     string    `json:"plan"`
-	Caller   string    `json:"caller"` // private actual caller, never projected
+	PlanReason string     `json:"planReason,omitempty"`
+	PlanAt     *time.Time `json:"planObservedAt,omitempty"`
+	Revision   string     `json:"revision"`
+	Context    string     `json:"context"`
+	At         time.Time  `json:"observedAt"`
+	Auth       string     `json:"auth"`
+	Reason     string     `json:"reason"`
+	Version    string     `json:"cliVersion"`
+	Plan       string     `json:"plan"`
+	Caller     string     `json:"caller"` // private actual caller, never projected
 }
 type Entry struct {
 	ID        string       `json:"id"`
@@ -63,6 +66,28 @@ type File struct {
 	SchemaVersion int     `json:"schemaVersion"`
 	Salt          string  `json:"salt"`
 	Entries       []Entry `json:"entries"`
+}
+
+// Schema 1 remains writable for legacy-compatible catalogs. Schema 2 is a
+// one-way write promotion for new plan metadata or tiers; strict old readers
+// refuse the whole catalog. Reads never promote or rewrite a catalog.
+func needsPlanSchema(f File) bool {
+	for _, e := range f.Entries {
+		for _, o := range []*Observation{e.Last, e.Attempt} {
+			if o == nil {
+				continue
+			}
+			if o.PlanAt != nil || o.PlanReason != "" {
+				return true
+			}
+			switch o.Plan {
+			case "", "max", "pro", "team", "enterprise", "free":
+			default:
+				return true
+			}
+		}
+	}
+	return false
 }
 
 func token() string {
@@ -117,7 +142,7 @@ func validEntry(e Entry) bool {
 		if o == nil {
 			continue
 		}
-		if o.Revision != e.Revision || o.Context != e.Context || o.At.IsZero() || len(o.Caller) > 160 || !validAuth(o.Auth) || !validReason(o.Reason) || (o.Version != "" && !versionPattern.MatchString(o.Version)) || !validPlan(o.Plan) {
+		if o.Revision != e.Revision || o.Context != e.Context || o.At.IsZero() || len(o.Caller) > 160 || !validAuth(o.Auth) || !validReason(o.Reason) || (o.Version != "" && !versionPattern.MatchString(o.Version)) || !validPlan(o.Plan) || !validPlanReason(o.PlanReason) || (o.PlanAt != nil && (o.PlanAt.IsZero() || o.Plan == "" || o.PlanAt.After(o.At))) {
 			return false
 		}
 	}
@@ -141,14 +166,42 @@ func validReason(s string) bool {
 }
 func validPlan(s string) bool {
 	switch s {
-	case "", "max", "pro", "team", "enterprise", "free":
+	case "", "max", "free", "go", "plus", "pro", "prolite", "promax", "team", "self_serve_business_prolite", "self_serve_business_usage_based", "business", "ent26", "enterprise_cbp_automation", "enterprise_cbp_usage_based", "enterprise", "edu", "edu_plus", "edu_pro":
 		return true
 	}
 	return false
 }
 
+func validPlanReason(s string) bool {
+	switch s {
+	case "", "timeout", "cancelled", "status_unavailable", "schema_unavailable", "unsupported", "no_account", "api_key", "account_type", "not_recognized":
+		return true
+	}
+	return false
+}
+func planEvidence(provider string, o *Observation, now time.Time) Evidence {
+	at := o.At
+	source := observationSource(provider, o.Version)
+	if provider == "codex" {
+		source = "codex account/read"
+		if o.PlanAt != nil {
+			at = *o.PlanAt
+		}
+	}
+	p := evidence("reported", o.Plan, source, at, now)
+	p.Text = planText(o.Plan)
+	if provider == "codex" && o.PlanReason != "" {
+		p.Freshness = "stale"
+		p.Reason = o.PlanReason
+	}
+	return p
+}
+
 // Context fingerprints relevant effective auth inputs without retaining values.
-// It does not read credentials or attest provider identity.
+// It does not read credentials or attest provider identity. The variables of
+// the session that ran the command (envvar.SupervisorSession) are not inputs:
+// they change between agent sessions and tool calls, and a check does not
+// pass them to the provider.
 func Context(f File, e Entry, env []string) string {
 	return contextForOS(f, e, env, runtime.GOOS == "windows")
 }
@@ -156,7 +209,7 @@ func contextForOS(f File, e Entry, env []string, windows bool) string {
 	m := map[string]string{}
 	for _, pair := range env {
 		k, v, ok := strings.Cut(pair, "=")
-		if !ok {
+		if !ok || envvar.IsSupervisorSession(k) {
 			continue
 		}
 		k = environmentKey(k, windows)
@@ -195,12 +248,51 @@ func contextForOS(f File, e Entry, env []string, windows bool) string {
 	sort.Strings(keys)
 	key, _ := hex.DecodeString(f.Salt)
 	h := hmac.New(sha256.New, key)
+	_, _ = h.Write([]byte(contextDefinition + "\n"))
 	enc := json.NewEncoder(h)
 	_ = enc.Encode([]string{e.Provider, e.Mode, e.CLI, e.Directory, e.Workdir})
 	for _, k := range keys {
 		_ = enc.Encode([]string{k, m[k]})
 	}
-	return hex.EncodeToString(h.Sum(nil))
+	sum := h.Sum(nil)[:24]
+	return hex.EncodeToString(append(sum, contextTag(key, sum)...))
+}
+
+// contextDefinition names the inputs Context covers. A digest is 24 bytes of
+// keyed fingerprint followed by an 8-byte keyed tag of this definition, so a
+// binding recorded by an earlier build, whose digest is a plain 32-byte HMAC
+// that also covered the caller's session variables, is recognizable without a
+// new stored field that earlier builds would refuse.
+const contextDefinition = "looptender accounts context 2"
+
+func contextTag(key, sum []byte) []byte {
+	h := hmac.New(sha256.New, key)
+	_, _ = h.Write([]byte(contextDefinition + " tag\n"))
+	_, _ = h.Write(sum)
+	return h.Sum(nil)[:8]
+}
+
+// currentDefinition reports whether digest was computed by Context as defined
+// in this build.
+func currentDefinition(f File, digest string) bool {
+	b, err := hex.DecodeString(digest)
+	if err != nil || len(b) != 32 {
+		return false
+	}
+	key, _ := hex.DecodeString(f.Salt)
+	return hmac.Equal(b[24:], contextTag(key, b[:24]))
+}
+
+// Bound returns the context a check records for e under env, and whether e's
+// binding accepts it. A binding computed under the current definition must
+// match exactly. A binding recorded by an earlier build cannot be compared,
+// because its digest covered the session variables of whichever session added
+// the entry; it is accepted, and the check replaces it with the current
+// digest, so every later check compares exactly. The entry's provider,
+// executable, working directory and account directory are bound either way.
+func Bound(f File, e Entry, env []string) (string, bool) {
+	current := Context(f, e, env)
+	return current, current == e.Context || !currentDefinition(f, e.Context)
 }
 func checkDir(dir string) error {
 	st, err := os.Lstat(dir)
@@ -259,7 +351,7 @@ func Load(dir string) (File, error) {
 	var f File
 	d := json.NewDecoder(bytes.NewReader(raw))
 	d.DisallowUnknownFields()
-	if d.Decode(&f) != nil || d.Decode(new(any)) != io.EOF || f.SchemaVersion != 1 || !validToken(f.Salt) || f.Entries == nil || len(f.Entries) > MaxEntries {
+	if d.Decode(&f) != nil || d.Decode(new(any)) != io.EOF || (f.SchemaVersion != 1 && f.SchemaVersion != 2) || (f.SchemaVersion == 1 && needsPlanSchema(f)) || !validToken(f.Salt) || f.Entries == nil || len(f.Entries) > MaxEntries {
 		return File{}, ErrInvalid
 	}
 	ids := map[string]bool{}
@@ -293,13 +385,14 @@ func Update(dir string, fn func(*File) error) error {
 	if err != nil {
 		return err
 	}
+	loadedSchema := f.SchemaVersion
 	if f.Salt == "" {
 		f.Salt = token()
 	}
 	if err = fn(&f); err != nil {
 		return err
 	}
-	if len(f.Entries) > MaxEntries {
+	if (f.SchemaVersion != 1 && f.SchemaVersion != 2) || len(f.Entries) > MaxEntries {
 		return ErrInvalid
 	}
 	ids := map[string]bool{}
@@ -308,6 +401,9 @@ func Update(dir string, fn func(*File) error) error {
 			return ErrInvalid
 		}
 		ids[e.ID] = true
+	}
+	if loadedSchema == 2 || needsPlanSchema(f) {
+		f.SchemaVersion = 2
 	}
 	raw, err := json.Marshal(f)
 	if err != nil || len(raw) > MaxBytes {
@@ -345,21 +441,73 @@ type Evidence struct {
 	Value      string     `json:"value,omitempty"`
 	Source     string     `json:"source,omitempty"`
 	ObservedAt *time.Time `json:"observedAt,omitempty"`
-	Freshness  string     `json:"freshness"`
+	// Freshness is "stale" five minutes after the observation, and always for
+	// a previous observation. It is kept for consumers; the page shows age as
+	// AgeSeconds instead, since nothing re-checks on its own.
+	Freshness string `json:"freshness"`
+	// AgeSeconds is how long before the view was built the observation was
+	// made; absent without an observation or when it is dated in the future.
+	AgeSeconds *int64 `json:"ageSeconds,omitempty"`
+	// CheckAgain is true when the observation is older than ConfirmAfter, so
+	// a person who relies on it should check again to confirm it. It is a
+	// hint, not a warning.
+	CheckAgain bool `json:"checkAgain,omitempty"`
+	// Missing says why there is no value; Text says it in words. Codex
+	// plan-read failures also use their allowlisted reason here.
+	Missing string `json:"missing,omitempty"`
+	Reason  string `json:"reason,omitempty"`
 }
+
+// Common reasons an Evidence holds no value.
+const (
+	// MissingNotReported: the provider's status command does not report it
+	// (retained for older catalog consumers).
+	MissingNotReported = "not_reported"
+	// MissingNotRecognized: the status reported no plan among the broad
+	// subscription types a check keeps; other values are discarded.
+	MissingNotRecognized = "not_recognized"
+	// MissingNoLogin: a plan is read only with a reported login.
+	MissingNoLogin = "no_login"
+	// MissingNotChecked: no check has run for the entry.
+	MissingNotChecked = "not_checked"
+	// MissingNotRecorded: the catalog does not record it. Models belong to
+	// routes, and a check never calls a model.
+	MissingNotRecorded = "not_recorded"
+)
+
+// Route association of a card, set by LinkRoutes.
+const (
+	RoutesNamed   = "named"   // at least one route names the entry
+	RoutesNone    = "none"    // every route was read and none names it
+	RoutesUnknown = "unknown" // not every route could be read, and none read names it
+)
+
 type Card struct {
-	ID              string    `json:"id"`
-	Label           string    `json:"label"`
-	Provider        string    `json:"provider"`
-	Selection       string    `json:"selection"`
-	Auth            Evidence  `json:"auth"`
-	Plan            Evidence  `json:"plan"`
-	ConfiguredModel Evidence  `json:"configuredModel"`
-	ObservedModel   Evidence  `json:"observedModel"`
-	PreviousAuth    *Evidence `json:"previousAuth,omitempty"`
-	Reason          string    `json:"reason,omitempty"`
-	Uses            string    `json:"uses"`
-	Identity        string    `json:"identity"`
+	Quota           *QuotaView `json:"quota,omitempty"`
+	ID              string     `json:"id"`
+	Label           string     `json:"label"`
+	Provider        string     `json:"provider"`
+	Selection       string     `json:"selection"`
+	Auth            Evidence   `json:"auth"`
+	Plan            Evidence   `json:"plan"`
+	ConfiguredModel Evidence   `json:"configuredModel"`
+	ObservedModel   Evidence   `json:"observedModel"`
+	Reason          string     `json:"reason,omitempty"`
+	// FailedCheckAt is the time of the latest check when it did not produce a
+	// login result and Auth and Plan show the observation before it.
+	FailedCheckAt *time.Time `json:"failedCheckAt,omitempty"`
+	Uses          string     `json:"uses"`
+	Identity      string     `json:"identity"`
+	// NeedsPerson is true only when the card shows something a person must
+	// act on, named by Attention: no_login (the selected CLI reports no
+	// login), check_failed (the latest check did not establish a result) or
+	// context_changed (the effective context differs from the selection).
+	// The age of an observation never sets it.
+	NeedsPerson bool   `json:"needsPerson"`
+	Attention   string `json:"attention,omitempty"`
+	// Routes is one of the Routes* values when the caller compared the
+	// card with the routes (LinkRoutes); empty when it did not.
+	Routes string `json:"routes,omitempty"`
 }
 type View struct {
 	State    string `json:"state"`
@@ -367,18 +515,44 @@ type View struct {
 	Cards    []Card `json:"cards"`
 }
 
+// ConfirmAfter is the age past which a login or plan observation carries the
+// hint to check again to confirm it.
+const ConfirmAfter = 24 * time.Hour
+
 func evidence(state, value, source string, at time.Time, now time.Time) Evidence {
 	fresh := "fresh"
 	if at.After(now) || now.Sub(at) >= 5*time.Minute {
 		fresh = "stale"
 	}
-	return Evidence{Text: authText(state), State: state, Value: value, Source: source, ObservedAt: &at, Freshness: fresh}
+	e := Evidence{Text: authText(state), State: state, Value: value, Source: source, ObservedAt: &at, Freshness: fresh}
+	if !at.After(now) {
+		age := int64(now.Sub(at) / time.Second)
+		e.AgeSeconds = &age
+		e.CheckAgain = now.Sub(at) > ConfirmAfter
+	}
+	return e
+}
+
+// attention names what on a card needs a person, or "" when nothing does.
+// A failed check outranks what an earlier check reported, as the earlier
+// result is no longer current.
+func attention(e Entry, c Card) string {
+	switch {
+	case c.Reason == "context_changed":
+		return "context_changed"
+	case e.Attempt != nil && e.Attempt.Auth == "unavailable" && c.Reason != "unsupported":
+		return "check_failed"
+	case c.Auth.State == "reported_absent":
+		return "no_login"
+	}
+	return ""
 }
 func Project(f File, now time.Time) View {
 	v := View{State: "available", Complete: true, Cards: []Card{}}
 	unavailable := Evidence{Text: "Unavailable", State: "unavailable", Freshness: "unavailable"}
+	notRecorded := Evidence{Text: "Not recorded", State: "unavailable", Freshness: "unavailable", Missing: MissingNotRecorded}
 	for _, e := range f.Entries {
-		c := Card{ID: e.ID, Label: e.Label, Provider: e.Provider, Selection: e.Mode, Auth: Evidence{Text: "Not checked", State: "unchecked", Freshness: "unavailable"}, Plan: unavailable, ConfiguredModel: unavailable, ObservedModel: unavailable, Uses: "unavailable", Identity: "selected_context_only"}
+		c := Card{ID: e.ID, Label: e.Label, Provider: e.Provider, Selection: e.Mode, Auth: Evidence{Text: "Not checked", State: "unchecked", Freshness: "unavailable"}, Plan: unavailable, ConfiguredModel: notRecorded, ObservedModel: notRecorded, Uses: "unavailable", Identity: "selected_context_only"}
 		if !supported(e.Provider) {
 			c.Auth.State = "unavailable"
 			c.Auth.Text = "Externally managed or unsupported"
@@ -392,30 +566,102 @@ func Project(f File, now time.Time) View {
 				c.Auth.Freshness = "unavailable"
 			}
 			if o.Plan != "" {
-				c.Plan = evidence("reported", o.Plan, observationSource(e.Provider, o.Version), o.At, now)
+				c.Plan = planEvidence(e.Provider, o, now)
 				c.Plan.Text = planText(o.Plan)
 			}
 		}
+		// A check that did not produce a login result keeps the last recognized
+		// observation, with its own time, and says when and why the latest
+		// check failed. It is previous evidence, never a refreshed result.
 		if e.Last != nil && (e.Attempt == nil || e.Attempt.Auth == "unavailable") {
-			x := evidence(e.Last.Auth, "", observationSource(e.Provider, e.Last.Version), e.Last.At, now)
-			x.Freshness = "stale"
-			c.PreviousAuth = &x
+			c.Auth = evidence(e.Last.Auth, "", observationSource(e.Provider, e.Last.Version), e.Last.At, now)
+			c.Auth.Freshness = "stale"
+			if e.Attempt != nil {
+				at := e.Attempt.At
+				c.FailedCheckAt = &at
+			}
 			if e.Last.Plan != "" {
-				c.Plan = evidence("reported", e.Last.Plan, e.Provider+" previous status", e.Last.At, now)
+				c.Plan = planEvidence(e.Provider, e.Last, now)
 				c.Plan.Text = planText(e.Last.Plan)
 				c.Plan.Freshness = "stale"
 			}
 		}
+		c.Plan = missingPlan(e.Provider, c.Auth.State, c.Plan)
+		if e.Provider == "codex" && c.Plan.Value == "" && e.Attempt != nil && e.Attempt.PlanReason != "" {
+			c.Plan.Missing = e.Attempt.PlanReason
+			c.Plan.Text = codexPlanMissing[e.Attempt.PlanReason]
+		}
+		c.Attention = attention(e, c)
+		c.NeedsPerson = c.Attention != ""
 		v.Cards = append(v.Cards, c)
 	}
 	return v
 }
+
+// missingPlan says why a card shows no plan, from what each provider's check
+// reads (cmd/looptender/accounts.go, accountLogin). A check that did not
+// establish a login leaves the plan unavailable.
+func missingPlan(provider, auth string, p Evidence) Evidence {
+	if p.Value != "" {
+		return p
+	}
+	why := ""
+	switch {
+	case provider == "codex" && auth == "reported_present":
+		return Evidence{Text: "Codex plan has not been read; check again.", State: "unavailable", Freshness: "unavailable", Missing: MissingNotChecked}
+	case provider != "claude-code" && provider != "codex":
+	case auth == "unchecked":
+		why = MissingNotChecked
+	case auth == "reported_present":
+		why = MissingNotRecognized
+	case auth == "reported_absent":
+		why = MissingNoLogin
+	}
+	if why == "" {
+		return p
+	}
+	return Evidence{Text: missingText[why], State: "unavailable", Freshness: "unavailable", Missing: why}
+}
+
+var codexPlanMissing = map[string]string{
+	"timeout": "Codex plan read timed out.", "cancelled": "Codex plan read was cancelled.",
+	"status_unavailable": "Codex plan read failed.", "schema_unavailable": "Codex plan response was not recognized.",
+	"unsupported": "This Codex CLI does not support the plan read.", "no_account": "Codex reported no account for the plan read.",
+	"api_key": "API key accounts have no ChatGPT subscription plan.", "account_type": "This Codex account type has no recognized ChatGPT plan.",
+	"not_recognized": "Codex reported no recognized plan.",
+}
+var missingText = map[string]string{
+	MissingNotReported:   "The status command does not report this value.",
+	MissingNotRecognized: "Claude Code's status reported no recognized plan.",
+	MissingNoLogin:       "No plan is read without a login.",
+	MissingNotChecked:    "Not checked",
+}
+
+// LinkRoutes sets each card's Routes from the catalog IDs that routes name.
+// complete is false when not every route could be read; a card that no
+// route read names is then unknown rather than none.
+func LinkRoutes(v *View, named map[string]bool, complete bool) {
+	for i := range v.Cards {
+		c := &v.Cards[i]
+		switch {
+		case named[c.ID]:
+			c.Routes = RoutesNamed
+		case complete:
+			c.Routes = RoutesNone
+		default:
+			c.Routes = RoutesUnknown
+		}
+	}
+}
+
 func ReadView(dir string, now time.Time) View {
 	f, err := Load(dir)
 	if err != nil {
 		return View{State: "unavailable", Complete: false, Cards: []Card{}}
 	}
-	return Project(f, now)
+	v := Project(f, now)
+	AttachQuota(&v, QuotaViews(dir, f, os.Environ(), now))
+	return v
 }
 
 // CheckGuard prevents overlapping checks of one selection, without holding the
@@ -456,15 +702,18 @@ func observationSource(provider, version string) string {
 	return provider + " CLI " + version + " status"
 }
 
-// ExecutionEnvironment applies the one supported account-directory override
-// using the same name equivalence as os/exec (case insensitive on Windows).
-// Other environment entries remain ephemeral and are passed through as before.
+// ExecutionEnvironment drops the caller's session variables
+// (envvar.SupervisorSession) and applies the one supported account-directory
+// override using the same name equivalence as os/exec (case insensitive on
+// Windows). Other environment entries remain ephemeral and pass through.
 func ExecutionEnvironment(e Entry, env []string) []string {
 	return executionEnvironmentForOS(e, env, runtime.GOOS == "windows")
 }
 func executionEnvironmentForOS(e Entry, env []string, windows bool) []string {
+	// The provider's status command is not the session that ran the check.
+	env = envvar.WithoutSupervisorSession(env)
 	if e.Mode != "explicit_directory" {
-		return append([]string(nil), env...)
+		return env
 	}
 	key := "CLAUDE_CONFIG_DIR"
 	if e.Provider == "codex" {

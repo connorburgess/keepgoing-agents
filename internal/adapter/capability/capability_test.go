@@ -239,6 +239,11 @@ func TestOptionalInterfacesMatchTheAdapters(t *testing.T) {
 		if listed := byID("child_recovery").Cells[a.ID].Status == Yes; lanes != a.LaneRecoverer || lanes != listed {
 			t.Errorf("%s: LaneRecoverer=%v; the capability table says %v and the child_recovery row says %v", a.ID, lanes, a.LaneRecoverer, listed)
 		}
+		// And the context row with whether it can read a context size.
+		_, reads := impl.(adapter.ContextReader)
+		if listed := byID("context").Cells[a.ID].Status == Yes; reads != a.ContextReader || reads != listed {
+			t.Errorf("%s: ContextReader=%v; the capability table says %v and the context row says %v", a.ID, reads, a.ContextReader, listed)
+		}
 		// And the stop_lanes row with whether it can stop lanes at all.
 		_, stops := impl.(adapter.LaneStopper)
 		if listed := byID("stop_lanes").Cells[a.ID].Status == Yes; stops != a.LaneStopper || stops != listed {
@@ -454,6 +459,10 @@ func TestPortedAgentsSetExactlyTheirInputs(t *testing.T) {
 		}
 		if listed := byID("error_classes").Cells[spec.Name].Status == Yes; listed != spec.Capabilities.StructuredErrors {
 			t.Errorf("%s: StructuredErrors=%v but the error_classes row is %s", spec.Name, spec.Capabilities.StructuredErrors, byID("error_classes").Cells[spec.Name].Status)
+		}
+		// It reports per-turn usage exactly when the matrix says so.
+		if listed := byID("turn_usage").Cells[spec.Name].Status == Yes; listed != spec.Capabilities.TurnUsage {
+			t.Errorf("%s: TurnUsage=%v but the turn_usage row is %s", spec.Name, spec.Capabilities.TurnUsage, byID("turn_usage").Cells[spec.Name].Status)
 		}
 		// Waiting on a person is structured exactly when permissions are.
 		if listed := byID("permissions").Cells[spec.Name].Status == Yes; listed != spec.Capabilities.StructuredWaiting {

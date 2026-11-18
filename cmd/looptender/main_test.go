@@ -39,6 +39,7 @@ case "$1 $2" in
 "thread show") if [ -f "$d/$t.show" ]; then cat "$d/$t.show"; else echo '{"thread":{"status":"idle"}}'; fi ;;
 "thread list") t="$4"; if [ -f "$d/$t.children" ]; then cat "$d/$t.children"; else echo '[]'; fi ;;
 "thread log")  if [ -f "$d/$t.log" ]; then cat "$d/$t.log"; else echo '[]'; fi ;;
+"thread context") if [ -f "$d/$t.context" ]; then cat "$d/$t.context"; else echo '{"ok":true}'; fi ;;
 "thread interactions") t="$4"; if [ -f "$d/$t.interactions" ]; then cat "$d/$t.interactions"; else echo '[]'; fi ;;
 "thread queue") t="$4"; if [ "$3" = list ]; then if [ -f "$d/$t.queue" ]; then cat "$d/$t.queue"; else echo '[]'; fi; else echo '{"ok":true}'; fi ;;
 "thread tell") cat >> "$d/$t.told"; echo >> "$d/$t.told"; echo '{"ok":true}' ;;
@@ -110,6 +111,12 @@ func newFixture(t *testing.T) *fixture {
 	testexec.Shared(t, filepath.Join(bin, "bb"), fakeBB)
 	testexec.Shared(t, filepath.Join(bin, "claude"), fakeClaude)
 	testexec.Shared(t, filepath.Join(bin, "codex"), fakeCodex)
+	// A route that names no CLI runs the one PATH finds: a probe of the
+	// loop's own first route, for one. Without this that is the real Claude
+	// Code or Codex wherever one is installed, signed in to the person's
+	// account, and its answer (a usage reading, a refusal) decides the test.
+	// The stand-ins come first.
+	t.Setenv("PATH", bin+string(os.PathListSeparator)+os.Getenv("PATH"))
 	t.Setenv("FAKE_BB", bbDir)
 	// Each fixture has its own registry and session claims: fixtures share
 	// fictional thread IDs.
