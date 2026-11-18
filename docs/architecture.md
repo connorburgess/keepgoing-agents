@@ -18,7 +18,7 @@ A manually created successor with separate loop state has no inferred relationsh
 ## Packages
 
 ```
-cmd/looptender               CLI: start, service, tick, daemon, status, context, timeline, goal, registry, client status/pause/stop/prepare-resume/resume/review/apply, dock, panel, transfer, control, fallbacks, report, adapter check, ci-wait, net-retry
+cmd/looptender               CLI: start, service, tick, daemon, status, context, timeline, goal, assignment, registry, client status/pause/stop/prepare-resume/resume/review/apply, dock, panel, transfer, control, fallbacks, report, adapter check, pr-backlog, ci-wait, net-retry
 internal/config             a loop's configuration file (looptender.yaml, or keepgoing.yaml) and fallbacks.yaml: loading, defaults, validation
 internal/envvar             the environment variables' two names: LOOPTENDER_X, and the earlier KEEPGOING_X
 internal/userdir            the per-user directories and their name: looptender, or keepgoing where one already exists; the explicit move between them
