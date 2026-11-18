@@ -1410,7 +1410,7 @@ func TestDockServerRefusesWithoutTokenCrossOriginAndWrites(t *testing.T) {
 }
 
 func TestDockPageHasNoExternalReferences(t *testing.T) {
-	for _, name := range []string{"dockui/index.html", "dockui/dock.css", "dockui/dock.js"} {
+	for _, name := range []string{"dockui/index.html", "dockui/dock.css", "dockui/dock.js", "dockui/routes-help.html"} {
 		b, err := dockUI.ReadFile(name)
 		if err != nil {
 			t.Fatal(err)

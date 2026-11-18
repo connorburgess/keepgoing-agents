@@ -52,8 +52,9 @@ func TestDockReadsTimeOutG2(t *testing.T) {
 	// The report and server reads go through getJSON; fetch is otherwise
 	// called by post(), the changes, which are not retried and are not timed
 	// out, and by loadUsage(), which has its own timeout and runs only after
-	// a report read, so a hidden tab never starts it.
-	if n := strings.Count(js, "fetch("); n != 3 || !strings.Contains(jsFunction(t, js, "function loadUsage() {"), "signal: abort.signal") {
+	// a report read, so a hidden tab never starts it. Subscription quota has
+	// its own bounded explicit POST, never called by the polling functions.
+	if n := strings.Count(js, "fetch("); n != 4 || !strings.Contains(jsFunction(t, js, "function loadUsage() {"), "signal: abort.signal") {
 		t.Errorf("fetch( appears %d times", n)
 	}
 	if !strings.Contains(jsFunction(t, js, "function loadServer() {"), "getJSON(SERVER)") {
@@ -80,4 +81,20 @@ func jsFunction(t *testing.T, js, head string) string {
 		t.Fatalf("no end for %q", head)
 	}
 	return js[i : i+end]
+}
+
+func TestDockQuotaOnlyReadsAfterExplicitReview(t *testing.T) {
+	js := dockUIText(t, "dock.js")
+	post := jsFunction(t, js, "function accountQuotaPost(id, step, form) {")
+	for _, want := range []string{"abort.abort()", "15000", "signal: abort.signal", `method: "POST"`, `action: "subscription_quota"`, "clearTimeout(timer)"} {
+		if !strings.Contains(post, want) {
+			t.Errorf("quota POST lacks %q", want)
+		}
+	}
+	for _, head := range []string{"function load(byHand) {", "function loadServer() {", "function loadUsage() {", "function schedule() {"} {
+		source := jsFunction(t, js, head)
+		if strings.Contains(source, "accountQuotaPost(") || strings.Contains(source, "accountQuotaRequest(") {
+			t.Errorf("automatic quota read in %s", head)
+		}
+	}
 }

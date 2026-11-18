@@ -130,11 +130,6 @@ func TestDockHowToBlocksP1(t *testing.T) {
 			`"looptender fallbacks move " + id + " --to PLACE " + loopArg(l)`,
 			"Show identifiers to see each route's ID",
 		},
-		"standardRouteBox": {
-			`"Add a route for every loop"`,
-			"--enter ENTER --account ACCOUNT_ID",
-			"looptender routes follow-standard --loop LOOP_NAME",
-		},
 		// Every block ends with where to run it.
 		"howEnd": {"IN_TERMINAL"},
 		// Each copy button is described by the line saying what it is for.
@@ -157,8 +152,7 @@ func TestDockHowToBlocksP1(t *testing.T) {
 		`pane.appendChild(emptyBox("No accounts selected here yet", FIRST_RUN));
       pane.appendChild(addAccountBox(true));`,
 		"pane.appendChild(addAccountBox(!cards.length));",
-		"pane.appendChild(standardRouteBox(true));",
-		"pane.appendChild(standardRouteBox(false));",
+		"pane.appendChild(routeEditorBox());",
 		"how.appendChild(addRouteBox(l));",
 	} {
 		if !strings.Contains(js, want) {
@@ -171,7 +165,7 @@ func TestDockHowToBlocksP1(t *testing.T) {
 		t.Error("addAccountBox says NAMES_ONLY other than once after the cases")
 	}
 	// Nothing here posts, fetches or runs: the blocks only show text.
-	for _, name := range []string{"addAccountBox", "addRouteBox", "reorderBox", "standardRouteBox", "howStep", "howBox"} {
+	for _, name := range []string{"addAccountBox", "addRouteBox", "reorderBox", "howStep", "howBox"} {
 		body := funcBody(t, js, name)
 		for _, banned := range []string{"post(", "fetch(", "prepareChange(", "confirmChange("} {
 			if strings.Contains(body, banned) {

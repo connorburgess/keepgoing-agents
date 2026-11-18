@@ -483,15 +483,16 @@ const (
 )
 
 type Card struct {
-	ID              string   `json:"id"`
-	Label           string   `json:"label"`
-	Provider        string   `json:"provider"`
-	Selection       string   `json:"selection"`
-	Auth            Evidence `json:"auth"`
-	Plan            Evidence `json:"plan"`
-	ConfiguredModel Evidence `json:"configuredModel"`
-	ObservedModel   Evidence `json:"observedModel"`
-	Reason          string   `json:"reason,omitempty"`
+	Quota           *QuotaView `json:"quota,omitempty"`
+	ID              string     `json:"id"`
+	Label           string     `json:"label"`
+	Provider        string     `json:"provider"`
+	Selection       string     `json:"selection"`
+	Auth            Evidence   `json:"auth"`
+	Plan            Evidence   `json:"plan"`
+	ConfiguredModel Evidence   `json:"configuredModel"`
+	ObservedModel   Evidence   `json:"observedModel"`
+	Reason          string     `json:"reason,omitempty"`
 	// FailedCheckAt is the time of the latest check when it did not produce a
 	// login result and Auth and Plan show the observation before it.
 	FailedCheckAt *time.Time `json:"failedCheckAt,omitempty"`
@@ -658,7 +659,9 @@ func ReadView(dir string, now time.Time) View {
 	if err != nil {
 		return View{State: "unavailable", Complete: false, Cards: []Card{}}
 	}
-	return Project(f, now)
+	v := Project(f, now)
+	AttachQuota(&v, QuotaViews(dir, f, os.Environ(), now))
+	return v
 }
 
 // CheckGuard prevents overlapping checks of one selection, without holding the

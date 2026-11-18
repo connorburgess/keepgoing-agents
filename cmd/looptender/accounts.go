@@ -32,7 +32,7 @@ func accountsDirectory(path string) (string, error) {
 }
 func accountsCommand(e env, args []string, run accountRun) int {
 	if len(args) == 0 {
-		e.errf("usage: accounts list|add|update|check [flags]")
+		e.errf("usage: accounts list|add|update|check|usage [flags]")
 		return exitUsage
 	}
 	op := args[0]
@@ -57,20 +57,23 @@ func accountsCommand(e env, args []string, run accountRun) int {
 	supplied := map[string]bool{}
 	fs.Visit(func(f *flag.Flag) { supplied[f.Name] = true })
 	for k := range supplied {
-		allowed := k == "directory" || k == "json" || ((op == "check" || op == "update") && k == "id") ||
+		allowed := k == "directory" || k == "json" || ((op == "check" || op == "update" || op == "usage") && k == "id") ||
 			((op == "add" || op == "update") && (k == "label" || k == "provider" || k == "selection" || k == "cli" || k == "account-dir" || k == "workdir" || (op == "update" && k == "expect")))
 		if !allowed {
 			e.errf("accounts: flag not allowed for this operation")
 			return exitUsage
 		}
 	}
-	if op != "list" && op != "add" && op != "update" && op != "check" {
+	if op != "list" && op != "add" && op != "update" && op != "check" && op != "usage" {
 		return exitUsage
 	}
 	path, err := accountsDirectory(*dir)
 	if err != nil {
 		e.errf("accounts: private catalog directory unavailable")
 		return exitFailed
+	}
+	if op == "usage" {
+		return accountsUsage(e, path, *id, *asJSON)
 	}
 	now := time.Now().UTC()
 	caller := os.Getenv("BB_THREAD_ID")

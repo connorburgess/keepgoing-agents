@@ -347,7 +347,7 @@ The report's `usagePicker` is the Usage row's line. The Usage page and each loop
 keepgoing panel --allow-changes
 ```
 
-A panel started this way lets the page pause, stop and resume one loop at a time, and replace a loop’s own build through the separate review below. Without the flag the panel is read-only, and `keepgoing dock` is read-only for good. `keepgoing dock`'s token is in its address, which ends up in terminal scrollback and shared screens, and it runs with its terminal's environment, so it would act as whatever BB thread it was started in. A running server never switches mode. `keepgoing panel --allow-changes` against a read-only server says so and asks for `keepgoing panel stop` first, and `keepgoing panel` against a server that allows changes asks the same. The footer says which mode the page is in, for how long changes have been allowed, and what that exposes: "Changes allowed for 2 h: started with keepgoing panel --allow-changes at 14:02. While changes are allowed, anyone who can use this browser window can pause, stop and resume loops, and replace the file that runs a loop's checks with this panel's build. keepgoing panel stop turns them off." The command's output and `keepgoing panel status` say the same. With changes off the page shows no controls at all.
+A panel started this way lets the page pause, stop and resume one loop at a time, and replace a loop’s own build through the separate review below. Unreleased source also offers the [route configuration editor](#configure-routes-in-the-panel), subject to the retained startup caller’s authority. Codex cards also offer an explicit reviewed subscription-quota read. Without the flag the panel is read-only, and `keepgoing dock` is read-only for good. `keepgoing dock`'s token is in its address, which ends up in terminal scrollback and shared screens, and it runs with its terminal's environment, so it would act as whatever BB thread it was started in. A running server never switches mode. `keepgoing panel --allow-changes` against a read-only server says so and asks for `keepgoing panel stop` first, and `keepgoing panel` against a server that allows changes asks the same. The footer says which mode the page is in, for how long changes have been allowed, and what that exposes: "Changes allowed for 2 h: started with keepgoing panel --allow-changes at 14:02. While changes are allowed, anyone using this window can pause, stop or resume loops, replace their check builds with this panel's build, edit routes within the startup caller's authority, and read selected Codex subscription quota. keepgoing panel stop turns them off." The command's output and `keepgoing panel status` say the same. With changes off the page shows no controls at all.
 
 **Pause all.** On the overview, while any loop can be paused, **Pause all…** reviews every registered loop at once. The review names each loop with a one-line effect ("example-api (Supervising) will be paused.", "example-site is already paused."), up to eight, then "And N more."; then the total ("Pauses 3 of 4 loops; 1 is already paused."), what pausing does, and when the review expires. It never repeats each loop's whole review. Confirming changes each loop on its own, through the same function as a single pause, and only if that loop's control record is still the one reviewed: a loop changed in between is not changed, and the rest are. The result names each loop's outcome, those not changed first, and a partial result never reads as success: "Paused 2 of 3; 1 needs a new review." A loop that could not be read or was in the middle of a check is named as not paused, and not counted as changed.
 
@@ -468,4 +468,81 @@ keepgoing dock --directory /private/example-scratch/registry
 
 ## Accounts
 
-Unreleased source adds a persistent read-only Accounts view backed by a private selected-context catalog. Refresh reads retained evidence only. Setup/status are explicit CLI operations; sign-in stays with the official provider tool. Names are owner labels, and login, plan, model and route-use evidence remain distinct. Each card says its source and age once when login and plan come from the same check, and says why a value is missing when nothing is wrong (a plan has not been read, the catalog records no model, no route names the entry yet) in neutral text; "Needs you" stays for no login, a failed check and a changed context. One footnote at the end names the check command, `looptender accounts check --id CONNECTION_ID --json`. Under the count, **Add an account** is a closed disclosure (open when there are no accounts) with three cases, each with its `looptender accounts add` command to copy: another subscription of a provider you use (sign in with the provider's tool in a new folder, then `--selection explicit_directory --account-dir FOLDER`), a provider that manages its own login (Cursor, BB), and an API key, which gets its own entry and is never taken. After the three cases it says once: "This names the account. It does not put it in any loop. To use it, add it to a loop's order." With no accounts the page says, in three sentences, what an account, a route and a loop's order are. The **Routes** view has **Add a route for every loop**: `looptender routes add … --account ACCOUNT_ID` for the [standard route list](routes.md), then `looptender routes follow-standard --loop LOOP_NAME`. Each card lists the routes that use it, the loops on each and each route's own reading, with "… allowance was out when read … · resets …" in the summary when any route's reading had a window used up that has not ended (naming the route when there are several), else "Not out when read …". Routes without an explicit catalog binding appear separately under **Routes with unknown accounts**, with each route's own recorded reading. Only registered selections count as selected accounts in the page and sidebar. Configuration contexts, providers, models and groups do not establish distinct subscriptions or match routes to selected accounts; no inferred account match or extra-account naming command is offered for these routes. A loop's page shows a bound route as "on *Label* · assigned by you · identity not verified" and an unbound one as "Not assigned to an account." See [Accounts](accounts.md) for commands, caller/privacy boundaries and unverified live acceptance.
+Unreleased source adds a persistent Accounts view backed by a private selected-context catalog. Refresh reads retained evidence only. Setup/status are explicit CLI operations; sign-in stays with the official provider tool. Names are owner labels, and login, plan, model and route-use evidence remain distinct. Each card says its source and age once when login and plan come from the same check, and says why a value is missing when nothing is wrong (a plan has not been read, the catalog records no model, no route names the entry yet) in neutral text; "Needs you" stays for no login, a failed check and a changed context. One footnote at the end names the check command, `looptender accounts check --id CONNECTION_ID --json`. Under the count, **Add an account** is a closed disclosure (open when there are no accounts) with three cases, each with its `looptender accounts add` command to copy: another subscription of a provider you use (sign in with the provider's tool in a new folder, then `--selection explicit_directory --account-dir FOLDER`), a provider that manages its own login (Cursor, BB), and an API key, which gets its own entry and is never taken. After the three cases it says once: "This names the account. It does not put it in any loop. To use it, add it to a loop's order." With no accounts the page says, in three sentences, what an account, a route and a loop's order are. The **Routes** view offers the [standard route editor](#configure-routes-in-the-panel), with a concise command-reference link. Each card lists the routes that use it, the loops on each and each route's own reading, with "… allowance was out when read … · resets …" in the summary when any route's reading had a window used up that has not ended (naming the route when there are several), else "Not out when read …". Routes without an explicit catalog binding appear separately under **Routes with unknown accounts**, with each route's own recorded reading. Only registered selections count as selected accounts in the page and sidebar. Configuration contexts, providers, models and groups do not establish distinct subscriptions or match routes to selected accounts; no inferred account match or extra-account naming command is offered for these routes. A loop's page shows a bound route as "on *Label* · assigned by you · identity not verified" and an unbound one as "Not assigned to an account." See [Accounts](accounts.md) for commands, caller/privacy boundaries and unverified live acceptance.
+
+## Configure routes in the panel
+
+Unreleased source adds a Routes editor for the standard preferred-route list.
+Open a panel **outside BB** with `looptender panel --allow-changes`. If an
+existing panel is read-only or was started by a BB thread, stop it with
+`looptender panel stop` outside BB, then open a new panel there with changes
+allowed. Reopening a window keeps the running panel's original caller.
+`looptender dock` remains read-only. This is the existing environment-based
+caller rule, not a new human-authentication mechanism.
+
+Choose **Read current configuration**, then add a route using an existing
+Claude Code or Codex catalog selection. The provider comes from that selection.
+A catalog association is your statement; it does not verify the account used
+by a live thread, model access or available quota. Conversation routes require
+an externally managed selection and keep the conversation's existing login.
+CLI routes use an inherited or existing-directory selection; executable and
+working-directory settings still come from each loop. No credentials are
+copied or accounts created.
+
+Enter a supported model and optional effort, or explicitly request **Load models
+reported by BB**. That button runs the existing bounded, read-only structured
+`bb provider models` listing. Nothing loads automatically, no model is called,
+and the listing does not establish an account's access. When unavailable, enter
+names from the provider's supported settings. A listed model offers only the
+effort levels present in that response; an omitted effort keeps the provider's
+default. Headless Codex routes do not support an effort override.
+
+Choose whether the route continues a BB conversation, may start a new one at
+handoff, or runs a CLI. A new conversation requires explicit route permission;
+each loop must already allow it, and existing creation caps, spacing and holds
+still apply. Choose which recorded limit the route shares, or supply a new
+label after checking the relationship yourself. Labels do not establish
+independent subscriptions or quota. Route identifiers are generated internally.
+
+Every add, move, on/off or removal has a review showing the resulting order,
+affected following loops, skipped routes and recorded-health warnings. Save
+uses the same validated in-process route writer as the CLI, with its private
+file rules, locks and history. Reviews expire after two minutes and are single
+use, session-bound and tied to the list, account selection and affected loop
+configuration. A concurrent change requires a new review. A lost save response
+has an unknown outcome; it is never retried automatically. Read the configuration
+before preparing another change.
+
+Adding to the standard list does not enroll other loops. Select up to 64 eligible loops per review
+under **Loops following this order**, review, then save that separate change.
+Each loop keeps its existing handoff setting, holds, budgets, ownership and
+conversation-creation opt-in. Each save uses the existing follow-standard
+writer and its own lock. This is **not an atomic batch**: a refusal stops the
+remaining saves; the result distinguishes changed, refused and unattempted
+loops. Earlier successful saves remain. Loops that cannot follow now say why.
+A BB-started panel offers no standard-list editor, even if its caller owns a
+loop. Loop-specific custom-list editing remains a CLI capability.
+
+The command reference remains in [preferred routes](routes.md).
+
+### Selected-context subscription quota
+
+Accounts cards keep Codex subscription quota separate from configured route
+observations and token totals. Page refresh reads the private cache only. A
+panel started with `--allow-changes` offers **Refresh subscription quota…**
+inside an expanded Codex card. Review and confirm the selected context before
+it contacts that CLI. The review is session-bound, expires after two minutes
+and is single use. No route, login, model request or loop control is changed.
+The same operation is available as `looptender accounts usage --id ACCOUNT_ID`.
+
+Successful readings show their source, original read time, primary/secondary
+window percentages and any reported durations/resets. A failed refresh leaves
+the earlier reading visible with its original age and a separate failure time;
+unknown or absent windows are unavailable, never zero. See the [quota contract
+and recovery limits](accounts.md#read-selected-context-subscription-quota).
+
+The macOS menu preserves the complete validated panel-authority disclosure in
+its controls confirmation, including combined route-editing and subscription
+quota capabilities. It refuses empty, control-containing or over-1024-byte
+disclosures instead of truncating authority text. Compact menu metadata keeps
+its separate 180-character limit.
