@@ -2,11 +2,13 @@ import { defineRpcContract } from "@get-bb/plugin-sdk";
 import { z } from "zod";
 import { targetSchema, recordSchema, planSchema, refusalSchema } from "./setup-contract.ts";
 import { transferHostInput } from "./transfer-contract.ts";
+import { attachHostInput, attachHostResult } from "./attach-contract.ts";
 import { boundsSchema } from "./new-thread-contract.ts";
 const text = z.string().min(1).max(4096);
 // Only the server calls the host entry. Browser input never selects a binary,
 // host, project path, config path, provider, or arbitrary command arguments.
 export const hostContract = defineRpcContract({
+  attachment: { input: attachHostInput, output: attachHostResult },
   transfer: { input: transferHostInput, output: z.object({ code: z.number().int(), data: z.unknown() }) },
   init: {
     input: z.object({ bin: text, target: targetSchema, name: text, task: z.string().max(262144), dryRun: z.boolean(), withGoal: z.boolean().optional(), bounds: boundsSchema.optional(), followStandard: z.literal(true).optional() }),
