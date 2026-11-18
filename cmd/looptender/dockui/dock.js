@@ -14,6 +14,10 @@
   var FAIL_LONG_MS = 120000;
   var API = "api/v1/dock";
   var SERVER = "api/v1/server";
+  // The end of the route brief that says a missing standby does not touch the
+  // route in use; the line is then a plain notice, not a warning. Kept in step
+  // with dockCurrentUnaffected in dock_view.go (a test checks).
+  var CURRENT_UNAFFECTED = "its current route is unaffected";
   // What looptender did: worded by the same read as API, served on its own
   // for its size, and read only for the Usage page and a loop's page.
   var USAGE = "api/v1/usage";
@@ -326,11 +330,15 @@
     a.href = href;
     if (current) a.setAttribute("aria-current", "page");
     a.appendChild(el("span", "dot " + dotClass));
-    var n = el("span", "pick-name", name);
-    n.title = name;
+    // The full text stays in the link, so it is the accessible name and what
+    // find and copy see; the ellipsis is only how it is drawn. A cut name is
+    // read in full by focusing or hovering the row (see dock.css), and by
+    // opening it: the page heading shows it whole.
+    var n = el("span", "pick-name");
+    n.appendChild(el("span", null, name));
     a.appendChild(n);
-    var s = el("span", "pick-state", sub);
-    s.title = sub;
+    var s = el("span", "pick-state");
+    s.appendChild(el("span", null, sub));
     a.appendChild(s);
     var go = icon("chevron");
     go.setAttribute("class", "go");
@@ -488,9 +496,6 @@
   // parent's observation. No relationship is inferred from names or order.
   function workTree(d) {
     var p = panel("Loops and lanes");
-    p.appendChild(el("p", "sub", "Only conversations that looptender supervises are shown here, with their lanes. To see another coordinator here, create a loop for it."));
-    p.appendChild(el("p", "sub", "Supervision and agent observations are separate. Expand a loop to see its recorded direct lanes."));
-    p.appendChild(el("p", "sub work-evidence", "Active does not prove progress or connectivity. Only direct lanes are listed; absent lanes do not establish completion. Finished means declared, not verified."));
     var ul = el("ul", "work-tree");
     var retainedOpen = Object.create(null);
     list(d.loops).forEach(function (l) {
@@ -543,6 +548,7 @@
     });
     state.treeOpen = retainedOpen;
     p.appendChild(ul);
+    p.appendChild(el("p", "sub work-evidence", "Each loop and its own lanes, as of its last check."));
     if (!d.complete || d.registry.omitted) p.appendChild(el("p", "more", "This read does not include every registered loop. Missing loops are not assumed stopped or clear."));
     return p;
   }
@@ -551,7 +557,8 @@
   // sample, not a complete chronology or a persisted "while away" cursor.
   function recentAcrossLoops(d) {
     var p = panel("Recent activity across loops");
-    p.appendChild(el("p", "sub", "Newest recorded events from up to five retained entries per loop. This is a bounded sample, not a complete history."));
+    var intro = el("p", "sub", "The newest few events from each loop.");
+    p.appendChild(intro);
     var rows = [], missing = false, pruned = false;
     list(d.loops).forEach(function (l) {
       if (!l.events || l.events.availability === "unknown") missing = true;
@@ -579,9 +586,9 @@
     });
     if (rows.length) p.appendChild(ol);
     else p.appendChild(el("p", "sub", missing ? "Recent activity is unavailable for one or more loops." : "No recent activity is recorded in this read."));
-    if (rows.length > 8) p.appendChild(el("p", "more", "Showing the newest 8 of " + rows.length + " entries supplied by this read. Inspect a loop for its retained history."));
-    if (pruned) p.appendChild(el("p", "more history-pruned", "Older history has been pruned for at least one loop. This sample cannot reconstruct it and is not a complete chronology."));
-    if ((rows.length && missing) || !d.complete || d.registry.omitted) p.appendChild(el("p", "more", "Activity is incomplete: some loop history or registered loops could not be included."));
+    if (rows.length > 8) p.appendChild(el("p", "more", "Showing the newest 8 of " + rows.length + ". Open a loop for more."));
+    if (pruned) intro.textContent = "The newest few events from each loop; older ones are no longer kept.";
+    if ((rows.length && missing) || !d.complete || d.registry.omitted) p.appendChild(el("p", "more", "Some loops or their history could not be read, so this list is missing events."));
     return p;
   }
 
@@ -686,10 +693,7 @@
       ol.appendChild(li);
     });
     p.appendChild(ol);
-    var more = el("p", "more", (ev.footer ? ev.footer + " " : "") + "More with ");
-    more.appendChild(el("code", null, "keepgoing timeline"));
-    more.appendChild(document.createTextNode("."));
-    p.appendChild(more);
+    if (ev.footer) p.appendChild(el("p", "more", ev.footer));
     return p;
   }
 
@@ -730,7 +734,7 @@
     // The ordered preferred routes are the main structure.
     var c = l.chain, entries = list(c.entries);
     var brief = !c.brief ? null : c.availability !== "none_configured" && c.brief.indexOf("unknown") >= 0 ? unknown(c.brief) :
-      el("span", c.availability === "none_configured" ? "sub" : "chain-ready" + (c.short ? " is-short" : ""), c.brief);
+      el("span", c.availability === "none_configured" ? "sub" : "chain-ready" + (c.brief.indexOf(CURRENT_UNAFFECTED) >= 0 ? " is-calm" : c.short ? " is-short" : ""), c.brief);
     var routing = panel("Preferred routes", [brief]);
     routing.appendChild(el("p", "sub chain-how", c.how || "Unknown."));
     var ol = el("ol", "route-list is-ordered");
@@ -2011,34 +2015,14 @@
   // Which command serves this page: "dock" until the server says otherwise.
   function served() { return state.server && state.server.servedBy === "panel" ? "panel" : "dock"; }
 
-  function idleSpan(seconds) {
-    if (seconds % 3600 === 0) return seconds === 3600 ? "1 hour" : seconds / 3600 + " hours";
-    if (seconds % 60 === 0) return seconds === 60 ? "1 minute" : seconds / 60 + " minutes";
-    return seconds + " seconds";
-  }
-
   function put(node, parts) {
     parts.forEach(function (part) { node.appendChild(typeof part === "string" ? document.createTextNode(part) : part); });
   }
 
-  // One sentence under the footer: what serves the page and when it stops.
+  // The footer's first line: whether this page can change anything.
   function renderServed() {
     var m = $("changes");
     if (m && state.server && list(state.server.changesText).length) m.textContent = say(state.server.changesText);
-    var vt = $("version");
-    if (vt && state.server && state.server.versionText) {
-      vt.textContent = "";
-      put(vt, [state.server.versionText + " ", link("#/versions", "Where each build runs")]);
-    }
-    var p = $("served");
-    if (!p) return;
-    p.textContent = "";
-    if (!state.server) return;
-    if (served() === "panel") {
-      put(p, ["Served to this computer only by ", el("code", null, "keepgoing panel"), ", which stops by itself after " + idleSpan(state.server.idleSeconds || 1800) + " with no page reading from it. ", el("code", null, "keepgoing panel stop"), " ends it now."]);
-    } else {
-      put(p, ["Served to this computer only by ", el("code", null, "keepgoing dock"), ", until Ctrl-C in its terminal."]);
-    }
   }
 
   // How long one read may take: a little under the refresh interval, from 4
