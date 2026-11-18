@@ -404,6 +404,10 @@ Documentation review accompanies each slice: README support/setup claims, integr
 
 See [provider contracts and sources](integrations.md#planned-integrations) for the reviewed CLI interfaces and remaining capability gaps. Research and work in progress do not check off implementation or live acceptance.
 
+#### Sessionpipe reporting implementation progress (unreleased)
+
+The first OUT slice is available in source as opt-in [Sessionpipe reporting](sessionpipe.md), separately from PR #311’s broader integration plan. Fictional receiver fixtures exercise tier-0 privacy, opaque restart identity, monotonic sequence reservation and acknowledgement validation. This is bounded best-effort reporting, with no durable outbox/replay or full upstream conformance claim. Overall Sessionpipe adapter acceptance remains unchecked: live receiver/GUI/phone acceptance is unverified; IN still needs F8 typed event intake and the observe-only-loop decision; no Sessionpipe Observe/Send/Stop capability is registered; BACK stays held by #233 and needs upstream control support. This progress note does not replace the concurrent roadmap plan or check off its acceptance.
+
 ### 7. Release and recovery verification
 
 - [x] Separate child-completion behavior from timer-budget tests after a native CI timeout: exercise completed/failed/interrupted notices and persisted no-replay behavior through the real fixture adapter with an ordinary test deadline, and verify early timer returns with an injected poll result. Slow-poll cancellation, runtime locks, holds and child-input precedence remain separately tested. Production intervals/timeouts and notification semantics are unchanged. Offline fixtures only; not a live latency guarantee.

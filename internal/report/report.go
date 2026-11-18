@@ -48,11 +48,12 @@ func (Nop) Report(context.Context, Event) error { return nil }
 
 // Webhook posts to one endpoint.
 type Webhook struct {
-	cfg    config.Report
-	url    string
-	secret string
-	client *http.Client
-	now    func() time.Time
+	stateDir string
+	cfg      config.Report
+	url      string
+	secret   string
+	client   *http.Client
+	now      func() time.Time
 }
 
 // MaxBody caps a report's size.
@@ -61,6 +62,9 @@ const MaxBody = 1 << 20
 // New resolves credentials from the environment, then the secret file.
 // Secrets are never logged or included in errors.
 func New(cfg config.Report) (*Webhook, error) {
+	if cfg.Format == "sessionpipe" && cfg.Scheme != "bearer" {
+		return nil, errors.New("report: sessionpipe format requires bearer scheme")
+	}
 	vals := map[string]string{}
 	if cfg.SecretFile != "" {
 		v, err := readEnvFile(cfg.SecretFile)
@@ -94,6 +98,9 @@ func New(cfg config.Report) (*Webhook, error) {
 		return nil, fmt.Errorf("report: %s and %s must be set in the environment or the secret file", cfg.URLEnv, cfg.SecretEnv)
 	}
 	u, err := url.Parse(w.url)
+	if cfg.Format == "sessionpipe" && (err != nil || u.User != nil || (u.Path != "" && u.Path != "/") || u.RawQuery != "" || u.Fragment != "") {
+		return nil, errors.New("report: sessionpipe URL must be an origin without credentials, path, query or fragment")
+	}
 	if err != nil || u.Host == "" {
 		return nil, errors.New("report: the webhook URL is malformed")
 	}
@@ -121,6 +128,9 @@ func key(secret string) ([]byte, error) {
 func (w *Webhook) Body(e Event) ([]byte, error) {
 	if e.At.IsZero() {
 		e.At = w.now()
+	}
+	if w.cfg.Format == "sessionpipe" {
+		return pipeBody(e, pipeState{Version: 1, ID: "00000000000000000000000000000000", Next: 1}, w.now())
 	}
 	var v any
 	if w.cfg.Format == "text" {
@@ -171,6 +181,9 @@ func (w *Webhook) Report(ctx context.Context, e Event) error {
 func (w *Webhook) report(ctx context.Context, e Event, observe func(Delivery)) error {
 	if !w.cfg.ReportsEvent(e.Type) {
 		return nil
+	}
+	if w.cfg.Format == "sessionpipe" {
+		return w.reportPipe(ctx, e, observe)
 	}
 	d := Delivery{Event: eventName(e.Type), StartedAt: w.now().UTC(), Receipt: "unverified", Attempts: []Attempt{}}
 	snapshot := func(outcome string) {

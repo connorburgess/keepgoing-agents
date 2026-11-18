@@ -97,7 +97,7 @@ func validDelivery(d Delivery) bool {
 		return false
 	}
 	switch d.Outcome {
-	case "prepared", "setup_failed", "body_failed", "sign_failed", "request_failed", "attempt_started", "transport_failed", "http_rejected", "http_accepted", "not_sent":
+	case "prepared", "setup_failed", "body_failed", "sign_failed", "request_failed", "attempt_started", "transport_failed", "http_rejected", "http_accepted", "protocol_failed", "not_sent":
 	default:
 		return false
 	}
@@ -116,6 +116,10 @@ func validDelivery(d Delivery) bool {
 			}
 		case "http_accepted":
 			if a.FinishedAt.IsZero() || a.HTTPStatus < 200 || a.HTTPStatus >= 300 {
+				return false
+			}
+		case "protocol_failed":
+			if a.FinishedAt.IsZero() || a.HTTPStatus < 100 || a.HTTPStatus > 599 {
 				return false
 			}
 		case "http_rejected":
@@ -205,6 +209,9 @@ type recorded struct {
 // then record setup_failed with no request. The error is for immediate diagnostics.
 func NewRecorded(cfg config.Report, dir string) (Reporter, error) {
 	w, err := New(cfg)
+	if w != nil {
+		w.stateDir = dir
+	}
 	return recorded{webhook: w, cfg: cfg, dir: dir}, err
 }
 
