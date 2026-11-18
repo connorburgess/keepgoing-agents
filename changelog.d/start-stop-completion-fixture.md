@@ -1,0 +1,1 @@
+- Let the detached-start fixture wait for stop-command completion within its configured deadline before requiring the saved success record; control responsiveness remains separately bounded.
