@@ -221,6 +221,9 @@ type dockLoop struct {
 	// NoProgress is the no-progress flag, the same value status shows; nil
 	// when the loop's status could not be read. It is never a need.
 	NoProgress *noProgressView `json:"noProgress,omitempty"`
+	// MigrationReview describes historical declarations, never execution,
+	// current lane activity, permission or a reason to change supervision.
+	MigrationReview dockMigrationReview `json:"migrationReview"`
 	// Refusals is the refusal gauge and any open question about refusals or
 	// a restriction, as status shows them; nil before the first refusal.
 	Refusals *refusalStatus `json:"refusals,omitempty"`
@@ -1384,6 +1387,7 @@ func projectDockLoop(in dockInput, now time.Time, staleAfter time.Duration, iden
 		}
 	}
 	st := in.Status
+	l.MigrationReview = dockMigrationReviewOf(st)
 	if snap != nil && st == nil && len(l.Issues) < dockMaxIssues {
 		l.Issues = append(l.Issues, "Its full status could not be read; some details are unknown.")
 	}

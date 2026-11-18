@@ -513,6 +513,10 @@
       summary.appendChild(el("span", "sub work-observation", l.lanes && l.lanes.summary ? "Lanes: " + l.lanes.summary : "Lane evidence: " + ((l.children && l.children.phrase) || "Unknown")));
       // Age in plain words, as for usage readings; see lastCheck().
       summary.appendChild(el("span", "sub work-age", (l.lastCheck && l.lastCheck.text) || "Last check unknown"));
+      var mr = l.migrationReview;
+      if (mr && mr.availability !== "not_recorded" && (!mr.counts || mr.counts.unfinished > 0)) {
+        summary.appendChild(el("span", "sub work-migration", "Migration review: " + mr.text + (mr.observedAt ? " · historical evidence from " + fmt(dayTimeYearFmt, mr.observedAt) : "")));
+      }
       details.appendChild(summary);
       var body = el("div", "work-body");
       body.appendChild(el("p", "detail", l.detail));
@@ -721,6 +725,7 @@
     pane.appendChild(nowRow(l));
     var change = changeBox(l);
     if (change) pane.appendChild(change);
+    pane.appendChild(migrationReviewPanel(l.migrationReview));
 
     // The ordered preferred routes are the main structure.
     var c = l.chain, entries = list(c.entries);
@@ -799,6 +804,28 @@
     }
     pane.appendChild(checks);
     pane.appendChild(usageBrief(key));
+  }
+
+  function migrationReviewPanel(review) {
+    var p = panel("Migration review");
+    p.classList.add("migration-review");
+    if (!review) {
+      p.appendChild(el("p", null, "Migration review unavailable in this read. Unfinished work is unknown."));
+      return p;
+    }
+    p.appendChild(el("p", null, review.text));
+    if (review.availability === "available" && review.counts) {
+      var c = review.counts, dl = el("dl", "facts");
+      dl.appendChild(fact("Evidence read", fmt(dayTimeYearFmt, review.observedAt)));
+      dl.appendChild(fact("Declared assignments", String(c.assignments)));
+      dl.appendChild(fact("Dormant / unresolved", c.dormant + " / " + c.unresolved));
+      dl.appendChild(fact("Observed direct lanes", String(c.directLanes)));
+      dl.appendChild(fact("Assignments absent from listing", String(c.absentAssignments)));
+      p.appendChild(dl);
+      p.appendChild(el("p", "sub", "Historical checklist of predecessor direct lanes only; descendants are excluded. Declared assignment state is separate from observed activity. This does not show which lanes are working now."));
+      p.appendChild(el("p", "sub", "Review metadata does not establish migration execution, completion or permission. Dormant work may be intentional. Nothing is resumed or dispatched from this view."));
+    }
+    return p;
   }
 
   // ---- Usage: what looptender did, in counted sentences ----
