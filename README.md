@@ -256,12 +256,12 @@ In **unreleased source**, a person-started panel with changes allowed can replac
 Unreleased source adds opt-in [Sessionpipe reporting](docs/sessionpipe.md): tier-0 loop events to a receiver you configure, with opaque identities and bounded best-effort delivery. This is fixture-tested OUT reporting only; it adds no supervision adapter, session intake, send/stop or hold-answer capability. Live receiver, board and phone acceptance remain open.
 
 Unreleased: an opted-in BB coordinator can keep [explicit assignment handoffs](docs/assignments.md),
-
-Unreleased source separately adds opt-in [whole-objective completion review](docs/assignments.md#whole-objective-completion-review-unreleased). Explicit completion requires a current goal/review-bound declaration, completed acknowledged obligations and fresh direct-child metadata; zero children never prove objective acceptance. Default loops are unchanged. No automatic completion, new hold-clear permission or installed/live acceptance is claimed.
 including an initial review of existing direct children, exact-revision acknowledgements and
 dated status/panel counts. Missing evidence stays unknown. Its explicit awaiting-user check
 rejects declared independent work; it does not schedule lanes, mandate turn-end handoffs or
 clear existing holds.
+
+Unreleased source separately adds opt-in [whole-objective completion review](docs/assignments.md#whole-objective-completion-review-unreleased). Explicit completion requires a current goal/review-bound declaration, completed acknowledged obligations and fresh direct-child metadata; zero children never prove objective acceptance. Default loops are unchanged. No automatic completion, new hold-clear permission or installed/live acceptance is claimed.
 
 A separate unreleased `assignment_coordination` opt-in can wake that existing coordinator
 once for a revision-bound declaration of independent unfinished work while a healthy
