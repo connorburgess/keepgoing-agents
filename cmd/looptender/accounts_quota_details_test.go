@@ -188,3 +188,17 @@ func TestAccountQuotaDetailsEmptyAuthoritativeMap(t *testing.T) {
 		}
 	}
 }
+
+func TestAccountQuotaDetailsResponseAliasesRefused(t *testing.T) {
+	for _, fields := range []string{
+		`"ordinaryUsageAllowed":true,"OrdinaryUsageAllowed":false`,
+		`"OrdinaryUsageAllowed":false`,
+		`"rateLimitsByLimitId":{},"RateLimitsByLimitId":{"codex":{"primary":{"usedPercent":0}}}`,
+		`"RateLimits":{"primary":{"usedPercent":0}}`,
+	} {
+		raw := []byte(`{"rateLimits":{"primary":{"usedPercent":91}},` + fields + `}`)
+		if d, reason := accountQuotaDetailsParse(raw, nil); d != nil || reason != "schema_unavailable" {
+			t.Fatalf("aliased protocol field accepted: %+v %s", d, reason)
+		}
+	}
+}

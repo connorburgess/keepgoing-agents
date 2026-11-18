@@ -3,6 +3,7 @@ package main
 import (
 	"encoding/json"
 	"sort"
+	"strings"
 	"time"
 
 	"github.com/looptender/looptender/internal/accounts"
@@ -17,6 +18,19 @@ func accountQuotaDetailsParse(raw []byte, err error) (*accounts.QuotaDetails, st
 	}
 	if len(raw) > 64<<10 || !accounts.QuotaJSONUnique(raw) {
 		return nil, "schema_unavailable"
+	}
+	// Protocol metadata may grow, but aliases of consumed fields must not
+	// silently overwrite canonical values through encoding/json case folding.
+	var top map[string]json.RawMessage
+	if json.Unmarshal(raw, &top) != nil || top == nil {
+		return nil, "schema_unavailable"
+	}
+	for key := range top {
+		for _, canonical := range []string{"rateLimits", "rateLimitsByLimitId", "ordinaryUsageAllowed"} {
+			if key != canonical && strings.EqualFold(key, canonical) {
+				return nil, "schema_unavailable"
+			}
+		}
 	}
 	var response struct {
 		RateLimits json.RawMessage            `json:"rateLimits"`

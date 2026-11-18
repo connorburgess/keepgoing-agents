@@ -613,8 +613,9 @@ process cleanup. A rejected or unsupported CLI returns unavailable evidence.
 The supported Codex response can expose several metered buckets. Up to eight
 are retained separately, with primary and secondary windows where present,
 including fractional percentages, duration and reset times. The legacy single
-bucket is used only when the bucket map is absent or empty; it is never added
-a second time. Individual limits retain decimal used/limit values in provider
+bucket is used only when the bucket map is absent or null; an explicitly empty
+map has no supported quota evidence. The legacy bucket is never added a second
+time. Individual limits retain decimal used/limit values in provider
 units and their reported remaining percentage. Credits retain availability,
 unlimited status and a bounded decimal balance; the response supplies no
 currency, so no currency or percentage is invented. A nullable ordinary-usage
