@@ -260,7 +260,7 @@ func accountsUsage(e env, dir, id string, asJSON bool) int {
 			fmt.Fprintf(e.stdout, "Refresh failed %s (%s); any retained reading has its original timestamp.\n", v.FailedRefreshAt.Format(time.RFC3339), v.FailedRefreshReason)
 		}
 	}
-	if v.FailedRefreshAt != nil {
+	if v.State != "reported" || v.FailedRefreshAt != nil {
 		return exitFailed
 	}
 	return exitOK

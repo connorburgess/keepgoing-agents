@@ -442,3 +442,21 @@ func TestAccountQuotaMissingCachedPercentageRefusesRPC(t *testing.T) {
 		})
 	}
 }
+
+func TestAccountQuotaUnsupportedProviderIsUnavailable(t *testing.T) {
+	dir, e := accountFixture(t, "claude-code")
+	before, _ := os.ReadFile(filepath.Join(dir, accounts.FileName))
+	calls := 0
+	v, err := accountQuotaRefresh(context.Background(), dir, e.ID, nil, func(context.Context, string, []string, string) ([]byte, error) { calls++; return nil, nil }, os.Environ(), time.Now)
+	if err != nil || calls != 0 || v.State != "unavailable" || v.Reason != "unsupported_provider" || len(v.Windows) != 0 {
+		t.Fatal(v, err, calls)
+	}
+	var out, errs bytes.Buffer
+	if code := accountsUsage(env{context.Background(), &out, &errs}, dir, e.ID, true); code != exitFailed {
+		t.Fatal("unavailable quota reported command success", code)
+	}
+	after, _ := os.ReadFile(filepath.Join(dir, accounts.FileName))
+	if !bytes.Equal(before, after) || !strings.Contains(out.String(), `"reason":"unsupported_provider"`) || strings.Contains(out.String(), "usedPercent") {
+		t.Fatal("unsupported-provider evidence changed catalog or implied usage")
+	}
+}
