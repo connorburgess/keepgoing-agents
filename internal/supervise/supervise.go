@@ -25,6 +25,7 @@ import (
 	"github.com/looptender/looptender/internal/health"
 	"github.com/looptender/looptender/internal/incident"
 	"github.com/looptender/looptender/internal/netretry"
+	"github.com/looptender/looptender/internal/prbacklog"
 	"github.com/looptender/looptender/internal/probe"
 	"github.com/looptender/looptender/internal/prompt"
 	"github.com/looptender/looptender/internal/report"
@@ -69,14 +70,15 @@ type Options struct {
 	CallerThread string
 	// SessionDir is the private directory of session claims shared by every
 	// loop this user runs; empty means session.Dir().
-	SessionDir  string
-	Now         time.Time
-	DryRun      bool // decide and record; send nothing and run no probes
-	Fingerprint func([]string) (string, error)
-	NewAdapter  factory.Func
-	Probe       ProbeFunc
-	Reporter    report.Reporter
-	Busy        func(ctx context.Context, y config.Yield) (bool, error)
+	SessionDir   string
+	Now          time.Time
+	DryRun       bool            // decide and record; send nothing and run no probes
+	BacklogQuery prbacklog.Query // nil uses fixed read-only gh query when opted in
+	Fingerprint  func([]string) (string, error)
+	NewAdapter   factory.Func
+	Probe        ProbeFunc
+	Reporter     report.Reporter
+	Busy         func(ctx context.Context, y config.Yield) (bool, error)
 	// Online reports connectivity once. Nil uses the loop's network settings;
 	// a loop with the check off is never checked.
 	Online func(ctx context.Context) bool
@@ -200,6 +202,7 @@ type Result struct {
 }
 
 type tick struct {
+	assignment *assignmentDelivery
 	// ctl is the control record as this check loaded it.
 	ctl control.File
 	// contextBytes adds up the supervision context blocks this check's sends
@@ -1022,6 +1025,7 @@ func (t *tick) run() error {
 		SinceLastReprompt: sinceReprompt, Backoff: loop.Errors.Backoff.Duration,
 		SwitchBackReady: t.switchBackReady(target),
 	}
+	in.AssignmentReady = t.assignmentObservation(a, obs)
 	in.IdleSpacing = t.idleSpacingInput(obs, ctl)
 	// A loop held for a restricted turn runs no check until a person resumes
 	// it. Reaching this point with that same turn still showing therefore
@@ -1906,6 +1910,20 @@ func (t *tick) act(a adapter.Adapter, d decide.Decision) error {
 		} else {
 			text = prompt.WithChildErrorsRetried(text, childErrors, t.lanesRetried)
 		}
+		var backlogNotice *backlogDelivery
+		if d.Action == decide.Wake && !d.AssignmentWake && !text.NoticeOnly && loop.PRBacklog != nil {
+			var allowed bool
+			text, backlogNotice, allowed = t.withBacklog(a, text)
+			if !allowed {
+				t.res.Action, t.res.Reason = string(decide.None), "controls changed during backlog consultation; no wake sent"
+				return nil
+			}
+		}
+		var assignmentAllowed bool
+		text, assignmentAllowed = t.prepareAssignment(a, d, text)
+		if !assignmentAllowed {
+			return nil
+		}
 		if !reserved {
 			action := string(d.Action)
 			if d.Reason == decide.RefusedContinueReason {
@@ -1915,11 +1933,15 @@ func (t *tick) act(a adapter.Adapter, d decide.Decision) error {
 				return err
 			}
 		}
+		if err := t.consumeAssignment(); err != nil {
+			return err
+		}
 		t.res.Recovery = ""
 		if d.Action == decide.Reprompt {
 			t.res.Recovery = string(decide.RecoverByPrompt)
 		}
 		err = t.send(a, text, mode, t.res.Target, string(d.Action))
+		t.noteBacklog(backlogNotice, err)
 		t.reserve = reserveReports + t.reserveNetwork // the send has been made
 		var refused adapter.ErrNotStarted
 		if errors.As(err, &refused) {

@@ -3,6 +3,7 @@ package bb
 import (
 	"context"
 	"encoding/json"
+	"github.com/looptender/looptender/internal/decide"
 	"regexp"
 	"sort"
 )
@@ -23,6 +24,9 @@ var childIDPattern = regexp.MustCompile(`^thr_[A-Za-z0-9_-]{1,128}$`)
 // an incomplete listing simply did not show.
 func (a *Adapter) childWork(ctx context.Context) (active int, unverified bool, awaiting, errored, healthy []string) {
 	a.activeChildIDs, a.childTitles = nil, map[string]string{}
+	a.directChildren = &decide.DirectChildren{States: map[string]decide.ChildState{}}
+	exact := false
+	defer func() { a.directChildren.Complete = exact && !unverified }()
 	ctx, cancel := context.WithTimeout(ctx, a.Timeout)
 	defer cancel()
 	out, err := a.run(ctx, "", "thread", "list", "--parent-thread", a.cfg.Thread, "--include-hidden", "--json")
@@ -37,6 +41,7 @@ func (a *Adapter) childWork(ctx context.Context) (active int, unverified bool, a
 	if json.Unmarshal(out, &children) != nil || children == nil || len(children) > 200 {
 		return 0, true, nil, nil, nil
 	}
+	exact = len(children) < 200
 	seen := make(map[string]bool)
 	for _, child := range children {
 		if !childIDPattern.MatchString(child.ID) || child.ID == a.cfg.Thread {
@@ -44,6 +49,7 @@ func (a *Adapter) childWork(ctx context.Context) (active int, unverified bool, a
 			continue
 		}
 		if seen[child.ID] {
+			exact = false
 			continue
 		}
 		seen[child.ID] = true
@@ -107,6 +113,7 @@ func (a *Adapter) childWork(ctx context.Context) (active int, unverified bool, a
 			unverified = true
 		}
 		pending, unknown := a.childPending(ctx, child.ID)
+		a.directChildren.States[child.ID] = decide.ChildState{Execution: t.Status, PendingInteraction: pending}
 		unverified = unverified || unknown
 		if pending {
 			awaiting = append(awaiting, child.ID)

@@ -730,6 +730,7 @@
     var change = changeBox(l);
     if (change) pane.appendChild(change);
     pane.appendChild(migrationReviewPanel(l.migrationReview));
+    pane.appendChild(assignmentPanel(l.assignments));
 
     // The ordered preferred routes are the main structure.
     var c = l.chain, entries = list(c.entries);
@@ -808,6 +809,24 @@
     }
     pane.appendChild(checks);
     pane.appendChild(usageBrief(key));
+  }
+
+  function assignmentPanel(review) {
+    var p = panel("Assignment handoffs");
+    p.classList.add("assignment-review");
+    p.appendChild(el("p", null, review ? review.text : "Assignment evidence unavailable. Outcomes are unknown."));
+    if (review && review.availability === "available" && review.counts) {
+      var c = review.counts, dl = el("dl", "facts");
+      dl.appendChild(fact("Evidence read", fmt(dayTimeYearFmt, review.observedAt)));
+      dl.appendChild(fact("Review recorded", fmt(dayTimeYearFmt, review.recordedAt)));
+      dl.appendChild(fact("Coverage", review.coverage === "observed_direct_children" ? "Observed direct children" : "Partial — coverage unknown"));
+      dl.appendChild(fact("Unknown / unacknowledged", c.unknown + " / " + c.unacknowledged));
+      dl.appendChild(fact("Unfinished assignments", String(c.unfinished)));
+      dl.appendChild(fact("Person-blocked / dependency-waiting", c.personBlocked + " / " + c.dependencyWaiting));
+      p.appendChild(dl);
+    }
+    p.appendChild(el("p", "sub", "Dated direct-lane evidence; descendants are excluded. BB running or idle is separate from declared outcome and availability. Missing handoffs need explicit coordinator reconciliation. This view does not dispatch work, grant permission or clear holds."));
+    return p;
   }
 
   function migrationReviewPanel(review) {
@@ -1130,11 +1149,9 @@
   }
 
   // ---- Routes across loops ----
-  // One block per account. Routes the person assigned to one catalog entry
-  // sit under its label, each with its own reading, as on the Accounts
-  // page: readings are never merged and the block shows no figure of its
-  // own. Any other block keeps its group and its newest reading, and says
-  // why it is not under an account.
+  // Only consistent explicit catalog assignments combine headings. Each
+  // route retains its own reading and windows; other routes remain separate
+  // under their configured group, with no inferred account identity.
   function allowancesPanel(d) {
     var items = list(d.allowances);
     var p = panel("Allowances", [el("span", "sub", "route readings; grouped by your assignments · not live")]);

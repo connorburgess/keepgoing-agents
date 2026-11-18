@@ -66,13 +66,14 @@ Local client discovery:
   client prepare-resume    Prepare a short-lived snapshot/ticket for review
   client resume            Clear holds using an unchanged prepared ticket
   accounts list|add|update|check|usage  Select private account contexts; explicit status only, no model calls
-  registry add|list|remove  Register private loop references; never start supervision
+  registry add|list|remove|reconcile  Register private loop references; never start supervision
   migrate                  Say what moving the per-user directories from keepgoing/ to looptender/ would do;
                            --apply moves them and leaves a link, --undo --apply moves them back
   dock                     Serve the read-only keepgoing panel for every registered loop on 127.0.0.1
   panel                    Open the keepgoing panel in your browser, starting it when needed; also status, stop, list
 
 Goal metadata:
+  assignment inventory|review|handoff|acknowledge|ready|reconcile-wake|show  Explicit BB assignment evidence (opt-in; no dispatch)
   goal create|revise|show   Record private, revisioned goal metadata
 
 Control:
@@ -109,6 +110,7 @@ Reporting:
 
 Tools (no config needed):
   init                     Guide setup of a disabled loop outside the checkout
+  pr-backlog               Check configured GitHub PR WIP policy (read-only)
   ci-wait                  Wait for every CI workflow on a PR head or exact commit
   net-retry -- cmd...      Rerun a network command only while the network is down
   version                  Print the version
@@ -174,6 +176,8 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 			return transferInventoryCommand(e, rest, doctorExec, doctorExecLimit(inventoryListLimit))
 		}
 		return transferCommand(e, rest, doctorExec)
+	case "assignment":
+		return assignmentCommand(e, rest, doctorExecLimit(inventoryListLimit))
 	case "goal":
 		return goalCommand(e, rest)
 	case "service":
@@ -203,6 +207,8 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 	case "version":
 		fmt.Fprintln(stdout, version)
 		return exitOK
+	case "pr-backlog":
+		return prBacklogCommand(e, rest, nil)
 	case "ci-wait":
 		return ciWait(e, rest)
 	case "net-retry":
@@ -235,6 +241,7 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 		asJSON:      fs.Bool("json", false, "print machine-readable JSON"),
 		dryRun:      fs.Bool("dry-run", false, "tick/daemon: record decisions only; fallbacks check/report test: preview only"),
 		now:         fs.String("now", "", "RFC 3339 time to use instead of the clock"),
+		reviewFile:  fs.String("review-file", "", "complete: bounded private whole-objective and assignment review JSON"),
 		note:        fs.String("note", "", "a short note stored in control.json"),
 		id:          fs.String("id", "", "fallbacks check: only this candidate"),
 		exact:       fs.Bool("exact", false, "fallbacks check: probe the target model, not the cheap one"),
@@ -255,6 +262,10 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 		return exitUsage
 	}
 	positional = append(positional, fs.Args()...)
+	if *f.reviewFile != "" && cmd != "complete" {
+		e.errf("--review-file is only supported by complete")
+		return exitUsage
+	}
 	if *f.takeOver && cmd != "enable" && cmd != "daemon" && cmd != "validate" {
 		e.errf("--take-over is only supported by enable, daemon, and validate")
 		return exitUsage
@@ -381,7 +392,9 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 		return code
 	case "stop":
 		return stopCmd(e, cfg, *f.note, *f.lanes, *f.dropQueued, *f.immediately)
-	case "disable", "pause", "resume", "await-user", "complete":
+	case "complete":
+		return completionCommand(e, cfg, *f.note, *f.reviewFile)
+	case "disable", "pause", "resume", "await-user":
 		return controlCmd(e, cfg, cmd, *f.note, *f.takeOver, *f.keepStop)
 	case "session reset":
 		if *f.dryRun {
@@ -417,6 +430,7 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 type cliFlags struct {
 	staleAfter                      *time.Duration
 	cfgPath, now, note, id, routine *string
+	reviewFile                      *string
 	client                          *string
 	target                          *string
 	here                            *bool

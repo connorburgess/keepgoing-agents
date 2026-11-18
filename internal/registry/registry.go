@@ -172,11 +172,23 @@ func update(dir string, fn func(*File) (bool, error)) error {
 // Add returns the existing ID for an identical registration. A changed binding
 // or another config for the same runtime directory requires explicit removal.
 func Add(dir, loop, configPath, stateDir string) (Entry, error) {
+	return AddChecked(dir, loop, configPath, stateDir, nil)
+}
+
+// AddChecked revalidates a caller's local binding under the registry lock,
+// including idempotent repeats. check must not wait, query providers or change
+// loop controls. A lost reply is repaired by repeating the same reference.
+func AddChecked(dir, loop, configPath, stateDir string, check func() error) (Entry, error) {
 	entry := Entry{ID: "loop_00000000000000000000000000000000", Loop: loop, ConfigPath: configPath, StateDir: stateDir}
 	if !validEntry(entry) {
 		return Entry{}, errors.New("invalid loop reference")
 	}
 	err := update(dir, func(f *File) (bool, error) {
+		if check != nil {
+			if err := check(); err != nil {
+				return false, err
+			}
+		}
 		for _, current := range f.Entries {
 			// The same files under another spelling, as through the link a
 			// renamed directory leaves, are the same registration.

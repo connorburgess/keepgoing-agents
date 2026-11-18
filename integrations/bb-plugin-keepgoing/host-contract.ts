@@ -1,3 +1,4 @@
+import { publicationSchema } from "./registry-contract.ts";
 import { defineRpcContract } from "@get-bb/plugin-sdk";
 import { z } from "zod";
 import { targetSchema, recordSchema, planSchema, refusalSchema } from "./setup-contract.ts";
@@ -9,11 +10,11 @@ const text = z.string().min(1).max(4096);
 // host, project path, config path, provider, or arbitrary command arguments.
 export const hostContract = defineRpcContract({
   attachment: { input: attachHostInput, output: attachHostResult },
-  transfer: { input: transferHostInput, output: z.object({ code: z.number().int(), data: z.unknown() }) },
+  transfer: { input: transferHostInput, output: z.object({ code: z.number().int(), data: z.unknown(), registration: publicationSchema.optional() }) },
   init: {
     input: z.object({ bin: text, target: targetSchema, name: text, task: z.string().max(262144), dryRun: z.boolean(), withGoal: z.boolean().optional(), bounds: boundsSchema.optional(), followStandard: z.literal(true).optional() }),
     // A plan, or keepgoing's own structured refusal.
-    output: z.union([z.object({ plan: planSchema }), z.object({ refused: refusalSchema }), z.object({ noRoutes: z.literal(true) })]),
+    output: z.union([z.object({ plan: planSchema, registration: publicationSchema.optional() }), z.object({ refused: refusalSchema }), z.object({ noRoutes: z.literal(true) })]),
   },
   // Whether the host's looptender has a standard route list with routes.
   standardRoutes: {
@@ -23,6 +24,6 @@ export const hostContract = defineRpcContract({
   command: {
     // `json` is honoured for start only, and only set when the CLI advertised it.
     input: z.object({ bin: text, record: recordSchema, operation: z.enum(["status", "doctor", "start", "pause", "resume", "stop"]), json: z.literal(true).optional() }),
-    output: z.object({ code: z.number().int(), data: z.unknown() }),
+    output: z.object({ code: z.number().int(), data: z.unknown(), registration: publicationSchema.optional() }),
   },
 });
