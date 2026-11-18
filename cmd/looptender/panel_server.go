@@ -417,6 +417,7 @@ func (h *panelHandler) served(w http.ResponseWriter) func(session string) {
 		} else {
 			since := h.changes.since
 			out.Changes, out.ChangesSince, out.Form = "on", &since, h.changes.prepareValue(session)
+			out.AccountQuota = true
 			out.ChangesText = txt("Changes allowed for "+dockSpan(now.Sub(since))+": started with keepgoing panel --allow-changes at ", tm(since, "clock"), ". "+panelExposure+" keepgoing panel stop turns them off.")
 		}
 		w.Header().Set("Content-Type", "application/json")

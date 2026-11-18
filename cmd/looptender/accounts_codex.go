@@ -9,12 +9,20 @@ import (
 	"os/exec"
 	"strconv"
 	"time"
+
+	"github.com/looptender/looptender/internal/accounts"
 )
 
 // accountCodexRead follows the existing Codex limits stdio exchange, but stays
 // in the account command layer: exact selected environment and working directory,
 // a smaller total output bound, and no provider/session adapter defaults.
 func accountCodexRead(ctx context.Context, cli string, env []string, workdir string) (raw []byte, resultErr error) {
+	return accountCodexRPC(ctx, cli, env, workdir, "account/read", map[string]bool{"refreshToken": false})
+}
+
+// The two callers supply fixed read methods; no method or parameter comes from
+// the panel. No login, token refresh, model or reset-credit request is sent.
+func accountCodexRPC(ctx context.Context, cli string, env []string, workdir, method string, params any) (raw []byte, resultErr error) {
 	ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
 	defer cancel()
 	defer func() {
@@ -61,7 +69,7 @@ func accountCodexRead(ctx context.Context, cli string, env []string, workdir str
 					Code int `json:"code"`
 				} `json:"error"`
 			}
-			if json.Unmarshal(lines.Bytes(), &m) != nil {
+			if !accounts.QuotaJSONUnique(lines.Bytes()) || json.Unmarshal(lines.Bytes(), &m) != nil {
 				return nil, errors.New("schema_unavailable")
 			}
 			if len(m.ID) == 0 && m.Method != "" {
@@ -95,7 +103,7 @@ func accountCodexRead(ctx context.Context, cli string, env []string, workdir str
 	if err = send(map[string]any{"method": "initialized"}); err != nil {
 		return nil, err
 	}
-	if err = send(map[string]any{"id": 2, "method": "account/read", "params": map[string]bool{"refreshToken": false}}); err != nil {
+	if err = send(map[string]any{"id": 2, "method": method, "params": params}); err != nil {
 		return nil, err
 	}
 	return await(2)

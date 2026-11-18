@@ -709,7 +709,7 @@ func panelCommand(e env, args []string) int {
 	refresh := fs.Duration("refresh", dockDefaultRefresh, "how often the page reads again (5s to 10m)")
 	staleAfter := fs.Duration("stale-after", defaultStaleAfter, "age at which a check or child listing is shown as stale")
 	offline := fs.Bool("offline", false, "do not ask each loop's local daemon for its next check")
-	changes := fs.Bool("allow-changes", false, "let the page pause, stop and resume loops and replace a loop’s own build (a panel this command starts; a running one keeps its own mode)")
+	changes := fs.Bool("allow-changes", false, "let the page change loop controls/builds and explicitly read selected Codex subscription quota (a panel this command starts; a running one keeps its own mode)")
 	if err := fs.Parse(args); err != nil {
 		if errors.Is(err, flag.ErrHelp) {
 			fmt.Fprintln(e.stdout, panelUsage)
