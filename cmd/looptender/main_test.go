@@ -111,6 +111,12 @@ func newFixture(t *testing.T) *fixture {
 	testexec.Shared(t, filepath.Join(bin, "bb"), fakeBB)
 	testexec.Shared(t, filepath.Join(bin, "claude"), fakeClaude)
 	testexec.Shared(t, filepath.Join(bin, "codex"), fakeCodex)
+	// A route that names no CLI runs the one PATH finds: a probe of the
+	// loop's own first route, for one. Without this that is the real Claude
+	// Code or Codex wherever one is installed, signed in to the person's
+	// account, and its answer (a usage reading, a refusal) decides the test.
+	// The stand-ins come first.
+	t.Setenv("PATH", bin+string(os.PathListSeparator)+os.Getenv("PATH"))
 	t.Setenv("FAKE_BB", bbDir)
 	// Each fixture has its own registry and session claims: fixtures share
 	// fictional thread IDs.
