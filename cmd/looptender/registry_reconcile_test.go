@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -254,5 +255,66 @@ func TestRegistryReconcileRefusalsDoNotRepairPrivateRecords(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+func TestRegistryReconcilePreviewPinsRegistryDestination(t *testing.T) {
+	t.Setenv("BB_THREAD_ID", "thr_example")
+	path := registryConfig(t)
+	first, second := filepath.Join(t.TempDir(), "first"), filepath.Join(t.TempDir(), "second")
+	p := registryPreview(t, first, path)
+	if code, _, _ := registryRun(t, second, "reconcile", "-c", path, "--thread", "thr_example", "--binding", p.Binding); code == 0 {
+		t.Fatal("preview authorized another registry")
+	}
+	f, err := registry.Load(second)
+	if err != nil || len(f.Entries) != 0 {
+		t.Fatal("wrong destination changed", f, err)
+	}
+}
+
+// Storage publishes after the binding callback returns. Releasing the runtime
+// locks at callback return would let a transfer overtake the reference save.
+func TestRegistryReconcileKeepsLocksThroughPublicationAndReleasesOnFailure(t *testing.T) {
+	for _, fail := range []bool{false, true} {
+		path := registryConfig(t)
+		runtime := filepath.Join(filepath.Dir(path), "state")
+		if err := os.Mkdir(runtime, 0700); err != nil {
+			t.Fatal(err)
+		}
+		b, err := captureRegistryBinding(path, "thr_example", "thr_example")
+		if err != nil {
+			t.Fatal(err)
+		}
+		checked := false
+		_, err = registerBoundWith(filepath.Join(t.TempDir(), "registry"), b, "thr_example", func(_, _, _, _ string, check func() error) (registry.Entry, error) {
+			if err := check(); err != nil {
+				return registry.Entry{}, err
+			}
+			checked = true
+			for _, name := range []string{lock.Tick, lock.Control} {
+				held, e := lock.AcquireNamed(runtime, name)
+				if e == nil {
+					held.Release()
+					t.Fatalf("%s released before storage publication", name)
+				}
+				if !errors.Is(e, lock.ErrHeld) {
+					t.Fatal(e)
+				}
+			}
+			if fail {
+				return registry.Entry{}, errors.New("fictional storage failure")
+			}
+			return registry.Entry{}, nil
+		})
+		if !checked || (err != nil) != fail {
+			t.Fatal(checked, err)
+		}
+		for _, name := range []string{lock.Tick, lock.Control} {
+			held, e := lock.AcquireNamed(runtime, name)
+			if e != nil {
+				t.Fatalf("%s retained after return: %v", name, e)
+			}
+			held.Release()
+		}
 	}
 }

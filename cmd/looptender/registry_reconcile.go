@@ -125,22 +125,32 @@ func captureRegistryBinding(path, expectedThread, caller string) (registryBindin
 // registerBound keeps registry -> tick -> control lock order, all nonwaiting.
 // No provider/daemon/BB query, control write or runtime repair is performed.
 func registerBound(dir string, b registryBinding, caller string) (registry.Entry, error) {
-	return registry.AddChecked(dir, b.cfg.Loop.Name, b.path, b.runtime, func() error {
-		var release func() error
-		if b.runtimeInfo != nil {
-			tick, err := lock.Acquire(b.runtime)
-			if err != nil {
-				return err
-			}
-			defer tick.Release()
-			ctl, err := lock.AcquireNamed(b.runtime, lock.Control)
-			if err != nil {
-				return err
-			}
-			release = ctl.Release
+	return registerBoundWith(dir, b, caller, registry.AddChecked)
+}
+
+func registerBoundWith(dir string, b registryBinding, caller string, add func(string, string, string, string, func() error) (registry.Entry, error)) (registry.Entry, error) {
+	// These releases belong to the whole publication, not just its check:
+	// AddChecked still has to atomically save after the callback returns.
+	var tick, ctl *lock.Lock
+	defer func() {
+		if ctl != nil {
+			_ = ctl.Release()
 		}
-		if release != nil {
-			defer release()
+		if tick != nil {
+			_ = tick.Release()
+		}
+	}()
+	return add(dir, b.cfg.Loop.Name, b.path, b.runtime, func() error {
+		if b.runtimeInfo != nil {
+			var err error
+			tick, err = lock.Acquire(b.runtime)
+			if err != nil {
+				return err
+			}
+			ctl, err = lock.AcquireNamed(b.runtime, lock.Control)
+			if err != nil {
+				return err
+			}
 		}
 		fresh, err := captureRegistryBinding(b.path, b.target, caller)
 		if err != nil || fresh.digest != b.digest || !os.SameFile(b.configInfo, fresh.configInfo) || (b.runtimeInfo == nil) != (fresh.runtimeInfo == nil) {
@@ -151,6 +161,11 @@ func registerBound(dir string, b registryBinding, caller string) (registry.Entry
 		}
 		return nil
 	})
+}
+
+func registryPublicationBinding(b registryBinding, dir string) string {
+	sum := sha256.Sum256([]byte(b.digest + "\x00" + dir))
+	return hex.EncodeToString(sum[:])
 }
 
 func registryReconcile(e env, args []string) int {
@@ -186,9 +201,9 @@ func registryReconcile(e env, args []string) int {
 			return exitFailed
 		}
 	}
-	report := registryPublication{State: "preview", Binding: b.digest, Source: "cli_registry"}
+	report := registryPublication{State: "preview", Binding: registryPublicationBinding(b, dir), Source: "cli_registry"}
 	if *binding != "" {
-		if *binding != b.digest {
+		if *binding != report.Binding {
 			e.errf("registry reconcile: preview binding changed; nothing published")
 			return exitFailed
 		}
