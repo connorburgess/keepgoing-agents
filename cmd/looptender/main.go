@@ -66,13 +66,14 @@ Local client discovery:
   client prepare-resume    Prepare a short-lived snapshot/ticket for review
   client resume            Clear holds using an unchanged prepared ticket
   accounts list|add|update|check|usage  Select private account contexts; explicit status only, no model calls
-  registry add|list|remove  Register private loop references; never start supervision
+  registry add|list|remove|reconcile  Register private loop references; never start supervision
   migrate                  Say what moving the per-user directories from keepgoing/ to looptender/ would do;
                            --apply moves them and leaves a link, --undo --apply moves them back
   dock                     Serve the read-only keepgoing panel for every registered loop on 127.0.0.1
   panel                    Open the keepgoing panel in your browser, starting it when needed; also status, stop, list
 
 Goal metadata:
+  assignment inventory|review|handoff|acknowledge|show  Explicit BB assignment evidence (opt-in; no dispatch)
   goal create|revise|show   Record private, revisioned goal metadata
 
 Control:
@@ -175,6 +176,8 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 			return transferInventoryCommand(e, rest, doctorExec, doctorExecLimit(inventoryListLimit))
 		}
 		return transferCommand(e, rest, doctorExec)
+	case "assignment":
+		return assignmentCommand(e, rest, doctorExecLimit(inventoryListLimit))
 	case "goal":
 		return goalCommand(e, rest)
 	case "service":

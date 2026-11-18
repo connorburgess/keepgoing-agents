@@ -504,6 +504,7 @@ func controlSignatureWithOpen(stateDir string, open func(string) (*os.File, erro
 }
 
 type statusOut struct {
+	Assignments          control.AssignmentSummary `json:"assignments"`
 	MigrationReview      *control.MigrationSummary `json:"migrationReview,omitempty"`
 	MigrationReviewError string                    `json:"migrationReviewError,omitempty"`
 	// NoProgress is the no-progress flag, the same value the panel shows.
@@ -760,6 +761,9 @@ func status(e env, cfg *config.Config, now time.Time, asJSON bool, staleAfter ti
 	}
 	if ctl.BBTarget != "" {
 		fmt.Fprintf(w, "bound BB target: %s\n", ctl.BBTarget)
+	}
+	if cfg.Loop.AssignmentLifecycle || out.Assignments.Availability != "not_recorded" {
+		printAssignmentSummary(e, out.Assignments)
 	}
 	if out.MigrationReview != nil {
 		printReconcile(e, *out.MigrationReview, false)
@@ -1124,6 +1128,7 @@ func readStatus(ctx context.Context, cfg *config.Config, now time.Time, staleAft
 			out.MigrationReview = &summary
 		}
 	}
+	out.Assignments = assignmentStatus(cfg, ctl)
 	out.PromptSend = describePromptSend(st.LastPromptSend, out.Goal)
 	if st.GoalCopy != nil && st.GoalCopy.Valid() {
 		out.PromptSend.GoalCopy = st.GoalCopy
@@ -1402,7 +1407,7 @@ func controlCmd(e env, cfg *config.Config, cmd, note string, takeOver ...bool) i
 // cover the lanes as well, and dropQueued (with lanes) for the messages
 // queued in lanes that have not started to be deleted.
 func controlCmdLanes(e env, cfg *config.Config, cmd, note string, lanes, dropQueued bool, takeOver ...bool) int {
-	if cmd == "enable" || cmd == "resume" {
+	if cmd == "enable" || cmd == "resume" || (cmd == "await-user" && cfg.Loop.AssignmentLifecycle) {
 		acquire := lock.Acquire
 		takingOver := cmd == "enable" && len(takeOver) > 0 && takeOver[0]
 		if takingOver {
@@ -1493,6 +1498,18 @@ func controlCmdLanes(e env, cfg *config.Config, cmd, note string, lanes, dropQue
 				return fmt.Errorf("%w, so nothing was changed and the loop is still %s: %v", errEpisodeState, f.Summary(), err)
 			}
 			newEpisode, settledBriefs = f.EpisodeHold, f.BriefHold
+		}
+		if cmd == "await-user" && cfg.Loop.AssignmentLifecycle {
+			if err := control.CheckOwner(*f, os.Getenv("BB_THREAD_ID"), false); err != nil {
+				return err
+			}
+			b, err := assignmentBinding(cfg, *f)
+			if err != nil {
+				return control.ErrAssignment
+			}
+			if err := control.CheckAssignmentAwaitUser(cfg.Loop.StateDir, b); err != nil {
+				return err
+			}
 		}
 		wasAwaiting := f.AwaitingUser
 		if !transfer {
