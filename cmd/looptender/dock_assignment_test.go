@@ -49,7 +49,7 @@ func TestDockAssignmentBrowserFixture(t *testing.T) {
 		s := control.AssignmentSummary{Availability: "not_recorded"}
 		switch l.Name {
 		case "docs-site-refresh":
-			s = control.AssignmentSummary{Availability: "available", Coverage: "partial", ObservedAt: &at, RecordedAt: &dockNow, Counts: &control.AssignmentCounts{Assignments: 4, Unknown: 2, Unacknowledged: 1, Unfinished: 3, PersonBlocked: 1, DependencyWaiting: 1}}
+			s = control.AssignmentSummary{Availability: "available", Coverage: "partial", ObservedAt: &at, RecordedAt: &dockNow, Counts: &control.AssignmentCounts{Assignments: 4, Unknown: 2, Unacknowledged: 1, Unfinished: 3, PersonBlocked: 1, DependencyWaiting: 1}, Coordination: &control.AssignmentWakeSummary{State: "attempted_unreconciled", AttemptedAt: &dockNow, NextAction: "looptender assignment show --private; then assignment reconcile-wake --file reconciliation.json --id <record-id> --revision <current-revision>; delivery is not established"}}
 		case "billing-api-migration":
 			s.Availability = "stale_binding"
 		case "mobile-onboarding":
@@ -65,5 +65,14 @@ func TestDockAssignmentBrowserFixture(t *testing.T) {
 	}
 	if err = os.WriteFile(path, raw, 0600); err != nil {
 		t.Fatal(err)
+	}
+}
+
+func TestDockAssignmentWakeRecoveryCopy(t *testing.T) {
+	at := dockNow
+	view := dockAssignmentsOf(&statusOut{Assignments: control.AssignmentSummary{Availability: "available", Counts: &control.AssignmentCounts{Unknown: 1, Unfinished: 2}, Coordination: &control.AssignmentWakeSummary{State: "attempted_unreconciled", AttemptedAt: &at, NextAction: "looptender assignment reconcile-wake"}}})
+	raw, _ := json.Marshal(view)
+	if !strings.Contains(view.Text, "delivery unverified") || !strings.Contains(view.Text, "reconcile-wake") || !strings.Contains(view.Text, "1 assignment needs reconciliation") || strings.Contains(string(raw), "grant") {
+		t.Fatal(view)
 	}
 }

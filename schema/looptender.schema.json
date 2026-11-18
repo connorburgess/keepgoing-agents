@@ -56,6 +56,7 @@
         "codex": {
           "$ref": "#/$defs/codex"
         },
+        "assignment_coordination": {"type": "object", "additionalProperties": false, "properties": {"enabled": {"type": "boolean", "default": false}, "max_evidence_age": {"type": "string", "default": "30m", "description": "Evidence age between 1m and 24h; stale evidence cannot authorize assignment coordination."}}},
         "assignment_completion": {"type": "boolean", "description": "Require explicit whole-objective attestation and bound assignment review before completion; no automatic completion or hold-clear authority"},
         "assignment_lifecycle": {"type": "boolean", "description": "Opt-in explicit coordinator assignment review and await-user contradiction check; no automatic lane dispatch or hold clearing"},
         "name": {

@@ -60,11 +60,12 @@ type Config struct {
 // Loop describes one supervised agent loop.
 type Loop struct {
 	// AssignmentLifecycle enables explicit coordinator assignment reconciliation and await-user checks.
-	AssignmentLifecycle  bool   `yaml:"assignment_lifecycle,omitempty"`
-	AssignmentCompletion bool   `yaml:"assignment_completion,omitempty"`
-	Name                 string `yaml:"name"`
-	StateDir             string `yaml:"state_dir"`
-	Agent                `yaml:",inline"`
+	AssignmentLifecycle    bool                    `yaml:"assignment_lifecycle,omitempty"`
+	AssignmentCompletion   bool                    `yaml:"assignment_completion,omitempty"`
+	AssignmentCoordination *AssignmentCoordination `yaml:"assignment_coordination,omitempty"`
+	Name                   string                  `yaml:"name"`
+	StateDir               string                  `yaml:"state_dir"`
+	Agent                  `yaml:",inline"`
 
 	Prompt     string `yaml:"prompt,omitempty"`
 	PromptFile string `yaml:"prompt_file,omitempty"`
@@ -677,6 +678,9 @@ func (c *Config) applyDefaults() {
 			l.Probe.Kind = "codex"
 		}
 	}
+	if l.AssignmentCoordination != nil && l.AssignmentCoordination.MaxEvidenceAge.Duration == 0 {
+		l.AssignmentCoordination.MaxEvidenceAge.Duration = 30 * time.Minute
+	}
 	if l.PRBacklog != nil {
 		l.PRBacklog.defaults()
 	}
@@ -780,6 +784,11 @@ func (c *Config) Validate() error {
 	}
 	if l.AssignmentLifecycle && (l.Adapter != "bb" || l.BB == nil) {
 		add("loop.assignment_lifecycle requires a BB primary")
+	}
+	if p := l.AssignmentCoordination; p != nil {
+		if !l.AssignmentLifecycle || l.Adapter != "bb" || l.BB == nil || p.MaxEvidenceAge.Duration < time.Minute || p.MaxEvidenceAge.Duration > 24*time.Hour {
+			add("loop.assignment_coordination requires assignment_lifecycle, a BB primary, and max_evidence_age between 1m and 24h")
+		}
 	}
 	if l.PRBacklog != nil {
 		if err := l.PRBacklog.Policy().Validate(); err != nil {

@@ -9,7 +9,6 @@ import (
 	"fmt"
 	"io"
 	"os"
-	"path/filepath"
 	"reflect"
 	"sort"
 	"time"
@@ -21,37 +20,10 @@ import (
 
 // assignmentBinding reads only local records. Failure never returns usable counts.
 func assignmentBinding(cfg *config.Config, ctl control.File) (control.AssignmentBinding, error) {
-	b := control.AssignmentBinding{Loop: cfg.Loop.Name}
-	if ctl.PendingTransfer != nil || (ctl.BBTarget != "" && (cfg.Loop.BB == nil || cfg.Loop.BB.Thread != ctl.BBTarget)) {
-		return b, control.ErrAssignment
+	if cfg.Loop.Adapter != "bb" || cfg.Loop.BB == nil {
+		return control.AssignmentBinding{}, control.ErrAssignment
 	}
-	if cfg.Loop.Adapter != "bb" || cfg.Loop.BB == nil || ctl.Ownership == nil || control.CheckOwner(ctl, "", false) != nil {
-		return b, control.ErrAssignment
-	}
-	var err error
-	b.Config, err = filepath.EvalSymlinks(cfg.Path())
-	if err != nil {
-		return b, control.ErrAssignment
-	}
-	b.Config, err = filepath.Abs(b.Config)
-	if err != nil {
-		return b, control.ErrAssignment
-	}
-	b.Runtime, err = filepath.EvalSymlinks(cfg.Loop.StateDir)
-	if err != nil {
-		return b, control.ErrAssignment
-	}
-	b.Runtime, err = filepath.Abs(b.Runtime)
-	if err != nil {
-		return b, control.ErrAssignment
-	}
-	g, err := control.LoadGoal(cfg.Loop.StateDir)
-	if err != nil || g == nil || g.OwningLoop != cfg.Loop.Name {
-		return b, control.ErrAssignment
-	}
-	b.Goal, b.GoalRevision = g.ID, g.Summary().Revision
-	b.Coordinator, b.Owner, b.Generation = cfg.Loop.BB.Thread, ctl.Ownership.ThreadID, ctl.Ownership.Generation
-	return b, nil
+	return control.AssignmentBindingFor(cfg.Loop.StateDir, cfg.Path(), cfg.Loop.Name, cfg.Loop.BB.Thread, ctl)
 }
 func assignmentStatus(cfg *config.Config, ctl control.File) control.AssignmentSummary {
 	r, err := control.LoadAssignments(cfg.Loop.StateDir)
@@ -65,7 +37,11 @@ func assignmentStatus(cfg *config.Config, ctl control.File) control.AssignmentSu
 	if err != nil {
 		return control.AssignmentSummary{Availability: "unavailable"}
 	}
-	return control.AssignmentSummaryOf(r, b)
+	s := control.AssignmentSummaryOf(r, b)
+	if p := cfg.Loop.AssignmentCoordination; p != nil && p.Enabled {
+		s.Coordination = control.AssignmentWakeSummaryOf(r, b, time.Now().UTC(), p.MaxEvidenceAge.Duration)
+	}
+	return s
 }
 func assignmentJSON(e env, v any) int {
 	if json.NewEncoder(e.stdout).Encode(v) != nil {
@@ -75,12 +51,12 @@ func assignmentJSON(e env, v any) int {
 }
 func assignmentCommand(e env, args []string, run doctorRun) int {
 	if len(args) == 0 {
-		e.errf("usage: assignment inventory|review|handoff|acknowledge|show; handoff --draft validates a lane document without loop access")
+		e.errf("usage: assignment inventory|review|handoff|acknowledge|ready|reconcile-wake|show; handoff --draft validates a lane document without loop access")
 		return exitUsage
 	}
 	cmd := args[0]
 	switch cmd {
-	case "inventory", "review", "handoff", "acknowledge", "show":
+	case "inventory", "review", "handoff", "acknowledge", "ready", "reconcile-wake", "show":
 	default:
 		return exitUsage
 	}
@@ -99,7 +75,7 @@ func assignmentCommand(e env, args []string, run doctorRun) int {
 		}
 		return exitUsage
 	}
-	if fs.NArg() != 0 || (*private && cmd != "show") || (*draft && cmd != "handoff") || ((cmd == "review" || cmd == "handoff" || cmd == "acknowledge") != (*file != "")) || ((cmd == "show" || cmd == "inventory" || *draft) && (*id != "" || *rev != 0)) || ((*id == "") != (*rev == 0)) {
+	if fs.NArg() != 0 || (*private && cmd != "show") || (*draft && cmd != "handoff") || ((cmd == "review" || cmd == "handoff" || cmd == "acknowledge" || cmd == "ready" || cmd == "reconcile-wake") != (*file != "")) || ((cmd == "show" || cmd == "inventory" || *draft) && (*id != "" || *rev != 0)) || ((*id == "") != (*rev == 0)) {
 		return exitUsage
 	}
 	var raw []byte
@@ -192,11 +168,27 @@ func assignmentCommand(e env, args []string, run doctorRun) int {
 	}
 	var specs []control.AssignmentSpec
 	var h control.AssignmentHandoff
+	var readiness struct {
+		IndependentlyActionable bool                              `json:"independentlyActionable"`
+		Selections              []control.AssignmentWakeSelection `json:"selections"`
+	}
+	var reconciliation struct {
+		Grant    string `json:"grant"`
+		Reviewed bool   `json:"reviewed"`
+	}
 	var ack struct {
 		Assignment      string `json:"assignment"`
 		HandoffRevision uint64 `json:"handoffRevision"`
 	}
 	switch cmd {
+	case "ready":
+		if decodeAssignmentInput(raw, &readiness) != nil || !readiness.IndependentlyActionable || cfg.Loop.AssignmentCoordination == nil || !cfg.Loop.AssignmentCoordination.Enabled {
+			return exitUsage
+		}
+	case "reconcile-wake":
+		if decodeAssignmentInput(raw, &reconciliation) != nil || !reconciliation.Reviewed || reconciliation.Grant == "" {
+			return exitUsage
+		}
 	case "review":
 		var p struct {
 			Assignments []control.AssignmentSpec `json:"assignments"`
@@ -236,7 +228,7 @@ func assignmentCommand(e env, args []string, run doctorRun) int {
 		e.errf("assignment binding changed; no record saved")
 		return exitSkipped
 	}
-	saved, err := control.WriteAssignments(cfg.Loop.StateDir, os.Getenv("BB_THREAD_ID"), b, *id, *rev, func(next *control.AssignmentRevision) error {
+	_, err = control.WriteAssignments(cfg.Loop.StateDir, os.Getenv("BB_THREAD_ID"), b, *id, *rev, func(next *control.AssignmentRevision) error {
 		if cmd != "review" {
 			prior, err := control.LoadAssignments(cfg.Loop.StateDir)
 			if err != nil || prior == nil || prior.Revisions[len(prior.Revisions)-1].Binding != b {
@@ -244,6 +236,14 @@ func assignmentCommand(e env, args []string, run doctorRun) int {
 			}
 		}
 		switch cmd {
+		case "ready":
+			return control.DeclareAssignmentWake(next, b, readiness.Selections, time.Now().UTC(), cfg.Loop.AssignmentCoordination.MaxEvidenceAge.Duration)
+		case "reconcile-wake":
+			if next.Wake == nil || next.Wake.ID != reconciliation.Grant || next.Wake.AttemptedAt == nil || next.Wake.ReconciledAt != nil {
+				return control.ErrAssignment
+			}
+			now := time.Now().UTC()
+			next.Wake.ReconciledAt = &now
 		case "review":
 			old := map[string]control.AssignmentRow{}
 			for _, r := range next.Rows {
@@ -304,9 +304,9 @@ func assignmentCommand(e env, args []string, run doctorRun) int {
 		return ownershipError(e, err)
 	}
 	if *asJSON {
-		return assignmentJSON(e, control.AssignmentSummaryOf(saved, b))
+		return assignmentJSON(e, assignmentStatus(cfg, fresh))
 	}
-	printAssignmentSummary(e, control.AssignmentSummaryOf(saved, b))
+	printAssignmentSummary(e, assignmentStatus(cfg, fresh))
 	fmt.Fprintln(e.stdout, "Explicit review evidence saved; no lane was dispatched or changed. Inspect assignment show --private for revision-bound handoff imports.")
 	return exitOK
 }
@@ -323,9 +323,12 @@ func decodeAssignmentInput(raw []byte, v any) error {
 	return nil
 }
 func printAssignmentSummary(e env, s control.AssignmentSummary) {
+	if w := s.Coordination; w != nil {
+		fmt.Fprintf(e.stdout, "Coordination: %s. Next: %s\n", w.State, w.NextAction)
+	}
 	fmt.Fprintf(e.stdout, "Assignments: %s; outcomes and availability are explicit declarations, separate from BB execution.\n", s.Availability)
 	if s.Counts == nil {
-		fmt.Fprintln(e.stdout, "Assignment outcomes unknown; reconcile existing direct lanes before relying on completion.")
+		fmt.Fprintln(e.stdout, "Assignment outcomes unknown. Next: looptender assignment inventory --json; then assignment review --file plan.json after reconciling existing direct lanes.")
 		return
 	}
 	if s.Coverage != "observed_direct_children" {

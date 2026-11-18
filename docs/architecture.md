@@ -386,11 +386,11 @@ strict regular-file snapshots and atomic replacement, and refuse stale revisions
 without dropping unfinished IDs. The 32-revision/200-assignment/1-MiB limits are refusals,
 not eviction. History transition invariants apply on load as well as write.
 
-Only explicit coordinator `await-user` consults this opt-in record under those locks.
+With lifecycle alone, only explicit coordinator `await-user` uses this record for a decision under those locks. The separate coordination opt-in below also permits a revision-bound wake.
 All remaining unfinished work must be explicitly acknowledged as person-blocked; missing,
 stale or partial evidence refuses that declaration. Pause/stop and automatic safety holds
 are unchanged. Ordinary status/panel read minimized local counts/dates without new queries;
-only explicit inventory/review reads bounded BB direct-child list/show metadata. Lane execution,
+with lifecycle alone, only explicit inventory/review adds BB direct-child list/show reads. Lane execution,
 assignment outcome and declared availability are independent. No transcript decisions, lane
 actions, self-resume, authenticated worker publication or mandatory turn-end hook are added.
 See [assignment lifecycle](assignments.md) for the explicit initial-review journey and gaps.
@@ -400,6 +400,25 @@ See [assignment lifecycle](assignments.md) for the explicit initial-review journ
 `internal/prbacklog` owns bounded read-only GraphQL acquisition through `gh`, typed aggregate projection, pure policy evaluation and validated private cache/notice records. `config` validates the explicit opt-in repository, threshold, labels and freshness policy; `state` stores one aggregate cache and one notice record. No acquisition is performed by config/state loading. The standalone command acquires fresh evidence without loading or writing loop records.
 
 Only the ordinary-wake branch of `internal/supervise.act` consults this policy, after the existing decision and before reserving the send. Refresh uses optional time, preserves mandatory reserves, has no retries and rechecks effective controls before sending. Failure is notice evidence, never a hold, failover or permission. Cache attempts are interval-throttled; notices use semantic change/known conversation bookkeeping with a three-attempt cap, not new wake decisions. No decision-engine, lane, repository, merge or approval authority is added. See [the full freshness/privacy/acceptance contract](pr-backlog.md).
+
+## Explicit assignment coordination (unreleased)
+
+The separate `assignment_coordination` opt-in adds a minimized readiness fact to the pure
+ordinary idle-wake stage. BB exposes exact direct-child execution/interaction evidence
+from its existing scan, separate from diagnostic identities/titles. `internal/supervise/assignment.go`
+compares that snapshot with strictly loaded current assignment declarations and performs
+one bounded optional revalidation before consuming a grant. It bypasses only healthy
+active-child suppression, never control gates, cadence/budgets, child authority or route rules.
+
+The same assignments.json history holds an explicit batch selection, immutable binding,
+pre-delivery attempt and explicit coordinator reconciliation. New scheduling data promotes
+the record to version 2; version 1 remains readable and unsupported readers fail closed.
+The tick/control lock order, optimistic record revision and source checks remain in force.
+Sends allowance is reserved before atomic assignment consumption, then the existing parent
+Send is called. A failed second write spends allowance but sends nothing; a crash after
+consumption cannot replay the grant. Ordinary no-active-child wakes preserve the task and
+retire valid grants as attempted, never delivered. No cross-file or BB observation/tell
+transaction is claimed. Capacity withholds coordination notices and refuses record writes rather than dropping obligations; it does not suppress baseline ordinary wakes.
 
 ## Explicit assignment completion review (unreleased)
 

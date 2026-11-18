@@ -87,7 +87,7 @@ Hold the action that needs approval and continue independent authorized tasks. R
 
 For example, fictional PR42 awaits the owner's merge approval, while PR43 has an already-authorized independent review and PR44 has an already-authorized test fix. Keep PR42's merge held, perform the PR43 review and PR44 fix, then report their evidence. Do not repeatedly ask to merge PR42 without new information. Ask a person when only approval-dependent work remains. A runtime hold already in place still wins: the supervised session must never clear it or resume itself to perform this scenario.
 
-This is a separate coordination acceptance case. Observed coordinator stalling is not proof of a looptender runtime defect. The backlog safeguard does not inspect assignments or approval text, decide which work is independent, set awaiting-user based on this scenario, infer permission from transcripts, or bypass self-resume restrictions. Automatic scheduling/approval and host handoff compliance remain open; the explicit assignment record does not supply those capabilities.
+This is a separate coordination acceptance case. Observed coordinator stalling is not proof of a looptender runtime defect. The backlog safeguard does not inspect assignments or approval text, decide which work is independent, set awaiting-user based on this scenario, infer permission from transcripts, or bypass self-resume restrictions. Automatic child dispatch/approval and host handoff compliance remain open. The separate [explicit independent-work coordinator wake](assignments.md#opt-in-coordinator-wake-for-independent-work) uses typed readiness, existing gates and durable attempt consumption; the assignment record alone does not supply those capabilities.
 
 ### Completing the whole objective
 

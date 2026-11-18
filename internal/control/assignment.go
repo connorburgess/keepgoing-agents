@@ -77,6 +77,7 @@ type AssignmentRevision struct {
 	Binding    AssignmentBinding   `json:"binding"`
 	Inventory  AssignmentInventory `json:"inventory"`
 	Rows       []AssignmentRow     `json:"rows"`
+	Wake       *AssignmentWake     `json:"wake,omitempty"`
 }
 type AssignmentRecord struct {
 	Version   int                  `json:"version"`
@@ -96,12 +97,13 @@ type AssignmentCounts struct {
 	Absent            int `json:"absent"`
 }
 type AssignmentSummary struct {
-	Availability string            `json:"availability"`
-	Revision     uint64            `json:"revision,omitempty"`
-	Coverage     string            `json:"coverage,omitempty"`
-	ObservedAt   *time.Time        `json:"observedAt,omitempty"`
-	RecordedAt   *time.Time        `json:"recordedAt,omitempty"`
-	Counts       *AssignmentCounts `json:"counts,omitempty"`
+	Availability string                 `json:"availability"`
+	Revision     uint64                 `json:"revision,omitempty"`
+	Coverage     string                 `json:"coverage,omitempty"`
+	ObservedAt   *time.Time             `json:"observedAt,omitempty"`
+	RecordedAt   *time.Time             `json:"recordedAt,omitempty"`
+	Counts       *AssignmentCounts      `json:"counts,omitempty"`
+	Coordination *AssignmentWakeSummary `json:"coordination,omitempty"`
 }
 
 func assignmentRefs(v []string, required bool) bool {
@@ -185,7 +187,7 @@ func assignmentComplete(r AssignmentRow) bool {
 	return assignmentAcknowledged(r) && r.Handoff.Outcome == "complete"
 }
 func validAssignmentRevision(r AssignmentRevision) bool {
-	if r.Revision == 0 || r.RecordedAt.IsZero() || !validAssignmentBinding(r.Binding) || !validAssignmentInventory(r.Inventory) || r.Rows == nil || len(r.Rows) > 200 || r.Inventory.ObservedAt.After(r.RecordedAt) {
+	if !validAssignmentWake(r.Wake, r.RecordedAt) || r.Revision == 0 || r.RecordedAt.IsZero() || !validAssignmentBinding(r.Binding) || !validAssignmentInventory(r.Inventory) || r.Rows == nil || len(r.Rows) > 200 || r.Inventory.ObservedAt.After(r.RecordedAt) {
 		return false
 	}
 	ids, lanes := map[string]bool{}, map[string]bool{}
@@ -214,7 +216,7 @@ func validAssignmentRevision(r AssignmentRevision) bool {
 	return true
 }
 func assignmentTransition(a, b AssignmentRevision) bool {
-	if b.Revision != a.Revision+1 || b.RecordedAt.Before(a.RecordedAt) {
+	if !assignmentWakeTransition(a.Wake, b.Wake) || b.Revision != a.Revision+1 || b.RecordedAt.Before(a.RecordedAt) {
 		return false
 	}
 	rows := map[string]AssignmentRow{}
@@ -245,6 +247,9 @@ func assignmentTransition(a, b AssignmentRevision) bool {
 			if next.HandoffRevision == old.HandoffRevision && !reflect.DeepEqual(old.Handoff, next.Handoff) {
 				return false
 			}
+			if next.HandoffRevision == old.HandoffRevision && old.Acknowledged > 0 && next.Acknowledged != old.Acknowledged {
+				return false
+			}
 		} else if next.Handoff != nil || next.HandoffRevision != 0 || next.Acknowledged != 0 {
 			return false
 		}
@@ -261,7 +266,7 @@ func LoadAssignments(dir string) (*AssignmentRecord, error) {
 		return nil, ErrAssignment
 	}
 	var r AssignmentRecord
-	if decodeGoalJSON(b, &r) != nil || r.Version != 1 || !assignmentRecordID.MatchString(r.ID) || len(r.Revisions) == 0 || len(r.Revisions) > assignmentHistoryLimit {
+	if decodeGoalJSON(b, &r) != nil || (r.Version != 1 && r.Version != 2) || !assignmentRecordID.MatchString(r.ID) || len(r.Revisions) == 0 || len(r.Revisions) > assignmentHistoryLimit {
 		return nil, ErrAssignment
 	}
 	canonical, err := filepath.EvalSymlinks(dir)
@@ -272,10 +277,24 @@ func LoadAssignments(dir string) (*AssignmentRecord, error) {
 	if err != nil {
 		return nil, ErrAssignment
 	}
+	hasWake := false
+	seenGrants := map[string]bool{}
+	priorGrant := ""
 	for n, rev := range r.Revisions {
-		if rev.Revision != uint64(n+1) || !validAssignmentRevision(rev) || rev.Binding.Runtime != canonical || (n > 0 && !assignmentTransition(r.Revisions[n-1], rev)) {
+		hasWake = hasWake || rev.Wake != nil
+		if rev.Wake != nil && rev.Wake.ID != priorGrant {
+			if seenGrants[rev.Wake.ID] {
+				return nil, ErrAssignment
+			}
+			seenGrants[rev.Wake.ID] = true
+			priorGrant = rev.Wake.ID
+		}
+		if (r.Version == 1 && rev.Wake != nil) || rev.Revision != uint64(n+1) || !validAssignmentRevision(rev) || rev.Binding.Runtime != canonical || !assignmentWakeDeclarationValid(r.Revisions, n, rev) || (n > 0 && !assignmentTransition(r.Revisions[n-1], rev)) {
 			return nil, ErrAssignment
 		}
+	}
+	if r.Version == 2 && !hasWake {
+		return nil, ErrAssignment
 	}
 	return &r, nil
 }
@@ -402,8 +421,11 @@ func WriteAssignments(dir, caller string, b AssignmentBinding, expectedID string
 	}
 	next.Revision = uint64(len(r.Revisions) + 1)
 	next.RecordedAt = time.Now().UTC()
-	if !validAssignmentRevision(next) || (len(r.Revisions) > 0 && !assignmentTransition(r.Revisions[len(r.Revisions)-1], next)) {
+	if !validAssignmentRevision(next) || !assignmentWakeDeclarationValid(r.Revisions, len(r.Revisions), next) || (len(r.Revisions) > 0 && !assignmentTransition(r.Revisions[len(r.Revisions)-1], next)) {
 		return nil, ErrAssignment
+	}
+	if next.Wake != nil {
+		r.Version = 2
 	}
 	r.Revisions = append(r.Revisions, next)
 	raw, err := json.MarshalIndent(r, "", "  ")

@@ -623,6 +623,17 @@ Older strict readers reject this key, so verify associated instances before acti
 No new ordinary queries, automatic lane actions or hold clearing occur. See the full
 [initial review and handoff workflow](assignments.md), limits and remaining acceptance.
 
+### Independent assignment coordination (unreleased)
+
+`loop.assignment_coordination: {enabled: true, max_evidence_age: 30m}` requires
+`assignment_lifecycle: true` and a BB primary. Default absent/disabled preserves existing
+supervision/query behavior. Evidence age defaults to 30m and is bounded to 1m–24h;
+expiry withholds the exception without clearing holds or discarding work. Explicit
+`assignment ready` and `assignment reconcile-wake` govern one durable batch grant.
+See the [complete workflow and failure limits](assignments.md#opt-in-coordinator-wake-for-independent-work).
+One optional pre-send structured child scan is bounded to 20s within existing reserves;
+no additional wake cadence, automatic dispatch or new route is enabled.
+
 ### Whole-objective completion review (unreleased)
 
 `loop.assignment_completion: true` separately opts a BB loop with

@@ -119,9 +119,11 @@ type Observation struct {
 	DeferredInteraction bool
 	// ActiveChildren is verified direct child work. ChildrenUnverified means
 	// discovery could not establish the complete picture. Neither permits a
-	// wake, nudge or switch-back of a parent that is not in error. Neither
+	// wake, nudge or switch-back of a parent that is not in error without
+	// explicit AssignmentReady at the ordinary idle-wake stage. Neither
 	// holds back the error rules for a parent that is: see Decide. Control
 	// holds and stop retain precedence.
+	DirectChildren     *DirectChildren
 	ActiveChildren     int
 	ChildrenUnverified bool
 	// AwaitingChildren contains verified child IDs with pending human input.
@@ -154,6 +156,7 @@ type Control struct {
 
 // Input is everything Decide needs.
 type Input struct {
+	AssignmentReady   int // exact current typed readiness, evaluated by the supervisor
 	Obs               Observation
 	Control           Control
 	InWindow          bool
@@ -356,6 +359,7 @@ type Decision struct {
 	// caller never matches on Reason text. The parent is idle on purpose while
 	// other children run: it gets the notice alone, not the task prompt.
 	ChildErrorWake bool
+	AssignmentWake bool
 	// DeferredInteraction is set only when the deferred-interaction rule itself
 	// produced an AwaitUser, so a caller never matches on Reason text.
 	DeferredInteraction bool
@@ -466,7 +470,9 @@ func Decide(in Input) Decision {
 			if childErrorWake(in) {
 				return Decision{Action: Wake, Reason: ChildErrorWakeReason, ChildErrorWake: true}
 			}
-			return none("child work running")
+			if in.AssignmentReady <= 0 || o.State != Idle || o.ChildrenUnverified {
+				return none("child work running")
+			}
 		}
 		if o.ChildrenUnverified {
 			return none("child status unverified")
@@ -499,13 +505,19 @@ func Decide(in Input) Decision {
 			return none(NetworkDownReason)
 		}
 		// Only between turns: never pull the loop from a fallback mid-turn.
-		if in.SwitchBackReady {
+		if in.SwitchBackReady && o.ActiveChildren == 0 {
 			return Decision{Action: SwitchBack, Reason: "primary's limit has reset"}
 		}
 		// Spacing only: every hold, gate and wait above still comes first, and
 		// a switch-back or a child-error notice is never spaced.
 		if idleSpaced(in) {
 			return Decision{Action: None, Reason: IdleSpacedReason, IdleWait: IdleUnchanged}
+		}
+		if o.ActiveChildren > 0 {
+			if in.SinceWake < in.MinWakeInterval {
+				return none("assignment wake spacing")
+			}
+			return Decision{Action: Wake, Reason: "independent assignments need coordinator", IdleWake: true, AssignmentWake: true}
 		}
 		return Decision{Action: Wake, Reason: "idle", IdleWake: true}
 	case Active:

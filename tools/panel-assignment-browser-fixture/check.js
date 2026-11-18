@@ -13,6 +13,7 @@ await p.keyboard.press("Enter");
 await p.waitForSelector(".assignment-review");
 check("unknown and unacknowledged evidence remains visible", await p.$eval(".assignment-review", e => ["2 assignments need reconciliation", "2 / 1", "Partial", "2029", "2030", "Unfinished assignments", "3", "Person-blocked / dependency-waiting", "1 / 1"].every(s => e.textContent.includes(s))));
 check("scope and declaration limits visible", await p.$eval(".assignment-review", e => ["descendants are excluded", "running or idle", "declared outcome and availability", "permission", "clear holds"].every(s => e.textContent.includes(s))));
+check("attempt is not delivery and recovery command is visible", await p.$eval(".assignment-review", e => ["Wake attempted", "delivery unverified", "assignment reconcile-wake", "delivery is not established"].every(s => e.textContent.includes(s))));
 check("no new action or form", await p.$eval(".assignment-review", e => !e.querySelector("button,input,a,form")));
 check("semantic section heading", await p.$eval(".assignment-review", e => e.querySelector("h2").textContent === "Assignment handoffs"));
 for (const theme of ["light", "dark"]) {
