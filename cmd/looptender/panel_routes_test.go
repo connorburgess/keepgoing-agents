@@ -253,3 +253,41 @@ func TestPanelRouteEndpointUsesExistingNetworkAndSessionGuards(t *testing.T) {
 		})
 	}
 }
+
+// A feature integration must advertise both capabilities and preserve the
+// complete authority statement consumed by the native confirmation.
+func TestPanelRoutesAndQuotaServedTogether(t *testing.T) {
+	for _, caller := range []string{"", "thr_example_owner"} {
+		t.Run(caller, func(t *testing.T) {
+			_, c, _ := routePanelFixture(t)
+			c.caller = caller
+			s, err := newPanelState(54321, time.Hour, time.Now)
+			if err != nil {
+				t.Fatal(err)
+			}
+			h := &panelHandler{state: s, page: newDockServer(54321, s, &dockReader{}), changes: c}
+			w := httptest.NewRecorder()
+			h.served(w)("fictional-session")
+			var out dockServed
+			if err := json.Unmarshal(w.Body.Bytes(), &out); err != nil {
+				t.Fatal(err)
+			}
+			want := "person"
+			if caller != "" {
+				want = "bb_caller"
+			}
+			if out.RouteChanges != want || !out.AccountQuota || out.Changes != "on" {
+				t.Fatalf("combined capabilities or caller changed: %+v", out)
+			}
+			text, err := json.Marshal(out.ChangesText)
+			if err != nil {
+				t.Fatal(err)
+			}
+			for _, capability := range []string{"pause", "stop", "resume", "this panel's build", "edit routes", "startup caller's authority", "Codex subscription quota"} {
+				if !strings.Contains(string(text), capability) {
+					t.Fatalf("missing disclosure %q: %s", capability, text)
+				}
+			}
+		})
+	}
+}

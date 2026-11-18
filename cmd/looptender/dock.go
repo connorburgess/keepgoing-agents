@@ -209,6 +209,7 @@ type dockServed struct {
 	ChangesText  dockText   `json:"changesText,omitempty"`
 	Form         string     `json:"form,omitempty"`
 	RouteChanges string     `json:"routeChanges,omitempty"`
+	AccountQuota bool       `json:"accountQuota,omitempty"` // explicit reviewed account-scoped refresh
 }
 
 func newDockServer(port int, auth dockAuth, reader *dockReader) *dockServer {
@@ -441,6 +442,7 @@ func (d *dockReader) read(ctx context.Context, identifiers bool) (result dockRep
 		if dir, err := accountsDirectory(d.accountsDir); err == nil && ctx.Err() == nil {
 			if f, err := accounts.Load(dir); err == nil {
 				view, catalog = accounts.Project(f, d.clock()), &f
+				accounts.AttachQuota(&view, accounts.QuotaViews(dir, f, os.Environ(), d.clock()))
 			}
 		}
 		dockLinkAccountRoutes(&view, result)

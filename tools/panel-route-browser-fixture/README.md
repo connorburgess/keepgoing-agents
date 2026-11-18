@@ -19,7 +19,9 @@ DevBrowser page API (`browser.getPage("main")`), checks native labels and
 validation, explicitly requested model/effort metadata, cross-model effort clearing and
 visible-form payload parity, required creation
 opt-in, retained draft after Read now, keyboard Tab/Enter confirmation,
-partial outcomes, and early capability limitations. It measures document
+partial outcomes, early capability limitations, combined Routes + Quota authority
+disclosure and navigation between the route editor and separately cached selected-context
+quota beside an unknown route. The fixture never confirms a quota read. It measures document
 width and button targets at 13 widths from 320 to 1920 in light and dark
 schemes, then takes one bounded JPEG. It throws on a failed assertion and
 prints a JSON check list on success. The artifact directory records fictional

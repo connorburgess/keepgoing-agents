@@ -18,8 +18,10 @@ reads only the existing recorded projection; it does not invoke BB usage APIs
 or refresh provider measurements, including APIs whose refresh:false option
 may still contact a provider.
 
-The page is read-only. Refresh reads the catalog only, executes no provider
-command and sends no model request. The `accounts` commands below do not start
+Page refresh reads retained catalog and quota evidence only and executes no provider
+command. In a panel started with `--allow-changes`, an explicit reviewed
+**Refresh subscription quota** action contacts the selected Codex CLI without a
+model request. The read-only panel offers no such action. The `accounts` commands below do not start
 a loop, enroll a route, sign in or copy credentials. Complete provider sign-in in
 the official provider tool first.
 
@@ -578,3 +580,72 @@ Coordinator acceptance of the earlier implementation read Plus through a private
 scratch metadata catalog with host access. The schema compatibility correction
 has fixture evidence only; production catalog/panel and live migration/rollback
 remain untested and unchanged.
+
+## Read selected-context subscription quota
+
+After selecting an existing Codex context, explicitly read its subscription
+windows without a model request:
+
+```sh
+looptender accounts usage --id ACCOUNT_ID --json
+```
+
+Use the same effective environment as the catalog selection. This command uses
+exactly its configured executable, working directory and account-directory
+selection. Inherited contexts must still match the retained environment
+fingerprint. A panel started with `--allow-changes` offers the same read after
+an inline review and confirmation on that Accounts card. Ordinary page refresh,
+`accounts list`, the read-only panel and route observations never trigger it.
+
+The [official Codex app-server protocol](https://learn.chatgpt.com/docs/app-server)
+exchange is `initialize`, `initialized`, then
+`account/rateLimits/read` with `excludeResetCreditDetails:true`. It does not
+start a login, explicitly refresh tokens, open credential files, call a model
+or call the separate token-usage endpoint. The official CLI may perform its
+own ordinary authentication/network work. The read has a five-second deadline,
+a 64 KiB stdout bound, discarded stderr, strict response correlation and owned
+process cleanup. A rejected or unsupported CLI returns unavailable evidence.
+
+Only the documented Codex bucket's primary/secondary windows are retained:
+integer percent used (including a reported zero), optional duration in minutes
+and optional reset time. Other buckets are never joined. Missing windows,
+API-key contexts without subscription windows, unknown buckets/windows and
+malformed responses are unavailable, not an inferred zero. Credits, account
+IDs, email addresses, plan/model labels and raw payloads are discarded. Plan
+and login evidence remain independent; quota does not establish model access
+or a stable account identity. Changing credentials inside the same selected
+directory cannot be detected as an identity change by this mechanism.
+
+The private `subscription-quota.json` cache is bounded to 1 MiB and 64 entries
+with strict schema 1 validation. It stores opaque catalog ID/revision/context
+bindings, allowlisted windows, successful read time and last attempt time/reason;
+it contains no executable/account paths or provider identifiers. It does not
+rewrite or promote `accounts.json`, and older catalog readers ignore it. All
+catalog schema-2 upgrade and rollback precautions above still apply to plan
+checks. Upgrade the panel/CLI separately to expose this action; deployment and
+installed-reader acceptance are not supplied by this source change.
+
+Reads run outside the catalog writer lock. Checks and quota reads for one
+selection share a single-flight guard. Publication revalidates the ID, revision,
+effective context, canonical executable and directory snapshots under the
+catalog lock. A removed/replaced selection, changed executable or directory,
+older response, symlink, unsafe permissions or corrupt/future cache is refused
+without replacing evidence. External non-cooperating edits after validation
+remain outside the lock contract. Corrupt cache bytes are preserved; inspect
+and back them up privately before an operator removes the cache to start over.
+No automatic repair or provider retry occurs. After a lost reply, read the
+cached state before explicitly retrying.
+
+A successful reading retains its original timestamp. After 30 minutes it is
+marked stale; an ended reset is shown as an ended window and needs a fresh
+read. A later failed refresh has a separate time/reason and never makes old
+windows fresh. Future-dated or context-mismatched evidence is withheld. These
+are subscription-quota observations for the selected context, not turn token
+usage, route availability, or a promise of entitlement. They do not attach the
+selection to any route, repoint a thread, change a default, or influence
+supervision.
+
+Fictional RPC/cache/panel fixtures cover correlation, bounds, timeout, selected
+environment, privacy, failed-refresh retention, concurrency and review fences.
+Native installed-panel and cross-platform process acceptance remain separate;
+platform compilation alone is not native execution evidence.

@@ -1,6 +1,6 @@
 from http.server import ThreadingHTTPServer,BaseHTTPRequestHandler
 from pathlib import Path
-import argparse,json,copy
+import argparse,json,copy,re
 parser=argparse.ArgumentParser(description='Fictional route-editor API; never reads runtime state.')
 parser.add_argument('--artifacts',type=Path,required=True)
 args=parser.parse_args()
@@ -8,6 +8,7 @@ root=args.artifacts; root.mkdir(parents=True,exist_ok=True); wt=Path(__file__).r
 rows=[dict(id='example-route-a',provider='claude-code',model='example-large',effort='medium',group='owner-limit-a',enter='same_conversation',disabled=False),dict(id='example-route-b',provider='codex',model='example-codex',group='owner-limit-b',enter='new_conversation',disabled=True)]
 loops=[dict(key='r'+str(i)*32,view=dict(loop='example-loop-'+str(i),list='own',handoff='off',can=['follow_standard'],routes=[],skipped=[],warnings=[])) for i in range(1,4)]
 accounts=[dict(id='a'*32,label='Example selected Claude',provider='claude-code',selection='externally_managed'),dict(id='b'*32,label='Example selected Codex',provider='codex',selection='inherited')]
+exposure=re.search(r'panelExposure = "([^"\n]+)"',(wt/"cmd/looptender/panel_changes.go").read_text()).group(1)
 pending={}
 class H(BaseHTTPRequestHandler):
  def log_message(self,*args): pass
@@ -16,9 +17,9 @@ class H(BaseHTTPRequestHandler):
  def do_GET(self):
   if self.path.endswith('/api/v1/server'):
    mode='bb_caller' if '/agent/' in self.path else 'person'
-   self.reply(dict(servedBy='panel',changes='off' if '/readonly/' in self.path else 'on',routeChanges=mode,form='fictional-session-form'));return
+   self.reply(dict(servedBy='panel',changes='off' if '/readonly/' in self.path else 'on',routeChanges=mode,accountQuota=True,changesText=[dict(t=exposure)],form='fictional-session-form'));return
   if self.path.endswith('/api/v1/dock'):
-   self.reply(dict(readAt='2026-11-18T01:00:00Z',complete=True,registry=dict(availability='available'),loops=[dict(key='r'+'1'*32,name='Example loop',state='paused',chain=dict(entries=[]))],routes=[],routesSummary=dict(picker='Configured routes'),needsYou=[],needsLine='Nothing needs you'));return
+   self.reply(dict(readAt='2026-11-18T01:00:00Z',complete=True,registry=dict(availability='available'),loops=[dict(key='r'+'1'*32,name='Example loop',state='paused',chain=dict(entries=[]))],accounts=dict(state="available",complete=True,cards=[dict(accounts[1],quota=dict(state='reported',observedAt='2026-11-18T00:00:00Z',source='Fictional selected-context account/rateLimits/read',windows=[dict(name='primary',usedPercent=37)]))]),accountUses=[dict(context='fictional-unbound',selection='inherited',routes=[dict(route='fictional-unbound-route',title='Fictional unbound route',loops=[])])],routes=[dict(key='fictional-unbound-route',usage=dict(availability='available',windows=[dict(name='Five-hour',usedPercent=73)]))],routesSummary=dict(picker='Configured routes'),needsYou=[],needsLine='Nothing needs you'));return
   name=self.path.split('/')[-1] or 'index.html'
   if name not in ['dock.js','dock.css','routes-help.html']:name='index.html'
   self.send_response(200); self.send_header('Content-Type',{'dock.js':'application/javascript','dock.css':'text/css','index.html':'text/html','routes-help.html':'text/html'}[name]);self.end_headers();body=(wt/'cmd/looptender/dockui'/name).read_bytes();body=body.replace(b'<body',b'<body data-fictional-route-fixture="true"') if name=='index.html' else body;self.wfile.write(body)

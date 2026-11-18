@@ -45,4 +45,11 @@ await p.setViewport({width:390,height:1000});await p.emulateMediaFeatures([{name
 for(const mode of ['agent','readonly']){await p.goto(origin+'/'+mode+'/#/routes');await p.waitForSelector('.route-editor');check(mode+' limitation precedes form',await p.$eval('.route-editor',(e,m)=>!e.querySelector('form')&&e.textContent.includes(m==='agent'?'BB thread':'read-only'),mode));}
 await p.goto(origin+'/owner/#/routes');await p.waitForSelector('[data-focus="route-edit-refresh"]');await p.click('[data-focus="route-edit-refresh"]');await p.waitForSelector('#route-field-account');await set('account','bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb');await p.waitForSelector('#route-field-model');
 check('Codex CLI does not offer an unsupported effort override',await p.$eval('.route-add-form',e=>!e.querySelector('[name=effort]')&&e.textContent.includes('no effort override')));
+await p.goto(origin+'/owner/#/accounts');await p.waitForSelector('.account-card');
+await p.click('.account-card summary');await p.waitForSelector('.account-quota');
+check('combined disclosure retains route caller boundary and selected quota capability',await p.$eval('footer',e=>["edit routes", "startup caller's authority", "Codex subscription quota", "this panel's build"].every(t=>e.textContent.includes(t))));
+check('selected subscription quota stays separate from unknown route reading',await p.$eval('#pane',e=>e.querySelector('.account-quota').textContent.includes('37% used')&&e.querySelector('.unknown-account-routes').textContent.includes('Fictional unbound route')&&!e.querySelector('.unknown-account-routes').textContent.includes('Subscription quota')&&e.querySelector('.account-count').textContent==='1 selected account'));
+check('quota refresh offered alongside routes without implicit refresh',await p.$eval('.account-quota',e=>!!e.querySelector('[data-focus^="quota-refresh-"]')));
+await p.goto(origin+'/owner/#/routes');await p.waitForSelector('[data-focus="route-edit-refresh"]');await p.click('[data-focus="route-edit-refresh"]');await p.waitForSelector('#route-field-account');
+check('route editor remains usable after viewing selected quota',await p.$eval('#route-field-account',e=>e.options.length===3));
 console.log(JSON.stringify(checks));
