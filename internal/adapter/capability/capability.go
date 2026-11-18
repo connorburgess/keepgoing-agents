@@ -89,8 +89,8 @@ type Behaviour struct {
 // Adapters in column order.
 var Adapters = []Adapter{
 	{ID: "bb", Title: "BB thread", Registered: true, Activator: true, WakePoller: true, TurnRetrier: true, LaneRecoverer: true, LaneStopper: true, SessionEvidence: true, ContextReader: true,
-		Files: []string{"internal/adapter/bb/bb.go", "internal/adapter/bb/children.go", "internal/adapter/bb/cursor.go", "internal/adapter/bb/lanes.go", "internal/adapter/bb/wake.go"},
-		Inputs: []string{"ActiveChildIDs", "ActiveChildren", "AwaitingChildren", "AwaitingInput", "Background", "ChildOutcome", "ChildTitles", "ChildrenUnverified", "ErrorClass", "ErroredChildren", "Evidence",
+		Files: []string{"internal/adapter/bb/bb.go", "internal/adapter/bb/children.go", "internal/adapter/bb/assignment.go", "internal/adapter/bb/cursor.go", "internal/adapter/bb/lanes.go", "internal/adapter/bb/wake.go"},
+		Inputs: []string{"ActiveChildIDs", "ActiveChildren", "AwaitingChildren", "AwaitingInput", "Background", "ChildOutcome", "ChildTitles", "ChildrenUnverified", "DirectChildren", "ErrorClass", "ErroredChildren", "Evidence",
 			"ErrorTurn", "Gone", "HealthyChildren", "ModelFallback", "Queued", "ResetsAt", "RetryDeclined", "RetryExpired", "RetryKnown", "RetryUnverified", "Retrying", "State", "Turn", "TurnUnknown", "Turns"}},
 	{ID: "claude", Title: "Claude Code headless", Registered: true, SessionEvidence: true,
 		Files:  []string{"internal/adapter/runner/claude.go", "internal/adapter/runner/spec.go"},
@@ -116,7 +116,7 @@ var Adapters = []Adapter{
 
 // ObservationFields is every field of decide.Observation. A new field must be
 // added here, and to the Inputs of each adapter that sets it.
-var ObservationFields = []string{"ActiveChildIDs", "ActiveChildren", "AwaitingChildren", "AwaitingInput", "Background", "ChildOutcome", "ChildTitles", "ChildrenUnverified", "DeferredInteraction", "ErrorClass",
+var ObservationFields = []string{"ActiveChildIDs", "ActiveChildren", "AwaitingChildren", "AwaitingInput", "Background", "ChildOutcome", "ChildTitles", "ChildrenUnverified", "DeferredInteraction", "DirectChildren", "ErrorClass",
 	"ErrorTurn", "ErroredChildren", "Evidence", "Gone", "HealthyChildren", "ModelFallback", "Queued", "ResetsAt", "RetryDeclined", "RetryExpired", "RetryKnown", "RetryUnverified", "Retrying", "SessionLost", "State", "Turn", "TurnUnknown", "Turns"}
 
 func t(path, test string) Ref { return Ref{Path: path, Test: test} }
@@ -226,11 +226,13 @@ var Matrix = []Behaviour{
 			"cursor":  {Yes, Fixture, fakeDecision, []Ref{t(networkTest, "TestOutageDoesNotSpendRepromptsOrProbes"), d(networkDoc)}},
 			"process": {Yes, Fixture, fakeDecision, []Ref{t(networkTest, "TestOutageDoesNotSpendRepromptsOrProbes"), d(networkDoc)}},
 		})},
-	{ID: "child_awareness", Title: "Child-work awareness", What: "Hold a parent that is not in error while conversations it started are still working, and say which. A parent in error is recovered regardless.",
+	{ID: "child_awareness", Title: "Child-work awareness", What: "Normally hold a parent that is not in error while conversations it started are still working, and say which. A parent in error is recovered regardless.",
 		Cells: merge(map[string]Cell{
 			"bb": {Yes, Live, "Direct child threads are listed and verified on each check.", []Ref{d(waitingLive), t("internal/adapter/bb/children_test.go", "TestObserveActiveChildSuppressesParentUntilFinished")}},
 		}, same(Cell{NA, None, "A headless turn has no child conversations outside its own process. Subagents the CLI starts live and end inside the turn.", nil}, headless...),
 			map[string]Cell{"process": {Partial, Fixture, "A background count in the status JSON holds the loop. No child identities are reported.", []Ref{t(processTest, "TestObserveJSON")}}})},
+	{ID: "assignment_coordination", Title: "Explicit independent-work coordinator wake", What: "Permit one existing coordinator wake alongside healthy busy direct children, only for explicitly declared independent assignments with current typed idle evidence.",
+		Cells: merge(map[string]Cell{"bb": {Yes, Fixture, "Unreleased separate assignment_coordination opt-in. Exact revision-bound readiness, complete current direct-child evidence and one bounded optional revalidation; existing holds, cadence and send allowances retain precedence. Durable pre-delivery attempt consumption prevents automatic replay; no child dispatch, self-resume, authenticated handoff or mandatory turn-end hook. No installed/live acceptance.", []Ref{t("cmd/looptender/assignment_scheduling_test.go", "TestAssignmentSchedulingFullJourney"), t("internal/supervise/assignment_age_test.go", "TestAssignmentObservationTimeCountsTowardGrantAge"), d("docs/assignments.md")}}}, same(Cell{NA, None, "This BB direct-child assignment contract is not supported by this adapter.", nil}, "claude", "codex", "cursor", "process", "custom"))},
 	{ID: "child_notice", Title: "Child failure notice and report", What: "Tell the parent conversation, and optionally the owner, when a child fails.",
 		Cells: merge(map[string]Cell{
 			"bb": {Yes, Fixture, "Running on one live loop; a notice has not been captured there.", []Ref{t("internal/adapter/bb/children_test.go", "TestChildWorkListsErroredChildren"), d("docs/operations.md")}},

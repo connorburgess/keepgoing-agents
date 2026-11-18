@@ -55,6 +55,7 @@ To change the matrix, edit the table and run `KEEPGOING_UPDATE_ADAPTERS_DOC=1 go
 | [Recover a failed turn: retry the turn](#recover-a-failed-turn-retry-the-turn) | yes · fixture | missing · none | missing · none | missing · none | missing · none | missing · none | missing · none |
 | [Connection loss and the network check](#connection-loss-and-the-network-check) | yes · fixture | yes · fixture | yes · fixture | yes · fixture | missing · none | yes · fixture | yes · fixture |
 | [Child-work awareness](#child-work-awareness) | yes · live | n/a | n/a | n/a | missing · none | partial · fixture | n/a |
+| [Explicit independent-work coordinator wake](#explicit-independent-work-coordinator-wake) | yes · fixture | n/a | n/a | n/a | missing · none | n/a | n/a |
 | [Child failure notice and report](#child-failure-notice-and-report) | yes · fixture | n/a | n/a | n/a | missing · none | n/a | n/a |
 | [Lane recovery: retry a failed child's turn](#lane-recovery-retry-a-failed-childs-turn) | yes · fixture | missing · none | missing · none | missing · none | missing · none | missing · none | missing · none |
 | [Handoff away from it](#handoff-away-from-it) | yes · live | yes · fixture | yes · fixture | missing · none | missing · none | yes · fixture | yes · fixture |
@@ -169,7 +170,7 @@ Tell an outage from a provider failure, wait it out without spending re-prompts 
 
 ### Child-work awareness
 
-Hold a parent that is not in error while conversations it started are still working, and say which. A parent in error is recovered regardless.
+Normally hold a parent that is not in error while conversations it started are still working, and say which. A parent in error is recovered regardless.
 
 - **BB thread:** yes, evidence live. Direct child threads are listed and verified on each check. [run-discovery.md#live-check-waiting-on](run-discovery.md#live-check-waiting-on) [`TestObserveActiveChildSuppressesParentUntilFinished`](../internal/adapter/bb/children_test.go)
 - **Claude Code headless:** n/a. A headless turn has no child conversations outside its own process. Subagents the CLI starts live and end inside the turn.
@@ -178,6 +179,18 @@ Hold a parent that is not in error while conversations it started are still work
 - **Antigravity:** missing, evidence none. No adapter is registered, so a loop cannot use it. [antigravity.md](antigravity.md)
 - **Generic process:** partial, evidence fixture. A background count in the status JSON holds the loop. No child identities are reported. [`TestObserveJSON`](../internal/adapter/process/process_test.go)
 - **Agent defined in configuration:** n/a. A definition cannot declare work that outlives a turn, so none is assumed.
+
+### Explicit independent-work coordinator wake
+
+Permit one existing coordinator wake alongside healthy busy direct children, only for explicitly declared independent assignments with current typed idle evidence.
+
+- **BB thread:** yes, evidence fixture. Unreleased separate assignment_coordination opt-in. Exact revision-bound readiness, complete current direct-child evidence and one bounded optional revalidation; existing holds, cadence and send allowances retain precedence. Durable pre-delivery attempt consumption prevents automatic replay; no child dispatch, self-resume, authenticated handoff or mandatory turn-end hook. No installed/live acceptance. [`TestAssignmentSchedulingFullJourney`](../cmd/looptender/assignment_scheduling_test.go) [`TestAssignmentObservationTimeCountsTowardGrantAge`](../internal/supervise/assignment_age_test.go) [assignments.md](assignments.md)
+- **Claude Code headless:** n/a. This BB direct-child assignment contract is not supported by this adapter.
+- **Codex headless:** n/a. This BB direct-child assignment contract is not supported by this adapter.
+- **Cursor headless:** n/a. This BB direct-child assignment contract is not supported by this adapter.
+- **Antigravity:** missing, evidence none. No adapter is registered, so a loop cannot use it. [antigravity.md](antigravity.md)
+- **Generic process:** n/a. This BB direct-child assignment contract is not supported by this adapter.
+- **Agent defined in configuration:** n/a. This BB direct-child assignment contract is not supported by this adapter.
 
 ### Child failure notice and report
 
