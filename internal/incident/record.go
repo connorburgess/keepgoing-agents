@@ -261,7 +261,7 @@ func tierOf(r Record) string {
 		return TierActivity
 	case "control":
 		c := r.ControlChange
-		if !sameControls(r.ControlBefore, r.ControlAfter) || (c != nil && (c.OwnershipChanged || c.Operation == "daemon_takeover" || c.Operation == "transfer_begin" || c.Operation == "transfer_finish" ||
+		if !sameControls(r.ControlBefore, r.ControlAfter) || (c != nil && (c.OwnershipChanged || c.Operation == "daemon_takeover" || c.Operation == "transfer_begin" || c.Operation == "transfer_finish" || c.Operation == "supersede" ||
 			c.Operation == "session_reset_by_thread" || c.Operation == "session_reset_by_terminal")) {
 			// A session reset changes which conversation has the loop.
 			return TierKey
@@ -551,7 +551,7 @@ func clean(r Record) Record {
 			Action: "none", Cause: "other", Outcome: "control_saved"}
 		if r.ControlChange != nil {
 			c := *r.ControlChange
-			c.Operation = oneOf(c.Operation, "unavailable", "enable", "disable", "pause", "resume", "stop", "complete", "await-user", "start", "daemon_takeover", "transfer_begin", "transfer_finish",
+			c.Operation = oneOf(c.Operation, "unavailable", "enable", "disable", "pause", "resume", "stop", "complete", "await-user", "start", "daemon_takeover", "transfer_begin", "transfer_finish", "supersede",
 				// The same three changes made from the keepgoing panel.
 				"panel_pause", "panel_stop", "panel_resume",
 				// A question the loop raised for a person, and its end.

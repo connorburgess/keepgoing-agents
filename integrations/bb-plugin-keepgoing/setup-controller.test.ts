@@ -271,3 +271,10 @@ test("a preview that does not come back with the route choice asked for is refus
   (f.state as Record<string, unknown>).redundancy = { healthy: [], min: 1 };
   assert.equal((await f.controller.call({ action: "inspect", threadId: "thr_example" })).canStart, false);
 });
+
+test("an imported registry reference never inherits setup Start even with otherwise healthy diagnostics",async()=>{
+  const f=fixture();
+  await f.d.save([{...f.target,id:"imported-example",loop:f.plan.loop,configPath:f.plan.configPath,registryId:"loop_0123456789abcdef0123456789abcdef",registryStateDir:f.plan.stateDir}]);
+  const result=await f.controller.call({action:"start",threadId:f.target.threadId});
+  assert.equal(result.canStart,false);assert.ok(!f.calls.includes("start"));
+});

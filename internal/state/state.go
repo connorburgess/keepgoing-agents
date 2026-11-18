@@ -514,11 +514,12 @@ func (f File) CandidateAgent(c config.Candidate) (a config.Agent, ok bool) {
 
 // OnceReport is a report keepgoing sends once per episode: Key names the
 // episode, and a failed delivery is tried again, at most MaxOnceAttempts
-// times in all.
+// times in all, unless the reporter forbids retry after an uncertain delivery.
 type OnceReport struct {
-	Key      string `json:"key"`
-	Attempts int    `json:"attempts"`
-	Sent     bool   `json:"sent"`
+	Key          string `json:"key"`
+	Attempts     int    `json:"attempts"`
+	Sent         bool   `json:"sent"`
+	RetryStopped bool   `json:"retryStopped,omitempty"`
 }
 
 // MaxOnceAttempts bounds the deliveries of one OnceReport.

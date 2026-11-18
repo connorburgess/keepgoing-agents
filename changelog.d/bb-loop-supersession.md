@@ -1,0 +1,1 @@
+- Unreleased CLI: explicitly supersede an obsolete BB loop after a manual move; durable resume/start fencing preserves holds and stop without changing the successor.

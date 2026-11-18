@@ -1,0 +1,1 @@
+- Wait for the output-bound regression fixture's second turn to finish before removing its runner directory.
