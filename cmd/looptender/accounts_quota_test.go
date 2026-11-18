@@ -130,6 +130,20 @@ func TestAccountQuotaMutationAndUnavailableFences(t *testing.T) {
 	for _, kind := range []string{"revision", "removed", "executable", "workdir", "symlink", "context", "corrupt"} {
 		t.Run(kind, func(t *testing.T) {
 			dir, e := accountFixture(t, "codex")
+			if kind == "workdir" {
+				workdir := filepath.Join(e.Workdir, "selected-workdir")
+				if err := os.Mkdir(workdir, 0700); err != nil {
+					t.Fatal(err)
+				}
+				if err := accounts.Update(dir, func(f *accounts.File) error {
+					e.Workdir = workdir
+					e.Context = accounts.Context(*f, e, os.Environ())
+					f.Entries[0] = e
+					return nil
+				}); err != nil {
+					t.Fatal(err)
+				}
+			}
 			if kind == "symlink" && runtime.GOOS == "windows" {
 				t.Skip("Unix symlink fixture")
 			}
@@ -340,5 +354,53 @@ func TestAccountQuotaCommandRejectsImplicitSelection(t *testing.T) {
 		if got := accountsCommand(env{context.Background(), &out, &errs}, args, nil); got != exitUsage {
 			t.Fatal(args, got)
 		}
+	}
+}
+
+func TestAccountQuotaMissingCachedPercentageRefusesRPC(t *testing.T) {
+	for _, kind := range []string{"missing", "null"} {
+		t.Run(kind, func(t *testing.T) {
+			dir, e := accountFixture(t, "codex")
+			run := func(context.Context, string, []string, string) ([]byte, error) { return []byte(quotaResponse), nil }
+			if _, err := accountQuotaRefresh(context.Background(), dir, e.ID, nil, run, os.Environ(), time.Now); err != nil {
+				t.Fatal(err)
+			}
+			path := filepath.Join(dir, accounts.QuotaName)
+			raw, _ := os.ReadFile(path)
+			var document map[string]any
+			if err := json.Unmarshal(raw, &document); err != nil {
+				t.Fatal(err)
+			}
+			entry := document["entries"].([]any)[0].(map[string]any)
+			for _, field := range []string{"lastSuccess", "lastAttempt"} {
+				w := entry[field].(map[string]any)["windows"].([]any)[0].(map[string]any)
+				if kind == "missing" {
+					delete(w, "usedPercent")
+				} else {
+					w["usedPercent"] = nil
+				}
+			}
+			malformed, _ := json.Marshal(document)
+			if err := os.WriteFile(path, malformed, 0600); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := accounts.LoadQuota(dir); !errors.Is(err, accounts.ErrInvalid) {
+				t.Fatal("unknown percent accepted", err)
+			}
+			f, _ := accounts.Load(dir)
+			view := accounts.QuotaViews(dir, f, os.Environ(), time.Now())[e.ID]
+			if view.State != "unavailable" || view.Reason != "cache_unavailable" || len(view.Windows) != 0 {
+				t.Fatal(view)
+			}
+			calls := 0
+			_, err := accountQuotaRefresh(context.Background(), dir, e.ID, nil, func(context.Context, string, []string, string) ([]byte, error) {
+				calls++
+				return []byte(quotaResponse), nil
+			}, os.Environ(), time.Now)
+			after, _ := os.ReadFile(path)
+			if !errors.Is(err, accounts.ErrInvalid) || calls != 0 || !bytes.Equal(malformed, after) {
+				t.Fatal("malformed cache queried or replaced", calls, err)
+			}
+		})
 	}
 }

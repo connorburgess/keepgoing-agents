@@ -27,6 +27,28 @@ type QuotaWindow struct {
 	DurationMinutes *int64     `json:"durationMinutes,omitempty"`
 	ResetsAt        *time.Time `json:"resetsAt,omitempty"`
 }
+
+// UnmarshalJSON distinguishes a reported zero from absent/null persisted data.
+// The ordinary encoder always writes usedPercent, including zero.
+func (w *QuotaWindow) UnmarshalJSON(b []byte) error {
+	var wire struct {
+		Name            string     `json:"name"`
+		UsedPercent     *int       `json:"usedPercent"`
+		DurationMinutes *int64     `json:"durationMinutes,omitempty"`
+		ResetsAt        *time.Time `json:"resetsAt,omitempty"`
+	}
+	d := json.NewDecoder(bytes.NewReader(b))
+	d.DisallowUnknownFields()
+	if err := d.Decode(&wire); err != nil {
+		return err
+	}
+	if wire.UsedPercent == nil {
+		return ErrInvalid
+	}
+	*w = QuotaWindow{Name: wire.Name, UsedPercent: *wire.UsedPercent, DurationMinutes: wire.DurationMinutes, ResetsAt: wire.ResetsAt}
+	return nil
+}
+
 type QuotaAttempt struct {
 	At      time.Time     `json:"observedAt"`
 	Reason  string        `json:"reason,omitempty"`
