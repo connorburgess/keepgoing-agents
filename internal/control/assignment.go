@@ -223,6 +223,9 @@ func assignmentTransition(a, b AssignmentRevision) bool {
 	}
 	for _, old := range a.Rows {
 		next, ok := rows[old.Spec.ID]
+		if ok && a.Binding != b.Binding && next.Revision != old.Revision+1 {
+			return false
+		}
 		if !ok {
 			if !assignmentComplete(old) {
 				return false
@@ -357,6 +360,9 @@ func WriteAssignments(dir, caller string, b AssignmentBinding, expectedID string
 	}
 	if err = CheckOwner(ctl, caller, false); err != nil {
 		return nil, err
+	}
+	if ctl.BBTarget != "" && ctl.BBTarget != b.Coordinator {
+		return nil, ErrAssignment
 	}
 	if ctl.Ownership == nil || b.Owner != ctl.Ownership.ThreadID || b.Generation != ctl.Ownership.Generation {
 		return nil, ErrAssignment

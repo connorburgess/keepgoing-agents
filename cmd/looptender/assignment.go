@@ -22,6 +22,9 @@ import (
 // assignmentBinding reads only local records. Failure never returns usable counts.
 func assignmentBinding(cfg *config.Config, ctl control.File) (control.AssignmentBinding, error) {
 	b := control.AssignmentBinding{Loop: cfg.Loop.Name}
+	if ctl.PendingTransfer != nil || (ctl.BBTarget != "" && (cfg.Loop.BB == nil || cfg.Loop.BB.Thread != ctl.BBTarget)) {
+		return b, control.ErrAssignment
+	}
 	if cfg.Loop.Adapter != "bb" || cfg.Loop.BB == nil || ctl.Ownership == nil || control.CheckOwner(ctl, "", false) != nil {
 		return b, control.ErrAssignment
 	}
@@ -168,6 +171,9 @@ func assignmentCommand(e env, args []string, run doctorRun) int {
 	if err = control.CheckTransferReady(ctl); err != nil {
 		return ownershipError(e, err)
 	}
+	if err := checkTransferSources(cfg, false); err != nil {
+		return ownershipError(e, err)
+	}
 	b, err := assignmentBinding(cfg, ctl)
 	if err != nil {
 		e.errf("record a goal and establish BB ownership before assignment review")
@@ -215,7 +221,7 @@ func assignmentCommand(e env, args []string, run doctorRun) int {
 		return ownershipError(e, err)
 	}
 	defer l.Release()
-	if err = cfg.CheckSources(); err != nil {
+	if err = checkTransferSources(cfg, false); err != nil {
 		e.errf("configuration changed; no assignment evidence saved")
 		return exitSkipped
 	}
@@ -321,6 +327,9 @@ func printAssignmentSummary(e env, s control.AssignmentSummary) {
 	if s.Counts == nil {
 		fmt.Fprintln(e.stdout, "Assignment outcomes unknown; reconcile existing direct lanes before relying on completion.")
 		return
+	}
+	if s.Coverage != "observed_direct_children" {
+		fmt.Fprintln(e.stdout, "Coverage is partial; additional assignments and work are unknown.")
 	}
 	c := s.Counts
 	fmt.Fprintf(e.stdout, "Historical direct-child evidence (%s), read %s: %d assignments, %d unknown, %d unacknowledged, %d unfinished; %d person-blocked, %d dependency-waiting. No work dispatched.\n", s.Coverage, s.ObservedAt.Format(time.RFC3339), c.Assignments, c.Unknown, c.Unacknowledged, c.Unfinished, c.PersonBlocked, c.DependencyWaiting)

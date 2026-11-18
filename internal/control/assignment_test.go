@@ -134,10 +134,11 @@ func TestAssignmentLifecycleRefusalAndRetainedHistory(t *testing.T) {
 	}
 	good, _ := os.ReadFile(path)
 	for name, mutate := range map[string]func(*AssignmentRecord){
-		"history-loss":   func(x *AssignmentRecord) { x.Revisions[1].Rows = []AssignmentRow{} },
-		"future-schema":  func(x *AssignmentRecord) { x.Version = 2 },
-		"null-rows":      func(x *AssignmentRecord) { x.Revisions[1].Rows = nil },
-		"copied-runtime": func(x *AssignmentRecord) { x.Revisions[0].Binding.Runtime = filepath.Dir(b.Runtime) },
+		"binding-without-reset": func(x *AssignmentRecord) { x.Revisions[1].Binding.Generation++ },
+		"history-loss":          func(x *AssignmentRecord) { x.Revisions[1].Rows = []AssignmentRow{} },
+		"future-schema":         func(x *AssignmentRecord) { x.Version = 2 },
+		"null-rows":             func(x *AssignmentRecord) { x.Revisions[1].Rows = nil },
+		"copied-runtime":        func(x *AssignmentRecord) { x.Revisions[0].Binding.Runtime = filepath.Dir(b.Runtime) },
 	} {
 		t.Run(name, func(t *testing.T) {
 			var x AssignmentRecord
@@ -234,5 +235,41 @@ func TestAssignmentLifecycleRetirementAndContention(t *testing.T) {
 	after, _ := os.ReadFile(path)
 	if !bytes.Equal(before, after) {
 		t.Fatal("failed publication changed evidence")
+	}
+}
+
+func TestAssignmentLifecycleChangedBindingCannotRetainAcknowledgement(t *testing.T) {
+	dir, b, r := assignmentFixture(t)
+	h := assignmentWaiting()
+	r, err := WriteAssignments(dir, b.Owner, b, r.ID, 1, func(x *AssignmentRevision) error { x.Rows[0].Handoff = &h; x.Rows[0].HandoffRevision = 1; return nil })
+	if err != nil {
+		t.Fatal(err)
+	}
+	r, err = WriteAssignments(dir, b.Owner, b, r.ID, 2, func(x *AssignmentRevision) error { x.Rows[0].Acknowledged = 1; return nil })
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err = CheckAssignmentAwaitUser(dir, b); err != nil {
+		t.Fatal(err)
+	}
+	raw, _ := json.Marshal(r.Revisions[2])
+	var next AssignmentRevision
+	_ = json.Unmarshal(raw, &next)
+	next.Revision = 4
+	next.RecordedAt = time.Now().UTC()
+	next.Binding.Generation++
+	r.Revisions = append(r.Revisions, next)
+	damaged, _ := json.Marshal(r)
+	path := filepath.Join(dir, AssignmentName)
+	_ = os.WriteFile(path, damaged, 0600)
+	if _, err = LoadAssignments(dir); err == nil {
+		t.Fatal("old acknowledgement satisfied changed binding")
+	}
+	if _, err = WriteAssignments(dir, b.Owner, b, r.ID, 4, func(x *AssignmentRevision) error { return nil }); err == nil {
+		t.Fatal("damaged binding history replaced")
+	}
+	after, _ := os.ReadFile(path)
+	if !bytes.Equal(after, damaged) {
+		t.Fatal("damaged bytes repaired")
 	}
 }

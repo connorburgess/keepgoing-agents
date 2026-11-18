@@ -63,9 +63,9 @@ Point the coordinator at this page, or a copy of it, from its handoff file rathe
 looptender supervises the loop's own conversation. For a BB loop it also knows the loop's direct lanes by count and state, and acts on them in two cases only. The rules are in [architecture](architecture.md#rules-that-do-not-bend) and the [glossary](glossary.md); in short:
 
 - **Does:** count lanes and their states; let a working lane keep the loop from looking idle, and wake the loop when a lane finishes; escalate a lane's pending question to a person; report lanes in error; retry a failed lane's turn when the loop opts in with `bb.children.retry_errored` ([lane recovery](operations.md#lane-recovery)); stop lanes when a person asks with `stop --lanes`; say in a handoff brief how many lanes were working. See [BB child awareness](operations.md#bb-child-awareness).
-- **Does not:** create, message or move a lane; read a lane's message text; keep a ledger or know about lanes not yet created; record or check approvals; choose a lane's model or effort; limit nesting or report size.
+- **Does not:** create, message or move a lane; read a lane's message text; maintain an automatic assignment ledger or know about lanes not yet created; record or check approvals; choose a lane's model or effort; limit nesting or report size.
 
-Planned coordinator support, none of it built, is listed in the [roadmap](roadmap.md#coordinating-lanes-planned).
+The unreleased opt-in record below adds explicit assignment evidence and an explicit awaiting-user precondition; it does not add automatic scheduling or approval authority. Remaining planned coordinator support is listed in the [roadmap](roadmap.md#coordinating-lanes-planned).
 
 ## Explicit assignment lifecycle (unreleased)
 

@@ -25,6 +25,9 @@ func dockAssignmentsOf(st *statusOut) dockAssignments {
 			s = control.AssignmentSummary{Availability: "unavailable"}
 		} else {
 			text = dockPlural(s.Counts.Unknown, "assignment needs reconciliation", "assignments need reconciliation")
+			if s.Coverage != "observed_direct_children" {
+				text += ". Coverage is partial; additional work is unknown."
+			}
 		}
 	}
 	// Only validated local summary fields are present; private records never enter

@@ -28,6 +28,10 @@ func TestDockAssignmentProjectionUnknownAndCounts(t *testing.T) {
 			t.Fatal(string(raw))
 		}
 	}
+	partialZero := dockAssignmentsOf(&statusOut{Assignments: control.AssignmentSummary{Availability: "available", Coverage: "partial", Counts: &control.AssignmentCounts{}}})
+	if !strings.Contains(partialZero.Text, "additional work is unknown") {
+		t.Fatal("partial zero implied global all-clear", partialZero)
+	}
 	if view := dockAssignmentsOf(nil); view.Availability != "unavailable" || view.Counts != nil {
 		t.Fatal(view)
 	}

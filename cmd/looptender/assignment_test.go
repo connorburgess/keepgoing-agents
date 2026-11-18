@@ -293,3 +293,113 @@ func TestAssignmentInitialPartialReviewPreservesObligations(t *testing.T) {
 		t.Fatal("failed review changed evidence")
 	}
 }
+
+func TestAssignmentStaleTransferredConfigRefusesBeforeQueries(t *testing.T) {
+	for _, existing := range []bool{false, true} {
+		t.Run(fmt.Sprint(existing), func(t *testing.T) {
+			f := newFixture(t)
+			t.Setenv("BB_THREAD_ID", "thr_example_coordinator")
+			raw, _ := os.ReadFile(f.cfg)
+			write(t, f.cfg, strings.Replace(string(raw), "  name:", "  assignment_lifecycle: true\n  name:", 1), 0600)
+			if c, _, e := f.run("enable"); c != 0 {
+				t.Fatal(e)
+			}
+			goal := filepath.Join(t.TempDir(), "goal.json")
+			write(t, goal, `{"title":"Example","objectiveRefs":["objective"],"acceptanceRefs":["acceptance"]}`, 0600)
+			if c, _, e := f.run("goal", "create", "--file", goal); c != 0 {
+				t.Fatal(e)
+			}
+			cfg, _ := config.Load(f.cfg)
+			write(t, filepath.Join(f.bbDir, "thr_primary.show"), `{"thread":{"id":"thr_primary","status":"idle"}}`, 0600)
+			write(t, filepath.Join(f.bbDir, "thr_primary.children"), `[]`, 0600)
+			plan := filepath.Join(t.TempDir(), "plan.json")
+			write(t, plan, `{"assignments":[]}`, 0600)
+			var r *control.AssignmentRecord
+			if existing {
+				if c, _, e := f.run("assignment", "review", "--file", plan); c != 0 {
+					t.Fatal(e)
+				}
+				r, _ = control.LoadAssignments(cfg.Loop.StateDir)
+			}
+			ctl := mustAssignmentControl(t, cfg)
+			ctl.BBTarget = "thr_example_destination"
+			if !existing {
+				ctl.Ownership.Generation++
+			}
+			if e := control.Save(cfg.Loop.StateDir, ctl); e != nil {
+				t.Fatal(e)
+			}
+			record := filepath.Join(cfg.Loop.StateDir, control.AssignmentName)
+			before, _ := os.ReadFile(record)
+			calls := f.read("calls")
+			args := []string{"assignment", "review", "--file", plan}
+			if r != nil {
+				args = append(args, "--id", r.ID, "--revision", "1")
+			}
+			if c, out, e := f.run(args...); c == 0 {
+				t.Fatalf("stale config saved review: %s %s", out, e)
+			}
+			if c, _, _ := f.run("assignment", "inventory"); c == 0 {
+				t.Fatal("stale config queried inventory")
+			}
+			if f.read("calls") != calls {
+				t.Fatal("stale config reached BB")
+			}
+			after, _ := os.ReadFile(record)
+			if !bytes.Equal(before, after) {
+				t.Fatal("stale config published evidence")
+			}
+			if existing {
+				s := assignmentStatus(cfg, ctl)
+				if s.Availability == "available" || s.Counts != nil {
+					t.Fatal("stale source projected current review", s)
+				}
+			}
+		})
+	}
+}
+
+func TestAssignmentTransferDuringInventoryPreservesPreviousRecord(t *testing.T) {
+	f := newFixture(t)
+	t.Setenv("BB_THREAD_ID", "thr_example_coordinator")
+	raw, _ := os.ReadFile(f.cfg)
+	write(t, f.cfg, strings.Replace(string(raw), "  name:", "  assignment_lifecycle: true\n  name:", 1), 0600)
+	if c, _, e := f.run("enable"); c != 0 {
+		t.Fatal(e)
+	}
+	goal := filepath.Join(t.TempDir(), "goal.json")
+	write(t, goal, `{"title":"Example","objectiveRefs":["objective"],"acceptanceRefs":["acceptance"]}`, 0600)
+	if c, _, e := f.run("goal", "create", "--file", goal); c != 0 {
+		t.Fatal(e)
+	}
+	cfg, _ := config.Load(f.cfg)
+	plan := filepath.Join(t.TempDir(), "plan.json")
+	write(t, plan, `{"assignments":[]}`, 0600)
+	changed := false
+	invoke := func(ctx context.Context, cli string, args []string, overrides map[string]string, workdir string) ([]byte, error) {
+		if args[1] == "list" {
+			if !changed {
+				ctl := mustAssignmentControl(t, cfg)
+				ctl.BBTarget = "thr_example_destination"
+				ctl.Ownership.Generation++
+				if e := control.Save(cfg.Loop.StateDir, ctl); e != nil {
+					t.Fatal(e)
+				}
+				changed = true
+			}
+			return []byte(`[]`), nil
+		}
+		if args[1] != "show" {
+			t.Fatal("unexpected operation", args)
+		}
+		return []byte(`{"thread":{"id":"thr_primary","status":"idle"}}`), nil
+	}
+	var out, errs bytes.Buffer
+	c := assignmentCommand(env{ctx: context.Background(), stdout: &out, stderr: &errs}, []string{"review", "-c", f.cfg, "--file", plan}, invoke)
+	if !changed || c == 0 {
+		t.Fatal("post-inventory transferred binding accepted", c, errs.String())
+	}
+	if _, err := os.Stat(filepath.Join(cfg.Loop.StateDir, control.AssignmentName)); !os.IsNotExist(err) {
+		t.Fatal("race published review", err)
+	}
+}
