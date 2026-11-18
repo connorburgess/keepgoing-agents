@@ -29,7 +29,19 @@ func accountQuotaDetailsParse(raw []byte, err error) (*accounts.QuotaDetails, st
 	d := &accounts.QuotaDetails{Buckets: []accounts.QuotaBucket{}, OrdinaryUsageAllowed: response.Allowed}
 	byID := response.ByID
 	if len(byID) == 0 {
-		byID = map[string]json.RawMessage{"codex": response.RateLimits}
+		key := "codex"
+		var legacy struct {
+			ID *string `json:"limitId"`
+		}
+		if len(response.RateLimits) > 0 && string(response.RateLimits) != "null" {
+			if json.Unmarshal(response.RateLimits, &legacy) != nil {
+				return nil, "schema_unavailable"
+			}
+			if legacy.ID != nil && *legacy.ID != "" {
+				key = *legacy.ID
+			}
+		}
+		byID = map[string]json.RawMessage{key: response.RateLimits}
 	}
 	if len(byID) > 256 {
 		return nil, "schema_unavailable"

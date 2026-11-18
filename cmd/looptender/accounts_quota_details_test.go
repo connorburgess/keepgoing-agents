@@ -167,3 +167,10 @@ func TestAccountQuotaDetailsUnknownWindowKeepsRecognizedCredits(t *testing.T) {
 		t.Fatalf("%+v %s", d, reason)
 	}
 }
+
+func TestAccountQuotaDetailsLegacyMeterKeepsItsOwnBucket(t *testing.T) {
+	d, reason := accountQuotaDetailsParse([]byte(`{"rateLimits":{"limitId":"example-meter","primary":{"usedPercent":12}}}`), nil)
+	if reason != "" || len(d.Buckets) != 1 || d.Buckets[0].Key != "example-meter" || d.Buckets[0].Windows[0].UsedPercent != 12 {
+		t.Fatal(d, reason)
+	}
+}
