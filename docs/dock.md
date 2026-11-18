@@ -33,6 +33,28 @@ Exit codes: 0 after an interrupt, 1 if it cannot listen, 2 for invalid flags.
 
 ## Landing view and evidence limits
 
+**Unreleased migration-review visibility.** A loop's detail includes a **Migration
+review** section. It reuses the validated saved summary already read by status:
+unfinished, dormant and unresolved declarations, total assignments, predecessor
+direct lanes and assignments absent from that historical listing, with the
+evidence date and year. The overview keeps unfinished or unavailable reviews
+visible beside each loop. It neither adds a needs-you condition nor changes the
+loop's state, ordering or available actions. Dormant work can be intentional.
+
+A missing record says **No migration review is saved**; a damaged/unreadable record
+says unfinished work is unknown, and a copied runtime/configuration binding is
+reported separately. Unavailable evidence never shows zero counts. A valid zero
+is a declaration in that saved checklist, not proof of completion. Counts survive
+as historical evidence; age never clears them or any hold. Only predecessor
+direct lanes were observed; descendants are excluded and current lane activity
+is not established by these declarations. The panel refresh makes no additional
+BB, provider or Git query, and adds no review ID, assignment text, lane identity,
+private path or digest, including with identifiers shown. Inspect or revise the
+private record through [transfer reconcile](transfer.md#record-a-migration-review-unreleased).
+This adds no task/goal/hold reconciliation, dispatch or resume capability.
+Fictional projection/browser checks do not establish installed-panel or live
+migration acceptance.
+
 **Unreleased source.** The overview opens with the existing loop needs-you queue and its recorded reason and next action. Under **Loops and lanes**, expand a loop to see the direct lanes of its last verified listing, its supervision state, last recorded decision and next known check. Expansion and keyboard focus survive ordinary reads while the page remains open. Choosing another view and returning also preserves expansion; reloading the browser page starts over. The registry's existing order keeps loops needing attention first. A line under the heading says that only conversations looptender supervises are shown, with their lanes, and that another coordinator appears once a loop is created for it; the page does not look for other conversations.
 
 Each loop's row labels its target "coordinator" when its last verified listing has lanes (the [glossary](glossary.md)'s role; nothing is renamed), and sums those lanes on one line, people first: "Lanes: 3 waiting · 2 failed · 35 working". A listing kept across a hold or pause says so on that line too. Rows without a listing keep "Lane evidence:" with its reason. When an expanded loop lists more than 8 lanes, the lanes waiting for an answer stay in view and the rest fold into one "Show the other N of M lanes" element, which also keeps its state across reads. The 24-lane cap and the count of lanes not listed are unchanged.
