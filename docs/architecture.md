@@ -18,7 +18,7 @@ A manually created successor with separate loop state has no inferred relationsh
 ## Packages
 
 ```
-cmd/looptender               CLI: start, service, tick, daemon, status, context, timeline, goal, registry, client status/pause/stop/prepare-resume/resume/review/apply, dock, panel, transfer, control, fallbacks, report, adapter check, ci-wait, net-retry
+cmd/looptender               CLI: start, service, tick, daemon, status, context, timeline, goal, registry, client status/pause/stop/prepare-resume/resume/review/apply, dock, panel, transfer, control, fallbacks, report, adapter check, pr-backlog, ci-wait, net-retry
 internal/config             a loop's configuration file (looptender.yaml, or keepgoing.yaml) and fallbacks.yaml: loading, defaults, validation
 internal/envvar             the environment variables' two names: LOOPTENDER_X, and the earlier KEEPGOING_X
 internal/userdir            the per-user directories and their name: looptender, or keepgoing where one already exists; the explicit move between them
@@ -370,8 +370,14 @@ The command layer composes existing read-only transfer inventories into two comp
 
 The report package owns the opt-in OUT integration described in [Sessionpipe reporting](sessionpipe.md). It reserves an opaque stream identity and sequences in a private snapshot under the existing delivery lock before bounded discovery/POST transport. No network operation holds that lock. A shared report.ErrNoRetry transport marker stops once-per-episode notification retry through an optional persisted retryStopped flag; it does not mark delivery sent or suppress new episodes/independent per-check reports. Ordinary webhook retries retain their behavior. Report results remain diagnostics; the pure decision engine, agent observation classifications, ownership, controls, budgets and send permissions do not read this state. No supervision adapter, provider process or inbound control channel is added.
 
-### Bound BB registry publication
+## Bound BB registry publication
 
 Explicit BB plugin lifecycle operations publish a CLI reference only after their own success is confirmed. The command layer binds config/runtime native identity, configuration sources, current BB route, owner and controls to an opaque preview, then revalidates under nonwaiting registry → tick → control locks through `registry.AddChecked`. The storage callback cannot query providers or edit controls. Existing schema-1 reference identity and unrelated entries remain intact; no new ledger or package boundary is introduced. The plugin's existing SDK target checks bind host/project/environment/path independently of progress evidence.
 
 Lifecycle, CLI registry and private plugin-reference writes are not an atomic transaction. Publication returns separate repair-needed evidence and never causes lifecycle replay or control rollback. Explicit `registry reconcile` repairs existing references without provider queries or changing ownership/holds/accounting. Status, menu and page reads never reconcile or scan. Plugin provenance and CLI registry coverage describe distinct explicit reference sets, not a complete process inventory. Durable supersession alone controls historical/no-Resume behavior; registration never infers it from a pause.
+
+## PR backlog consultation (unreleased)
+
+`internal/prbacklog` owns bounded read-only GraphQL acquisition through `gh`, typed aggregate projection, pure policy evaluation and validated private cache/notice records. `config` validates the explicit opt-in repository, threshold, labels and freshness policy; `state` stores one aggregate cache and one notice record. No acquisition is performed by config/state loading. The standalone command acquires fresh evidence without loading or writing loop records.
+
+Only the ordinary-wake branch of `internal/supervise.act` consults this policy, after the existing decision and before reserving the send. Refresh uses optional time, preserves mandatory reserves, has no retries and rechecks effective controls before sending. Failure is notice evidence, never a hold, failover or permission. Cache attempts are interval-throttled; notices use semantic change/known conversation bookkeeping with a three-attempt cap, not new wake decisions. No decision-engine, lane, repository, merge or approval authority is added. See [the full freshness/privacy/acceptance contract](pr-backlog.md).

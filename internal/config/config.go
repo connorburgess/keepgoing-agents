@@ -70,6 +70,8 @@ type Loop struct {
 	// the conversation, and otherwise one line naming its ID and revision.
 	// It requires PromptGoal.
 	PromptGoalOnChange bool `yaml:"prompt_goal_on_change,omitempty"`
+	// PRBacklog is opt-in GitHub evidence on ordinary wakes, never a decision gate.
+	PRBacklog *PRBacklog `yaml:"pr_backlog,omitempty"`
 	// PromptContext appends the loop's supervision context (see
 	// internal/loopcontext) to wakes, re-prompts and handoff briefs, when it
 	// is new to the conversation or has changed. Off by default.
@@ -672,6 +674,9 @@ func (c *Config) applyDefaults() {
 			l.Probe.Kind = "codex"
 		}
 	}
+	if l.PRBacklog != nil {
+		l.PRBacklog.defaults()
+	}
 	setDur(&l.Daemon.Interval, DefaultDaemonInterval)
 	l.tickTimeoutDefaulted = l.TickTimeout.Duration == 0
 	setDur(&l.TickTimeout, DefaultTickTimeout)
@@ -766,6 +771,11 @@ func (c *Config) Validate() error {
 	}
 	if l.Prompt != "" && l.PromptFile != "" {
 		add("set only one of loop.prompt and loop.prompt_file")
+	}
+	if l.PRBacklog != nil {
+		if err := l.PRBacklog.Policy().Validate(); err != nil {
+			add("loop.pr_backlog: %v", err)
+		}
 	}
 	if l.PromptGoalOnChange && !l.PromptGoal {
 		add("loop.prompt_goal_on_change needs loop.prompt_goal: true")
