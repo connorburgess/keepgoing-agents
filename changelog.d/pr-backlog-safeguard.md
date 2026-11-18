@@ -1,0 +1,1 @@
+- Add an opt-in PR backlog safeguard: bounded cached GitHub WIP evidence and an integration-first reminder on ordinary wakes, plus a read-only `pr-backlog` command. Unavailable evidence stays unknown; no extra wakes, repository edits, merges, branch-creation enforcement or permission changes.
