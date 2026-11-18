@@ -258,3 +258,10 @@ including an initial review of existing direct children, exact-revision acknowle
 dated status/panel counts. Missing evidence stays unknown. Its explicit awaiting-user check
 rejects declared independent work; it does not schedule lanes, mandate turn-end handoffs or
 clear existing holds.
+
+A separate unreleased `assignment_coordination` opt-in can wake that existing coordinator
+once for a revision-bound declaration of independent unfinished work while a healthy
+lane stays busy. [Readiness and attempt reconciliation](docs/assignments.md#opt-in-coordinator-wake-for-independent-work)
+remain explicit. Missing/stale evidence withholds this exception; failed/unknown attempts
+never automatically rearm. Ordinary task prompts, gates, cadence and send allowances remain.
+This does not dispatch children, clear a saved hold or enforce handoffs at turn end.

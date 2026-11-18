@@ -81,8 +81,64 @@ Pause and stop remain unconditional safety controls. Automatic provider/input/bu
 
 Older strict configuration readers reject `assignment_lifecycle`; do not activate it while an older reader still owns the loop. No configuration is rewritten on read. Verify all associated readers, ownership and gates before coordinated upgrades. Registry references in the BB plugin and the per-user CLI registry are different inventories; neither alone proves all installed instances have been covered.
 
+## Opt-in coordinator wake for independent work
+
+`assignment_lifecycle` alone keeps the existing child-active suppression. A separate opt-in permits one coordinator wake for an explicit batch of independently actionable assignments:
+
+```yaml
+loop:
+  assignment_lifecycle: true
+  assignment_coordination:
+    enabled: true
+    max_evidence_age: 30m
+```
+
+The age defaults to 30 minutes and must be between 1 minute and 24 hours. It only withholds scheduling when evidence is too old; it never clears a hold or discards obligations. Missing configuration adds no supervision reads or queries. A disabled object also preserves the ordinary prompt and query sequence. Configuration requires a BB primary; this exception does not operate on a fallback.
+
+First complete the initial review, import each lane's explicit handoff, and acknowledge its exact revision using the preceding workflow. Include the busy CI assignment as well as the idle docs and transfer-preview assignments. Missing, stale, unacknowledged, absent or partial evidence anywhere withholds this first exception: it does not automatically recover missing handoffs. Execution alone never supplies a declaration. A person-blocked merge does not block independently authorized review work, but the coordinator must explicitly declare that independence.
+
+Create `ready.json` privately, naming exact assignment and handoff revisions from `assignment show --private`:
+
+```json
+{"independentlyActionable":true,"selections":[
+  {"assignment":"docs","assignmentRevision":1,"handoffRevision":1},
+  {"assignment":"preview","assignmentRevision":1,"handoffRevision":1}
+]}
+```
+
+Each selected handoff must be acknowledged, `unfinished`, `available`, and have blocker `none`. The explicit declaration attests that its remaining work is already authorized and independent of ongoing lanes. Looptender does not interpret scope, authorization, dependency or next-owner text to reach that conclusion. Set the following variables from the current private record identity/revision, then run:
+
+```sh
+keepgoing assignment ready -c /private/example/looptender.yaml --file /private/example/ready.json \
+  --id "$ASSIGNMENT_RECORD_ID" --revision "$ASSIGNMENT_RECORD_REVISION"
+```
+
+This saves one batch grant. It does not send anything. The ordinary scheduled check may use it only for the existing configured coordinator, with exact current idle direct-lane evidence. One healthy busy CI lane can then coexist with a single coordinator notice about the independent docs/preview work. No message, retry, spawn, archive, reparent or stop is sent to a child. The coordinator chooses its next authorized action and preserves healthy workers.
+
+The pure decision exception bypasses only active-child suppression. Every existing stop, pause, disabled/awaiting-user/completed/retired gate, interaction, retry, window, spacing, network, deadline and send/progress bound retains precedence. The notice uses the ordinary Wake action and send allowance. It contains fixed counts and the automatic/non-person-instruction disclosure, without private references or stale task text. It adds no extra wake cadence or permission. The independent-work exception never triggers a route change.
+
+Immediately before consuming a grant, one bounded structured child scan revalidates identities, statuses and pending interactions. It uses the existing optional-check allowance, at most 20 seconds, with send/report/cleanup reserves retained. No retry loop or provider probe is added. Changed, partial or failed evidence or insufficient optional budget withholds the busy-child exception. The observation and BB tell are not a transaction: changes after the final scan cannot be cancelled by this contract.
+
+A normal no-active-child wake keeps its configured task prompt and may append the fixed counts notice. It retires an exact valid local grant in that same attempt, preventing a later busy-child exception from repeating it. If optional revalidation is unavailable or changes evidence, the normal wake proceeds under its existing gates without a current-assignment claim, and retires only the still-bound local grant as `superseded_by_ordinary_wake_attempt`. Unknown or stale assignment evidence never suppresses baseline ordinary wakes by policy. Actual source/ownership/storage failures at the pre-send safety boundary can still prevent delivery.
+
+Before any adapter call, sends.json reserves the ordinary allowance and the assignment record atomically records the exact grant attempt. If allowance reservation fails, no grant is consumed. If assignment publication fails, no prompt is sent, and the reserved allowance is conservatively spent. A crash may consume allowance/grant without delivery. A failed or unknown send, restart, failed final diagnostic save, provider return, time passing, or unrelated metadata update does not rearm that grant. This is durable attempt bookkeeping, **not delivery evidence**.
+
+After reviewing the attempt and remaining assignment obligations, the coordinator prepares `reconciliation.json` using the grant identity from private show:
+
+```json
+{"grant":"assignment_00000000000000000000000000000000","reviewed":true}
+```
+
+```sh
+keepgoing assignment reconcile-wake -c /private/example/looptender.yaml \
+  --file /private/example/reconciliation.json \
+  --id "$ASSIGNMENT_RECORD_ID" --revision "$ASSIGNMENT_RECORD_REVISION"
+```
+
+Refresh the record revision variables before each write. This declares coordinator review, not authenticated receipt or completion. `assignment show`, status and the panel distinguish readiness, stale evidence and attempted/unreconciled work with dates and the next supported command. A new readiness batch requires another explicit declaration; an attempted grant cannot be replaced before reconciliation. Handoff/assignment/goal/owner/binding changes make old readiness unusable without erasing the attempt. Reads never repair evidence. Scheduling data explicitly promotes assignments.json to version 2; version 1 remains readable, but older binaries refuse the promoted record. The existing 32-revision/1-MiB bound applies to declarations, attempts and reconciliations too; capacity failure refuses sends rather than evicting unfinished obligations.
+
 ## Remaining acceptance
 
-This implements explicit initial reconciliation, handoff import/acknowledgement, visibility and the declared hold precondition. It does **not** require a handoff before BB ends a turn: the available idle event is post-turn and the dispatch hook is not a turn-completion checkpoint. It does not automatically wake the parent alongside a healthy worker, dispatch ready lanes, authenticate worker publication or resume a held coordinator after owner continuation. Existing child-active suppression remains. These scheduling/host compliance paths require separate typed anti-duplicate and host-hook acceptance; passing the precondition does not close the whole idle-work incident.
+This implements explicit initial reconciliation, handoff import/acknowledgement, visibility and the declared hold precondition. It does **not** require a handoff before BB ends a turn: the available idle event is post-turn and the dispatch hook is not a turn-completion checkpoint. The separate coordinator-wake opt-in above covers explicitly declared independent work alongside a healthy worker. It does not dispatch ready lanes, authenticate worker publication, enforce turn-end handoffs or resume a held coordinator after owner continuation. Unknown or missing evidence still requires explicit reconciliation; passing this slice does not close the whole idle-work incident.
 
 Fixture evidence is separate from deployed acceptance. After reviewed artifacts and exact-head checks, the authorized rollout must inventory all BB-associated instances (including newly discovered associated apps), preserve identity/controls/accounting, satisfy ordinary owner-terminal execution constraints, and verify installed behavior. No source test proves that upgrade or live coordinator scheduling happened.

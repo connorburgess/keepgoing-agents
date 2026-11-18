@@ -624,3 +624,16 @@ Windows compilation is distinct from native record fixture execution in CI. A bu
 pre-feature main executable refuses the opt-in configuration key; that is not installed
 reader or live upgrade acceptance. No mandatory turn-end hook, lane scheduling or deployed
 coordinator compliance is established by these tests. See [remaining assignment acceptance](assignments.md#remaining-acceptance).
+
+## Independent assignment coordinator wake
+
+Provider-free fictional regressions cover initial review/handoff/acknowledge/ready/Tick/reconcile
+with one active CI lane and two independent idle assignments, plus ordinary task-wake grant
+retirement. Fresh config/control/state/assignment loading on every command checks restart
+replay after uncertain send and failed final state save. Injected allowance and assignment
+publication failures verify zero adapter sends and conservative allowance accounting.
+Typed revalidation tests cover added/removed/activity/interaction changes, partial scans and
+optional-budget exhaustion; opt-out tests compare exact prompt/query sequences. Pure decision
+tables retain controls, cadence, window, network, retry and limit precedence. Malformed grant
+history is refused without repairing bytes. Source fixtures are not installed/live acceptance,
+mandatory host handoff compliance or automatic child-dispatch evidence.
