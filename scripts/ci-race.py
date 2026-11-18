@@ -106,6 +106,9 @@ class Job:
             except ProcessLookupError:
                 return False
 
+        # Defer cancellation until this owned group is gone. A repeated signal
+        # must not mark incomplete cleanup done or strand a sibling process.
+        old_mask = signal.pthread_sigmask(signal.SIG_BLOCK, {signal.SIGINT, signal.SIGTERM})
         try:
             if group_alive():
                 try:
@@ -122,9 +125,10 @@ class Job:
                     except ProcessLookupError:
                         pass
             self.process.wait()
+            self.stopped = True
         finally:
             self.output.close()
-            self.stopped = True
+            signal.pthread_sigmask(signal.SIG_SETMASK, old_mask)
 
 
 def wait_jobs(jobs, deadline):
@@ -148,6 +152,32 @@ def wait_jobs(jobs, deadline):
             raise TimeoutError('command package exhausted its 10-minute budget')
         if pending:
             time.sleep(0.1)
+    if errors:
+        raise RuntimeError('; '.join(errors))
+
+
+def cleanup_jobs(jobs):
+    # The first cancellation already failed the run. Ignore repeats while
+    # cleaning every sibling and publishing all available logs.
+    previous = {sig: signal.signal(sig, signal.SIG_IGN)
+                for sig in (signal.SIGINT, signal.SIGTERM)}
+    errors = []
+    try:
+        for job in jobs:
+            try:
+                job.stop()
+            except Exception as error:
+                errors.append(f'{job.log.name}: {error}')
+        for job in jobs:
+            try:
+                print(f'::group::{job.log.name}', flush=True)
+                print(job.log.read_text(), flush=True)
+                print('::endgroup::', flush=True)
+            except Exception as error:
+                errors.append(f'{job.log.name} log: {error}')
+    finally:
+        for sig, handler in previous.items():
+            signal.signal(sig, handler)
     if errors:
         raise RuntimeError('; '.join(errors))
 
@@ -197,14 +227,11 @@ def main():
             jobs.append(Job(['go', 'test', '-race', *others], root, output / 'packages.log'))
             wait_jobs(jobs[1:], deadline)
         finally:
-            for job in jobs:
-                job.stop()
-            for sig, handler in previous.items():
-                signal.signal(sig, handler)
-            for job in jobs:
-                print(f'::group::{job.log.name}', flush=True)
-                print(job.log.read_text(), flush=True)
-                print('::endgroup::', flush=True)
+            try:
+                cleanup_jobs(jobs)
+            finally:
+                for sig, handler in previous.items():
+                    signal.signal(sig, handler)
         print('Native race inventory executed exactly once across command partitions.', flush=True)
 
 

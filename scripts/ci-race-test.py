@@ -1,13 +1,17 @@
 """Provider-free regressions for selection, execution evidence and failure paths."""
 import importlib.util
+import contextlib
+import io
 import json
 from pathlib import Path
 import re
+import signal
 import subprocess
 import sys
 import tempfile
 import time
 import unittest
+from unittest import mock
 
 spec = importlib.util.spec_from_file_location('ci_race', Path(__file__).with_name('ci-race.py'))
 race = importlib.util.module_from_spec(spec)
@@ -105,6 +109,66 @@ class PartitionTests(unittest.TestCase):
                     job.stop()  # must not signal a group again after releasing it
                 finally:
                     job.stop(grace=.1)
+
+    def test_repeated_cancellation_is_deferred_until_group_cleanup(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            code = ("import signal,time; from pathlib import Path; "
+                    "signal.signal(signal.SIGTERM, signal.SIG_IGN); "
+                    "Path('ready').touch(); time.sleep(1); Path('survived').touch()")
+            job = race.Job([sys.executable, '-c', code], root, root / 'signal.log')
+            def interrupted(signum, frame):
+                raise InterruptedError('second cancellation')
+            previous = signal.signal(signal.SIGTERM, interrupted)
+            sleep = time.sleep
+            injected = False
+            def cancel_during_grace(seconds):
+                nonlocal injected
+                if not injected:
+                    injected = True
+                    signal.raise_signal(signal.SIGTERM)
+                sleep(seconds)
+            try:
+                deadline = time.monotonic() + 5
+                while not (root / 'ready').exists() and time.monotonic() < deadline:
+                    sleep(.01)
+                self.assertTrue((root / 'ready').exists())
+                with mock.patch.object(race.time, 'sleep', cancel_during_grace):
+                    with self.assertRaises(InterruptedError):
+                        job.stop(grace=.1)
+                self.assertTrue(job.stopped)
+                self.assertIsNotNone(job.process.poll())
+                sleep(1.1)
+                self.assertFalse((root / 'survived').exists())
+                job.stop(grace=.1)
+            finally:
+                signal.signal(signal.SIGTERM, previous)
+                job.stop(grace=.1)
+
+    def test_cleanup_failure_and_repeat_signal_do_not_hide_siblings_or_logs(self):
+        with tempfile.TemporaryDirectory() as temp:
+            jobs = []
+            for i in range(2):
+                log = Path(temp) / f'{i}.log'
+                log.write_text(f'fictional log {i}')
+                jobs.append(mock.Mock(log=log))
+            def interrupted(signum, frame):
+                raise InterruptedError('repeat cancellation')
+            previous = signal.signal(signal.SIGTERM, interrupted)
+            def failing_stop():
+                signal.raise_signal(signal.SIGTERM)
+                raise OSError('fictional cleanup failure')
+            jobs[0].stop.side_effect = failing_stop
+            output = io.StringIO()
+            try:
+                with contextlib.redirect_stdout(output), self.assertRaisesRegex(RuntimeError, 'cleanup failure'):
+                    race.cleanup_jobs(jobs)
+                jobs[1].stop.assert_called_once()
+                self.assertIn('fictional log 0', output.getvalue())
+                self.assertIn('fictional log 1', output.getvalue())
+                self.assertIs(signal.getsignal(signal.SIGTERM), interrupted)
+            finally:
+                signal.signal(signal.SIGTERM, previous)
 
     def test_native_go_examples_fuzz_and_test2json_failure(self):
         # A tiny standalone module verifies Go's real -list/-run/test2json contract.
