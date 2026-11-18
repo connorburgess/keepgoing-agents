@@ -234,23 +234,42 @@ func TestConfigurationReportIsBoundedAndSavedBeforeDelivery(t *testing.T) {
 }
 
 func TestSavedStopPrecedesConfigurationErrorDelivery(t *testing.T) {
-	f, _, _, _ := configReportFixture(t)
+	f, cfg, _, e := configReportFixture(t)
 	stopped := make(chan bool, 1)
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		stopped <- strings.Contains(f.read("calls"), "thread stop thr_primary")
+		saved, err := state.Load(cfg.Loop.StateDir)
+		stopped <- strings.Contains(f.read("calls"), "thread stop thr_primary") &&
+			err == nil && saved.LastCheck != nil && saved.LastCheck.Action == "stop" &&
+			saved.LastCheck.Outcome == "succeeded" && saved.LastCheck.ConfigUnavailable != nil
 		w.WriteHeader(202)
 	}))
 	defer srv.Close()
 	t.Setenv("KEEPGOING_WEBHOOK_URL", srv.URL)
-	g := startGoneDaemonFixture(t, f)
-	if err := os.Rename(f.cfg, g.moved); err != nil {
+	// Save stop before the retained-configuration pass begins. Starting a live
+	// daemon first allows it to report the outage before stop has been saved.
+	if code, _, errs := f.run("stop"); code != 0 {
+		t.Fatal(errs)
+	}
+	write(t, filepath.Join(f.bbDir, "thr_primary.show"), `{"thread":{"status":"active"}}`, 0o600)
+	if err := os.Remove(f.cfg); err != nil {
 		t.Fatal(err)
 	}
-	g.control(t, "stop")
+	ctx, cancel := context.WithCancel(context.Background())
+	e.ctx = ctx
+	done := make(chan int, 1)
+	go func() { done <- daemonLoop(e, cfg, f.cfg, false, nil, nil) }()
+	t.Cleanup(func() {
+		cancel()
+		select {
+		case <-done:
+		case <-time.After(5 * time.Second):
+			t.Error("fixture daemon did not exit")
+		}
+	})
 	select {
 	case yes := <-stopped:
 		if !yes {
-			t.Fatal("reported before carrying out the saved stop")
+			t.Fatal("reported before carrying out and recording the saved stop with configuration-unavailable evidence")
 		}
 	case <-time.After(5 * time.Second):
 		t.Fatal("no error report")

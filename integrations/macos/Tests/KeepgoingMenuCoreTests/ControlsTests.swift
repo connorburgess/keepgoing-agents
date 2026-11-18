@@ -188,4 +188,33 @@ final class ControlsTests: XCTestCase {
         XCTAssertNil(ConfirmationBuilder.openWithControls(allowing))
         XCTAssertNil(ConfirmationBuilder.openWithControls(PanelStatus(schemaVersion: 1, running: false, idleRemainingSeconds: nil)))
     }
+    func testCombinedRoutesAndQuotaAuthorityIsComplete() throws {
+        let exposure = "While changes are allowed, anyone who can use this browser window can pause, stop and resume loops, replace the file that runs a loop's checks with this panel's build, edit preferred routes and their account selections, and read selected-context Codex subscription quota."
+        XCTAssertGreaterThan(exposure.count, 180)
+        let data = try JSONSerialization.data(withJSONObject: ["schemaVersion": 1, "running": false, "exposure": exposure])
+        let status = try Contract.panelStatus(data, exit: 0)
+        let confirmation = try XCTUnwrap(ConfirmationBuilder.openWithControls(status))
+        XCTAssertTrue(confirmation.informativeText.contains(exposure))
+        XCTAssertTrue(confirmation.informativeText.contains("edit preferred routes"))
+        XCTAssertTrue(confirmation.informativeText.contains("Codex subscription quota"))
+        XCTAssertNil(confirmation.defaultButton.command)
+        XCTAssertEqual(confirmation.buttons[1].command, .openPanelWithChanges)
+        // Compact menu metadata keeps its existing separate limit.
+        XCTAssertEqual(Contract.text(exposure).count, 180)
+        XCTAssertNotEqual(Contract.text(exposure), exposure)
+    }
+
+    func testInvalidPanelAuthorityCannotOfferControls() throws {
+        for exposure in ["", "   ", "Permission\nwith a hidden line", "Permission\u{0000}suffix", "Permission\u{2028}suffix", String(repeating: "a", count: 1025)] {
+            let data = try JSONSerialization.data(withJSONObject: ["schemaVersion": 1, "running": false, "exposure": exposure])
+            XCTAssertThrowsError(try Contract.panelStatus(data, exit: 0))
+            // Guard direct callers as well as decoded status.
+            var status = PanelStatus(schemaVersion: 1, running: false, idleRemainingSeconds: nil)
+            status.exposure = exposure
+            XCTAssertNil(ConfirmationBuilder.openWithControls(status))
+        }
+        XCTAssertEqual(Contract.panelAuthority(String(repeating: "a", count: 1024)), String(repeating: "a", count: 1024))
+        XCTAssertNil(Contract.panelAuthority(String(repeating: "é", count: 513)))
+    }
+
 }

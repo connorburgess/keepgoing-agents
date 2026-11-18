@@ -47,7 +47,8 @@ check full '"docs/odd\nname.md"'
 check full README.md Makefile
 
 # The event decides before any file is looked at.
-for event in push schedule ""; do
+# A queued merge is checked in full: the queue runs every job on the tree that lands.
+for event in push schedule merge_group ""; do
 	got=$(EVENT=$event scripts/ci-scope.sh 2>/dev/null)
 	[ "$got" = "scope=full" ] || { echo "FAIL: event '$event' gave $got"; fail=1; }
 done

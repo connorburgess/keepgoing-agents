@@ -239,6 +239,7 @@
         "report": {
           "type": "object",
           "additionalProperties": false,
+          "allOf": [{"if": {"properties": {"format": {"const": "sessionpipe"}}, "required": ["format"]}, "then": {"properties": {"scheme": {"const": "bearer"}}, "required": ["scheme"]}}],
           "properties": {
             "url_env": {
               "type": "string",
@@ -263,7 +264,8 @@
             "format": {
               "enum": [
                 "standard",
-                "text"
+                "text",
+                "sessionpipe"
               ]
             },
             "events": {
