@@ -15,6 +15,7 @@ import (
 
 	"github.com/looptender/looptender/internal/accounts"
 	"github.com/looptender/looptender/internal/lock"
+	"github.com/looptender/looptender/internal/snapshot"
 	"github.com/looptender/looptender/internal/testexec"
 )
 
@@ -127,7 +128,7 @@ func TestAccountQuotaSelectionPrivacyAndFailedRefresh(t *testing.T) {
 }
 
 func TestAccountQuotaMutationAndUnavailableFences(t *testing.T) {
-	for _, kind := range []string{"revision", "removed", "executable", "workdir", "symlink", "context", "corrupt"} {
+	for _, kind := range []string{"revision", "removed", "executable", "executable_replaced", "workdir", "directory", "symlink", "context", "corrupt"} {
 		t.Run(kind, func(t *testing.T) {
 			dir, e := accountFixture(t, "codex")
 			if kind == "workdir" {
@@ -137,6 +138,20 @@ func TestAccountQuotaMutationAndUnavailableFences(t *testing.T) {
 				}
 				if err := accounts.Update(dir, func(f *accounts.File) error {
 					e.Workdir = workdir
+					e.Context = accounts.Context(*f, e, os.Environ())
+					f.Entries[0] = e
+					return nil
+				}); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if kind == "directory" {
+				e.Mode = "explicit_directory"
+				e.Directory = filepath.Join(e.Workdir, "selected-account")
+				if err := os.Mkdir(e.Directory, 0700); err != nil {
+					t.Fatal(err)
+				}
+				if err := accounts.Update(dir, func(f *accounts.File) error {
 					e.Context = accounts.Context(*f, e, os.Environ())
 					f.Entries[0] = e
 					return nil
@@ -174,13 +189,36 @@ func TestAccountQuotaMutationAndUnavailableFences(t *testing.T) {
 					if err := os.WriteFile(e.CLI, []byte("replacement binary"), 0700); err != nil {
 						t.Fatal(err)
 					}
-				case "workdir":
-					old := e.Workdir + "-moved"
-					if err := os.Rename(e.Workdir, old); err != nil {
+				case "executable_replaced":
+					info, err := os.Stat(e.CLI)
+					if err != nil {
+						t.Fatal(err)
+					}
+					raw, err := os.ReadFile(e.CLI)
+					if err != nil {
+						t.Fatal(err)
+					}
+					stage := e.CLI + "-replacement"
+					if err := os.WriteFile(stage, raw, info.Mode().Perm()); err != nil {
+						t.Fatal(err)
+					}
+					if err := os.Chtimes(stage, info.ModTime(), info.ModTime()); err != nil {
+						t.Fatal(err)
+					}
+					if err := snapshot.Replace(stage, e.CLI); err != nil {
+						t.Fatal(err)
+					}
+				case "workdir", "directory":
+					path := e.Workdir
+					if kind == "directory" {
+						path = e.Directory
+					}
+					old := path + "-moved"
+					if err := os.Rename(path, old); err != nil {
 						t.Fatal(err)
 					}
 					t.Cleanup(func() { os.RemoveAll(old) })
-					if err := os.Mkdir(e.Workdir, 0700); err != nil {
+					if err := os.Mkdir(path, 0700); err != nil {
 						t.Fatal(err)
 					}
 				case "symlink":

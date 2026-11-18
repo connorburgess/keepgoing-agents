@@ -11,6 +11,7 @@ import (
 
 	"github.com/looptender/looptender/internal/accounts"
 	"github.com/looptender/looptender/internal/lock"
+	"github.com/looptender/looptender/internal/snapshot"
 )
 
 type accountQuotaRun func(context.Context, string, []string, string) ([]byte, error)
@@ -44,8 +45,11 @@ func accountQuotaCapture(dir, id string, env []string) (accountQuotaSelection, e
 		if err != nil || p != path {
 			return nil, accounts.ErrChanged
 		}
-		i, err := os.Stat(path)
-		if err != nil || i.IsDir() != wantDir || (!wantDir && !i.Mode().IsRegular()) {
+		// Snapshot metadata captures Windows file IDs through a handle now.
+		// Path-based os.Stat defers identity lookup until SameFile, which can
+		// otherwise inspect a replacement at the old spelling.
+		i, err := snapshot.Lstat(path)
+		if err != nil || i.Mode()&os.ModeSymlink != 0 || i.IsDir() != wantDir || (!wantDir && !i.Mode().IsRegular()) {
 			return nil, accounts.ErrChanged
 		}
 		return i, nil
