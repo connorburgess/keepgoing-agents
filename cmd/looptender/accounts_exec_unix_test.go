@@ -53,7 +53,7 @@ func TestAccountsCLIDirectoryAndExplicitSelection(t *testing.T) {
 	if os.Mkdir(account, 0700) != nil {
 		t.Fatal("fixture directory")
 	}
-	write(t, e.CLI, "#!/bin/sh\nif [ \"$1\" = '--version' ]; then printf '2.1.318 (Claude Code)'; exit; fi\n[ \"$1 $2 $3\" = 'auth status --json' ] || exit 9\n[ \"$BB_THREAD_ID\" = thr_example_actual ] || exit 8\n[ \"$CLAUDE_CONFIG_DIR\" = '"+account+"' ] || exit 7\nprintf '%s' '{\"loggedIn\":true,\"subscriptionType\":\"max\",\"email\":\"private@example.com\"}'\n", 0700)
+	write(t, e.CLI, "#!/bin/sh\nif [ \"$1\" = '--version' ]; then printf '2.1.318 (Claude Code)'; exit; fi\n[ \"$1 $2 $3\" = 'auth status --json' ] || exit 9\n[ -z \"${BB_THREAD_ID+set}\" ] || exit 8\n[ \"$CLAUDE_CONFIG_DIR\" = '"+account+"' ] || exit 7\nprintf '%s' '{\"loggedIn\":true,\"subscriptionType\":\"max\",\"email\":\"private@example.com\"}'\n", 0700)
 	if err := accounts.Update(dir, func(f *accounts.File) error {
 		old := f.Entries[0]
 		next := old

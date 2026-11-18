@@ -35,36 +35,47 @@ type transferTarget struct {
 }
 
 type transferPreview struct {
-	SchemaVersion        int                  `json:"schemaVersion"`
-	Outcome              string               `json:"outcome"`
-	ApplySupported       bool                 `json:"applySupported"`
-	ReadAt               time.Time            `json:"readAt"`
-	Compatibility        string               `json:"compatibility"`
-	From                 transferTarget       `json:"from"`
-	To                   transferTarget       `json:"to"`
-	ConfiguredProvider   string               `json:"configuredProvider,omitempty"`
-	ConfiguredModel      string               `json:"configuredModel,omitempty"`
-	ConfiguredReasoning  string               `json:"configuredReasoning,omitempty"`
-	ConfiguredQuotaGroup string               `json:"configuredQuotaGroup,omitempty"`
-	Controls             *incident.Controls   `json:"controls,omitempty"`
-	Owner                string               `json:"owner,omitempty"`
-	Goal                 *control.GoalSummary `json:"goal,omitempty"`
-	Checks               []doctorCheck        `json:"checks"`
+	DestinationRoute     *config.BBTransferRoute `json:"destinationRoute,omitempty"`
+	SchemaVersion        int                     `json:"schemaVersion"`
+	Outcome              string                  `json:"outcome"`
+	ApplySupported       bool                    `json:"applySupported"`
+	ReadAt               time.Time               `json:"readAt"`
+	Compatibility        string                  `json:"compatibility"`
+	From                 transferTarget          `json:"from"`
+	To                   transferTarget          `json:"to"`
+	ConfiguredProvider   string                  `json:"configuredProvider,omitempty"`
+	ConfiguredModel      string                  `json:"configuredModel,omitempty"`
+	ConfiguredReasoning  string                  `json:"configuredReasoning,omitempty"`
+	ConfiguredQuotaGroup string                  `json:"configuredQuotaGroup,omitempty"`
+	Controls             *incident.Controls      `json:"controls,omitempty"`
+	Owner                string                  `json:"owner,omitempty"`
+	Goal                 *control.GoalSummary    `json:"goal,omitempty"`
+	Checks               []doctorCheck           `json:"checks"`
 }
 
 // A preview is advisory, not a prepared transaction or an authorization token.
 // The preview branch takes no locks and performs no provider commands, control
 // writes or environment changes. Apply/recover have their own guarded path.
 func transferCommand(e env, args []string, run doctorRun) int {
+	if len(args) > 0 && args[0] == "reconcile" {
+		return transferReconcileCommand(e, args, run, run)
+	}
+	if len(args) > 0 && args[0] == "supersede" {
+		return transferSupersede(e, args[1:])
+	}
 	if len(args) > 0 && (args[0] == "apply" || args[0] == "recover") {
 		return transferApply(e, args, run, nil)
 	}
+	if len(args) > 0 && args[0] == "inventory" {
+		return transferInventoryCommand(e, args, run, run)
+	}
 	if len(args) == 0 || args[0] != "preview" {
-		e.errf("usage: keepgoing transfer preview|apply|recover; see transfer preview --help, transfer apply --help or transfer recover --help")
+		e.errf("usage: keepgoing transfer preview|inventory|apply|recover|supersede; see transfer <command> --help")
 		return exitUsage
 	}
 	fs := flag.NewFlagSet("transfer preview", flag.ContinueOnError)
 	fs.SetOutput(io.Discard)
+	providerFlags := providerTransferFlags(fs)
 	path := fs.String("c", "", configFlagHelp("configuration path"))
 	thread := fs.String("thread", "", "existing destination BB thread ID")
 	asJSON := fs.Bool("json", false, "versioned advisory preview")
@@ -81,6 +92,10 @@ func transferCommand(e env, args []string, run doctorRun) int {
 	}
 	if fs.NArg() != 0 || !transferThreadID.MatchString(*thread) || *timeout <= 0 || *timeout > 30*time.Second {
 		e.errf("transfer: provide a valid --thread and a timeout greater than zero and at most 30s; no positional arguments")
+		return exitUsage
+	}
+	if err := providerFlags.validate(fs, false); err != nil {
+		e.errf("transfer: %v", err)
 		return exitUsage
 	}
 	if !configDefault(e, "transfer", fs, path) {
@@ -104,6 +119,14 @@ func transferCommand(e env, args []string, run doctorRun) int {
 		} else if status == "unavailable" && r.Compatibility != "blocked" {
 			r.Compatibility = "unavailable"
 		}
+	}
+	route, routeErr := providerFlags.plan(a.Provider)
+	if routeErr != nil {
+		add("provider", "error", routeErr.Error())
+	}
+	if route != nil {
+		r.DestinationRoute = route
+		add("provider_settings", "warning", "Explicit provider change replaces provider/model/reasoning/quota-group labels and clears account annotation, probe and timing settings. Account identity remains unverified.")
 	}
 	if *thread == a.BB.Thread {
 		add("destination", "error", "Source and destination are the same thread.")
@@ -165,10 +188,24 @@ func transferCommand(e env, args []string, run doctorRun) int {
 			} else {
 				add("environment", "ok", "BB reports the same project, environment, host and working directory for both threads.")
 			}
-			if from.Provider != a.Provider || to.Provider != a.Provider {
+			destinationProvider := a.Provider
+			if route != nil {
+				destinationProvider = route.Provider
+			}
+			if from.Provider != a.Provider || to.Provider != destinationProvider {
 				add("provider", "error", "A thread provider differs from the configured provider; automatic relabeling is not supported.")
 			} else {
-				add("provider", "ok", "Both thread provider IDs match the configured provider label.")
+				add("provider", "ok", "Thread provider IDs match the source configuration and explicit destination plan.")
+			}
+			// Advisory only: appended directly so that it never changes
+			// compatibility, whatever its status.
+			for _, side := range []struct{ id, path string }{{"workspace.from", fromPath}, {"workspace.to", toPath}} {
+				status, message := workspaceVerdict(e.ctx, side.path, cfg.Loop.Progress.Repositories, *timeout)
+				fix := ""
+				if status == "warning" {
+					fix = workspaceFix
+				}
+				r.Checks = append(r.Checks, doctorCheck{ID: side.id, Status: status, Message: message, Fix: fix})
 			}
 		}
 	}
@@ -178,7 +215,7 @@ func transferCommand(e env, args []string, run doctorRun) int {
 	// The preview never grants authority or reserves a future apply operation.
 	r.Checks = append(r.Checks,
 		doctorCheck{ID: "model_account", Status: "unavailable", Message: "Thread show does not verify model/reasoning selection, account identity, quota or model access. Configured labels are not verification."},
-		doctorCheck{ID: "apply", Status: "warning", Message: "Preview only. Use explicit transfer apply with expected --from and --thread; it revalidates under the tick lock and leaves an awaiting-user hold. The plugin move UI is not implemented."},
+		doctorCheck{ID: "apply", Status: "warning", Message: "Preview only. Use explicit transfer apply with expected --from and --thread; it revalidates under the tick lock and leaves an awaiting-user hold. Provider-change opt-in is CLI-only."},
 		doctorCheck{ID: "freshness", Status: "warning", Message: "Reads are independent, not an atomic snapshot. Holds, ownership and targets may change; a future apply operation must revalidate under locks."},
 	)
 	if *asJSON {
@@ -195,6 +232,9 @@ func transferCommand(e env, args []string, run doctorRun) int {
 			}
 		}
 		fmt.Fprintf(e.stdout, "Configured provider: %s; model: %s; reasoning: %s; quota group: %s\n", r.ConfiguredProvider, r.ConfiguredModel, r.ConfiguredReasoning, r.ConfiguredQuotaGroup)
+		if route := r.DestinationRoute; route != nil {
+			fmt.Fprintf(e.stdout, "Destination provider: %s; model: %q; reasoning: %q; quota group: %s\n", route.Provider, route.Model, route.Reasoning, route.Group)
+		}
 		if r.Controls != nil {
 			fmt.Fprintf(e.stdout, "Controls: enabled=%t paused=%t stop=%t awaiting-user=%t completed=%t\n", r.Controls.Enabled, r.Controls.Paused, r.Controls.Stop, r.Controls.AwaitingUser, r.Controls.Completed)
 		}

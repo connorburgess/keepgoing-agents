@@ -19,6 +19,7 @@ import (
 	"time"
 	"unicode/utf8"
 
+	"github.com/looptender/looptender/internal/accounts"
 	"github.com/looptender/looptender/internal/config"
 	"github.com/looptender/looptender/internal/control"
 	"github.com/looptender/looptender/internal/health"
@@ -100,12 +101,14 @@ func TestDockReportCoversEveryStateFromFixtures(t *testing.T) {
 	}
 
 	// Needs you: the hold's recorded cause and how long it has waited, from
-	// the retained history record of the hold. The note is withheld.
+	// the retained history record of the hold. The note is shown with its
+	// identifiers masked.
 	if len(r.NeedsYou) != 1 {
 		t.Fatalf("%+v", r.NeedsYou)
 	}
 	n := r.NeedsYou[0]
-	if n.Kind != "held" || n.Loop != "billing-api-migration" || n.Reason != "A lane is waiting for an answer." || n.Note != "" || !n.NoteWithheld ||
+	if n.Kind != "held" || n.Loop != "billing-api-migration" || n.Reason != "A lane is waiting for an answer." ||
+		n.Note != "Needs a decision on the refund table: keep the old columns or migrate them? Answer in [hidden] (plan in [hidden]), then resume." || !n.NoteMasked || n.MaskedNote != "" || n.NoteWithheld ||
 		n.SinceEvidence != "hold_recorded" || n.WaitedSeconds == nil || *n.WaitedSeconds != int64((2*time.Hour+14*time.Minute)/time.Second) || !strings.Contains(n.Action, "resume") {
 		t.Errorf("%+v", n)
 	}
@@ -114,7 +117,8 @@ func TestDockReportCoversEveryStateFromFixtures(t *testing.T) {
 	if c := docs.Children; c.Availability != "current" || !c.Holding || c.Working != 3 || c.Stuck != 0 || c.Failed != 1 || c.Phrase != "3 working, 1 failed" {
 		t.Errorf("lanes %+v", c)
 	}
-	if docs.Detail != "On. Its last check sent nothing because lanes are working or waiting." {
+	// Its failed lane is said in words (design pass 2, new finding 1).
+	if docs.Detail != "On. Its last check sent nothing because lanes are working or waiting. 1 lane failed, as of its last check; the loop is not held for a failed lane, so look at the lane if it should be working." || docs.LanesFailed != "1 lane failed" {
 		t.Errorf("%q", docs.Detail)
 	}
 	if c := docs.LastCheck; c.Availability != "recent" || c.AgeSeconds == nil || *c.AgeSeconds != 180 || c.Phrase != "Checked; sent nothing" {
@@ -123,7 +127,7 @@ func TestDockReportCoversEveryStateFromFixtures(t *testing.T) {
 	if docs.CurrentRoute != (dockTarget{Availability: "known", Role: "main", Tool: "BB thread", Provider: "claude-code", Model: "claude-opus-5-5"}) {
 		t.Errorf("%+v", docs.CurrentRoute)
 	}
-	if docs.NextCheck.Availability != "unknown" || !strings.Contains(docs.NextCheck.Detail, "no looptender scheduler is on record") {
+	if docs.NextCheck.Availability != "unknown" || !strings.HasPrefix(docs.NextCheck.Detail, "the last check ran 3 min ago") || !strings.Contains(docs.NextCheck.Detail, "No looptender scheduler is on record to say when the next is due.") {
 		t.Errorf("next check must be unknown without a daemon: %+v", docs.NextCheck)
 	}
 	if f := docs.Fallbacks; f.Availability != "known" || f.Ready != 1 || f.Eligible != 2 || !f.Enough {
@@ -442,12 +446,37 @@ func TestDockPhrasesFollowEvidence(t *testing.T) {
 		{daemonStatus{State: "responsive", Phase: "waiting", NextCheckAt: &next}, "known", ""},
 		{daemonStatus{State: "responsive", Phase: "checking"}, "in_progress", ""},
 	} {
-		if n := dockNextCheck(&clientSnapshot{Daemon: c.daemon}, dockNow); n.Availability != c.availability || n.Detail != c.detail {
+		if n := dockNextCheck(&clientSnapshot{Daemon: c.daemon}, nil, dockNow); n.Availability != c.availability || n.Detail != c.detail {
 			t.Errorf("%+v: %+v", c.daemon, n)
 		}
 	}
 
+	// With no looptender scheduler on record, what the record shows of past
+	// checks is said: never a time for the next one.
+	const noNext = "No looptender scheduler is on record to say when the next is due."
+	minuteAgo, future := dockNow.Add(-70*time.Second), dockNow.Add(time.Hour)
+	for _, c := range []struct {
+		name     string
+		schedule scheduleStatus
+		want     string
+	}{
+		{"never checked", scheduleStatus{}, "no looptender scheduler is on record for this loop, and one outside looptender is not visible"},
+		{"a last check dated ahead of the clock", scheduleStatus{LastCheckAt: &future}, "no looptender scheduler is on record for this loop, and one outside looptender is not visible"},
+		{"too few gaps to say how often", scheduleStatus{LastCheckAt: &minuteAgo, sch: state.Schedule{GapsSeen: 2}}, "the last check ran 1 min ago. " + noNext},
+		{"held, with checks about every 10 min", scheduleStatus{LastCheckAt: &minuteAgo, NotJudged: "held", sch: state.Schedule{Recent: 10 * time.Minute}},
+			"the last check ran 1 min ago, and recent checks ran about 10 min apart (past checks, not a forecast). " + noNext},
+		{"started by a BB automation", scheduleStatus{LastCheckAt: &minuteAgo, StartedBy: &state.Routine{Source: state.RoutineBBAutomation, Routine: "auto_example"}, sch: state.Schedule{Recent: 15 * time.Minute}},
+			"the last check ran 1 min ago, started by a BB automation, and recent checks ran about 15 min apart (past checks, not a forecast). " + noNext},
+	} {
+		st := &statusOut{Schedule: c.schedule}
+		n := dockNextCheck(&clientSnapshot{Daemon: daemonStatus{State: "not_recorded"}}, st, dockNow)
+		if n.Availability != "unknown" || n.At != nil || n.Detail != c.want {
+			t.Errorf("%s: %+v", c.name, n)
+		}
+	}
+
 	// Lanes, from the runs blocker.
+	threeHours := int64(3 * 3600)
 	for _, c := range []struct {
 		blocker              runsBlocker
 		availability, phrase string
@@ -459,8 +488,21 @@ func TestDockPhrasesFollowEvidence(t *testing.T) {
 		{runsBlocker{Availability: blockerHeld, Children: []runsChild{{Status: "awaiting_input"}}}, "held", "1 waiting for an answer (as of the check that held it)", false},
 		{runsBlocker{Availability: blockerUnknown, Reason: "no_open_run"}, "none_recorded", "None recorded", false},
 		{runsBlocker{Availability: blockerUnknown, Reason: "last_check_older_than_stale_after"}, "stale", "Stale: the last listing is too old to show as current", false},
-		{runsBlocker{Availability: blockerUnknown, Reason: "child_listing_incomplete"}, "unknown", "Unknown", false},
-		{runsBlocker{Availability: blockerUnknown, Reason: "not_refreshed_by_the_last_check"}, "unknown", "Unknown", false},
+		{runsBlocker{Availability: blockerBeforeHold, LastCheckCause: "paused", AgeSeconds: &threeHours, Children: []runsChild{{Status: "active"}, {Status: "active"}}}, "before_hold", "2 working (as of the check before it was paused, 3 h ago; not current)", false},
+		{runsBlocker{Availability: blockerBeforeHold, LastCheckCause: "awaiting_user", AgeSeconds: &threeHours, Children: []runsChild{{Status: "active"}}}, "before_hold", "1 working (as of the check before it was held, 3 h ago; not current)", false},
+		{runsBlocker{Availability: blockerBeforeHold, LastCheckCause: "paused", AgeSeconds: &threeHours}, "before_hold", "None (as of the check before it was paused, 3 h ago; not current)", false},
+		{runsBlocker{Availability: blockerBeforeHold, LastCheckCause: "paused"}, "before_hold", "None (as of the check before it was paused, at an unknown time; not current)", false},
+		{runsBlocker{Availability: blockerUnknown, Reason: "no_child_evidence_recorded"}, "none_recorded", "None recorded", false},
+		{runsBlocker{Availability: blockerUnknown, Reason: "child_listing_incomplete"}, "unknown", "Unknown: the last check could not see every lane, and a partial list would read as the whole answer", false},
+		{runsBlocker{Availability: blockerUnknown, Reason: "not_refreshed_by_the_last_check", LastCheckCause: "paused"}, "unknown", "Unknown: the loop is paused, so its checks do not look at its lanes, and no complete listing was recorded before the pause", false},
+		{runsBlocker{Availability: blockerUnknown, Reason: "not_refreshed_by_the_last_check", LastCheckCause: "awaiting_user"}, "unknown", "Unknown: the loop is held for a person, so its checks do not look at its lanes, and no complete listing was recorded before the hold", false},
+		{runsBlocker{Availability: blockerUnknown, Reason: "not_refreshed_by_the_last_check", LastCheckCause: "disabled"}, "unknown", "Unknown: the loop is turned off, so its checks do not look at its lanes", false},
+		{runsBlocker{Availability: blockerUnknown, Reason: "not_refreshed_by_the_last_check", LastCheckCause: "completed"}, "unknown", "Unknown: the loop is marked finished, so its checks do not look at its lanes", false},
+		{runsBlocker{Availability: blockerUnknown, Reason: "not_refreshed_by_the_last_check", LastCheckCause: "active"}, "unknown", "Unknown: the last check did not list the lanes, so the listing on record is from an earlier check and is not shown", false},
+		{runsBlocker{Availability: blockerUnknown, Reason: "last_check_not_recorded"}, "unknown", "Unknown: no check is on record for this loop", false},
+		{runsBlocker{Availability: blockerUnknown, Reason: "graph_unavailable"}, "unknown", "Unknown: the loop's run record cannot be read", false},
+		{runsBlocker{Availability: blockerUnknown, Reason: "binding_unavailable"}, "unknown", "Unknown: the loop's configuration cannot be read or did not validate", false},
+		{runsBlocker{Availability: blockerUnknown, Reason: "a_reason_this_build_does_not_know"}, "unknown", "Unknown: the records do not say why", false},
 	} {
 		if got := dockChildWork(runsLoop{Blocker: c.blocker}, true); got.Availability != c.availability || got.Phrase != c.phrase || got.Holding != c.holding {
 			t.Errorf("%+v: %+v", c.blocker, got)
@@ -520,13 +562,23 @@ func TestDockHoldWaitAndNoteWithholding(t *testing.T) {
 	in := dockEvidence{controls: &clientControls{Enabled: true, AwaitingUser: true}}.input()
 	in.Status.Control = control.File{UpdatedAt: dockNow.Add(-time.Hour), Note: "  see thr_private0001 in /private/example  "}
 	// Without a history record of the hold starting, the wait is a lower
-	// bound. The note is withheld, as registered status withholds it.
+	// bound. The note is shown with its identifiers masked.
 	_, need := projectDockLoop(in, dockNow, defaultStaleAfter, false)
-	if need.SinceEvidence != "control_changed" || *need.WaitedSeconds != 3600 || need.Note != "" || !need.NoteWithheld {
+	if need.SinceEvidence != "control_changed" || *need.WaitedSeconds != 3600 || need.Note != "see [hidden] in [hidden]" || !need.NoteMasked || need.MaskedNote != "" || need.NoteWithheld ||
+		need.Action != dockHoldAdviceNote {
 		t.Errorf("%+v", need)
 	}
-	if _, need = projectDockLoop(in, dockNow, defaultStaleAfter, true); need.Note != "see thr_private0001 in /private/example" || need.NoteWithheld {
+	// With identifiers it is whole, and carries the masked text for hiding
+	// identifiers at once.
+	if _, need = projectDockLoop(in, dockNow, defaultStaleAfter, true); need.Note != "see thr_private0001 in /private/example" || !need.NoteMasked || need.MaskedNote != "see [hidden] in [hidden]" || need.NoteWithheld {
 		t.Errorf("%+v", need)
+	}
+	// A note with nothing to mask is the same in both views.
+	in.Status.Control.Note = "Waiting on the design review."
+	for _, ids := range []bool{false, true} {
+		if _, need = projectDockLoop(in, dockNow, defaultStaleAfter, ids); need.Note != "Waiting on the design review." || need.NoteMasked || need.MaskedNote != "" {
+			t.Errorf("identifiers %t: %+v", ids, need)
+		}
 	}
 	in.Hold = &dockHold{At: dockNow.Add(-2 * time.Hour), Marked: true}
 	if _, need = projectDockLoop(in, dockNow, defaultStaleAfter, false); need.SinceEvidence != "hold_recorded" || *need.WaitedSeconds != 7200 {
@@ -561,7 +613,7 @@ func TestDockWithholdsIdentifiersNotesAndPathsAndIsBounded(t *testing.T) {
 	if m := dockPrivate.Find(body); m != nil {
 		t.Errorf("identifier %s in the default report", m)
 	}
-	for _, private := range []string{root, "keepgoing.yaml", "nonexistent-provider-fixture", "state_dir", "nonexistent-probe", "long note"} {
+	for _, private := range []string{root, "keepgoing.yaml", "nonexistent-provider-fixture", "state_dir", "nonexistent-probe"} {
 		if bytes.Contains(body, []byte(private)) {
 			t.Errorf("%q in the default report", private)
 		}
@@ -570,7 +622,9 @@ func TestDockWithholdsIdentifiersNotesAndPathsAndIsBounded(t *testing.T) {
 	if err := json.Unmarshal(body, &r); err != nil {
 		t.Fatal(err)
 	}
-	if r.NeedsYou[0].Note != "" || !r.NeedsYou[0].NoteWithheld {
+	// The note is in the default report, masked and cut to its cap.
+	if n := []rune(r.NeedsYou[0].Note); !strings.HasPrefix(r.NeedsYou[0].Note, "ask in [hidden], see [hidden] long note") || !r.NeedsYou[0].NoteMasked ||
+		len(n) != dockMaxNote || n[len(n)-1] != '…' {
 		t.Errorf("%+v", r.NeedsYou[0])
 	}
 	// On request: the registration, the configured thread and the note, cut
@@ -634,7 +688,13 @@ func TestDockRoutesAreCappedAndKeyedByAccount(t *testing.T) {
 	// Durations read the same on both sides of a limit.
 	changed := dockNow.Add(-(3*time.Hour + 12*time.Minute))
 	limits := dockLimits(&statusOut{ProgressAllowance: &progressAllowanceStatus{Timeout: "24h0m0s", ChangedAt: &changed}}, dockNow)
-	if len(limits) != 1 || limits[0].Phrase != "3 h 12 min of 24 h" {
+	if len(limits) != 1 || limits[0].Phrase != "3 h 12 min of 24 h" || limits[0].Reached || limits[0].Effect != "" {
+		t.Errorf("%+v", limits)
+	}
+	// A reached limit says what it does to the loop.
+	long := dockNow.Add(-54 * time.Hour)
+	limits = dockLimits(&statusOut{ProgressAllowance: &progressAllowanceStatus{Timeout: "24h0m0s", ChangedAt: &long, Due: true}}, dockNow)
+	if len(limits) != 1 || limits[0].Phrase != "2 days 6 h of 24 h" || !limits[0].Reached || limits[0].Effect != dockNoProgressLimitEffect {
 		t.Errorf("%+v", limits)
 	}
 	for d, want := range map[time.Duration]string{40 * time.Second: "1 min", 90 * time.Minute: "1 h 30 min", 54 * time.Hour: "2 days 6 h", 48 * time.Hour: "2 days", -time.Hour: "0 min"} {
@@ -833,7 +893,7 @@ func TestDockLeftRouteLimitAndAllowances(t *testing.T) {
 		say(d.Text) != "Hit a usage limit here on Sun 3 Mar, and the loop moved on. The provider reported a reset for Sat 9 Mar, 12:00 (in 5 days). looptender returns after that, once a test passes." {
 		t.Errorf("%+v %q", d, say(d.Text))
 	}
-	if say(pay.Short) != "On its second choice since Sun 3 Mar" || say(pay.Why) != "First choice at a usage limit until Sat 9 Mar" || payLoop.PickerState != "Supervising · on its second choice" {
+	if say(pay.Short) != "On its second route since Sun 3 Mar" || say(pay.Why) != "First choice at a usage limit until Sat 9 Mar" || payLoop.PickerState != "Supervising · on its second route after a usage limit" {
 		t.Errorf("%q %q %q", say(pay.Short), say(pay.Why), payLoop.PickerState)
 	}
 	// The departure is the first note on the route it left; the used-up reading
@@ -1066,6 +1126,51 @@ func TestDockSharedLimitMatchesTheAccountNotTheGroupName(t *testing.T) {
 	}
 	if len(allow) != 3 || limited != 1 || !strings.Contains(strings.Join(subs, "|"), "account 1 of 3 named shared-group") {
 		t.Errorf("%d allowances, %d limited: %v", len(allow), limited, subs)
+	}
+}
+
+// Allowance lines that share a provider and title each say what their routes
+// are, without saying whether they are the same account; identified accounts
+// keep their numbering, and a line whose name is its own says nothing more.
+func TestDockAllowancesTellApartLinesThatShareAName(t *testing.T) {
+	route := func(key, tool, model, effort, identity string) dockRoute {
+		return dockRoute{Key: key, Provider: "example", Account: "example", Tool: tool, Model: model, Effort: effort, identity: identity,
+			Usage: dockUsageTarget{Availability: "unavailable", Windows: []dockUsageWindow{}}}
+	}
+	for _, c := range []struct {
+		name   string
+		routes []dockRoute
+		want   []string
+	}{
+		{"one untested, one identified", []dockRoute{route("rA", "BB thread", "", "", ""), route("rB", "Codex CLI", "example-large", "high", "account-1")},
+			[]string{"1 route: BB thread · which account is not identified by a test", "1 route: Codex CLI, model example-large, effort high"}},
+		{"two untested", []dockRoute{route("rA", "BB thread", "example-large", "", ""), route("rB", "BB thread", "example-small", "", "")},
+			[]string{"1 route: BB thread, model example-large · which account is not identified by a test",
+				"1 route: BB thread, model example-small · which account is not identified by a test"}},
+		{"two identified keep their numbers", []dockRoute{route("rA", "Codex CLI", "", "", "account-1"), route("rB", "Codex CLI", "", "", "account-2")},
+			[]string{"1 route: Codex CLI · account 1 of 2 named example", "1 route: Codex CLI · account 2 of 2 named example"}},
+		{"untested beside two identified", []dockRoute{route("rA", "", "example-large", "", ""), route("rB", "Claude Code", "", "", "account-1"),
+			route("rC", "Codex CLI", "", "", "account-2"), route("rD", "Cursor", "", "", "account-2")},
+			[]string{"1 route: tool not recorded, model example-large · which account is not identified by a test",
+				"1 route: Claude Code · account 1 of 2 named example", "2 routes: Codex CLI; Cursor · account 2 of 2 named example"}},
+		{"many kinds are capped", []dockRoute{route("rA", "BB thread", "", "", ""), route("rB", "Codex CLI", "m1", "", "account-1"), route("rC", "Codex CLI", "m2", "", "account-1"),
+			route("rD", "Codex CLI", "m3", "", "account-1"), route("rE", "Codex CLI", "m4", "", "account-1"), route("rF", "Codex CLI", "m4", "", "account-1")},
+			[]string{"1 route: BB thread · which account is not identified by a test",
+				"5 routes: Codex CLI, model m1; Codex CLI, model m2; Codex CLI, model m3; and 1 more"}},
+		{"a name of its own says nothing more", []dockRoute{route("rA", "BB thread", "", "", ""), {Key: "rB", Provider: "other", Account: "other", Tool: "Codex CLI", identity: "account-1",
+			Usage: dockUsageTarget{Availability: "unavailable", Windows: []dockUsageWindow{}}}},
+			[]string{"1 route · which account is not identified by a test", "1 route"}},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			allow, _ := dockAllowances(c.routes)
+			got := []string{}
+			for _, a := range allow {
+				got = append(got, a.Sub)
+			}
+			if strings.Join(got, "|") != strings.Join(c.want, "|") {
+				t.Errorf("\n got %q\nwant %q", got, c.want)
+			}
+		})
 	}
 }
 
@@ -1305,7 +1410,7 @@ func TestDockServerRefusesWithoutTokenCrossOriginAndWrites(t *testing.T) {
 }
 
 func TestDockPageHasNoExternalReferences(t *testing.T) {
-	for _, name := range []string{"dockui/index.html", "dockui/dock.css", "dockui/dock.js"} {
+	for _, name := range []string{"dockui/index.html", "dockui/dock.css", "dockui/dock.js", "dockui/routes-help.html"} {
 		b, err := dockUI.ReadFile(name)
 		if err != nil {
 			t.Fatal(err)
@@ -1385,7 +1490,7 @@ func dockMaximalInput(i int) dockInput {
 	}
 	in := dockEvidence{controls: &clientControls{Enabled: true}}.input()
 	in.Entry = registry.Entry{ID: fmt.Sprintf("loop_%032x", i), Loop: long("example-loop-", i)}
-	in.Status.Control.Note = strings.Repeat("a long note ", 200)
+	in.Status.Control.Note = strings.Repeat("a long note in thr_example0001 at /example/path ", 200) // both note fields at the cap
 	cands := make([]config.Candidate, dockMaxChain+20)
 	for j := range cands {
 		c := &cands[j]
@@ -1443,8 +1548,8 @@ func dockMaximalInput(i int) dockInput {
 }
 
 // The largest registry, with every loop maximal, stays well inside the
-// response bound, with and without identifiers. It measured about 5.4 MB
-// with identifiers and ASCII names (6.1 MB with four-byte ones, below), with
+// response bound, with and without identifiers. It measured about 5.5 MB
+// with identifiers and ASCII names (6.2 MB with four-byte ones, below), with
 // the longest projection sentence in every usage window; dock.go and
 // docs/dock.md quote.
 func TestDockMaximalRegistryStaysUnderTheResponseBound(t *testing.T) {
@@ -1479,6 +1584,47 @@ func TestDockMaximalRegistryStaysUnderTheResponseBound(t *testing.T) {
 	}
 }
 
+// The tree row calls a loop's target "coordinator" only when the listing shown
+// has lanes, and sums its lanes people first.
+func TestDockLaneSummaryAndCoordinatorRole(t *testing.T) {
+	threeHours, listedAt := int64(3*3600), dockNow.Add(-3*time.Hour)
+	kids := func(statuses ...string) []runsChild {
+		out := []runsChild{}
+		for i, s := range statuses {
+			out = append(out, runsChild{Ref: fmt.Sprintf("child:example%d", i), Status: s})
+		}
+		return out
+	}
+	for _, c := range []struct {
+		name          string
+		blocker       runsBlocker
+		role, summary string
+	}{
+		{"current", runsBlocker{Availability: blockerListed, CheckedAt: &listedAt, AgeSeconds: &threeHours,
+			Children: kids("active", "awaiting_input", "error", "active", "awaiting_input", "active", "active")}, "coordinator", "2 waiting \u00B7 1 failed \u00B7 4 working"},
+		{"working only", runsBlocker{Availability: blockerListed, Children: kids("active")}, "coordinator", "1 working"},
+		{"more than stored", runsBlocker{Availability: blockerListed, Children: kids("active"), OmittedChildren: 5}, "coordinator", "1 working \u00B7 5 more not itemized"},
+		{"before a pause", runsBlocker{Availability: blockerBeforeHold, LastCheckCause: "paused", CheckedAt: &listedAt, AgeSeconds: &threeHours, Children: kids("error", "active")},
+			"coordinator", "1 failed \u00B7 1 working \u00B7 as of the check before it was paused, 3 h ago; not current"},
+		{"before a hold", runsBlocker{Availability: blockerBeforeHold, LastCheckCause: "awaiting_user", CheckedAt: &listedAt, AgeSeconds: &threeHours, Children: kids("active")},
+			"coordinator", "1 working \u00B7 as of the check before it was held, 3 h ago; not current"},
+		{"held by a lane", runsBlocker{Availability: blockerHeld, CheckedAt: &listedAt, AgeSeconds: &threeHours, Children: kids("awaiting_input")},
+			"coordinator", "1 waiting \u00B7 as of the check that held it, 3 h ago"},
+		{"no lanes", runsBlocker{Availability: blockerNone, CheckedAt: &listedAt, AgeSeconds: &threeHours}, "", ""},
+		{"stale listing", runsBlocker{Availability: blockerUnknown, Reason: "last_check_older_than_stale_after", Children: kids("active")}, "", ""},
+		{"not observed", runsBlocker{Availability: blockerUnknown, Reason: "not_refreshed_by_the_last_check", LastCheckCause: "paused"}, "", ""},
+	} {
+		l := dockLaneList(runsLoop{Blocker: c.blocker}, true, false, false, nil, dockNow)
+		if l.Role != c.role || l.Summary != c.summary {
+			t.Errorf("%s: role %q, summary %q; want %q, %q", c.name, l.Role, l.Summary, c.role, c.summary)
+		}
+	}
+	// An unread loop is never called a coordinator.
+	if l := dockLaneList(runsLoop{Blocker: runsBlocker{Availability: blockerListed, Children: kids("active")}}, false, false, false, nil, dockNow); l.Role != "" || l.Summary != "" {
+		t.Errorf("unknown loop: %+v", l)
+	}
+}
+
 // The review's mutations: each record that must not be worded as more than it
 // is, and the rules every time in a sentence follows.
 func TestDockSentencesSayNoMoreThanTheirRecords(t *testing.T) {
@@ -1497,6 +1643,22 @@ func TestDockSentencesSayNoMoreThanTheirRecords(t *testing.T) {
 	// Lanes from a listing too old to be current are not listed.
 	stale := runsLoop{Blocker: runsBlocker{Availability: blockerUnknown, Reason: "last_check_older_than_stale_after", Children: []runsChild{{Status: "active"}}}}
 	if l := dockLaneList(stale, true, false, true, nil, dockNow); len(l.Lanes) != 0 || l.Availability != "stale" {
+		t.Errorf("%+v", l)
+	}
+	// Lanes kept from before a hold or pause are listed, but never as current.
+	threeHours, listedAt := int64(3*3600), dockNow.Add(-3*time.Hour)
+	for cause, word := range map[string]string{"paused": "paused", "awaiting_user": "held"} {
+		before := runsLoop{Blocker: runsBlocker{Availability: blockerBeforeHold, LastCheckCause: cause, CheckedAt: &listedAt, AgeSeconds: &threeHours,
+			Children: []runsChild{{Ref: "child:example1", Status: "active"}, {Ref: "child:example2", Status: "error"}}}}
+		l := dockLaneList(before, true, false, true, nil, dockNow)
+		if l.Availability != "before_hold" || len(l.Lanes) != 2 || l.Lanes[0].Phrase != "Had failed" || l.Lanes[1].Phrase != "Was working" ||
+			l.Heading != "This loop's lanes \u00B7 1 working, 1 failed \u00B7 as of the check before it was "+word+", 3 h ago; not current" {
+			t.Errorf("%s: %+v", cause, l)
+		}
+	}
+	// The stuck-lane hold keeps its own wording.
+	stuck := runsLoop{Blocker: runsBlocker{Availability: blockerHeld, CheckedAt: &listedAt, AgeSeconds: &threeHours, Children: []runsChild{{Ref: "child:example1", Status: "awaiting_input"}}}}
+	if l := dockLaneList(stuck, true, false, true, nil, dockNow); l.Availability != "held" || l.Lanes[0].Phrase != "Waiting for an answer" || !strings.HasSuffix(l.Heading, "as of the check that held it, 3 h ago") {
 		t.Errorf("%+v", l)
 	}
 	// "Overdue" only where scheduled tests run: not with tests off, not while
@@ -1800,12 +1962,90 @@ func TestDockFourByteNamesStayUnderTheResponseBound(t *testing.T) {
 		in.Chain.Primary.Agent = in.Chain.Candidates[0].Agent
 		inputs[i] = in
 	}
-	body, err := json.Marshal(buildDockReport(inputs, dockNow, time.Minute, defaultStaleAfter, true, true, 0, true))
+	r := buildDockReport(inputs, dockNow, time.Minute, defaultStaleAfter, true, true, 0, true)
+	// With the account route lists the Accounts page adds, every account
+	// an unnamed context of four-byte names.
+	r.AccountUses, r.AccountUsesOmitted = dockAccountUses(r, accounts.View{State: "available", Complete: true, Cards: []accounts.Card{}}, nil, true, dockNow)
+	body, err := json.Marshal(r)
 	if err != nil {
 		t.Fatal(err)
 	}
-	t.Logf("%d bytes", len(body))
+	t.Logf("%d bytes, %d account route lists", len(body), len(r.AccountUses))
 	if len(body) > dockMaxResponse*3/4 {
 		t.Errorf("%d bytes, over three quarters of the %d-byte bound", len(body), dockMaxResponse)
+	}
+}
+
+// A limit note takes its reset from the limit event, then from the usage
+// reading shown with it, and says "no reset time was reported" only when
+// neither gives one.
+func TestDockLimitNotesTakeTheResetFromTheReading(t *testing.T) {
+	reported := dockNow.Add(5 * 24 * time.Hour)
+	windowReset := dockNow.Add(3 * 24 * time.Hour)
+	reading := func(used int, reset *time.Time) dockUsageTarget {
+		age := int64(3600)
+		return dockUsageTarget{Availability: "available", ObservedAt: dockPtr(dockNow.Add(-time.Hour)), AgeSeconds: &age,
+			Windows: []dockUsageWindow{{Name: "7-day", UsedPercent: used, ResetsAt: reset}}}
+	}
+	none := dockUsageTarget{Availability: "unavailable", Windows: []dockUsageWindow{}}
+	cases := []struct {
+		name          string
+		eventReset    *time.Time
+		usage         dockUsageTarget
+		allow, shares string
+	}{
+		{"event has a reset", &reported, reading(100, &windowReset),
+			"example-loop hit a usage limit on a route on this account on Mon 4 Mar; the provider reported a reset for Sat 9 Mar, 12:00.",
+			"; the provider reported a reset for Sat 9 Mar."},
+		{"event lacks a reset, the reading's used-up window has one", nil, reading(100, &windowReset),
+			"example-loop hit a usage limit on a route on this account on Mon 4 Mar; no reset was reported with the limit, and the usage reading shows the 7-day allowance resetting Thu 7 Mar, 12:00.",
+			"; no reset was reported with the limit, and the usage reading shows the 7-day allowance resetting Thu 7 Mar."},
+		{"event lacks a reset, the reading has a reset but nothing used up", nil, reading(40, &windowReset),
+			"example-loop hit a usage limit on a route on this account on Mon 4 Mar; no reset was reported with the limit; the usage reading shows when each window resets.",
+			"; no reset was reported with the limit; the usage reading shows when each window resets."},
+		{"neither has a reset", nil, reading(100, nil),
+			"example-loop hit a usage limit on a route on this account on Mon 4 Mar; no reset time was reported.",
+			"; no reset time was reported."},
+		{"no reading at all", nil, none,
+			"example-loop hit a usage limit on a route on this account on Mon 4 Mar; no reset time was reported.",
+			"; no reset time was reported."},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			a := &dockAway{Choice: 2, Return: dockReturnOff, Departures: []dockDeparture{{Position: 0, How: dockLeftLimit, At: dockPtr(dockNow.Add(-time.Hour)), ResetsAt: c.eventReset}}}
+			a.finish(dockNow)
+			entry := func(pos int, route, model string) dockChainEntry {
+				return dockChainEntry{Position: pos, Route: route, Model: model, Account: "example-group", Provider: "example", Title: model, Readiness: "unknown",
+					identity: "account-1", Usage: c.usage}
+			}
+			loops := []dockLoop{{Key: "l1", Name: "example-loop", State: "supervising", CurrentRoute: dockTarget{Availability: "known"}, Away: a,
+				Chain: dockChain{Entries: []dockChainEntry{entry(0, "rA", "example-large"), {Position: 1, Route: "rB", Model: "example-small", Title: "example-small",
+					Readiness: "unknown", Usage: none}}}},
+				{Key: "l2", Name: "example-other", State: "supervising", CurrentRoute: dockTarget{Availability: "known"},
+					Chain: dockChain{Entries: []dockChainEntry{entry(0, "rC", "example-medium")}}}}
+			routes, _ := dockRoutes(loops, dockNow)
+			shares := ""
+			for _, r := range routes {
+				for _, n := range r.Notes {
+					if s := say(n.Text, dockNow); r.Key == "rC" && strings.HasPrefix(s, "Shares its account") {
+						shares = s
+					}
+				}
+			}
+			want := "Shares its account with a route where example-loop hit a usage limit on Mon 4 Mar" + c.shares + " This route's own test result below is separate."
+			if shares != want {
+				t.Errorf("route note\n got %q\nwant %q", shares, want)
+			}
+			allow, _ := dockAllowances(routes)
+			got := []string{}
+			for _, x := range allow {
+				for _, n := range x.Notes {
+					got = append(got, say(n.Text, dockNow))
+				}
+			}
+			if len(got) != 1 || got[0] != c.allow {
+				t.Errorf("allowance notes\n got %q\nwant %q", got, c.allow)
+			}
+		})
 	}
 }

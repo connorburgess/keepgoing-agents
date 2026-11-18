@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"github.com/looptender/looptender/internal/envvar"
 	"io"
 	"os"
 	"os/exec"
@@ -351,7 +352,9 @@ func (c *Cursor) version(ctx context.Context) string {
 	defer cancel()
 	cmd := exec.CommandContext(ctx, c.cfg.CLI, "--version")
 	cmd.Dir = c.cfg.Workdir
-	cmd.Env = append(os.Environ(), envList(c.cfg.Env)...)
+	// The provider's program: not the session the supervisor was started
+	// from; the loop's own entries come after, so they win.
+	cmd.Env = append(envvar.WithoutSupervisorSession(os.Environ()), envList(c.cfg.Env)...)
 	cmd.WaitDelay = time.Second
 	out, err := cmd.Output()
 	if err != nil || len(out) > 128 {

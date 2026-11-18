@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
@@ -67,6 +68,9 @@ func (a *Adapter) WithStateDir(dir string) *Adapter {
 // Name implements adapter.Adapter.
 func (a *Adapter) Name() string { return "bb" }
 
+// ConversationKey implements adapter.ConversationKeyer: the configured thread.
+func (a *Adapter) ConversationKey() (string, bool) { return a.cfg.Thread, a.cfg.Thread != "" }
+
 type envelope struct {
 	OK    *bool `json:"ok"`
 	Error *struct {
@@ -126,6 +130,8 @@ func (a *Adapter) Observe(ctx context.Context) (decide.Observation, error) {
 	sig := a.signals(ctx)
 	if sig.ok {
 		obs.ModelFallback = sig.fallbackSeq
+		obs.ChildOutcome = sig.childOutcome
+		obs.Turns = &decide.TurnCounts{Requests: sig.turnRequests, Starts: sig.turnStarts}
 	}
 	if sig.ok && sig.hasError {
 		obs.Evidence = sig.evidence
@@ -253,6 +259,9 @@ type signals struct {
 	turnStartSeq  int64
 	toolsRunning  bool
 	fallbackSeq   int64
+	childOutcome  int64
+	turnRequests  int64
+	turnStarts    int64
 }
 
 // signals reads the thread's new log events and returns the current error,
@@ -261,7 +270,8 @@ type signals struct {
 func (a *Adapter) signals(ctx context.Context) signals {
 	c, ok := a.scan(ctx)
 	s := signals{class: decide.ErrUnknown, ok: ok, blocked: c.Blocked, resetsAt: c.ResetsAt, pending: len(c.Pending) > 0, lastEventAt: c.LastEventAt, turnStartedMs: c.TurnStartedMs,
-		turnStartSeq: c.TurnStartSeq, toolsRunning: c.ToolsUncertain || len(c.OpenTools) > 0, fallbackSeq: c.FallbackSeq}
+		turnStartSeq: c.TurnStartSeq, toolsRunning: c.ToolsUncertain || len(c.OpenTools) > 0, fallbackSeq: c.FallbackSeq, childOutcome: c.ChildOutcomeSeq,
+		turnRequests: c.TurnRequests, turnStarts: c.TurnStarts}
 	if c.Error != nil {
 		s.hasError = true
 		s.evidence = evidence.Clean(c.Error.Evidence)
@@ -481,6 +491,9 @@ func (a *Adapter) exec(ctx context.Context, stdin string, args ...string) ([]byt
 	ctx, cancel := context.WithTimeout(ctx, a.Timeout)
 	defer cancel()
 	cmd := exec.CommandContext(ctx, a.cfg.CLI, args...)
+	if len(args) >= 2 && args[0] == "thread" && args[1] == "tell" {
+		cmd.Env = sendEnv(os.Environ())
+	}
 	if stdin != "" {
 		cmd.Stdin = strings.NewReader(stdin)
 	}
@@ -511,6 +524,25 @@ func (a *Adapter) exec(ctx context.Context, stdin string, args ...string) ([]byt
 		err = fmt.Errorf("%w: %w", errStopped, err)
 	}
 	return stdout.Bytes(), err
+}
+
+// threadIdentityVar is the variable bb reads to say which BB thread a command
+// comes from.
+const threadIdentityVar = "BB_THREAD_ID"
+
+// sendEnv is the environment of a message looptender sends: the supervisor's
+// own, without a BB thread identity. A supervisor started by hand inside a BB
+// thread inherits that thread's ID, and BB would show every wake as sent by
+// that thread, which did not write it. A service-started supervisor already
+// runs without one. Names are matched in any letter case, as Windows does.
+func sendEnv(environ []string) []string {
+	env := make([]string, 0, len(environ))
+	for _, kv := range environ {
+		if name, _, _ := strings.Cut(kv, "="); !strings.EqualFold(name, threadIdentityVar) {
+			env = append(env, kv)
+		}
+	}
+	return env
 }
 
 // SignalExits implements adapter.SignalExitReporter: the cumulative count
