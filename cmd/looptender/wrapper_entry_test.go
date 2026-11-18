@@ -5,6 +5,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 
@@ -81,7 +82,12 @@ func TestMain(m *testing.M) {
 		os.Unsetenv("BB_THREAD_ID")
 		os.Setenv("KEEPGOING_TEST_IDENTITY_CLEARED", "1")
 	}
+	guard := guardAgentCLIs(private)
 	code := m.Run()
+	if reached := guard(); reached != "" {
+		fmt.Fprintf(os.Stderr, "FAIL: a test ran an agent CLI found on PATH instead of a stand-in:\n%s", reached)
+		code = 1
+	}
 	panelTestCleanup() // the binary and launcher the panel tests share
 	os.RemoveAll(private)
 	os.Exit(code)
@@ -107,4 +113,39 @@ func TestIdentityHelper(t *testing.T) {
 		t.Skip("subprocess helper")
 	}
 	fmt.Printf("identity=%s\n", os.Getenv("BB_THREAD_ID"))
+}
+
+// guardedAgentCLIs are the agent and BB programs a configuration may name by
+// bare name, so that a route without a cli setting runs the one PATH finds.
+var guardedAgentCLIs = []string{"claude", "codex", "cursor-agent", "agent", "bb"}
+
+// guardAgentCLIs puts a program first on PATH for each guardedAgentCLIs
+// name, so that no test can run the real one installed on the machine: it
+// would act on the person's own account, and its answer would make the test
+// pass or fail by machine (CI has none installed). Each records the call and
+// fails as a missing program would. The returned function lists the calls.
+// A test that needs one of these programs installs a stand-in of its own,
+// ahead of these. Windows does not run these scripts; nothing is installed
+// there.
+func guardAgentCLIs(private string) func() string {
+	if runtime.GOOS == "windows" {
+		return func() string { return "" }
+	}
+	dir := filepath.Join(private, "agent-cli-guard")
+	log := filepath.Join(private, "agent-cli-guard.log")
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		panic(err)
+	}
+	for _, name := range guardedAgentCLIs {
+		script := "#!/bin/sh\nprintf '%s %s\\n' \"" + name + "\" \"$*\" >> '" + log + "'\n" +
+			"echo 'test guard: no test may run the " + name + " found on PATH; install a stand-in' >&2\nexit 127\n"
+		if err := os.WriteFile(filepath.Join(dir, name), []byte(script), 0o700); err != nil {
+			panic(err)
+		}
+	}
+	os.Setenv("PATH", dir+string(os.PathListSeparator)+os.Getenv("PATH"))
+	return func() string {
+		b, _ := os.ReadFile(log)
+		return string(b)
+	}
 }
