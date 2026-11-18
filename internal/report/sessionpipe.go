@@ -60,9 +60,10 @@ func reservePipe(dir string) (pipeState, error) {
 	}
 	defer l.Release()
 	path := filepath.Join(dir, sessionpipeFile)
-	s := pipeState{Version: 1, Next: 1}
+	var s pipeState
 	info, err := snapshot.LstatRecord(path)
 	if errors.Is(err, os.ErrNotExist) {
+		s.Version, s.Next = 1, 1
 		b := make([]byte, 16)
 		if _, err = rand.Read(b); err != nil {
 			return pipeState{}, errSessionpipe
@@ -83,11 +84,17 @@ func reservePipe(dir string) (pipeState, error) {
 		}
 		b, err := io.ReadAll(io.LimitReader(f, 1025))
 		f.Close()
+		var stored struct {
+			Version *int    `json:"version"`
+			ID      *string `json:"id"`
+			Next    *uint64 `json:"next"`
+		}
 		dec := json.NewDecoder(bytes.NewReader(b))
 		dec.DisallowUnknownFields()
-		if err != nil || len(b) > 1024 || dec.Decode(&s) != nil || dec.Decode(new(any)) != io.EOF {
+		if err != nil || len(b) > 1024 || dec.Decode(&stored) != nil || dec.Decode(new(any)) != io.EOF || stored.Version == nil || stored.ID == nil || stored.Next == nil {
 			return pipeState{}, errSessionpipe
 		}
+		s = pipeState{Version: *stored.Version, ID: *stored.ID, Next: *stored.Next}
 	}
 	id, err := hex.DecodeString(s.ID)
 	// Keep JSON integers exactly representable in common receivers.

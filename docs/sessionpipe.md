@@ -81,7 +81,7 @@ receiver's attention display; use looptender status as the authority for holds.
 opaque identity and the next sequence. The existing nonwaiting `delivery` lock
 serializes reservations across callers, including separate reporter instances.
 Two sequences are reserved and atomically published before the POST. Contention,
-corrupt/oversized/nonregular state or publication failure refuses that send.
+corrupt/oversized/nonregular state or publication failure refuses that send. Existing snapshots require non-null version, identity and next-sequence fields; defaults apply only when the file is genuinely absent. Invalid snapshots remain unchanged.
 Sequences consumed by failures are not reused. Retain this file across restart
 and migration; do not copy the same loop state to concurrent independent owners.
 Removing it starts a new report identity. Publication uses the existing private

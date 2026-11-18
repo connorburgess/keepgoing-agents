@@ -361,3 +361,40 @@ func TestSessionpipeTotalTimeout(t *testing.T) {
 		t.Fatalf("err=%v elapsed=%s", err, time.Since(start))
 	}
 }
+
+// Once an identity has sent, missing/null required fields must never reset its
+// sequence. A corrupt snapshot is evidence to inspect, not defaults to repair.
+func TestSessionpipeMissingStateFieldsPreserveBytesAndPreventPOST(t *testing.T) {
+	for _, fields := range []string{`"version":1`, `"version":1,"next":null`, `"next":9`, `"version":null,"next":9`, `"version":1,"next":9,"id":null`, `"version":1,"next":9`} {
+		t.Run(fields, func(t *testing.T) {
+			posts := 0
+			srv := pipeReceiver(t, pipeAck, func(_ *http.Request, _ pipeBatch) { posts++ })
+			c := pipeConfig(t, srv.URL)
+			dir := t.TempDir()
+			initial, err := reservePipe(dir)
+			if err != nil {
+				t.Fatal(err)
+			}
+			bad := []byte(`{"id":"` + initial.ID + `",` + fields + `}`)
+			// The final case omits identity; the preceding case explicitly nulls it.
+			if fields == `"version":1,"next":9` {
+				bad = []byte(`{` + fields + `}`)
+			}
+			path := filepath.Join(dir, sessionpipeFile)
+			if err = os.WriteFile(path, bad, 0600); err != nil {
+				t.Fatal(err)
+			}
+			r, err := NewRecorded(c, dir)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err = r.Report(context.Background(), Event{Type: "error"}); err == nil || posts != 0 {
+				t.Errorf("err=%v posts=%d", err, posts)
+			}
+			after, err := os.ReadFile(path)
+			if err != nil || string(after) != string(bad) {
+				t.Fatalf("corrupt bytes changed: %s err=%v", after, err)
+			}
+		})
+	}
+}
