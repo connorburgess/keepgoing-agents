@@ -172,7 +172,7 @@ func LoadQuota(dir string) (QuotaFile, error) {
 	var out QuotaFile
 	d := json.NewDecoder(bytes.NewReader(b))
 	d.DisallowUnknownFields()
-	if !QuotaJSONUnique(b) || d.Decode(&out) != nil || d.Decode(new(any)) != io.EOF || !validQuota(out) {
+	if !QuotaJSONUnique(b) || !quotaCanonicalFields(b, reflect.TypeOf(out)) || d.Decode(&out) != nil || d.Decode(new(any)) != io.EOF || !validQuota(out) {
 		return empty, ErrInvalid
 	}
 	return out, nil

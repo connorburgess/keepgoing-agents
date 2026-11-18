@@ -5,7 +5,9 @@ import (
 	"encoding/json"
 	"fmt"
 	"math"
+	"reflect"
 	"regexp"
+	"strings"
 	"time"
 )
 
@@ -220,6 +222,9 @@ func SummarizeQuota(v QuotaView, now time.Time) QuotaSummary {
 // Required numeric/boolean fields must survive storage as explicit values;
 // missing or null is never a reported zero/false.
 func quotaDecodeRequired(raw []byte, value any, required ...string) error {
+	if !quotaCanonicalFields(raw, reflect.TypeOf(value)) {
+		return ErrInvalid
+	}
 	var fields map[string]json.RawMessage
 	if json.Unmarshal(raw, &fields) != nil || fields == nil {
 		return ErrInvalid
@@ -247,4 +252,50 @@ func (c *QuotaCredit) UnmarshalJSON(raw []byte) error {
 func (i *QuotaIndividual) UnmarshalJSON(raw []byte) error {
 	type plain QuotaIndividual
 	return quotaDecodeRequired(raw, (*plain)(i), "limit", "used", "remainingPercent", "resetsAt")
+}
+
+// encoding/json accepts case-insensitive field aliases. Persisted evidence must
+// use the exact schema spelling, including optional fields at every depth.
+func quotaCanonicalFields(raw []byte, typ reflect.Type) bool {
+	for typ.Kind() == reflect.Pointer {
+		typ = typ.Elem()
+	}
+	if string(raw) == "null" {
+		return true
+	}
+	switch typ.Kind() {
+	case reflect.Struct:
+		if typ == reflect.TypeOf(time.Time{}) {
+			return true
+		}
+		var fields map[string]json.RawMessage
+		if json.Unmarshal(raw, &fields) != nil || fields == nil {
+			return false
+		}
+		allowed := map[string]reflect.Type{}
+		for i := 0; i < typ.NumField(); i++ {
+			f := typ.Field(i)
+			name := strings.Split(f.Tag.Get("json"), ",")[0]
+			if name != "" && name != "-" {
+				allowed[name] = f.Type
+			}
+		}
+		for key, value := range fields {
+			child, ok := allowed[key]
+			if !ok || !quotaCanonicalFields(value, child) {
+				return false
+			}
+		}
+	case reflect.Slice:
+		var items []json.RawMessage
+		if json.Unmarshal(raw, &items) != nil {
+			return false
+		}
+		for _, item := range items {
+			if !quotaCanonicalFields(item, typ.Elem()) {
+				return false
+			}
+		}
+	}
+	return true
 }

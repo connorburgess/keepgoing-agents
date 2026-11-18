@@ -522,18 +522,6 @@
       if (mr && mr.availability !== "not_recorded" && (!mr.counts || mr.counts.unfinished > 0)) {
         summary.appendChild(el("span", "sub work-migration", "Migration review: " + mr.text + (mr.observedAt ? " · historical evidence from " + fmt(dayTimeYearFmt, mr.observedAt) : "")));
       }
-      var qs = c.quota && c.quota.summary;
-      var compact = el("span", "quota-compact");
-      if (qs && qs.state === "reported") {
-        list(qs.rows).filter(function (w) { return typeof w.usedPercent === "number"; }).slice(0, 2).forEach(function (w) {
-          var item = el("span", "quota-chip"); item.appendChild(el("span", "sub", w.name));
-          item.appendChild(el("strong", null, w.ended ? "Window ended" : w.usedPercent + "% used")); compact.appendChild(item);
-        });
-        if (!compact.childNodes.length) compact.appendChild(el("span", "sub", qs.partial ? "Partial quota evidence" : "Quota details recorded"));
-        compact.appendChild(el("span", "sub", qs.freshness === "stale" ? "Older quota reading" : "Saved quota reading"));
-        compact.title = "Saved account quota; expand for all recorded detail";
-      } else if (c.provider === "codex" || c.provider === "claude-code") compact.appendChild(el("span", "sub", "Account quota unavailable"));
-      summary.appendChild(compact);
       details.appendChild(summary);
       var body = el("div", "work-body");
       body.appendChild(el("p", "detail", l.detail));

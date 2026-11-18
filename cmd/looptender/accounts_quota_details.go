@@ -28,7 +28,7 @@ func accountQuotaDetailsParse(raw []byte, err error) (*accounts.QuotaDetails, st
 	}
 	d := &accounts.QuotaDetails{Buckets: []accounts.QuotaBucket{}, OrdinaryUsageAllowed: response.Allowed}
 	byID := response.ByID
-	if len(byID) == 0 {
+	if byID == nil {
 		key := "codex"
 		var legacy struct {
 			ID *string `json:"limitId"`

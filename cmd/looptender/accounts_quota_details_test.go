@@ -174,3 +174,17 @@ func TestAccountQuotaDetailsLegacyMeterKeepsItsOwnBucket(t *testing.T) {
 		t.Fatal(d, reason)
 	}
 }
+
+func TestAccountQuotaDetailsEmptyAuthoritativeMap(t *testing.T) {
+	for _, suffix := range []string{``, `,"rateLimitsByLimitId":null`, `,"rateLimitsByLimitId":{}`} {
+		raw := []byte(`{"rateLimits":{"primary":{"usedPercent":91}}` + suffix + `}`)
+		d, reason := accountQuotaDetailsParse(raw, nil)
+		if strings.HasSuffix(suffix, "{}") {
+			if d != nil || reason != "no_windows" {
+				t.Fatalf("empty authoritative map borrowed legacy evidence: %+v %s", d, reason)
+			}
+		} else if reason != "" || d.Buckets[0].Windows[0].UsedPercent != 91 {
+			t.Fatalf("absent/null legacy fallback lost: %+v %s", d, reason)
+		}
+	}
+}

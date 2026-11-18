@@ -2,6 +2,8 @@ const p=await browser.getPage('main');
 const origin='http://127.0.0.1:60298';
 const checks=[];
 function check(name,ok){checks.push({name,ok});if(!ok)throw new Error(name);}
+await p.goto(origin+'/owner/#/');await p.reload();await p.waitForSelector('.work-branch');
+check('default overview renders nonempty loops without reply error',await p.$eval('#pane',e=>e.querySelectorAll('.work-branch').length>0&&!e.textContent.includes('could not show')));
 await p.goto(origin+'/owner/#/accounts');await p.reload();await p.waitForSelector('.account-card');
 check('fictional marker',await p.$eval('body',e=>e.dataset.fictionalQuotaFixture==='true'));
 check('compact named windows visible before expansion',await p.$eval('.account-card summary',e=>['Codex · 5-hour','37.5% used','Codex · 7-day','82% used'].every(x=>e.textContent.includes(x))));

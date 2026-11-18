@@ -73,3 +73,45 @@ func TestQuotaLegacyReadIsInertAndDetailUpgradePreservesCatalog(t *testing.T) {
 		t.Fatal("quota detail changed catalog")
 	}
 }
+
+func TestQuotaCacheRejectsNoncanonicalFieldsWithoutPublication(t *testing.T) {
+	for _, pair := range [][2]string{
+		{`"usedPercent":37.5`, `"usedPercent":37.5,"UsedPercent":0`},
+		{`"hasCredits":true`, `"hasCredits":true,"HasCredits":false`},
+		{`"remainingPercent":62.5`, `"remainingPercent":62.5,"RemainingPercent":0`},
+		{`"ordinaryUsageAllowed":true`, `"ordinaryUsageAllowed":true,"OrdinaryUsageAllowed":false`},
+		{`"partial":true`, `"partial":true,"Partial":false`},
+		{`"buckets":`, `"Buckets":`},
+		{`"schemaVersion":2`, `"schemaVersion":2,"SchemaVersion":1`},
+	} {
+		t.Run(pair[1], func(t *testing.T) {
+			dir, e, env := quotaFixture(t)
+			now := time.Now().UTC()
+			yes := true
+			d := &QuotaDetails{Partial: true, OrdinaryUsageAllowed: &yes, Buckets: []QuotaBucket{{Key: "codex", Windows: []QuotaMeter{{Name: "primary", UsedPercent: 37.5}}, Credits: &QuotaCredit{HasCredits: true}, Individual: &QuotaIndividual{Limit: "100", Used: "37.5", RemainingPercent: 62.5, ResetsAt: now.Add(time.Hour)}}}}
+			a := QuotaAttempt{At: now, Details: d}
+			if err := quotaPublish(t, dir, e, env, a); err != nil {
+				t.Fatal(err)
+			}
+			path := filepath.Join(dir, QuotaName)
+			raw, _ := os.ReadFile(path)
+			changed := []byte(strings.ReplaceAll(string(raw), pair[0], pair[1]))
+			if bytes.Equal(raw, changed) {
+				t.Fatal("fixture did not mutate")
+			}
+			if err := os.WriteFile(path, changed, 0600); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := LoadQuota(dir); err == nil {
+				t.Fatal("aliased field accepted")
+			}
+			if err := quotaPublish(t, dir, e, env, a); err == nil {
+				t.Fatal("published over malformed evidence")
+			}
+			after, _ := os.ReadFile(path)
+			if !bytes.Equal(changed, after) {
+				t.Fatal("malformed evidence changed")
+			}
+		})
+	}
+}
