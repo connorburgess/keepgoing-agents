@@ -250,7 +250,7 @@ func readClientStatus(ctx context.Context, directory, id string, private, offlin
 		if ctl.BBTarget != "" && (cfg.Loop.BB == nil || ctl.BBTarget != cfg.Loop.BB.Thread || !transferThreadID.MatchString(ctl.BBTarget)) {
 			return unavailable("target_binding_mismatch")
 		}
-		s.Controls = &clientControls{ctl.Enabled, ctl.Paused, ctl.Stop, ctl.AwaitingUser, ctl.Completed}
+		s.Controls = &clientControls{ctl.Gate().Enabled, ctl.Paused, ctl.Stop, ctl.AwaitingUser, ctl.Completed}
 		s.ControlState = ctl.Summary()
 	}
 	var st state.File

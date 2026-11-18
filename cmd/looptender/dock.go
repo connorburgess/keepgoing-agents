@@ -38,7 +38,7 @@ import (
 // report from the existing read paths. Nothing in this file writes, controls a
 // loop, or talks to a provider.
 
-//go:embed dockui/index.html dockui/dock.css dockui/dock.js dockui/expired.js
+//go:embed dockui/index.html dockui/dock.css dockui/dock.js dockui/expired.js dockui/routes-help.html
 var dockUI embed.FS
 
 const (
@@ -208,12 +208,14 @@ type dockServed struct {
 	ChangesSince *time.Time `json:"changesSince,omitempty"`
 	ChangesText  dockText   `json:"changesText,omitempty"`
 	Form         string     `json:"form,omitempty"`
+	RouteChanges string     `json:"routeChanges,omitempty"`
+	AccountQuota bool       `json:"accountQuota,omitempty"` // explicit reviewed account-scoped refresh
 }
 
 func newDockServer(port int, auth dockAuth, reader *dockReader) *dockServer {
 	return &dockServer{port: port, guard: newDockGuard(port), auth: auth, reader: reader, served: dockServed{SchemaVersion: 1, ServedBy: "dock",
 		Version: dockBuildLabel(version), VersionText: dockPanelVersionText(version),
-		ChangesText: txt("Read-only. keepgoing dock never pauses, resumes, stops or starts anything; keepgoing panel --allow-changes can.")}}
+		ChangesText: txt("Read-only: this page cannot pause, resume, stop or start anything.")}}
 }
 
 func (s *dockServer) url(token string) string {
@@ -273,6 +275,8 @@ func (s *dockServer) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		s.asset(w, "dockui/index.html", "text/html; charset=utf-8")
 	case "dock.css":
 		s.asset(w, "dockui/dock.css", "text/css; charset=utf-8")
+	case "routes-help.html":
+		s.asset(w, "dockui/routes-help.html", "text/html; charset=utf-8")
 	case "dock.js":
 		s.asset(w, "dockui/dock.js", "text/javascript; charset=utf-8")
 	case dockServerPath:
@@ -438,6 +442,7 @@ func (d *dockReader) read(ctx context.Context, identifiers bool) (result dockRep
 		if dir, err := accountsDirectory(d.accountsDir); err == nil && ctx.Err() == nil {
 			if f, err := accounts.Load(dir); err == nil {
 				view, catalog = accounts.Project(f, d.clock()), &f
+				accounts.AttachQuota(&view, accounts.QuotaViews(dir, f, os.Environ(), d.clock()))
 			}
 		}
 		dockLinkAccountRoutes(&view, result)
@@ -537,7 +542,7 @@ func (d *dockReader) readLoop(ctx context.Context, dir string, entry registry.En
 		return in
 	}
 	if cfg := validated[entry.ID]; cfg != nil {
-		in.Chain = &dockChainInput{Primary: cfg.Loop.PrimaryCandidate(), FailoverOn: cfg.Loop.Errors.FailoverOn, SwitchBack: cfg.Loop.SwitchBack.Enabled, TimingOn: cfg.Loop.TimingOn()}
+		in.Chain = &dockChainInput{Primary: cfg.Loop.PrimaryCandidate(), Standard: cfg.Loop.FollowsStandard(), FailoverOn: cfg.Loop.Errors.FailoverOn, SwitchBack: cfg.Loop.SwitchBack.Enabled, TimingOn: cfg.Loop.TimingOn()}
 		if cfg.Loop.Timing != nil {
 			in.Chain.TimingSteps = cfg.Loop.Timing.Steps
 		}

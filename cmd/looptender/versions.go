@@ -5,7 +5,6 @@ import (
 	"crypto/sha256"
 	"os"
 	"path/filepath"
-	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -276,27 +275,30 @@ func dockVersionsOf(loops []dockLoop, clients *clientsFile, clientsErr error, no
 	return v
 }
 
-// dockVersionsSummary is the picker's line. It says all is on one build only
-// when every row was compared; a row that could not be ordered or compared
-// is counted, never read as current or as nothing older.
+// dockVersionsSummary is the picker's line, short enough for the narrowest
+// sidebar without being cut. It says all is on one build only when every row
+// was compared; a row that could not be ordered or compared is counted, never
+// read as current or as nothing older. The page's lede and rows hold the why.
 func dockVersionsSummary(v dockVersions, ref, refKind string) string {
-	var parts []string
-	if v.Behind > 0 {
-		parts = append(parts, dockPlural(v.Behind, "place needs", "places need")+" a look, against "+ref)
-	}
-	if v.different > 0 {
-		parts = append(parts, dockPlural(v.different, "runs", "run")+" a different build; which is newer is not known")
-	}
-	if v.uncompared > 0 {
-		parts = append(parts, strconv.Itoa(v.uncompared)+" cannot be compared")
+	kinds, n := 0, v.Behind+v.different+v.uncompared
+	for _, c := range []int{v.Behind, v.different, v.uncompared} {
+		if c > 0 {
+			kinds++
+		}
 	}
 	switch {
-	case len(parts) > 0:
-		return strings.Join(parts, ". ")
+	case kinds > 1:
+		return dockPlural(n, "place needs", "places need") + " a look"
+	case v.Behind > 0:
+		return dockPlural(v.Behind, "place needs", "places need") + " a look"
+	case v.different > 0:
+		return dockPlural(v.different, "place", "places") + " on another build"
+	case v.uncompared > 0:
+		return dockPlural(v.uncompared, "place", "places") + " cannot be compared"
 	case refKind == "newest_release":
 		return "All on " + ref
 	default:
-		return "Everything here runs this panel's build"
+		return "All on this build"
 	}
 }
 

@@ -36,14 +36,16 @@ var ErrInvalid = errors.New("accounts storage unavailable or invalid")
 var ErrChanged = errors.New("accounts selection changed; review again")
 
 type Observation struct {
-	Revision string    `json:"revision"`
-	Context  string    `json:"context"`
-	At       time.Time `json:"observedAt"`
-	Auth     string    `json:"auth"`
-	Reason   string    `json:"reason"`
-	Version  string    `json:"cliVersion"`
-	Plan     string    `json:"plan"`
-	Caller   string    `json:"caller"` // private actual caller, never projected
+	PlanReason string     `json:"planReason,omitempty"`
+	PlanAt     *time.Time `json:"planObservedAt,omitempty"`
+	Revision   string     `json:"revision"`
+	Context    string     `json:"context"`
+	At         time.Time  `json:"observedAt"`
+	Auth       string     `json:"auth"`
+	Reason     string     `json:"reason"`
+	Version    string     `json:"cliVersion"`
+	Plan       string     `json:"plan"`
+	Caller     string     `json:"caller"` // private actual caller, never projected
 }
 type Entry struct {
 	ID        string       `json:"id"`
@@ -64,6 +66,28 @@ type File struct {
 	SchemaVersion int     `json:"schemaVersion"`
 	Salt          string  `json:"salt"`
 	Entries       []Entry `json:"entries"`
+}
+
+// Schema 1 remains writable for legacy-compatible catalogs. Schema 2 is a
+// one-way write promotion for new plan metadata or tiers; strict old readers
+// refuse the whole catalog. Reads never promote or rewrite a catalog.
+func needsPlanSchema(f File) bool {
+	for _, e := range f.Entries {
+		for _, o := range []*Observation{e.Last, e.Attempt} {
+			if o == nil {
+				continue
+			}
+			if o.PlanAt != nil || o.PlanReason != "" {
+				return true
+			}
+			switch o.Plan {
+			case "", "max", "pro", "team", "enterprise", "free":
+			default:
+				return true
+			}
+		}
+	}
+	return false
 }
 
 func token() string {
@@ -118,7 +142,7 @@ func validEntry(e Entry) bool {
 		if o == nil {
 			continue
 		}
-		if o.Revision != e.Revision || o.Context != e.Context || o.At.IsZero() || len(o.Caller) > 160 || !validAuth(o.Auth) || !validReason(o.Reason) || (o.Version != "" && !versionPattern.MatchString(o.Version)) || !validPlan(o.Plan) {
+		if o.Revision != e.Revision || o.Context != e.Context || o.At.IsZero() || len(o.Caller) > 160 || !validAuth(o.Auth) || !validReason(o.Reason) || (o.Version != "" && !versionPattern.MatchString(o.Version)) || !validPlan(o.Plan) || !validPlanReason(o.PlanReason) || (o.PlanAt != nil && (o.PlanAt.IsZero() || o.Plan == "" || o.PlanAt.After(o.At))) {
 			return false
 		}
 	}
@@ -142,10 +166,35 @@ func validReason(s string) bool {
 }
 func validPlan(s string) bool {
 	switch s {
-	case "", "max", "pro", "team", "enterprise", "free":
+	case "", "max", "free", "go", "plus", "pro", "prolite", "promax", "team", "self_serve_business_prolite", "self_serve_business_usage_based", "business", "ent26", "enterprise_cbp_automation", "enterprise_cbp_usage_based", "enterprise", "edu", "edu_plus", "edu_pro":
 		return true
 	}
 	return false
+}
+
+func validPlanReason(s string) bool {
+	switch s {
+	case "", "timeout", "cancelled", "status_unavailable", "schema_unavailable", "unsupported", "no_account", "api_key", "account_type", "not_recognized":
+		return true
+	}
+	return false
+}
+func planEvidence(provider string, o *Observation, now time.Time) Evidence {
+	at := o.At
+	source := observationSource(provider, o.Version)
+	if provider == "codex" {
+		source = "codex account/read"
+		if o.PlanAt != nil {
+			at = *o.PlanAt
+		}
+	}
+	p := evidence("reported", o.Plan, source, at, now)
+	p.Text = planText(o.Plan)
+	if provider == "codex" && o.PlanReason != "" {
+		p.Freshness = "stale"
+		p.Reason = o.PlanReason
+	}
+	return p
 }
 
 // Context fingerprints relevant effective auth inputs without retaining values.
@@ -302,7 +351,7 @@ func Load(dir string) (File, error) {
 	var f File
 	d := json.NewDecoder(bytes.NewReader(raw))
 	d.DisallowUnknownFields()
-	if d.Decode(&f) != nil || d.Decode(new(any)) != io.EOF || f.SchemaVersion != 1 || !validToken(f.Salt) || f.Entries == nil || len(f.Entries) > MaxEntries {
+	if d.Decode(&f) != nil || d.Decode(new(any)) != io.EOF || (f.SchemaVersion != 1 && f.SchemaVersion != 2) || (f.SchemaVersion == 1 && needsPlanSchema(f)) || !validToken(f.Salt) || f.Entries == nil || len(f.Entries) > MaxEntries {
 		return File{}, ErrInvalid
 	}
 	ids := map[string]bool{}
@@ -336,13 +385,14 @@ func Update(dir string, fn func(*File) error) error {
 	if err != nil {
 		return err
 	}
+	loadedSchema := f.SchemaVersion
 	if f.Salt == "" {
 		f.Salt = token()
 	}
 	if err = fn(&f); err != nil {
 		return err
 	}
-	if len(f.Entries) > MaxEntries {
+	if (f.SchemaVersion != 1 && f.SchemaVersion != 2) || len(f.Entries) > MaxEntries {
 		return ErrInvalid
 	}
 	ids := map[string]bool{}
@@ -351,6 +401,9 @@ func Update(dir string, fn func(*File) error) error {
 			return ErrInvalid
 		}
 		ids[e.ID] = true
+	}
+	if loadedSchema == 2 || needsPlanSchema(f) {
+		f.SchemaVersion = 2
 	}
 	raw, err := json.Marshal(f)
 	if err != nil || len(raw) > MaxBytes {
@@ -399,16 +452,16 @@ type Evidence struct {
 	// a person who relies on it should check again to confirm it. It is a
 	// hint, not a warning.
 	CheckAgain bool `json:"checkAgain,omitempty"`
-	// Missing says why there is no value when that is by design and needs
-	// nothing from a person; Text then says it in words. See the Missing*
-	// constants.
+	// Missing says why there is no value; Text says it in words. Codex
+	// plan-read failures also use their allowlisted reason here.
 	Missing string `json:"missing,omitempty"`
+	Reason  string `json:"reason,omitempty"`
 }
 
-// Why an Evidence holds no value, when nothing is wrong.
+// Common reasons an Evidence holds no value.
 const (
 	// MissingNotReported: the provider's status command does not report it
-	// (Codex's login status reports a login only, never a plan).
+	// (retained for older catalog consumers).
 	MissingNotReported = "not_reported"
 	// MissingNotRecognized: the status reported no plan among the broad
 	// subscription types a check keeps; other values are discarded.
@@ -430,15 +483,16 @@ const (
 )
 
 type Card struct {
-	ID              string   `json:"id"`
-	Label           string   `json:"label"`
-	Provider        string   `json:"provider"`
-	Selection       string   `json:"selection"`
-	Auth            Evidence `json:"auth"`
-	Plan            Evidence `json:"plan"`
-	ConfiguredModel Evidence `json:"configuredModel"`
-	ObservedModel   Evidence `json:"observedModel"`
-	Reason          string   `json:"reason,omitempty"`
+	Quota           *QuotaView `json:"quota,omitempty"`
+	ID              string     `json:"id"`
+	Label           string     `json:"label"`
+	Provider        string     `json:"provider"`
+	Selection       string     `json:"selection"`
+	Auth            Evidence   `json:"auth"`
+	Plan            Evidence   `json:"plan"`
+	ConfiguredModel Evidence   `json:"configuredModel"`
+	ObservedModel   Evidence   `json:"observedModel"`
+	Reason          string     `json:"reason,omitempty"`
 	// FailedCheckAt is the time of the latest check when it did not produce a
 	// login result and Auth and Plan show the observation before it.
 	FailedCheckAt *time.Time `json:"failedCheckAt,omitempty"`
@@ -512,7 +566,7 @@ func Project(f File, now time.Time) View {
 				c.Auth.Freshness = "unavailable"
 			}
 			if o.Plan != "" {
-				c.Plan = evidence("reported", o.Plan, observationSource(e.Provider, o.Version), o.At, now)
+				c.Plan = planEvidence(e.Provider, o, now)
 				c.Plan.Text = planText(o.Plan)
 			}
 		}
@@ -527,12 +581,16 @@ func Project(f File, now time.Time) View {
 				c.FailedCheckAt = &at
 			}
 			if e.Last.Plan != "" {
-				c.Plan = evidence("reported", e.Last.Plan, e.Provider+" previous status", e.Last.At, now)
+				c.Plan = planEvidence(e.Provider, e.Last, now)
 				c.Plan.Text = planText(e.Last.Plan)
 				c.Plan.Freshness = "stale"
 			}
 		}
 		c.Plan = missingPlan(e.Provider, c.Auth.State, c.Plan)
+		if e.Provider == "codex" && c.Plan.Value == "" && e.Attempt != nil && e.Attempt.PlanReason != "" {
+			c.Plan.Missing = e.Attempt.PlanReason
+			c.Plan.Text = codexPlanMissing[e.Attempt.PlanReason]
+		}
 		c.Attention = attention(e, c)
 		c.NeedsPerson = c.Attention != ""
 		v.Cards = append(v.Cards, c)
@@ -549,9 +607,9 @@ func missingPlan(provider, auth string, p Evidence) Evidence {
 	}
 	why := ""
 	switch {
-	case provider == "codex":
-		why = MissingNotReported
-	case provider != "claude-code":
+	case provider == "codex" && auth == "reported_present":
+		return Evidence{Text: "Codex plan has not been read; check again.", State: "unavailable", Freshness: "unavailable", Missing: MissingNotChecked}
+	case provider != "claude-code" && provider != "codex":
 	case auth == "unchecked":
 		why = MissingNotChecked
 	case auth == "reported_present":
@@ -565,8 +623,15 @@ func missingPlan(provider, auth string, p Evidence) Evidence {
 	return Evidence{Text: missingText[why], State: "unavailable", Freshness: "unavailable", Missing: why}
 }
 
+var codexPlanMissing = map[string]string{
+	"timeout": "Codex plan read timed out.", "cancelled": "Codex plan read was cancelled.",
+	"status_unavailable": "Codex plan read failed.", "schema_unavailable": "Codex plan response was not recognized.",
+	"unsupported": "This Codex CLI does not support the plan read.", "no_account": "Codex reported no account for the plan read.",
+	"api_key": "API key accounts have no ChatGPT subscription plan.", "account_type": "This Codex account type has no recognized ChatGPT plan.",
+	"not_recognized": "Codex reported no recognized plan.",
+}
 var missingText = map[string]string{
-	MissingNotReported:   "Codex does not report a plan.",
+	MissingNotReported:   "The status command does not report this value.",
 	MissingNotRecognized: "Claude Code's status reported no recognized plan.",
 	MissingNoLogin:       "No plan is read without a login.",
 	MissingNotChecked:    "Not checked",
@@ -594,7 +659,9 @@ func ReadView(dir string, now time.Time) View {
 	if err != nil {
 		return View{State: "unavailable", Complete: false, Cards: []Card{}}
 	}
-	return Project(f, now)
+	v := Project(f, now)
+	AttachQuota(&v, QuotaViews(dir, f, os.Environ(), now))
+	return v
 }
 
 // CheckGuard prevents overlapping checks of one selection, without holding the

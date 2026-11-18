@@ -967,7 +967,7 @@ func TestDockLeftRouteLimitAndAllowances(t *testing.T) {
 		}
 	}
 	if payAcct == nil || len(payAcct.Notes) != 1 || payAcct.Usage.Windows[0].UsedPercent != 100 ||
-		say(payAcct.Notes[0].Text) != "payments-reconciler hit a usage limit on a route on this account on Sun 3 Mar; the provider reported a reset for Sat 9 Mar, 12:00." {
+		say(payAcct.Notes[0].Text) != "payments-reconciler hit a usage limit on this route on Sun 3 Mar; the provider reported a reset for Sat 9 Mar, 12:00." {
 		t.Errorf("%+v", payAcct)
 	}
 	for _, a := range r.Allowances {
@@ -1124,53 +1124,28 @@ func TestDockSharedLimitMatchesTheAccountNotTheGroupName(t *testing.T) {
 			limited++
 		}
 	}
-	if len(allow) != 3 || limited != 1 || !strings.Contains(strings.Join(subs, "|"), "account 1 of 3 named shared-group") {
+	if len(allow) != 4 || limited != 1 || strings.Contains(strings.Join(subs, "|"), "account 1") {
 		t.Errorf("%d allowances, %d limited: %v", len(allow), limited, subs)
 	}
 }
 
-// Allowance lines that share a provider and title each say what their routes
-// are, without saying whether they are the same account; identified accounts
-// keep their numbering, and a line whose name is its own says nothing more.
+// Unknown routes retain configured labels without inferred account numbering.
 func TestDockAllowancesTellApartLinesThatShareAName(t *testing.T) {
-	route := func(key, tool, model, effort, identity string) dockRoute {
-		return dockRoute{Key: key, Provider: "example", Account: "example", Tool: tool, Model: model, Effort: effort, identity: identity,
-			Usage: dockUsageTarget{Availability: "unavailable", Windows: []dockUsageWindow{}}}
+	routes := []dockRoute{
+		{Key: "rA", Provider: "example", Account: "example", Tool: "BB thread", Model: "example-large"},
+		{Key: "rB", Provider: "example", Account: "example", Tool: "Codex CLI", Model: "example-small", Effort: "high", identity: "context-a"},
+		{Key: "rC", Provider: "example", Account: "example", Tool: "Codex CLI", identity: "context-a"},
+		{Key: "rD", Provider: "example", Account: "example", Tool: "Codex CLI", identity: "context-b"},
 	}
-	for _, c := range []struct {
-		name   string
-		routes []dockRoute
-		want   []string
-	}{
-		{"one untested, one identified", []dockRoute{route("rA", "BB thread", "", "", ""), route("rB", "Codex CLI", "example-large", "high", "account-1")},
-			[]string{"1 route: BB thread · which account is not identified by a test", "1 route: Codex CLI, model example-large, effort high"}},
-		{"two untested", []dockRoute{route("rA", "BB thread", "example-large", "", ""), route("rB", "BB thread", "example-small", "", "")},
-			[]string{"1 route: BB thread, model example-large · which account is not identified by a test",
-				"1 route: BB thread, model example-small · which account is not identified by a test"}},
-		{"two identified keep their numbers", []dockRoute{route("rA", "Codex CLI", "", "", "account-1"), route("rB", "Codex CLI", "", "", "account-2")},
-			[]string{"1 route: Codex CLI · account 1 of 2 named example", "1 route: Codex CLI · account 2 of 2 named example"}},
-		{"untested beside two identified", []dockRoute{route("rA", "", "example-large", "", ""), route("rB", "Claude Code", "", "", "account-1"),
-			route("rC", "Codex CLI", "", "", "account-2"), route("rD", "Cursor", "", "", "account-2")},
-			[]string{"1 route: tool not recorded, model example-large · which account is not identified by a test",
-				"1 route: Claude Code · account 1 of 2 named example", "2 routes: Codex CLI; Cursor · account 2 of 2 named example"}},
-		{"many kinds are capped", []dockRoute{route("rA", "BB thread", "", "", ""), route("rB", "Codex CLI", "m1", "", "account-1"), route("rC", "Codex CLI", "m2", "", "account-1"),
-			route("rD", "Codex CLI", "m3", "", "account-1"), route("rE", "Codex CLI", "m4", "", "account-1"), route("rF", "Codex CLI", "m4", "", "account-1")},
-			[]string{"1 route: BB thread · which account is not identified by a test",
-				"5 routes: Codex CLI, model m1; Codex CLI, model m2; Codex CLI, model m3; and 1 more"}},
-		{"a name of its own says nothing more", []dockRoute{route("rA", "BB thread", "", "", ""), {Key: "rB", Provider: "other", Account: "other", Tool: "Codex CLI", identity: "account-1",
-			Usage: dockUsageTarget{Availability: "unavailable", Windows: []dockUsageWindow{}}}},
-			[]string{"1 route · which account is not identified by a test", "1 route"}},
-	} {
-		t.Run(c.name, func(t *testing.T) {
-			allow, _ := dockAllowances(c.routes, nil, dockNow)
-			got := []string{}
-			for _, a := range allow {
-				got = append(got, a.Sub)
-			}
-			if strings.Join(got, "|") != strings.Join(c.want, "|") {
-				t.Errorf("\n got %q\nwant %q", got, c.want)
-			}
-		})
+	allow, _ := dockAllowances(routes, nil, dockNow)
+	want := []string{"1 route: BB thread, model example-large · account unknown", "1 route: Codex CLI, model example-small, effort high · account unknown", "1 route: Codex CLI · account unknown", "1 route: Codex CLI · account unknown"}
+	if len(allow) != len(want) {
+		t.Fatalf("%d blocks, want %d", len(allow), len(want))
+	}
+	for i, a := range allow {
+		if a.Sub != want[i] || a.Routes != 1 || a.Assignment != "Not assigned to an account." {
+			t.Errorf("block %d: %+v", i, a)
+		}
 	}
 }
 
@@ -1410,7 +1385,7 @@ func TestDockServerRefusesWithoutTokenCrossOriginAndWrites(t *testing.T) {
 }
 
 func TestDockPageHasNoExternalReferences(t *testing.T) {
-	for _, name := range []string{"dockui/index.html", "dockui/dock.css", "dockui/dock.js"} {
+	for _, name := range []string{"dockui/index.html", "dockui/dock.css", "dockui/dock.js", "dockui/routes-help.html"} {
 		b, err := dockUI.ReadFile(name)
 		if err != nil {
 			t.Fatal(err)
@@ -1812,7 +1787,7 @@ func TestDockSharedLimitNeedsARecordedAccountIdentity(t *testing.T) {
 	}
 	unidentified := 0
 	for _, a := range r.Allowances {
-		if strings.Contains(a.Sub, "which account is not identified by a test") {
+		if strings.Contains(a.Sub, "account unknown") {
 			unidentified++
 		}
 		for _, note := range a.Notes {
@@ -1995,19 +1970,19 @@ func TestDockLimitNotesTakeTheResetFromTheReading(t *testing.T) {
 		allow, shares string
 	}{
 		{"event has a reset", &reported, reading(100, &windowReset),
-			"example-loop hit a usage limit on a route on this account on Mon 4 Mar; the provider reported a reset for Sat 9 Mar, 12:00.",
+			"example-loop hit a usage limit on this route on Mon 4 Mar; the provider reported a reset for Sat 9 Mar, 12:00.",
 			"; the provider reported a reset for Sat 9 Mar."},
 		{"event lacks a reset, the reading's used-up window has one", nil, reading(100, &windowReset),
-			"example-loop hit a usage limit on a route on this account on Mon 4 Mar; no reset was reported with the limit, and the usage reading shows the 7-day allowance resetting Thu 7 Mar, 12:00.",
+			"example-loop hit a usage limit on this route on Mon 4 Mar; no reset was reported with the limit, and the usage reading shows the 7-day allowance resetting Thu 7 Mar, 12:00.",
 			"; no reset was reported with the limit, and the usage reading shows the 7-day allowance resetting Thu 7 Mar."},
 		{"event lacks a reset, the reading has a reset but nothing used up", nil, reading(40, &windowReset),
-			"example-loop hit a usage limit on a route on this account on Mon 4 Mar; no reset was reported with the limit; the usage reading shows when each window resets.",
+			"example-loop hit a usage limit on this route on Mon 4 Mar; no reset was reported with the limit; the usage reading shows when each window resets.",
 			"; no reset was reported with the limit; the usage reading shows when each window resets."},
 		{"neither has a reset", nil, reading(100, nil),
-			"example-loop hit a usage limit on a route on this account on Mon 4 Mar; no reset time was reported.",
+			"example-loop hit a usage limit on this route on Mon 4 Mar; no reset time was reported.",
 			"; no reset time was reported."},
 		{"no reading at all", nil, none,
-			"example-loop hit a usage limit on a route on this account on Mon 4 Mar; no reset time was reported.",
+			"example-loop hit a usage limit on this route on Mon 4 Mar; no reset time was reported.",
 			"; no reset time was reported."},
 	}
 	for _, c := range cases {

@@ -2,6 +2,7 @@ package main
 
 import (
 	"encoding/json"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -83,11 +84,11 @@ func TestDockAllowancesHeadedByAssignedAccount(t *testing.T) {
 		{"bound to one label", []use{{"alpha", "rA", codexBound}}, []dockRoute{route("rA", "gpt-example", "", low)},
 			[]string{"Work Codex | 1 route | assigned by_you | gpt-example: Read 20 min ago"}},
 		{"unbound keeps its group", []use{{"alpha", "rA", codexUnbound}}, []dockRoute{route("rA", "gpt-example", "id-1", low)},
-			[]string{"codex | 1 route | Not assigned to an account. | own reading: "}},
+			[]string{"codex | 1 route: gpt-example · account unknown | Not assigned to an account. | own reading: "}},
 		{"a failed check is not under the label", []use{{"alpha", "rA", codexOnClaude}}, []dockRoute{route("rA", "gpt-example", "", low)},
-			[]string{"codex | 1 route · which account is not identified by a test | The accounts catalog entry is for another provider. | own reading: "}},
+			[]string{"codex | 1 route: gpt-example · account unknown | The accounts catalog entry is for another provider. | own reading: "}},
 		{"an entry the catalog lacks is not under a label", []use{{"alpha", "rA", codexMissing}}, []dockRoute{route("rA", "gpt-example", "", none)},
-			[]string{"codex | 1 route · which account is not identified by a test | The accounts catalog has no entry with this ID. | own reading: No reading"}},
+			[]string{"codex | 1 route: gpt-example · account unknown | The accounts catalog has no entry with this ID. | own reading: No reading"}},
 		{"a BB thread route is under the label, not verified", []use{{"alpha", "rB", codexBB}}, []dockRoute{route("rB", "BB thread gpt-example", "", low)},
 			[]string{"Work Codex | 1 route | assigned by_you | BB thread gpt-example: Read 20 min ago (BB thread)"}},
 		{"two routes on one label keep their own readings, the one out first",
@@ -97,12 +98,12 @@ func TestDockAllowancesHeadedByAssignedAccount(t *testing.T) {
 		{"no reading", []use{{"alpha", "rA", codexBound}}, []dockRoute{route("rA", "gpt-example", "", none)},
 			[]string{"Work Codex | 1 route | assigned by_you | gpt-example: No usage reading is recorded for its route."}},
 		{"loops that state different accounts are not under either", []use{{"alpha", "rA", codexBound}, {"beta", "rA", codexUnbound}}, []dockRoute{route("rA", "gpt-example", "", none)},
-			[]string{"codex | 1 route · which account is not identified by a test | Its loops assign it to different accounts. | own reading: No reading"}},
+			[]string{"codex | 1 route: gpt-example · account unknown | Its loops assign it to different accounts. | own reading: No reading"}},
 		{"bound and unbound routes of one identity are two blocks, the one out first",
 			[]use{{"alpha", "rA", codexUnbound}, {"alpha", "rB", codexBound}},
 			[]dockRoute{route("rA", "gpt-small", "id-1", low), route("rB", "gpt-example", "id-1", out)},
 			[]string{"Work Codex | 1 route | assigned by_you | gpt-example: Read 2 h ago",
-				"codex | 1 route | Not assigned to an account. | own reading: "}},
+				"codex | 1 route: gpt-small · account unknown | Not assigned to an account. | own reading: "}},
 		{"under a label a route is named by its model alone",
 			[]use{{"alpha", "rA", codexBound}, {"alpha", "rB", codexBB}},
 			[]dockRoute{grouped(route("rA", "gpt-example", "", low), "team-account"), grouped(route("rB", "gpt-small", "", low), "team-second-account")},
@@ -118,9 +119,9 @@ func TestDockAllowancesHeadedByAssignedAccount(t *testing.T) {
 			got := []string{}
 			for _, a := range allow {
 				d := describe(a)
-				// An unbound block's read line is the newest reading's own;
+				// An unbound block keeps its single route's read line;
 				// only whether it has one is compared here.
-				if i := strings.Index(d, " | own reading: "); i >= 0 && !strings.HasSuffix(d, "No reading") {
+				if i := strings.Index(d, " | own reading: "); i >= 0 && a.Usage.ObservedAt != nil {
 					d = d[:i+len(" | own reading: ")]
 				}
 				got = append(got, d)
@@ -180,7 +181,7 @@ func TestDockAllowancesPageReadsEachRoute(t *testing.T) {
 		`head.appendChild(el("span", "sub", bbOnly ? ASSIGNED_BB : ASSIGNED));`,
 		`if (a.assignment) head.appendChild(el("span", "sub", a.assignment));`,
 		`link("#/routes/" + r.route, r.title)`,
-		`rl.appendChild(el("p", "allow-reading", say(r.reading)));`,
+		`var reading = el("p", "allow-reading", say(r.reading));`,
 		`var u = routeUsage(d, r.route);`,
 	} {
 		if !strings.Contains(f, want) {
@@ -194,5 +195,84 @@ func TestDockAllowancesPageReadsEachRoute(t *testing.T) {
 	}
 	if !strings.Contains(js, `var ASSIGNED = "assigned by you · identity not verified";`) {
 		t.Error("the assigned wording moved; the strip must use the Accounts page's")
+	}
+}
+
+// A usage context describes configured probe inputs, not account identity.
+// Previously the strip selected the newest route's windows for their shared
+// context. Different readings, ended windows and missing evidence must survive.
+func TestDockAllowancesNeverSubstituteSharedContextReadings(t *testing.T) {
+	reset := dockNow.Add(-time.Minute)
+	ended := acctReading(3*time.Hour, 93, &reset)
+	ended.Availability = "stale"
+	ended.Windows[0].Stale = true
+	missing := dockUsageTarget{Availability: "unavailable", ReadLine: "No reading", Windows: []dockUsageWindow{}, Reason: "not recorded"}
+	recent := acctReading(5*time.Minute, 21, nil)
+	routes := []dockRoute{
+		{Key: "old", Provider: "codex", Account: "example-group", Title: "example-large", identity: "same-context", Usage: ended},
+		{Key: "missing", Provider: "codex", Account: "example-group", Title: "example-missing", identity: "same-context", Usage: missing},
+		{Key: "recent", Provider: "codex", Account: "example-group", Title: "example-small", identity: "same-context", Usage: recent},
+	}
+	allow, _ := dockAllowances(routes, nil, dockNow)
+	if len(allow) != 3 {
+		t.Fatalf("shared context collapsed %d routes into %d blocks", len(routes), len(allow))
+	}
+	for i, a := range allow {
+		want := routes[i].Usage
+		if want.ReadLine == "" {
+			if want.ObservedAt != nil {
+				want.ReadLine = "Read " + dockAgo(dockNow, *want.ObservedAt)
+			} else {
+				want.ReadLine = "No reading"
+			}
+		}
+		want.ReadLine = strings.Replace(want.ReadLine, "Usage read", "Read", 1)
+		if !reflect.DeepEqual(a.Usage, &want) {
+			t.Errorf("route %s reading substituted: got %+v want %+v", routes[i].Key, a.Usage, want)
+		}
+		if a.Assigned != "" || a.Title != "example-group" || strings.Contains(a.Sub, "account 1") {
+			t.Errorf("inferred account: %+v", a)
+		}
+	}
+}
+
+// Nil-first and assigned-first loop orders must both refuse a combined label.
+func TestDockAllowancesMixedAssignmentOrder(t *testing.T) {
+	a := &accounts.RouteAccount{Assigned: "by_you", Account: acctWork, Label: "Example selected", Check: accounts.RouteConsistent}
+	for _, entries := range [][]dockChainEntry{
+		{{Route: "r"}, {Route: "r", CatalogAccount: a}},
+		{{Route: "r", CatalogAccount: a}, {Route: "r"}},
+	} {
+		loops := []dockLoop{{Chain: dockChain{Entries: entries[:1]}}, {Chain: dockChain{Entries: entries[1:]}}}
+		got, _ := dockAllowances([]dockRoute{{Key: "r", Account: "example-group"}}, loops, dockNow)
+		if len(got) != 1 || got[0].Assigned != "" || got[0].Assignment != "Its loops assign it to different accounts." {
+			t.Errorf("mixed order: %+v", got)
+		}
+	}
+}
+
+// Explicit assignment combines only the heading. Neither shared context nor
+// the selected-context quota cache supplies a replacement reading for a line.
+func TestDockAllowancesAssignedSharedContextKeepsEachRoute(t *testing.T) {
+	a := &accounts.RouteAccount{Assigned: "by_you", Account: acctWork, Label: "Example selected", Check: accounts.RouteConsistent}
+	routes := []dockRoute{
+		{Key: "low", Title: "example-small", identity: "shared", Usage: acctReading(5*time.Minute, 21, nil)},
+		{Key: "out", Title: "example-large", identity: "shared", Usage: acctReading(time.Hour, 100, nil)},
+		{Key: "missing", Title: "example-missing", identity: "shared", Usage: dockUsageTarget{Availability: "unavailable", Windows: []dockUsageWindow{}}},
+	}
+	entries := []dockChainEntry{}
+	for _, r := range routes {
+		entries = append(entries, dockChainEntry{Route: r.Key, CatalogAccount: a})
+	}
+	got, _ := dockAllowances(routes, []dockLoop{{Chain: dockChain{Entries: entries}}}, dockNow)
+	if len(got) != 1 || got[0].Usage != nil || len(got[0].Lines) != 3 {
+		t.Fatalf("%+v", got)
+	}
+	lines := got[0].Lines
+	if lines[0].Route != "out" || lines[1].Route != "low" || lines[2].Route != "missing" {
+		t.Errorf("out-first stable order: %+v", lines)
+	}
+	if say(lines[0].Reading, dockNow) != "Read 1 h ago" || say(lines[1].Reading, dockNow) != "Read 5 min ago" || !strings.Contains(say(lines[2].Reading, dockNow), "No usage reading") {
+		t.Errorf("readings: %+v", lines)
 	}
 }

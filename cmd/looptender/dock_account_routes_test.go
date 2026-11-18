@@ -83,10 +83,10 @@ func TestDockAccountUses(t *testing.T) {
 		if got := say(side.Reading, dockNow); side.Out || got != "No usage reading is recorded for its route." {
 			t.Errorf("mismatch reading: %t %q", side.Out, got)
 		}
-		// An unnamed headless context: named for its provider, with the
-		// command that would name it and the entry with the same directory.
-		if unnamedClaude.Title != "Unnamed Claude Code account" || unnamedClaude.Selection != "explicit_directory" || unnamedClaude.Group != "claude-side" ||
-			!slices.Equal(unnamedClaude.MayBeSame, []string{acctOther}) || len(unnamedClaude.Routes) != 1 || unnamedClaude.Routes[0].Loops[0] != dockKey("beta") {
+		// An unbound headless context stays separate from the selected
+		// entry even when its directory matches.
+		if unnamedClaude.Title != "Claude Code routes (account unknown)" || unnamedClaude.Selection != "explicit_directory" || unnamedClaude.Group != "claude-side" ||
+			len(unnamedClaude.Routes) != 1 || unnamedClaude.Routes[0].Loops[0] != dockKey("beta") {
 			t.Errorf("unnamed claude: %+v", unnamedClaude)
 		}
 		wantAdd := "looptender accounts add --label ACCOUNT_LABEL --provider claude-code --selection explicit_directory --account-dir ACCOUNT_DIRECTORY"
@@ -103,7 +103,7 @@ func TestDockAccountUses(t *testing.T) {
 			t.Errorf("no reading: %q", got)
 		}
 		// A BB thread context: never compared with a catalog entry.
-		if unnamedBB.Title != "Unnamed Claude Code account" || unnamedBB.Selection != "bb_thread" || !unnamedBB.Routes[0].BBThread || unnamedBB.MayBeSame != nil ||
+		if unnamedBB.Title != "Claude Code routes (account unknown)" || unnamedBB.Selection != "bb_thread" || !unnamedBB.Routes[0].BBThread ||
 			unnamedBB.Add != "looptender accounts add --label ACCOUNT_LABEL --provider bb --selection externally_managed" {
 			t.Errorf("unnamed bb: %+v", unnamedBB)
 		}
@@ -145,30 +145,30 @@ func TestDockAccountReading(t *testing.T) {
 	}
 }
 
-// The structured comparison: same provider and the same directory, or both
-// inherited. Never by label.
-func TestDockMayBeSame(t *testing.T) {
-	f := &accounts.File{Entries: []accounts.Entry{
-		{ID: "a", Label: "Same name", Provider: "codex", Mode: "explicit_directory", Directory: "/home/example/.codex-a"},
-		{ID: "b", Label: "Same name", Provider: "codex", Mode: "inherited"},
-		{ID: "c", Label: "Same name", Provider: "claude-code", Mode: "inherited"},
-	}}
-	for _, c := range []struct {
-		facts dockAccountFacts
-		want  []string
-	}{
-		{dockAccountFacts{provider: "codex", selection: "explicit_directory", dir: "/home/example/.codex-a"}, []string{"a"}},
-		{dockAccountFacts{provider: "codex", selection: "explicit_directory", dir: "/home/example/.codex-b"}, nil},
-		{dockAccountFacts{provider: "codex", selection: "inherited"}, []string{"b"}},
-		{dockAccountFacts{provider: "claude-code", selection: "bb_thread"}, nil},
-		{dockAccountFacts{provider: "cursor", selection: "inherited"}, nil},
-	} {
-		if got := dockMayBeSame(f, c.facts); !slices.Equal(got, c.want) {
-			t.Errorf("%+v: %v", c.facts, got)
+// A provider, selection, directory, group or model does not bind a route
+// to a selected account, even when those facts match a catalog entry.
+func TestDockUnknownAccountDoesNotInferBinding(t *testing.T) {
+	for _, selection := range []string{"inherited", "explicit_directory", "bb_thread"} {
+		catalog := &accounts.File{Entries: []accounts.Entry{{ID: acctWork, Label: "Example", Provider: "codex", Mode: "inherited"}}}
+		agent := config.Agent{Provider: "codex", Group: "codex", Codex: &config.Codex{}}
+		if selection == "explicit_directory" {
+			catalog.Entries[0].Mode = selection
+			catalog.Entries[0].Directory = "/home/example/.codex"
+			agent.Codex.Env = map[string]string{"CODEX_HOME": "/home/example/.codex"}
 		}
-	}
-	if dockMayBeSame(nil, dockAccountFacts{provider: "codex", selection: "inherited"}) != nil {
-		t.Error("unread catalog")
+		if selection == "bb_thread" {
+			agent.BB = &config.BB{}
+		}
+		_, entry := acctEntry("example-loop", "example-route", "example-model", agent, catalog, dockUsageTarget{})
+		view := accounts.View{Cards: []accounts.Card{{ID: acctWork, Label: "Example"}}}
+		uses, _ := dockAccountUses(dockReport{Loops: []dockLoop{{Key: "example-loop", Chain: dockChain{Entries: []dockChainEntry{entry}}}}}, view, catalog, false, dockNow)
+		if len(uses) != 2 || uses[0].Card != acctWork || len(uses[0].Routes) != 0 || uses[1].Context == "" || uses[1].Card != "" || len(uses[1].Routes) != 1 {
+			t.Fatalf("%s: route was lost or assigned by inference: %+v", selection, uses)
+		}
+		data, _ := json.Marshal(uses)
+		if strings.Contains(string(data), "mayBeSame") || strings.Contains(string(data), "Unnamed") {
+			t.Fatalf("%s: suggests account identity: %s", selection, data)
+		}
 	}
 }
 
@@ -201,6 +201,45 @@ func TestDockAccountUsesStayCompact(t *testing.T) {
 			if len(rt.Loops) > dockMaxAccountLoops {
 				t.Errorf("%d loops", len(rt.Loops))
 			}
+		}
+	}
+}
+
+// The Accounts view must not turn missing bindings into additional selected
+// accounts or propose identity matches. Browser fixtures also exercise the
+// rendered counts, route retention and unavailable/empty states.
+func TestDockUnknownAccountsStaySeparateFromSelectedCards(t *testing.T) {
+	js := dockUIText(t, "dock.js")
+	for _, legacy := range []string{"Unnamed ", "not named yet", "May be the same account as", "function unnamedCard", "function unnamedCount"} {
+		if strings.Contains(js, legacy) {
+			t.Errorf("misleading account presentation returned: %q", legacy)
+		}
+	}
+	section := funcBody(t, js, "unknownAccountSection")
+	for _, want := range []string{"Routes with unknown accounts", "separate routes do not mean separate subscriptions", "accountRouteList(d, u, false)", "aria-labelledby"} {
+		if !strings.Contains(section, want) {
+			t.Errorf("unknown routes lose explanation or route evidence: %q", want)
+		}
+	}
+	picker := funcBody(t, js, "renderPicker")
+	if strings.Contains(picker, "accountUses") {
+		t.Error("the selected-account count includes inferred route contexts")
+	}
+}
+
+// Unknown routes live outside account-body dd, so they must retain their
+// own reflow rule. Browser checks use an unbroken 80-character route title
+// and 120-character loop name at 320 px and verify the reading stays inside.
+func TestDockUnknownRouteNamesWrap(t *testing.T) {
+	css := dockUIText(t, "dock.css")
+	start := strings.Index(css, ".unknown-route-context {")
+	if start < 0 {
+		t.Fatal("unknown route context rule missing")
+	}
+	rule := strings.SplitN(css[start:], "}", 2)[0]
+	for _, property := range []string{"overflow-wrap: anywhere;", "min-width: 0;"} {
+		if !strings.Contains(rule, property) {
+			t.Errorf("unknown route context lost %s", property)
 		}
 	}
 }

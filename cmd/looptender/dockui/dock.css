@@ -159,8 +159,15 @@ details[open] > .work-summary .work-name::before { transform: rotate(45deg); }
 .btn:hover { background: var(--sunk); border-color: var(--ink-2); }
 .btn:active { transform: translateY(0.5px); }
 .btn[aria-pressed="true"] { background: var(--limit-soft); border-color: var(--limit); }
-.btn[aria-busy="true"] svg { animation: spin 900ms linear infinite; }
+/* "Read now" turns while it reads. Motion is opted in; with reduced motion
+   it still turns, slowly, so the button visibly works. */
 @keyframes spin { to { transform: rotate(360deg); } }
+@media (prefers-reduced-motion: no-preference) {
+  .btn[aria-busy="true"] svg { animation: spin 900ms linear infinite; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .btn[aria-busy="true"] svg { animation: spin 6s linear infinite; }
+}
 /* A notice about reading sits over the foot of the window, so it never moves
    the page; the page gains room at its end so nothing stays hidden under it.
    Neutral while the page recovers by itself; a warning once a person is needed. */
@@ -183,6 +190,26 @@ body.has-banner { padding-bottom: 8rem; }
 .pick .dot { grid-row: 1 / 3; }
 .pick-name { font-weight: 600; font-size: 0.925rem; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .pick-state { grid-column: 2; font-size: 0.8125rem; color: var(--ink-2); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+/* A picker line cut with an ellipsis (single-line-overflow): the row's own
+   scroll timeline flags the cut, and while the row is hovered or has keyboard
+   focus the text slides into view. Where the browser lacks scroll timelines
+   or style queries, or motion is reduced, the ellipsis stays and the row
+   opens the page whose heading shows the whole name. */
+@property --truncated { syntax: "<integer>"; inherits: false; initial-value: 0; }
+@keyframes truncated { from, to { --truncated: 1; } }
+@supports (animation-timeline: scroll(self inline)) {
+  .pick-name, .pick-state { animation: truncated linear both; animation-timeline: scroll(self inline); }
+}
+@media (prefers-reduced-motion: no-preference) {
+  @container style(--truncated: 1) {
+    .pick:is(:hover, :focus-visible) :is(.pick-name, .pick-state) > span {
+      display: inline-block;
+      margin-inline-start: 100%;
+      translate: calc(1px - 100%);
+      transition: margin-inline-start 2s ease-in, translate 2s ease-in;
+    }
+  }
+}
 .pick svg.go { grid-row: 1 / 3; grid-column: 3; color: var(--ink-3); }
 .pick-needs { grid-template-columns: auto minmax(0, 1fr) auto; min-height: 2.75rem; background: var(--attn-soft); border-color: var(--attn-line); font-weight: 600; }
 .pick-needs:hover, .pick-needs[aria-current="page"]:not(.is-clear) { background: var(--attn-soft); border-color: var(--attn); }
@@ -191,6 +218,9 @@ body.has-banner { padding-bottom: 8rem; }
 .pick-needs .count { display: inline-grid; place-items: center; min-width: 1.5rem; height: 1.5rem; padding: 0 0.4rem; border-radius: 999px; background: var(--attn); color: var(--surface); font-size: 0.8rem; font-weight: 700; }
 
 .pane { min-width: 0; }
+/* What only the script can fill or make work keeps its place but stays out
+   of sight, and out of the tab order, until the script has run. */
+html:not(.has-script) .needs-script { visibility: hidden; }
 .pane:focus { outline: none; }
 .back { display: none; align-items: center; gap: 0.35rem; margin: 0 0 0.9rem -0.35rem; padding: 0.4rem 0.6rem 0.4rem 0.35rem; font-size: 0.875rem; font-weight: 550; color: var(--ink-2); text-decoration: none; border-radius: 8px; }
 .back svg { transform: rotate(180deg); }
@@ -271,6 +301,7 @@ body.has-banner { padding-bottom: 8rem; }
 
 /* The route component: a loop's preferred routes, and the view across loops */
 .chain-ready { font-size: 0.8125rem; font-weight: 600; color: var(--good); }
+.chain-ready.is-calm { color: var(--ink-2); font-size: 0.875rem; }
 .chain-ready.is-short { color: var(--warn); font-size: 0.875rem; }
 .chain-how { margin: 0.3rem 0 0; font-size: 0.8125rem; max-width: 70ch; }
 .route-list { list-style: none; margin: 0.75rem 0 0; padding: 0; }
@@ -315,7 +346,7 @@ body.has-banner { padding-bottom: 8rem; }
 .route-summary .sub { font-weight: 500; }
 .route-summary a { text-underline-offset: 0.2em; }
 
-/* Allowances: one line per account group */
+/* Allowances: explicit assignments, otherwise each route separately. */
 .allow-list { list-style: none; margin: 0.6rem 0 0; padding: 0; }
 .allow { display: grid; grid-template-columns: 14rem minmax(0, 1fr); gap: 0.5rem 1.25rem; padding: 0.75rem 0; }
 .allow + .allow { border-top: 1px dashed var(--line); }
@@ -327,6 +358,8 @@ body.has-banner { padding-bottom: 8rem; }
 .allow-next { margin-top: 0.3rem; font-size: 0.8125rem; }
 /* A catalog entry's block: each route on a line of its own, as on the Accounts page. */
 .allow-body .allow-routes { margin-top: 0; }
+.allow-head { min-width: 0; overflow-wrap: anywhere; }
+.allow-routes .account-route { display: block; overflow-wrap: anywhere; }
 .allow-reading { font-size: 0.875rem; }
 .allow-routes .route-usage { margin-top: 0.1rem; }
 /* Where the strip itself is narrow (a narrow window beside the picker), the
@@ -423,9 +456,6 @@ body.has-banner { padding-bottom: 8rem; }
   .tools .btn span { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }
   .tools .btn { min-width: 2.75rem; justify-content: center; }
 }
-@media (prefers-reduced-motion: reduce) {
-  *, *::before, *::after { transition: none !important; animation: none !important; }
-}
 @media (forced-colors: active) {
   .state, .tag, .in-use, .pos, .meter, .now > div, .panel, .need, .lanes, .route-note.is-limit, .route-note.is-attn, .work-role { border: 1px solid CanvasText; }
   .account-card.is-attention { border: 3px double CanvasText; }
@@ -434,6 +464,8 @@ body.has-banner { padding-bottom: 8rem; }
   .dot-unknown { background: Canvas; border: 1px solid CanvasText; }
   .pick[aria-current="page"] { outline: 2px solid Highlight; outline-offset: -2px; }
   .tools .btn[aria-pressed="true"] { background: Highlight; color: HighlightText; border-color: Highlight; }
+  /* The route in use keeps its filled position badge. */
+  .route.is-active .pos { background: Highlight; color: HighlightText; border-color: Highlight; }
 }
 
 /* The page shown for a used or expired link. It has no session and no script. */
@@ -503,3 +535,66 @@ body.has-banner { padding-bottom: 8rem; }
  .account-summary { grid-template-columns: minmax(0, 1fr); gap: 1rem; }
  .account-plan { border-top: 1px solid var(--line); padding-top: .8rem; }
 }
+/* How to add an account, add a route and change the order: disclosures with commands to copy. Neutral: nothing here is a warning. */
+.how { margin-top: 1rem; background: var(--surface); border: 1px solid var(--line); border-radius: 14px; }
+.how-summary { cursor: pointer; display: flex; align-items: baseline; gap: 0.6rem; padding: 0.85rem 1.1rem; font-weight: 620; border-radius: 14px; }
+.how-summary::marker { content: ""; }
+.how-summary::-webkit-details-marker { display: none; }
+.how-summary::before { content: ""; flex: none; width: 0.45rem; height: 0.45rem; border-inline-end: 1.5px solid currentColor; border-block-end: 1.5px solid currentColor; transform: rotate(-45deg); }
+details[open] > .how-summary::before { transform: rotate(45deg); }
+.how-summary:hover { background: var(--sunk); }
+.how-body { padding: 0.15rem 1.1rem 1.1rem; display: grid; gap: 0.75rem; }
+.how-body p { margin: 0; max-width: 75ch; }
+.how-case { margin: 0.6rem 0 -0.25rem; font-size: 0.9375rem; font-weight: 620; }
+.how-step { display: grid; gap: 0.4rem; }
+.how-step .copy { display: flex; flex-wrap: wrap; align-items: center; gap: 0.5rem; }
+.how-step .command { white-space: normal; overflow-wrap: anywhere; font-family: var(--mono); font-size: 0.8125rem; }
+.how-step .btn { white-space: nowrap; }
+.how-terminal { font-weight: 560; }
+/* Inside the loop's routes panel: rules between, not a box in a box. */
+.how-group { margin-top: 1rem; border-top: 1px solid var(--line); }
+.how-group .how { margin: 0; background: none; border: 0; border-bottom: 1px solid var(--line); border-radius: 0; }
+.how-group .how:last-child { border-bottom: 0; }
+.how-group .how-summary { padding-inline: 0.25rem; border-radius: 6px; }
+.how-group .how-body { padding-inline: 0.25rem; }
+.account-quota { margin-top: 1.2rem; padding-top: 1rem; border-top: 1px solid var(--line); min-width: 0; overflow-wrap: anywhere; }
+.account-quota h3 { margin: 0 0 .4rem; font-size: 1rem; }
+.account-quota h4 { margin: 1rem 0 .5rem; font-size: 1rem; }
+.account-quota .work-facts { margin: .8rem 0; font-variant-numeric: tabular-nums; }
+.account-quota-actions { display: flex; flex-wrap: wrap; gap: .6rem; margin-top: .8rem; }
+.account-quota .btn { white-space: normal; max-width: 100%; min-height: 2.75rem; }
+
+/* Configuration uses ordinary labelled controls, retaining drafts on reads. */
+.route-editor { overflow-wrap: anywhere; min-width: 0; }
+.route-editor h3 { margin: 1.6rem 0 .7rem; }
+.route-editor h4 { margin: 1rem 0 .4rem; }
+.route-editor p { max-width: 72ch; }
+.route-editor .more { display: block; margin-top: 1.2rem; }
+.route-field { display: grid; gap: .4rem; margin: 1rem 0; max-width: 36rem; min-width: 0; }
+.route-field label { font-weight: 600; }
+.route-field input, .route-field select { width: 100%; min-width: 0; box-sizing: border-box; font: inherit; color: var(--ink); background: var(--surface); border: 1px solid var(--line-2); border-radius: 5px; padding: .65rem; caret-color: var(--focus); }
+.route-editor input:focus-visible, .route-editor select:focus-visible { outline: 2px solid var(--focus); outline-offset: 3px; }
+.route-editor input[type="checkbox"] { accent-color: var(--focus); flex: none; width: 1.2rem; height: 1.2rem; }
+.route-check { display: flex; align-items: start; gap: .65rem; padding: .6rem 0; min-height: 44px; }
+.route-check input { margin-top: .2rem; }
+.route-editor fieldset { border: 1px solid var(--line); padding: 1rem; min-width: 0; }
+.route-editor legend { font-weight: 600; }
+.route-settings { margin: 1rem 0; }
+.route-settings summary { cursor: pointer; padding: .6rem 0; }
+.route-edit-order { padding-left: 1.5rem; }
+.route-edit-order > li { padding: .7rem 0; border-bottom: 1px solid var(--line); }
+.route-actions { display: flex; flex-wrap: wrap; gap: .5rem; }
+.route-editor .btn { min-height: 44px; white-space: normal; }
+.route-feedback { border: 1px solid var(--line-2); border-radius: var(--radius); padding: 1rem; margin: 1rem 0; background: var(--sunk); }
+.route-feedback .btn { margin: .5rem .5rem 0 0; }
+.route-add-form, .route-follow-form { margin-top: 1.5rem; }
+.route-effect { border-top: 1px solid var(--line); margin-top: 1rem; }
+.route-help { max-width: 72ch; padding: 2rem 1.2rem; margin: auto; overflow-wrap: anywhere; }
+.route-help h1 { margin: 1.5rem 0 1rem; }
+.route-help h2 { margin: 2rem 0 .75rem; }
+.route-help p { margin: .75rem 0; }
+.route-help pre { white-space: pre-wrap; overflow-wrap: anywhere; padding: 1rem; background: var(--sunk); border: 1px solid var(--line); border-radius: var(--radius); }
+/* Unbound route contexts are separate from selected-account cards. */
+.unknown-account-routes { margin-top: 2rem; }
+.unknown-route-context { padding-block: 1rem; border-top: 1px solid var(--line); overflow-wrap: anywhere; min-width: 0; }
+.unknown-route-context > p { margin: 0 0 .5rem; }

@@ -368,7 +368,7 @@ type Report struct {
 	SecretFile string   `yaml:"secret_file,omitempty"`
 	Source     string   `yaml:"source,omitempty"`
 	Scheme     string   `yaml:"scheme,omitempty"` // standard-webhooks or bearer
-	Format     string   `yaml:"format,omitempty"` // standard or text
+	Format     string   `yaml:"format,omitempty"` // standard, text or sessionpipe
 	Events     []string `yaml:"events,omitempty"`
 	Timeout    Duration `yaml:"timeout,omitempty"`
 }
@@ -842,8 +842,11 @@ func (c *Config) Validate() error {
 		if r.Scheme != "standard-webhooks" && r.Scheme != "bearer" {
 			add("loop.report.scheme must be standard-webhooks or bearer")
 		}
-		if r.Format != "standard" && r.Format != "text" {
-			add("loop.report.format must be standard or text")
+		if r.Format != "standard" && r.Format != "text" && r.Format != "sessionpipe" {
+			add("loop.report.format must be standard, text or sessionpipe")
+		}
+		if r.Format == "sessionpipe" && r.Scheme != "bearer" {
+			add("loop.report: sessionpipe format requires bearer scheme")
 		}
 		for _, e := range r.Events {
 			if e != "all" && !contains(ReportEvents, e) {

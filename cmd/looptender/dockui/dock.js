@@ -6,11 +6,18 @@
 // route is sent by the report, which the Go tests check word for word; the
 // page only shows its times in this browser's time zone.
 (function () {
+  // The header buttons and the reading lines are shown only once this runs;
+  // without a script the page says so instead (index.html, noscript).
+  document.documentElement.classList.add("has-script");
   var SCHEMA = 1;
   // How long reads may fail before the page asks a person to look (G4).
   var FAIL_LONG_MS = 120000;
   var API = "api/v1/dock";
   var SERVER = "api/v1/server";
+  // The end of the route brief that says a missing standby does not touch the
+  // route in use; the line is then a plain notice, not a warning. Kept in step
+  // with dockCurrentUnaffected in dock_view.go (a test checks).
+  var CURRENT_UNAFFECTED = "its current route is unaffected";
   // What looptender did: worded by the same read as API, served on its own
   // for its size, and read only for the Usage page and a loop's page.
   var USAGE = "api/v1/usage";
@@ -323,11 +330,15 @@
     a.href = href;
     if (current) a.setAttribute("aria-current", "page");
     a.appendChild(el("span", "dot " + dotClass));
-    var n = el("span", "pick-name", name);
-    n.title = name;
+    // The full text stays in the link, so it is the accessible name and what
+    // find and copy see; the ellipsis is only how it is drawn. A cut name is
+    // read in full by focusing or hovering the row (see dock.css), and by
+    // opening it: the page heading shows it whole.
+    var n = el("span", "pick-name");
+    n.appendChild(el("span", null, name));
     a.appendChild(n);
-    var s = el("span", "pick-state", sub);
-    s.title = sub;
+    var s = el("span", "pick-state");
+    s.appendChild(el("span", null, sub));
     a.appendChild(s);
     var go = icon("chevron");
     go.setAttribute("class", "go");
@@ -355,7 +366,7 @@
     var rs = d.routesSummary || {};
     fixed.appendChild(pickRow("#/routes", rs.trouble ? "dot-limit" : "dot-calm", "Routes", rs.picker || "", r.view === "routes"));
     var ac = d.accounts || {};
-    fixed.appendChild(pickRow("#/accounts", "dot-calm", "Accounts", ac.complete ? list(ac.cards).length + " selected" + (unnamedCount(d) ? " · " + unnamedCount(d) + " not named yet" : "") : "Unavailable", r.view === "accounts"));
+    fixed.appendChild(pickRow("#/accounts", "dot-calm", "Accounts", ac.complete ? list(ac.cards).length + " selected" : "Unavailable", r.view === "accounts"));
     var vs = d.versions || {};
     fixed.appendChild(pickRow("#/versions", vs.behind ? "dot-limit" : "dot-calm", "Versions", vs.summary || "", r.view === "versions"));
     fixed.appendChild(pickRow("#/usage", "dot-calm", "Usage", d.usagePicker || "", r.view === "usage"));
@@ -383,9 +394,15 @@
     var head = el("div", "pane-head");
     var h = el("h1", null, title);
     h.id = "pane-title";
+    // Focus lands here after a change of view or the skip link.
+    h.tabIndex = -1;
     head.appendChild(h);
     if (pill) head.appendChild(pill);
     return head;
+  }
+  // The view's heading takes focus; the pane only when there is none.
+  function focusPaneTitle(scroll) {
+    ($("pane-title") || $("pane")).focus({ preventScroll: !scroll });
   }
   function back() {
     var a = link("#/", "", "back");
@@ -479,9 +496,6 @@
   // parent's observation. No relationship is inferred from names or order.
   function workTree(d) {
     var p = panel("Loops and lanes");
-    p.appendChild(el("p", "sub", "Only conversations that looptender supervises are shown here, with their lanes. To see another coordinator here, create a loop for it."));
-    p.appendChild(el("p", "sub", "Supervision and agent observations are separate. Expand a loop to see its recorded direct lanes."));
-    p.appendChild(el("p", "sub work-evidence", "Active does not prove progress or connectivity. Only direct lanes are listed; absent lanes do not establish completion. Finished means declared, not verified."));
     var ul = el("ul", "work-tree");
     var retainedOpen = Object.create(null);
     list(d.loops).forEach(function (l) {
@@ -504,6 +518,10 @@
       summary.appendChild(el("span", "sub work-observation", l.lanes && l.lanes.summary ? "Lanes: " + l.lanes.summary : "Lane evidence: " + ((l.children && l.children.phrase) || "Unknown")));
       // Age in plain words, as for usage readings; see lastCheck().
       summary.appendChild(el("span", "sub work-age", (l.lastCheck && l.lastCheck.text) || "Last check unknown"));
+      var mr = l.migrationReview;
+      if (mr && mr.availability !== "not_recorded" && (!mr.counts || mr.counts.unfinished > 0)) {
+        summary.appendChild(el("span", "sub work-migration", "Migration review: " + mr.text + (mr.observedAt ? " · historical evidence from " + fmt(dayTimeYearFmt, mr.observedAt) : "")));
+      }
       details.appendChild(summary);
       var body = el("div", "work-body");
       body.appendChild(el("p", "detail", l.detail));
@@ -530,6 +548,7 @@
     });
     state.treeOpen = retainedOpen;
     p.appendChild(ul);
+    p.appendChild(el("p", "sub work-evidence", "Each loop and its own lanes, as of its last check."));
     if (!d.complete || d.registry.omitted) p.appendChild(el("p", "more", "This read does not include every registered loop. Missing loops are not assumed stopped or clear."));
     return p;
   }
@@ -538,7 +557,8 @@
   // sample, not a complete chronology or a persisted "while away" cursor.
   function recentAcrossLoops(d) {
     var p = panel("Recent activity across loops");
-    p.appendChild(el("p", "sub", "Newest recorded events from up to five retained entries per loop. This is a bounded sample, not a complete history."));
+    var intro = el("p", "sub", "The newest few events from each loop.");
+    p.appendChild(intro);
     var rows = [], missing = false, pruned = false;
     list(d.loops).forEach(function (l) {
       if (!l.events || l.events.availability === "unknown") missing = true;
@@ -566,9 +586,9 @@
     });
     if (rows.length) p.appendChild(ol);
     else p.appendChild(el("p", "sub", missing ? "Recent activity is unavailable for one or more loops." : "No recent activity is recorded in this read."));
-    if (rows.length > 8) p.appendChild(el("p", "more", "Showing the newest 8 of " + rows.length + " entries supplied by this read. Inspect a loop for its retained history."));
-    if (pruned) p.appendChild(el("p", "more history-pruned", "Older history has been pruned for at least one loop. This sample cannot reconstruct it and is not a complete chronology."));
-    if ((rows.length && missing) || !d.complete || d.registry.omitted) p.appendChild(el("p", "more", "Activity is incomplete: some loop history or registered loops could not be included."));
+    if (rows.length > 8) p.appendChild(el("p", "more", "Showing the newest 8 of " + rows.length + ". Open a loop for more."));
+    if (pruned) intro.textContent = "The newest few events from each loop; older ones are no longer kept.";
+    if ((rows.length && missing) || !d.complete || d.registry.omitted) p.appendChild(el("p", "more", "Some loops or their history could not be read, so this list is missing events."));
     return p;
   }
 
@@ -673,10 +693,7 @@
       ol.appendChild(li);
     });
     p.appendChild(ol);
-    var more = el("p", "more", (ev.footer ? ev.footer + " " : "") + "More with ");
-    more.appendChild(el("code", null, "keepgoing timeline"));
-    more.appendChild(document.createTextNode("."));
-    p.appendChild(more);
+    if (ev.footer) p.appendChild(el("p", "more", ev.footer));
     return p;
   }
 
@@ -712,11 +729,12 @@
     pane.appendChild(nowRow(l));
     var change = changeBox(l);
     if (change) pane.appendChild(change);
+    pane.appendChild(migrationReviewPanel(l.migrationReview));
 
     // The ordered preferred routes are the main structure.
     var c = l.chain, entries = list(c.entries);
     var brief = !c.brief ? null : c.availability !== "none_configured" && c.brief.indexOf("unknown") >= 0 ? unknown(c.brief) :
-      el("span", c.availability === "none_configured" ? "sub" : "chain-ready" + (c.short ? " is-short" : ""), c.brief);
+      el("span", c.availability === "none_configured" ? "sub" : "chain-ready" + (c.brief.indexOf(CURRENT_UNAFFECTED) >= 0 ? " is-calm" : c.short ? " is-short" : ""), c.brief);
     var routing = panel("Preferred routes", [brief]);
     routing.appendChild(el("p", "sub chain-how", c.how || "Unknown."));
     var ol = el("ol", "route-list is-ordered");
@@ -734,6 +752,14 @@
     routing.appendChild(ol);
     if (c.more) routing.appendChild(el("p", "sub", c.more));
     if (!entries.some(function (e) { return e.current; })) routing.appendChild(laneBox(l));
+    // Beside the order: how to add a route and change the order, to copy.
+    if (c.availability !== "unknown") {
+      var how = el("div", "how-group");
+      how.appendChild(addRouteBox(l));
+      var order = reorderBox(l);
+      if (order) how.appendChild(order);
+      routing.appendChild(how);
+    }
     pane.appendChild(routing);
 
     pane.appendChild(eventsPanel(l.events));
@@ -782,6 +808,28 @@
     }
     pane.appendChild(checks);
     pane.appendChild(usageBrief(key));
+  }
+
+  function migrationReviewPanel(review) {
+    var p = panel("Migration review");
+    p.classList.add("migration-review");
+    if (!review) {
+      p.appendChild(el("p", null, "Migration review unavailable in this read. Unfinished work is unknown."));
+      return p;
+    }
+    p.appendChild(el("p", null, review.text));
+    if (review.availability === "available" && review.counts) {
+      var c = review.counts, dl = el("dl", "facts");
+      dl.appendChild(fact("Evidence read", fmt(dayTimeYearFmt, review.observedAt)));
+      dl.appendChild(fact("Declared assignments", String(c.assignments)));
+      dl.appendChild(fact("Dormant / unresolved", c.dormant + " / " + c.unresolved));
+      dl.appendChild(fact("Observed direct lanes", String(c.directLanes)));
+      dl.appendChild(fact("Assignments absent from listing", String(c.absentAssignments)));
+      p.appendChild(dl);
+      p.appendChild(el("p", "sub", "Historical checklist of predecessor direct lanes only; descendants are excluded. Declared assignment state is separate from observed activity. This does not show which lanes are working now."));
+      p.appendChild(el("p", "sub", "Review metadata does not establish migration execution, completion or permission. Dormant work may be intentional. Nothing is resumed or dispatched from this view."));
+    }
+    return p;
   }
 
   // ---- Usage: what looptender did, in counted sentences ----
@@ -1089,8 +1137,8 @@
   // why it is not under an account.
   function allowancesPanel(d) {
     var items = list(d.allowances);
-    var p = panel("Allowances", [el("span", "sub", "recorded readings by account; not live")]);
-    if (!items.length) { p.appendChild(el("p", "sub chain-how", "No accounts to show.")); return p; }
+    var p = panel("Allowances", [el("span", "sub", "route readings; grouped by your assignments · not live")]);
+    if (!items.length) { p.appendChild(el("p", "sub chain-how", "No route readings to show.")); return p; }
     var ul = el("ul", "allow-list");
     items.forEach(function (a) {
       var li = el("li", "allow" + (a.assigned ? " is-account" : ""));
@@ -1116,8 +1164,11 @@
           notesOf(r.notes).forEach(function (n) { rl.appendChild(el("p", "route-note is-" + n.tone, n.text)); });
           // The route's own reading: one plain sentence with its age, then
           // its windows. Being out is information here, not a warning.
-          rl.appendChild(el("p", "allow-reading", say(r.reading)));
+          var reading = el("p", "allow-reading", say(r.reading));
           var u = routeUsage(d, r.route);
+          if (u && u.observedAt) reading.title = fmt(dayTimeFmt, u.observedAt);
+          rl.appendChild(reading);
+          if (u && u.observedAt) rl.appendChild(el("p", "sub", "Source: recorded route probe · " + fmt(dayTimeFmt, u.observedAt)));
           if (u && u.availability !== "unavailable") {
             var box = el("div", "route-usage");
             if (u.needsPerson && u.ageNote) box.appendChild(el("p", "route-note is-attn usage-age", u.ageNote));
@@ -1130,6 +1181,7 @@
         if (a.linesOmitted) body.appendChild(el("p", "more", a.linesOmitted + (a.linesOmitted === 1 ? " more route is" : " more routes are") + " not shown."));
       } else {
         notesOf(a.notes).forEach(function (n) { body.appendChild(el("p", "route-note is-" + n.tone, n.text)); });
+        if (a.usage && a.usage.observedAt) body.appendChild(el("p", "sub", "Source: recorded route probe · " + fmt(dayTimeFmt, a.usage.observedAt)));
         var blk = usageBlock(a.usage);
         if (list(a.next).length) blk.appendChild(el("div", "sub allow-next", say(a.next)));
         body.appendChild(blk);
@@ -1138,7 +1190,7 @@
       ul.appendChild(li);
     });
     p.appendChild(ul);
-    if (d.allowancesOmitted) p.appendChild(el("p", "more", d.allowancesOmitted + (d.allowancesOmitted === 1 ? " more account is" : " more accounts are") + " not shown."));
+    if (d.allowancesOmitted) p.appendChild(el("p", "more", d.allowancesOmitted + (d.allowancesOmitted === 1 ? " more block is" : " more blocks are") + " not shown."));
     return p;
   }
 
@@ -1264,53 +1316,110 @@
   function accountReading(use) {
     return list(use && use.reading).length ? el("span", "sub account-reading", say(use.reading)) : null;
   }
-  // An account context routes use with no catalog entry: neutral, with one
-  // quiet "not named yet" tag and the command that would name it.
-  function unnamedCard(d, u, cards) {
-    var li = el("li", "account-card is-unnamed"), details = el("details");
-    var k = "context-" + u.context;
-    details.open = !!state.accountOpen[k];
-    var summary = el("summary", "account-summary");
-    summary.setAttribute("data-focus", "account-" + k);
-    var identity = el("span", "account-title");
-    var name = el("span", "account-name", u.title);
-    name.id = "account-name-" + u.context;
-    name.appendChild(tag("calm", "not named yet"));
-    identity.appendChild(name);
-    identity.appendChild(el("span", "sub", SELECTIONS[u.selection] || "Context as configured"));
-    if (u.group && u.group !== u.provider) identity.appendChild(el("span", "sub", "Group " + u.group));
-    // Several unnamed accounts can share a heading; their first route tells
-    // them apart at a glance.
-    var rs = list(u.routes), more = rs.length - 1 + (u.omitted || 0);
-    if (rs.length) identity.appendChild(el("span", "sub", "Routes: " + rs[0].title + (more ? " and " + more + " more" : "")));
-    summary.appendChild(identity);
-    var status = el("span", "account-status");
-    var reading = accountReading(u);
-    if (reading) status.appendChild(reading);
-    summary.appendChild(status);
-    details.appendChild(summary);
-    var body = el("div", "account-body"), facts = el("dl", "work-facts");
-    if (u.directory) facts.appendChild(fact("Directory", u.directory));
-    var same = list(u.mayBeSame).map(function (id) { return list(cards).filter(function (c) { return c.id === id; })[0]; }).filter(Boolean);
-    if (same.length) facts.appendChild(fact("May be the same account as", same.map(function (c) { return c.label; }).join(", ") + " (same provider and selection; not verified)"));
-    facts.appendChild(fact("Routes", accountRouteList(d, u, false)));
-    body.appendChild(facts);
-    var nameIt = el("div", "account-name-it");
-    nameIt.appendChild(el("p", "sub", "To name it, run this with your own label" + (u.selection === "explicit_directory" && !u.directory ? " and its directory (Show identifiers to fill it in)" : "") + ". Naming it changes no route."));
-    nameIt.appendChild(copyCommand("div", u.add, "copy-add-" + u.context, "account-name-" + u.context));
-    body.appendChild(nameIt);
-    details.appendChild(body);
-    details.addEventListener("toggle", function () { if (details.isConnected) state.accountOpen[k] = details.open; });
-    li.appendChild(details);
-    return { li: li, key: k, open: details.open };
+  // Missing route bindings are not evidence of additional accounts.
+  function unknownAccountSection(d, contexts) {
+    var section = el("section", "unknown-account-routes");
+    var heading = el("h2", null, "Routes with unknown accounts");
+    heading.id = "unknown-account-routes";
+    section.setAttribute("aria-labelledby", heading.id);
+    section.appendChild(heading);
+    section.appendChild(el("p", "sub", "These routes do not name a selected account. They may use an account above; separate routes do not mean separate subscriptions. Check which account each route uses before assigning it."));
+    contexts.forEach(function (u) {
+      var context = el("div", "unknown-route-context");
+      context.appendChild(el("p", "sub", SELECTIONS[u.selection] || "Context as configured"));
+      if (u.directory) context.appendChild(el("p", "sub command", u.directory));
+      context.appendChild(accountRouteList(d, u, false));
+      section.appendChild(context);
+    });
+    return section;
   }
-  function unnamedCount(d) { return list(d.accountUses).filter(function (u) { return u.context; }).length; }
+  // Explicit subscription-quota reads have their own review and never run from
+  // a page poll. This state cannot be mistaken for a loop or route action.
+  function accountQuotaPost(id, step, form) {
+    var abort = new AbortController(), timer = setTimeout(function () { abort.abort(); }, 15000);
+    return fetch("api/v1/accounts/" + encodeURIComponent(id) + "/" + step, {
+      method: "POST", cache: "no-store", credentials: "same-origin", signal: abort.signal,
+      headers: { "Content-Type": "application/json", Accept: "application/json", "X-Keepgoing-Form": form },
+      body: JSON.stringify({ action: "subscription_quota" })
+    }).then(function (r) {
+      if (!r.ok) { var e = new Error("status " + r.status); e.status = r.status; throw e; }
+      return r.json();
+    }).then(function (d) { if (!d || d.schemaVersion !== 1) throw new Error("schema"); return d; })
+      .finally(function () { clearTimeout(timer); });
+  }
+  function accountQuotaRequest(c, confirm) {
+    if (!changesOn() || !state.server.accountQuota) return;
+    var old = state.accountQuotaChange, p = confirm && old && old.id === c.id && old.preview;
+    if (confirm && !p) return;
+    var request = { id: c.id, busy: true, preview: p || null };
+    state.accountQuotaChange = request;
+    render(false, true);
+    accountQuotaPost(c.id, confirm ? "confirm" : "prepare", confirm ? p.form : state.server.form)
+      .then(function (d) { request.preview = d.preview; request.result = d.result; })
+      .catch(function (err) {
+        var refused = err && err.status >= 400 && err.status < 500;
+        request.preview = null;
+        request.result = { text: !confirm ? "The quota review could not be prepared. Nothing was refreshed." : refused ? p.refused : p.lost };
+      }).then(function () {
+        if (state.accountQuotaChange !== request) return;
+        request.busy = false;
+        render(false, true);
+        focusOn(request.preview ? "quota-cancel-" + c.id : "quota-result-" + c.id);
+        if (request.result) announce(request.result.text);
+        if (confirm) { clearTimeout(state.timer); load(true); }
+      });
+  }
+  function accountQuotaReason(reason) {
+    return ({ not_checked: "No subscription quota reading is saved for this selection.", context_changed: "The selected context changed. Review it before refreshing quota.", cache_unavailable: "Private quota evidence could not be read. No usage is assumed.",
+      time_unavailable: "The reading's time cannot be established.", unsupported_provider: "Subscription quota reads are available for selected Codex contexts only.", unsupported: "This Codex CLI does not support subscription quota reads.",
+      timeout: "The quota read timed out.", cancelled: "The quota read was cancelled.", status_unavailable: "Codex could not provide a quota reading.", schema_unavailable: "The quota response was not recognized.",
+      no_windows: "Codex reported no subscription windows.", unknown_bucket: "Codex did not report the supported subscription bucket.", unknown_windows: "Codex reported an unsupported quota window shape." })[reason] || "Subscription quota is unavailable.";
+  }
+  function accountQuotaBox(c) {
+    var q = c.quota || {}, box = el("div", "account-quota");
+    box.appendChild(el("h3", null, "Subscription quota"));
+    box.appendChild(el("p", "sub", "For this selected Codex context. Separate from route-probe readings and token totals."));
+    if (q.state === "reported" && q.observedAt && list(q.windows).length) {
+      box.appendChild(el("p", "sub", "Read " + when({ at: q.observedAt }) + (q.freshness === "stale" ? " · Older reading; refresh before relying on it." : " · Recorded snapshot.")));
+      var windows = el("dl", "work-facts");
+      list(q.windows).forEach(function (w) {
+        var ended = w.resetsAt && Date.parse(w.resetsAt) <= readTime();
+        var name = w.name === "primary" ? "Primary window" : "Secondary window";
+        var value = w.usedPercent + "% used" + (w.durationMinutes ? " · " + w.durationMinutes + " minutes" : "");
+        value += ended ? " · Window ended; refresh needed." : w.resetsAt ? " · Resets " + when({ at: w.resetsAt }) : " · Reset time unavailable.";
+        windows.appendChild(fact(name, value));
+      });
+      box.appendChild(windows);
+      box.appendChild(el("p", "sub", "Source: " + q.source));
+    } else box.appendChild(el("p", "sub", accountQuotaReason(q.reason || "not_checked")));
+    if (q.failedRefreshAt) box.appendChild(el("p", "sub", "Refresh failed " + when({ at: q.failedRefreshAt }) + ". " + accountQuotaReason(q.failedRefreshReason) + (q.state === "reported" ? " The earlier reading retains its original time." : "")));
+    var change = state.accountQuotaChange, current = change && change.id === c.id ? change : null;
+    if (current) {
+      var review = el("div", "account-quota-review");
+      if (current.preview) {
+        review.appendChild(el("h4", null, current.preview.title));
+        list(current.preview.lines).forEach(function (line) { review.appendChild(el("p", null, say(line))); });
+        var controls = el("div", "account-quota-actions");
+        controls.appendChild(button("Cancel", "quota-cancel-" + c.id, "", function () { state.accountQuotaChange = null; render(false, true); focusOn("quota-refresh-" + c.id); }, current.busy));
+        controls.appendChild(button(current.busy ? "Reading…" : current.preview.confirm, "quota-confirm-" + c.id, "is-primary", function () { accountQuotaRequest(c, true); }, current.busy));
+        review.appendChild(controls);
+      } else if (current.result) {
+        var result = el("p", null, current.result.text); result.tabIndex = -1; result.setAttribute("data-focus", "quota-result-" + c.id); review.appendChild(result);
+        review.appendChild(button("Close", "quota-close-" + c.id, "", function () { state.accountQuotaChange = null; render(false, true); focusOn("quota-refresh-" + c.id); }));
+      } else review.appendChild(el("p", "sub", "Preparing quota review…"));
+      box.appendChild(review);
+    }
+    if (changesOn() && state.server.accountQuota) {
+      if (!current) box.appendChild(button("Refresh subscription quota…", "quota-refresh-" + c.id, "", function () { accountQuotaRequest(c, false); }));
+    } else box.appendChild(el("p", "sub", "Refresh explicitly with looptender accounts usage --id ACCOUNT_ID, or review a refresh in a panel started with changes allowed."));
+    return box;
+  }
   function renderAccounts(d, pane) {
     var a = d.accounts || {};
     pane.appendChild(back());
     pane.appendChild(paneHead("Accounts"));
     pane.appendChild(el("p", "lede", "Your selected accounts, with the evidence available on this device."));
-    pane.appendChild(el("p", "sub", "Read-only. Reading this page never checks a login or calls a model."));
+    pane.appendChild(el("p", "sub", "Reading this page uses saved evidence. Subscription quota refresh is an explicit, reviewed read; it calls no model."));
     var usage = el("p", "account-usage-link");
     usage.appendChild(link("#/routes", "View recorded usage", "work-inspect"));
     usage.appendChild(el("span", "sub", ". Readings come from configured routes and are not live. Each account shows the readings of the routes that use it."));
@@ -1323,11 +1432,13 @@
     uses.forEach(function (u) { if (u.card) byCard[u.card] = u; });
     var unnamed = uses.filter(function (u) { return u.context; });
     if (!cards.length && !unnamed.length) {
-      pane.appendChild(emptyBox("No accounts selected here yet", "Select an existing account context with the accounts add command, then explicitly check it with accounts check. Provider sign-in stays in the official provider tool."));
+      pane.appendChild(emptyBox("No accounts selected here yet", FIRST_RUN));
+      pane.appendChild(addAccountBox(true));
       return;
     }
-    pane.appendChild(el("p", "account-count", cards.length + (cards.length === 1 ? " selected account" : " selected accounts") + (unnamed.length ? " · " + unnamed.length + " not named yet" : "")));
-    if (!d.complete || (d.registry || {}).availability !== "available") pane.appendChild(el("p", "sub", "Not every loop could be read, so an account its routes use may be missing here."));
+    pane.appendChild(el("p", "account-count", cards.length + (cards.length === 1 ? " selected account" : " selected accounts")));
+    pane.appendChild(addAccountBox(!cards.length));
+    if (!d.complete || (d.registry || {}).availability !== "available") pane.appendChild(el("p", "sub", "Not every loop could be read, so some routes may be missing here."));
     var ul = el("ul", "accounts-list"), retained = Object.create(null);
     cards.forEach(function (c) {
       var li = el("li", "account-card" + (c.needsPerson ? " is-attention" : "")), details = el("details");
@@ -1364,6 +1475,7 @@
       var use = byCard[c.id];
       facts.appendChild(fact("Routes", use && list(use.routes).length ? accountRouteList(d, use, true) : accountRoutes(c)));
       body.appendChild(facts);
+      if (c.provider === "codex") body.appendChild(accountQuotaBox(c));
       // The catalog records no model: a route chooses it, and a check never
       // calls one. Said once, quietly, in place of two empty rows.
       if (c.configuredModel && c.configuredModel.missing === "not_recorded" && c.observedModel && c.observedModel.missing === "not_recorded") body.appendChild(el("p", "sub", "Models are not recorded here: a route chooses the model, and a check never calls one."));
@@ -1387,14 +1499,10 @@
       if (c.attention !== "context_changed" && (c.needsPerson || (c.auth && c.auth.checkAgain) || (c.plan && c.plan.checkAgain))) li.appendChild(accountCheckHint(c));
       ul.appendChild(li);
     });
-    unnamed.forEach(function (u) {
-      var x = unnamedCard(d, u, cards);
-      retained[x.key] = x.open;
-      ul.appendChild(x.li);
-    });
     state.accountOpen = retained;
-    pane.appendChild(ul);
-    if (d.accountUsesOmitted) pane.appendChild(el("p", "more", d.accountUsesOmitted + (d.accountUsesOmitted === 1 ? " more account is" : " more accounts are") + " not shown."));
+    if (cards.length) pane.appendChild(ul);
+    if (unnamed.length) pane.appendChild(unknownAccountSection(d, unnamed));
+    if (d.accountUsesOmitted) pane.appendChild(el("p", "more", d.accountUsesOmitted + " more account entries or route contexts are not shown."));
     // One footnote for the page, naming the command. With one card its ID
     // fills in as on the card's own hint.
     var note = el("p", "sub account-footnote");
@@ -1403,6 +1511,308 @@
     note.appendChild(accountCheckCommand(cards.length === 1 ? cards[0] : null));
     note.appendChild(document.createTextNode(cards.length === 1 && state.identifiers ? "." : state.identifiers ? " with the card's connection ID." : " with the card's connection ID (Show identifiers to see it)."));
     pane.appendChild(note);
+  }
+
+  // ---- How to add an account, add a route and change the order ----
+  // Text and commands to copy, for a person to run in Terminal. The page
+  // runs nothing and changes nothing. A value the page does not know is a
+  // placeholder in capitals, with one line saying what to put there.
+  var IN_TERMINAL = "Run in Terminal, not in a BB agent thread.";
+  var NAMES_ONLY = "This names the account. It does not put it in any loop. To use it, add it to a loop's order.";
+  var FIRST_RUN = "An account is a sign-in you already have, with a name you choose. A route is one model on one of your accounts. Each loop works down its own order of routes: it uses the first that has room, moves to the next when one runs out, and moves back up when it can.";
+  var ROUTE_ADD_FIELDS = "Put a new ID in place of ROUTE_ID (lowercase letters, digits and hyphens), claude-code or codex for PROVIDER, the model for MODEL, the usage limit it draws on for GROUP, and same_conversation, new_conversation or headless for ENTER.";
+  // Whether each disclosure is open, by its key, kept across re-renders.
+  var howOpen = Object.create(null);
+  function howBox(key, title, open) {
+    var d = el("details", "how");
+    d.open = key in howOpen ? howOpen[key] : !!open;
+    var s = el("summary", "how-summary", title);
+    s.setAttribute("data-focus", key);
+    d.appendChild(s);
+    d.addEventListener("toggle", function () { if (d.isConnected) howOpen[key] = d.open; });
+    return d;
+  }
+  // One command: what it does, which also describes its copy button, the
+  // command, and the line that says what to put in place of a placeholder.
+  function howStep(focus, what, command, fill, describedBy) {
+    var w = el("div", "how-step");
+    var p = el("p", null, what);
+    p.id = focus + "-what";
+    w.appendChild(p);
+    w.appendChild(copyCommand("div", command, focus, (describedBy ? describedBy + " " : "") + p.id));
+    if (fill) w.appendChild(el("p", "sub", fill));
+    return w;
+  }
+  // Every block ends with where to run its commands.
+  function howEnd(box, body) {
+    body.appendChild(el("p", "how-terminal", IN_TERMINAL));
+    box.appendChild(body);
+    return box;
+  }
+  // "--loop NAME" with the name the server quoted for a shell, or a
+  // placeholder when the name is too long to put in a command.
+  function loopArg(l) { return l.loopArg || "--loop LOOP_NAME"; }
+  var LOOP_NAME_FILL = "Put this loop's name in place of LOOP_NAME, in quotes if it has a space.";
+  function withLoopFill(l, fill) { return l.loopArg ? fill : [fill, LOOP_NAME_FILL].filter(Boolean).join(" "); }
+  var ROUTE_ID = /^[a-z0-9-]+$/;
+
+  function addAccountBox(open) {
+    var box = howBox("how-account", "Add an account", open), body = el("div", "how-body");
+    var cases = [
+      ["folder", "Another subscription of a provider you use",
+        "Sign in with the provider's own tool in a new folder, then name that folder here.",
+        "looptender accounts add --label ACCOUNT_LABEL --provider PROVIDER --selection explicit_directory --account-dir FOLDER",
+        "Put a name you choose in place of ACCOUNT_LABEL (in quotes if it has a space), claude-code or codex for PROVIDER, and the folder you signed in to for FOLDER."],
+      ["managed", "A provider that manages its own login",
+        "Cursor and BB keep their own login. Name the account here; looptender does not check it.",
+        "looptender accounts add --label ACCOUNT_LABEL --provider PROVIDER --selection externally_managed",
+        "Put a name you choose in place of ACCOUNT_LABEL, and cursor or bb for PROVIDER."],
+      ["key", "An API key",
+        "Give the key its own entry. If you use it through the provider's tool, sign in with it in its own folder and name that folder as above. Otherwise:",
+        "looptender accounts add --label ACCOUNT_LABEL --provider other --selection externally_managed",
+        "Put a name you choose in place of ACCOUNT_LABEL. looptender never takes the key."]
+    ];
+    cases.forEach(function (c) {
+      var h = el("h3", "how-case", c[1]);
+      h.id = "how-account-" + c[0];
+      body.appendChild(h);
+      body.appendChild(howStep("copy-account-" + c[0], c[2], c[3], c[4], h.id));
+    });
+    // Said once, after the three cases.
+    body.appendChild(el("p", null, NAMES_ONLY));
+    return howEnd(box, body);
+  }
+
+  // The loop page: add a route to this loop, and change its order. A loop
+  // that follows the standard route list changes that list instead.
+  function addRouteBox(l) {
+    var c = l.chain || {}, arg = loopArg(l);
+    var box = howBox("how-route-" + l.key, "Add a route to this loop"), body = el("div", "how-body");
+    if (c.standard) {
+      body.appendChild(el("p", null, "This loop follows your standard route list, which every loop that follows it uses. Add the route to that list."));
+      body.appendChild(howStep("copy-route-add", "Add a route to the standard list.",
+        "looptender routes add --id ROUTE_ID --provider PROVIDER --model MODEL --group GROUP --enter ENTER", ROUTE_ADD_FIELDS));
+      body.appendChild(el("p", null, "A new route is used only after a check of it passes."));
+      body.appendChild(howStep("copy-route-check", "Check it. This is one real request and uses this account's quota.",
+        "looptender routes check ROUTE_ID --exact " + arg, withLoopFill(l, "Put the new route's ID in place of ROUTE_ID.")));
+      if (!list(c.handoffOn).length) body.appendChild(el("p", null, "Automatic handoff is off for this loop, so it does not move to another route by itself. For a loop that follows the standard list, it is set by errors.failover_on in the loop's configuration file."));
+    } else {
+      body.appendChild(howStep("copy-route-add", "Add a route. A guide asks for the provider, the account, the model and its place in the order, and shows a preview before it changes anything.",
+        "looptender fallbacks add " + arg, withLoopFill(l, "")));
+      body.appendChild(el("p", null, "A new route is used only after a check of it passes."));
+      body.appendChild(howStep("copy-route-check", "Check it. This is one real request and uses this account's quota.",
+        "looptender fallbacks check --id ROUTE_ID --exact " + arg, withLoopFill(l, "Put the new route's ID in place of ROUTE_ID; the guide shows it in its preview.")));
+      if (!list(c.handoffOn).length) body.appendChild(howStep("copy-route-handoff", "Automatic handoff is off for this loop, so it does not move to another route by itself. To turn it on:",
+        "looptender fallbacks handoff on " + arg, withLoopFill(l, "")));
+    }
+    return howEnd(box, body);
+  }
+  function reorderBox(l) {
+    var c = l.chain || {}, rest = list(c.entries).filter(function (e) { return e.position > 0; });
+    if (rest.length + (c.omitted || 0) < 2) return null;
+    var box = howBox("how-order-" + l.key, "Change the order"), body = el("div", "how-body");
+    var move = c.standard ? function (id) { return "looptender routes move " + id + " --to PLACE"; } :
+      function (id) { return "looptender fallbacks move " + id + " --to PLACE " + loopArg(l); };
+    body.appendChild(el("p", null, c.standard ?
+      "This loop follows your standard route list, so the order is that list's, and every loop that follows it gets the new order. Put the route's new place in the list in place of PLACE: 1 is the top." :
+      "The first choice stays first. Put the route's new place after it in place of PLACE: 1 is the next choice."));
+    var ids = rest.filter(function (e) { return e.id && ROUTE_ID.test(e.id); });
+    if (state.identifiers && ids.length === rest.length) {
+      rest.forEach(function (e) {
+        body.appendChild(howStep("copy-move-" + e.position, "Choice " + (e.position + 1) + ": " + e.title, move(e.id), ""));
+      });
+      if (!c.standard && !l.loopArg) body.appendChild(el("p", "sub", LOOP_NAME_FILL));
+    } else {
+      var fill = "Put the route's ID in place of ROUTE_ID.";
+      if (!state.identifiers) fill = "Put the route's ID in place of ROUTE_ID. Show identifiers to see each route's ID.";
+      body.appendChild(howStep("copy-move", "Move a route.", move("ROUTE_ID"), c.standard ? fill : withLoopFill(l, fill)));
+    }
+    return howEnd(box, body);
+  }
+  // The Routes page: add a route to the standard list, then have a loop
+  // follow it.
+  // Route configuration is kept apart from background report refreshes.
+  // Draft values are captured on input; a review is immutable server state.
+  var retainedRouteEditor = null;
+  var routeEdit = { data: null, draft: {}, models: [], busy: false, reply: null, message: "" };
+  var ROUTE_DOCS = "routes-help.html";
+  function routeButton(text, id, run) {
+    var b = el("button", "btn", text); b.type = "button"; b.dataset.focus = id; b.disabled = routeEdit.busy;
+    b.addEventListener("click", run); return b;
+  }
+  function routeRequest(step, input, form) {
+    routeEdit.busy = true; routeEdit.message = ""; render(false, true);
+    return post("api/v1/routes/" + step, form || state.server.form, input)
+      .then(function (r) {
+        if (r.editor) routeEdit.data = r.editor;
+        else if (step === "models") { routeEdit.models = list(r.models); routeEdit.message = r.text || ""; }
+        else routeEdit.reply = r;
+      }).catch(function () {
+        routeEdit.message = step === "confirm" ? "The save result is unknown. Read the current list before preparing another change; this save will not be retried." : "The panel did not answer. Nothing was saved. Try reading the editor again.";
+        routeEdit.reply = null;
+      }).then(function () {
+        routeEdit.busy = false; render(false, true); focusOn("route-feedback");
+        announce(routeEdit.message || (routeEdit.reply && routeEdit.reply.text) || "Route editor loaded.");
+      });
+  }
+  function routeField(form, name, label, options, required) {
+    var wrap = el("div", "route-field"), id = "route-field-" + name, control;
+    wrap.appendChild(el("label", null, label)); wrap.firstChild.htmlFor = id;
+    if (options) {
+      control = el("select");
+      options.forEach(function (o) { var opt = el("option", null, o[1]); opt.value = o[0]; control.appendChild(opt); });
+    } else { control = el("input"); control.type = "text"; control.maxLength = 128; control.autocomplete = "off"; }
+    control.id = id; control.name = name; control.dataset.focus = id; control.required = !!required;
+    control.value = routeEdit.draft[name] || ""; control.disabled = routeEdit.busy;
+    control.addEventListener("input", function () {
+      if (name === "model" && routeEdit.draft.model !== control.value) { routeEdit.draft.effort = ""; var effort = $("route-field-effort"); if (effort) effort.value = ""; }
+      routeEdit.draft[name] = control.value;
+    });
+    control.addEventListener("change", function () { routeEdit.draft[name] = control.value; if (name === "account") { routeEdit.models = []; routeEdit.draft.model = ""; routeEdit.draft.effort = ""; routeEdit.draft.behavior = ""; routeEdit.draft.newConversation = false; } if (name === "model") routeEdit.draft.effort = ""; if (options) render(false, true); });
+    wrap.appendChild(control); form.appendChild(wrap); return control;
+  }
+  function routeCheck(parent, name, label) {
+    var wrap = el("label", "route-check"), input = el("input"); input.type = "checkbox"; input.name = name;
+    input.checked = !!routeEdit.draft[name]; input.disabled = routeEdit.busy;
+    input.addEventListener("change", function () { routeEdit.draft[name] = input.checked; });
+    wrap.appendChild(input); wrap.appendChild(el("span", null, label)); parent.appendChild(wrap); return input;
+  }
+  function routeProvider(provider) { return provider === "claude-code" ? "Claude Code" : provider === "codex" ? "Codex" : provider || "Configured provider"; }
+  function routeTitle(row) { var label = routeEdit.data && routeEdit.data.accountLabels && routeEdit.data.accountLabels[row.id]; if (!label && routeEdit.reply && routeEdit.reply.accountLabels) label = routeEdit.reply.accountLabels[row.id]; return (row.model || "Configured default model") + (row.effort ? " · " + row.effort : "") + " · " + routeProvider(row.provider) + " · " + (label || "Account unknown") + (row.disabled ? " · Off" : ""); }
+  function routeEffects(parent, r) {
+    var labels = {}, beforeLabels = {};
+    list(routeEdit.data && routeEdit.data.standard && routeEdit.data.standard.routes).forEach(function (row) { beforeLabels[row.id] = routeTitle(row); });
+    list(routeEdit.data && routeEdit.data.loops).forEach(function (entry) { if (entry.view.loop === r.loop) list(entry.view.routes).forEach(function (row) { beforeLabels[row.id] = routeTitle(row); }); });
+    list(r.routes).forEach(function (row) { labels[row.id] = routeTitle(row); });
+    function names(ids, source) { return list(ids).map(function (id) { return source[id] || (id === "primary" ? "First route" : "Configured route"); }).join(" → ") || "No standby routes"; }
+    var before = el("p", "sub", "Before: " + names(r.before, beforeLabels)), after = el("p", null, "After: " + names(r.after, labels));
+    parent.appendChild(before); parent.appendChild(after);
+    list(r.loops).forEach(function (l) {
+      var item = el("div", "route-effect"); item.appendChild(el("h4", null, l.loop));
+      item.appendChild(el("p", null, "Standby routes after saving: " + names(l.after, labels)));
+      if (l.problem) item.appendChild(el("p", "c-warn", "Configuration unavailable; effects are unknown."));
+      if (l.currentLeavesList) item.appendChild(el("p", "c-warn", "The current route leaves this list. The loop stays there until its ordinary rules move it."));
+      if (l.noRouteApplies) item.appendChild(el("p", "c-warn", "No route in this list applies to this loop."));
+      if (l.belowMinHealthy) item.appendChild(el("p", "c-warn", "Recorded healthy routes are below this loop's minimum."));
+      list(l.newlySkipped).forEach(function (skip) { item.appendChild(el("p", "sub", (labels[skip.id] || "A route") + ": " + skip.reason)); });
+      parent.appendChild(item);
+    });
+    list(r.warnings).forEach(function (text) { parent.appendChild(el("p", "c-warn", text)); });
+    if (r.refusal) parent.appendChild(el("p", "c-warn", r.refusal.text));
+  }
+  function routeReview(parent) {
+    var r = routeEdit.reply;
+    if (!r && !routeEdit.message && !routeEdit.busy) return false;
+    var box = el("section", "route-feedback"); box.id = "route-feedback"; box.tabIndex = -1; box.dataset.focus = "route-feedback";
+    box.setAttribute("aria-labelledby", "route-review-title");
+    var title = el("h3", null, r && r.form ? "Review route change" : "Route update"); title.id = "route-review-title"; box.appendChild(title);
+    box.appendChild(el("p", null, routeEdit.busy ? "Waiting for the panel…" : routeEdit.message || (r && r.text) || ""));
+    if (r) list(r.lines).forEach(function (line) { box.appendChild(el("p", null, line)); });
+    if (r) list(r.changes).forEach(function (change) {
+      if (change.loop) box.appendChild(el("h4", null, change.loop + (r.form ? "" : ": " + change.outcome.replace(/_/g, " "))));
+      routeEffects(box, change);
+    });
+    if (r && r.form) {
+      box.appendChild(routeButton("Save reviewed change", "route-save", function () {
+        var op = r.changes[0].op;
+        // Spend the local confirmation before sending; a lost response is
+        // an unknown outcome, never an automatic retry.
+        var form = r.form; routeEdit.reply = null;
+        routeRequest("confirm", { op: op }, form).then(function () { routeEdit.data = null; render(false, true); });
+      }));
+      box.appendChild(routeButton("Cancel review", "route-cancel", function () { routeEdit.reply = null; render(false, true); focusOn("route-edit-refresh"); }));
+    }
+    parent.appendChild(box); return !!(r && r.form);
+  }
+  function routeEditorBox() {
+    if (retainedRouteEditor) return retainedRouteEditor;
+    var box = panel("Configure preferred routes"); box.classList.add("route-editor");
+    box.appendChild(el("p", "sub", "One standard order for loops that follow it. Saving a list does not enroll other loops."));
+    if (!changesOn() || !state.server || state.server.routeChanges !== "person") {
+      box.appendChild(el("p", null, changesOn() && state.server.routeChanges === "bb_caller" ?
+        "This panel was started by a BB thread. Only a person can edit the standard list. Stop it and open a panel outside BB with changes allowed; reopening this window keeps its original caller." :
+        "Route editing requires a panel started outside BB with changes allowed. This window is read-only for route configuration."));
+      box.appendChild(link(ROUTE_DOCS, "How to open an owner panel")); return box;
+    }
+    var reviewing = routeReview(box);
+    box.appendChild(routeButton("Read current configuration", "route-edit-refresh", function () { routeEdit.reply = null; routeRequest("read", { op: "read" }); }));
+    var data = routeEdit.data;
+    if (!data || reviewing || routeEdit.busy) { box.appendChild(link(ROUTE_DOCS, "Route configuration help", "more")); return box; }
+    if (data.reason) { box.appendChild(el("p", "c-warn", data.reason)); return box; }
+    var standard = data.standard || {}, rows = list(standard.routes);
+    box.appendChild(el("h3", null, "Preferred order"));
+    var order = el("ol", "route-edit-order");
+    rows.forEach(function (row, i) {
+      var li = el("li"), name = routeTitle(row);
+      li.appendChild(el("p", null, name));
+      function action(label, op, to) { return routeButton(label, "route-" + op + "-" + row.id + "-" + to, function () { routeRequest("prepare", { op: op, id: row.id, to: to || 0 }); }); }
+      var controls = el("div", "route-actions");
+      if (i) controls.appendChild(action("Move earlier", "move", i));
+      if (i < rows.length - 1) controls.appendChild(action("Move later", "move", i + 2));
+      controls.appendChild(action(row.disabled ? "Turn on" : "Turn off", row.disabled ? "on" : "off"));
+      controls.appendChild(action("Remove", "remove"));
+      Array.prototype.forEach.call(controls.querySelectorAll("button"), function (b) { b.setAttribute("aria-label", b.textContent + ": " + name); });
+      li.appendChild(controls); order.appendChild(li);
+    });
+    box.appendChild(order);
+    if (!rows.length) box.appendChild(el("p", "sub", standard.state === "unreadable" ? "The standard list cannot be read. Resolve it before editing." : "No standard routes yet. Add your first route below."));
+    if (list(standard.can).indexOf("add") >= 0) {
+      var form = el("form", "route-add-form"); form.method = "post"; form.action = "api/v1/routes/prepare"; form.setAttribute("aria-labelledby", "route-add-title");
+      var heading = el("h3", null, "Add a route"); heading.id = "route-add-title"; form.appendChild(heading);
+      var accounts = list(data.accounts), chosen = accounts.filter(function (a) { return a.id === routeEdit.draft.account; })[0];
+      routeField(form, "account", "Existing account selection", [["", "Choose an account"]].concat(accounts.map(function (a) { return [a.id, a.label + " · " + routeProvider(a.provider)]; })), true);
+      form.appendChild(el("p", "sub", "You state which account this route uses. Selection does not verify a live thread's identity, model access or available quota."));
+      if (!accounts.length) form.appendChild(link("#/accounts", "No supported account selections. View Accounts."));
+      if (chosen) {
+        if (routeEdit.models.length) form.appendChild(routeButton("Enter model names instead", "route-model-manual", function () { routeEdit.models = []; render(false, true); }));
+        form.appendChild(routeButton("Load models reported by BB", "route-models", function () { routeRequest("models", { op: "models", provider: chosen.provider }); }));
+        form.appendChild(el("p", "sub", "Model listing is optional and read-only. Without a listing, enter names supported by your provider."));
+        if (routeEdit.models.length) {
+          var offered = routeEdit.models.filter(function (m) { return m.model === routeEdit.draft.model; })[0];
+          if (!offered) { routeEdit.draft.model = ""; routeEdit.draft.effort = ""; }
+          else if (!list(offered.supportedReasoningEfforts).some(function (e) { return e.reasoningEffort === routeEdit.draft.effort; })) routeEdit.draft.effort = "";
+        }
+        var modelOptions = routeEdit.models.length ? [["", "Choose a model"]].concat(routeEdit.models.map(function (m) { return [m.model, m.displayName || m.model]; })) : null;
+        routeField(form, "model", "Model", modelOptions, true);
+        var model = routeEdit.models.filter(function (m) { return m.model === routeEdit.draft.model; })[0];
+        var efforts = model ? list(model.supportedReasoningEfforts).map(function (e) { return [e.reasoningEffort, e.reasoningEffort]; }) : null;
+        if (chosen.provider === "codex" && chosen.selection !== "externally_managed") form.appendChild(el("p", "sub", "Codex CLI routes have no effort override."));
+        else routeField(form, "effort", "Effort (optional)", efforts ? [["", "Provider default"]].concat(efforts) : null, false);
+        var details = el("details", "route-settings"); details.appendChild(el("summary", null, "How conversation and limit choices work"));
+        var behavior = chosen.selection === "externally_managed" ? [["", "Choose conversation behavior"], ["same_conversation", "Continue the loop's BB conversation"], ["new_conversation", "Start a new BB conversation at handoff"]] : [["", "Choose execution behavior"], ["headless", "Run the selected CLI without a conversation window"]];
+        routeField(form, "behavior", "How this route runs", behavior, true);
+        if (routeEdit.draft.behavior === "new_conversation") routeCheck(form, "newConversation", "Allow this route to start a conversation at handoff. Each loop must also opt in; its existing creation cap and spacing still apply.").required = true;
+        details.appendChild(el("p", "sub", "A conversation route uses that conversation's existing login; it does not switch credentials. A CLI route keeps each loop's executable and working directory, using its inherited login or the selected existing directory."));
+        var limits = [];
+        rows.forEach(function (r) { if (limits.indexOf(r.group) < 0) limits.push(r.group); });
+        routeField(form, "limitChoice", "Which recorded limit does it share?", [["", "Choose a limit relationship"], ["new", "New label (relationship checked)"]].concat(limits.map(function (g) { return [g, "Share the limit labelled " + g]; })), true);
+        if (routeEdit.draft.limitChoice === "new") routeField(form, "limit", "New limit label", null, true);
+        details.appendChild(el("p", "sub", "Labels record your configuration. They do not prove separate subscriptions or independent quota. Routes sharing limits must share a label."));
+        form.appendChild(details);
+        var submit = el("button", "btn", "Review new route"); submit.type = "submit"; submit.dataset.focus = "route-add-review"; form.appendChild(submit);
+      }
+      form.addEventListener("submit", function (ev) {
+        ev.preventDefault(); if (!form.reportValidity()) return;
+        var values = new FormData(form), limitChoice = values.get("limitChoice");
+        routeRequest("prepare", { op: "add", account: values.get("account"), model: values.get("model"), effort: values.get("effort") || "", behavior: values.get("behavior"), newConversation: values.get("newConversation") === "on", limit: limitChoice === "new" ? values.get("limit") : limitChoice });
+      }); box.appendChild(form);
+    }
+    if (rows.length) {
+      var follow = el("form", "route-follow-form"); follow.method = "post"; follow.action = "api/v1/routes/prepare";
+      var fieldset = el("fieldset"); fieldset.appendChild(el("legend", null, "Loops following this order"));
+      list(data.loops).forEach(function (entry) {
+        var view = entry.view, allowed = list(view.can).indexOf("follow_standard") >= 0;
+        if (view.list === "standard") { fieldset.appendChild(el("p", "sub", view.loop + " · Already follows the standard list")); return; }
+        var cb = routeCheck(fieldset, "loop-" + entry.key, view.loop + (allowed ? (view.handoff === "off" ? " · Handoff is off and stays off" : "") : " · Cannot follow now: " + (view.canReason || view.problem || "not available").replace(/_/g, " ")));
+        cb.disabled = !allowed;
+      });
+      follow.appendChild(fieldset);
+      follow.appendChild(el("p", "sub", "Review and save this separately from route edits. Each loop keeps its holds, budgets, handoff settings and conversation opt-in. Saves are per loop, not atomic."));
+      var submit = el("button", "btn", "Review selected loops"); submit.type = "submit"; follow.appendChild(submit);
+      follow.addEventListener("submit", function (ev) { ev.preventDefault(); var selected = list(data.loops).filter(function (e) { return list(e.view.can).indexOf("follow_standard") >= 0 && routeEdit.draft["loop-" + e.key]; }).map(function (e) { return e.key; }); if (selected.length > 64) { routeEdit.message = "Select up to 64 loops per review."; render(false, true); focusOn("route-feedback"); return; } routeRequest("prepare", { op: "follow_standard", loops: selected }); });
+      box.appendChild(follow);
+    }
+    box.appendChild(link(ROUTE_DOCS, "Route configuration help and CLI reference", "more")); return box;
   }
 
   function renderVersions(d, pane) {
@@ -1459,6 +1869,7 @@
     var routes = list(d.routes), rs = d.routesSummary || {};
     if (!routes.length) {
       pane.appendChild(emptyBox(d.registry.availability === "available" ? "No routes to show." : "Unknown: the registry could not be read.", ""));
+      if (d.registry.availability === "available") pane.appendChild(routeEditorBox());
       return;
     }
     var sum = el("p", "route-summary");
@@ -1467,6 +1878,7 @@
     if (rs.trouble && rs.first) sum.appendChild(link("#/routes/" + rs.first, rs.problem, "c-warn"));
     else if (rs.problem) sum.appendChild(el("span", "sub", rs.problem));
     pane.appendChild(sum);
+    pane.appendChild(routeEditorBox());
     pane.appendChild(allowancesPanel(d));
 
     var wrap = panel("All routes", [el("span", "sub", "those at a limit or not ready first")]);
@@ -1540,7 +1952,7 @@
   // A focusable element is found again after a redraw by a key that does
   // not change when its text does (an age, a count): its tag, its link
   // target, its id or data-focus name, and which of those it was in order.
-  var FOCUSABLE = "a[href], button, summary, [tabindex]";
+  var FOCUSABLE = "a[href], button, input, select, textarea, summary, [tabindex]";
   function signature(n) { return n.tagName + "|" + (n.getAttribute("href") || "") + "|" + (n.id || "") + "|" + (n.getAttribute("data-focus") || ""); }
   function focusKey(node, root) {
     if (!node || node === document.body || !root.contains(node) || !node.matches(FOCUSABLE)) return null;
@@ -1570,9 +1982,11 @@
     if (!navigated && !force && selecting()) { state.pending = true; renderReadline(); return; }
     state.pending = false;
     var r = route(), pane = $("pane");
+    if (!navigated && !force && r.view === "routes" && pane.contains(document.activeElement) && document.activeElement.matches("input, select, textarea")) { state.pending = true; renderReadline(); return; }
     var top = navigated ? 0 : window.scrollY;
     var active = document.activeElement, inPane = pane.contains(active), inPicker = $("picker").contains(active);
     var key = inPane ? focusKey(active, pane) : inPicker ? focusKey(active, $("picker")) : null;
+    retainedRouteEditor = !navigated && !force && r.view === "routes" && routeEdit.data && changesOn() && state.server.routeChanges === "person" ? pane.querySelector(".route-editor") : null;
     try {
       $("layout").dataset.view = r.view;
       renderPicker(d, r);
@@ -1585,11 +1999,13 @@
       else if (r.view === "accounts") renderAccounts(d, pane);
       else renderHome(d, pane);
     } catch (err) {
+      retainedRouteEditor = null;
       pane.replaceChildren(emptyBox("This page could not show the reply it was sent.", "Reload the page, or restart keepgoing " + served() + "."));
       notice("render", "This page could not show the reply it was sent. Reload the page, or restart keepgoing " + served() + ".", true);
       renderReadline();
       return false;
     }
+    retainedRouteEditor = null;
     renderReadline();
     var needs = list(d.needsYou).length;
     document.title = (needs ? "(" + needs + ") " : "") + "looptender";
@@ -1599,10 +2015,11 @@
     if (needsSaid !== state.needsSaid) { state.needsSaid = needsSaid; announce(needsSaid); }
     window.scrollTo(0, top);
     if (navigated) {
-      // A link to one route lands on that route; any other lands on the pane.
+      // A link to one route lands on that route; any other lands on the
+      // view's heading. A read that is not a change of view moves nothing.
       var at = r.view === "routes" && r.key ? $("route-" + r.key) : null;
       if (at) { at.focus({ preventScroll: true }); at.scrollIntoView({ block: "start" }); }
-      else pane.focus({ preventScroll: true });
+      else focusPaneTitle();
       var cur = $("picker").querySelector('.pick-scroll [aria-current="page"]');
       if (cur && cur.scrollIntoView) cur.scrollIntoView({ block: "nearest" });
     } else if (key) {
@@ -1637,34 +2054,14 @@
   // Which command serves this page: "dock" until the server says otherwise.
   function served() { return state.server && state.server.servedBy === "panel" ? "panel" : "dock"; }
 
-  function idleSpan(seconds) {
-    if (seconds % 3600 === 0) return seconds === 3600 ? "1 hour" : seconds / 3600 + " hours";
-    if (seconds % 60 === 0) return seconds === 60 ? "1 minute" : seconds / 60 + " minutes";
-    return seconds + " seconds";
-  }
-
   function put(node, parts) {
     parts.forEach(function (part) { node.appendChild(typeof part === "string" ? document.createTextNode(part) : part); });
   }
 
-  // One sentence under the footer: what serves the page and when it stops.
+  // The footer's first line: whether this page can change anything.
   function renderServed() {
     var m = $("changes");
     if (m && state.server && list(state.server.changesText).length) m.textContent = say(state.server.changesText);
-    var vt = $("version");
-    if (vt && state.server && state.server.versionText) {
-      vt.textContent = "";
-      put(vt, [state.server.versionText + " ", link("#/versions", "Where each build runs")]);
-    }
-    var p = $("served");
-    if (!p) return;
-    p.textContent = "";
-    if (!state.server) return;
-    if (served() === "panel") {
-      put(p, ["Served to this computer only by ", el("code", null, "keepgoing panel"), ", which stops by itself after " + idleSpan(state.server.idleSeconds || 1800) + " with no page reading from it. ", el("code", null, "keepgoing panel stop"), " ends it now."]);
-    } else {
-      put(p, ["Served to this computer only by ", el("code", null, "keepgoing dock"), ", until Ctrl-C in its terminal."]);
-    }
   }
 
   // How long one read may take: a little under the refresh interval, from 4
@@ -1769,7 +2166,7 @@
     // The skip link moves focus to the details without changing the view.
     document.querySelector("a.skip").addEventListener("click", function (ev) {
       ev.preventDefault();
-      $("pane").focus();
+      focusPaneTitle(true);
     });
     window.addEventListener("hashchange", function () {
       render(true);
