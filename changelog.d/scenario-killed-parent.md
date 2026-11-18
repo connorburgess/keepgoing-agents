@@ -1,0 +1,1 @@
+- Keep fault-scenario stand-ins alive until their killed supervisor has exited, preventing an extra orphaned command.

@@ -102,11 +102,27 @@ func TestDaemonConnectivityCheckWaitsForTheTickLock(t *testing.T) {
 // the past, changes nothing.
 func TestDaemonChecksAtAKnownLimitReset(t *testing.T) {
 	cfg := soonerLoop(t, nil)
-	if err := state.Save(cfg.Loop.StateDir, state.File{LimitResetsAt: time.Now().Add(100 * time.Millisecond)}); err != nil {
-		t.Fatal(err)
+	// The reset is a time on the clock, so the wait is judged against it,
+	// not against when the wait began: on a busy machine saving the record
+	// takes part of the 100 ms. A save so slow that the reset has nearly
+	// passed is made again with a later reset, up to 50 times, since a reset
+	// already past when the wait begins is ignored, as it should be.
+	var reset time.Time
+	for try := 1; ; try++ {
+		if try > 50 {
+			t.Fatal("50 saves each left less than 20 ms before a reset 100 ms ahead")
+		}
+		reset = time.Now().Add(100 * time.Millisecond)
+		if err := state.Save(cfg.Loop.StateDir, state.File{LimitResetsAt: reset}); err != nil {
+			t.Fatal(err)
+		}
+		if time.Until(reset) > 20*time.Millisecond {
+			break
+		}
 	}
-	if took := wait(t, cfg); took < 90*time.Millisecond || took > time.Second {
-		t.Fatalf("the wait ended after %s, the reset was at 100ms", took)
+	wait(t, cfg)
+	if ended := time.Now(); ended.Before(reset) || ended.Sub(reset) > time.Second {
+		t.Fatalf("the wait ended %s after the reset", ended.Sub(reset))
 	}
 	now := time.Now()
 	for _, reset := range []time.Time{now.Add(2 * time.Hour), now.Add(-time.Minute)} {
