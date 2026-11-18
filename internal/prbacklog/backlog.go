@@ -14,6 +14,7 @@ import (
 	"strings"
 	"time"
 	"unicode"
+	"unicode/utf8"
 )
 
 const MaxRows = 500
@@ -137,7 +138,7 @@ type rawPR struct {
 	ReviewDecision                     *string
 	Labels                             *struct {
 		TotalCount *int
-		Nodes      []struct{ Name string }
+		Nodes      []*struct{ Name *string }
 	}
 }
 
@@ -230,8 +231,13 @@ func Collect(ctx context.Context, run Query, p Policy, now func() time.Time) Rep
 }
 
 func validPR(p *rawPR, now time.Time) bool {
-	if p == nil || p.Number == nil || *p.Number < 1 || p.CreatedAt == nil || p.UpdatedAt == nil || p.CreatedAt.IsZero() || p.UpdatedAt.Before(*p.CreatedAt) || p.UpdatedAt.After(now.Add(time.Minute)) || p.CreatedAt.After(now) || p.Additions == nil || p.Deletions == nil || p.ChangedFiles == nil || p.IsDraft == nil || p.BaseRefName == nil || p.HeadRefName == nil || p.MergeStateStatus == nil || p.Labels == nil || p.Labels.TotalCount == nil || *p.Labels.TotalCount < 0 || len(p.Labels.Nodes) > 100 {
+	if p == nil || p.Number == nil || *p.Number < 1 || p.CreatedAt == nil || p.UpdatedAt == nil || p.CreatedAt.IsZero() || p.UpdatedAt.Before(*p.CreatedAt) || p.UpdatedAt.After(now.Add(time.Minute)) || p.CreatedAt.After(now) || p.Additions == nil || p.Deletions == nil || p.ChangedFiles == nil || p.IsDraft == nil || p.BaseRefName == nil || p.HeadRefName == nil || p.MergeStateStatus == nil || p.Labels == nil || p.Labels.TotalCount == nil || *p.Labels.TotalCount < 0 || p.Labels.Nodes == nil || len(p.Labels.Nodes) > 100 {
 		return false
+	}
+	for _, l := range p.Labels.Nodes {
+		if l == nil || l.Name == nil || len(*l.Name) == 0 || len(*l.Name) > 256 || strings.TrimSpace(*l.Name) == "" || !utf8.ValidString(*l.Name) || strings.IndexFunc(*l.Name, unicode.IsControl) >= 0 {
+			return false
+		}
 	}
 	for _, n := range []int64{*p.Additions, *p.Deletions, *p.ChangedFiles} {
 		if n < 0 || n > 1e12 {
@@ -258,10 +264,10 @@ func project(raw []*rawPR, p Policy) ([]Row, *Summary) {
 			}
 		}
 		for _, l := range v.Labels.Nodes {
-			if p.HeldLabel != "" && l.Name == p.HeldLabel {
+			if p.HeldLabel != "" && *l.Name == p.HeldLabel {
 				row.Held = true
 			}
-			if p.SupersededLabel != "" && l.Name == p.SupersededLabel {
+			if p.SupersededLabel != "" && *l.Name == p.SupersededLabel {
 				row.Superseded = true
 			}
 		}
@@ -345,7 +351,6 @@ func Notice(p Policy, c *Cache, now time.Time) (string, string) {
 	var sem *Summary
 	if c != nil && c.Valid(p, now) && c.Good != nil {
 		v := *c.Good
-		v.Oldest = time.Time{}
 		sem = &v
 	}
 	b, _ := json.Marshal([]any{p.Binding(), status, sem})

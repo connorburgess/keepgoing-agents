@@ -252,3 +252,51 @@ func TestInvalidCacheCannotBecomeAValidZeroOnRoundTrip(t *testing.T) {
 		t.Fatal(text)
 	}
 }
+
+func TestLabelEvidenceRequiresNodesAndNames(t *testing.T) {
+	cases := map[string]map[string]any{
+		"missing-nodes": {"totalCount": 0},
+		"null-nodes":    {"totalCount": 0, "nodes": nil},
+		"null-element":  {"totalCount": 1, "nodes": []any{nil}},
+		"missing-name":  {"totalCount": 1, "nodes": []any{map[string]any{}}},
+		"empty-name":    {"totalCount": 1, "nodes": []any{map[string]any{"name": ""}}},
+		"control-name":  {"totalCount": 1, "nodes": []any{map[string]any{"name": "line\nbreak"}}},
+		"null-name":     {"totalCount": 1, "nodes": []any{map[string]any{"name": nil}}},
+	}
+	for name, labels := range cases {
+		t.Run(name, func(t *testing.T) {
+			v := pr(1)
+			v["labels"] = labels
+			p := policy()
+			r := collect(t, p, response(1, false, "", v))
+			if r.Complete || r.Failure != "invalid_response" {
+				t.Fatalf("malformed label evidence accepted: %+v", r)
+			}
+			text, _ := Notice(p, Update(nil, p, r, at), at)
+			if !strings.Contains(text, "status=unknown") {
+				t.Fatal(text)
+			}
+		})
+	}
+}
+
+func TestInventoryCompleteAtAcquisitionCap(t *testing.T) {
+	pages := [][]byte{}
+	for page := 0; page < 5; page++ {
+		rows := []map[string]any{}
+		for i := 1; i <= 100; i++ {
+			rows = append(rows, pr(page*100+i))
+		}
+		pages = append(pages, response(MaxRows, page < 4, fmt.Sprintf("page-%d", page), rows...))
+	}
+	p := policy()
+	p.MaxOpen = 5000
+	r := collect(t, p, pages...)
+	if !r.Complete || r.Summary == nil || r.Summary.Open != MaxRows || len(r.Rows) != MaxRows {
+		t.Fatalf("%+v", r.Summary)
+	}
+	text, _ := Notice(p, Update(nil, p, r, at), at)
+	if !strings.Contains(text, "below_threshold") {
+		t.Fatal(text)
+	}
+}
