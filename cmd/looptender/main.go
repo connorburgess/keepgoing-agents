@@ -73,6 +73,7 @@ Local client discovery:
   panel                    Open the keepgoing panel in your browser, starting it when needed; also status, stop, list
 
 Goal metadata:
+  assignment inventory|review|handoff|acknowledge|show  Explicit BB assignment evidence (opt-in; no dispatch)
   goal create|revise|show   Record private, revisioned goal metadata
 
 Control:
@@ -175,6 +176,8 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 			return transferInventoryCommand(e, rest, doctorExec, doctorExecLimit(inventoryListLimit))
 		}
 		return transferCommand(e, rest, doctorExec)
+	case "assignment":
+		return assignmentCommand(e, rest, doctorExecLimit(inventoryListLimit))
 	case "goal":
 		return goalCommand(e, rest)
 	case "service":

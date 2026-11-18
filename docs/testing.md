@@ -608,3 +608,19 @@ Accounts correction review: the catalog reader now uses snapshot LstatRecord/Ope
 `internal/report/sessionpipe_test.go` uses fictional loopback receivers shaped from the published v1 discovery/event/acknowledgement examples. It checks private payload allowlists, identity and sequences across fresh reporter instances, concurrent reservation exclusion, corrupt state, uncertain acknowledgements and transport refusal. Configuration fixtures require explicit bearer auth. Missing/null required-state-field regressions first reproduced sequence reuse and a POST on the initial implementation; strict loading now leaves the corrupt bytes unchanged and attempts no POST. A full Tick fixture reproduces repeated uncertain claim-episode delivery before the caller fix, then verifies one attempt with unsent/retry-stopped persistence across fresh reporters, receiver recovery and a distinct new episode. Independent per-check error reports remain new events. A real ordinary webhook 503 fixture retains its existing within-call and across-check retries; an accepted Sessionpipe POST with failed history publication also forbids retry. Existing decision tests retain their semantics. Cross-compilation is separate from native execution; no live receiver, GUI/phone, provider, account, installation, power-loss or upstream conformance acceptance is claimed.
 
 Capability/documentation review covers README, configuration, adapter reference, architecture, Sessionpipe setup, canonical schema and compatibility reference, roadmap and changelog. The OUT feature remains source-only and partial. Lifecycle review: no subprocess, installer, OS integration, stop mechanism or new lock is added; private sequence publication reuses snapshot primitives and the existing migration-fenced delivery lock. No changes to loop authority or the pure engine are implied.
+
+## Explicit assignment lifecycle fixtures (unreleased)
+
+Provider-free command fixtures exercise an initial idle-child inventory, missing handoffs,
+validated lane draft production, coordinator import and exact-revision acknowledgement,
+actionable/dependency/person-blocked distinctions, partial parent/list reads, retained
+vanished obligations and unconditional pause/stop plus an automatic deadline hold. The
+missing-view regression fails against pre-feature main before dispatch is added. Store
+fixtures cover owner/retirement/contention, copied/corrupt/history-loss/nonregular records,
+stale bindings/revisions, interrupted publication and refusal at capacity without eviction.
+The dedicated fictional panel fixture covers dates, partial coverage, unknown vs valid-zero,
+keyboard navigation and responsive light/dark rendering without runtime data or mutations.
+Windows compilation is distinct from native record fixture execution in CI. A built
+pre-feature main executable refuses the opt-in configuration key; that is not installed
+reader or live upgrade acceptance. No mandatory turn-end hook, lane scheduling or deployed
+coordinator compliance is established by these tests. See [remaining assignment acceptance](assignments.md#remaining-acceptance).

@@ -18,7 +18,7 @@ A manually created successor with separate loop state has no inferred relationsh
 ## Packages
 
 ```
-cmd/looptender               CLI: start, service, tick, daemon, status, context, timeline, goal, registry, client status/pause/stop/prepare-resume/resume/review/apply, dock, panel, transfer, control, fallbacks, report, adapter check, pr-backlog, ci-wait, net-retry
+cmd/looptender               CLI: start, service, tick, daemon, status, context, timeline, goal, assignment, registry, client status/pause/stop/prepare-resume/resume/review/apply, dock, panel, transfer, control, fallbacks, report, adapter check, pr-backlog, ci-wait, net-retry
 internal/config             a loop's configuration file (looptender.yaml, or keepgoing.yaml) and fallbacks.yaml: loading, defaults, validation
 internal/envvar             the environment variables' two names: LOOPTENDER_X, and the earlier KEEPGOING_X
 internal/userdir            the per-user directories and their name: looptender, or keepgoing where one already exists; the explicit move between them
@@ -375,6 +375,25 @@ The report package owns the opt-in OUT integration described in [Sessionpipe rep
 Explicit BB plugin lifecycle operations publish a CLI reference only after their own success is confirmed. The command layer preserves configuration path resolution semantics and binds config/runtime native identity, configuration sources, current BB route, owner and controls to an opaque preview, then revalidates under nonwaiting registry → tick → control locks through `registry.AddChecked`. The storage callback cannot query providers or edit controls. Existing schema-1 reference identity and unrelated entries remain intact; no new ledger or package boundary is introduced. The plugin's existing SDK target checks bind host/project/environment/path independently of progress evidence.
 
 Lifecycle, CLI registry and private plugin-reference writes are not an atomic transaction. Publication returns separate repair-needed evidence and never causes lifecycle replay or control rollback. Explicit `registry reconcile` repairs existing references without provider queries or changing ownership/holds/accounting. Status, menu and page reads never reconcile or scan. Plugin provenance and CLI registry coverage describe distinct explicit reference sets, not a complete process inventory. Durable supersession alone controls historical/no-Resume behavior; registration never infers it from a pause.
+
+## Explicit assignment lifecycle (unreleased)
+
+`loop.assignment_lifecycle` opts a BB coordinator into a separate private
+`assignments.json` record in `internal/control`, command-layer inventory/import/acknowledgement,
+and a pure minimized summary. It does not overload goals, migration checklists or run graphs.
+Record writes hold tick then control locks, verify source/owner/current goal bindings, use
+strict regular-file snapshots and atomic replacement, and refuse stale revisions or capacity
+without dropping unfinished IDs. The 32-revision/200-assignment/1-MiB limits are refusals,
+not eviction. History transition invariants apply on load as well as write.
+
+Only explicit coordinator `await-user` consults this opt-in record under those locks.
+All remaining unfinished work must be explicitly acknowledged as person-blocked; missing,
+stale or partial evidence refuses that declaration. Pause/stop and automatic safety holds
+are unchanged. Ordinary status/panel read minimized local counts/dates without new queries;
+only explicit inventory/review reads bounded BB direct-child list/show metadata. Lane execution,
+assignment outcome and declared availability are independent. No transcript decisions, lane
+actions, self-resume, authenticated worker publication or mandatory turn-end hook are added.
+See [assignment lifecycle](assignments.md) for the explicit initial-review journey and gaps.
 
 ## PR backlog consultation (unreleased)
 
