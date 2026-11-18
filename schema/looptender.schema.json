@@ -93,6 +93,42 @@
           "type": "boolean",
           "description": "Explicitly include the latest private goal revision in automatic prompts and handoff briefs. Missing or invalid goals prevent sending."
         },
+        "pr_backlog": {
+          "type": "object",
+          "additionalProperties": false,
+          "description": "Opt-in bounded GitHub PR evidence on ordinary wakes; no extra wakes or branch/merge authority.",
+          "required": [
+            "repo",
+            "max_open"
+          ],
+          "properties": {
+            "repo": {
+              "type": "string",
+              "pattern": "^[A-Za-z0-9][A-Za-z0-9_.-]{0,99}/[A-Za-z0-9_.-]{1,100}$"
+            },
+            "max_open": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 5000
+            },
+            "refresh_interval": {
+              "$ref": "#/$defs/duration",
+              "description": "Default 15m; 5m to 24h."
+            },
+            "max_age": {
+              "$ref": "#/$defs/duration",
+              "description": "Default 1h; at least refresh_interval, at most 24h."
+            },
+            "held_label": {
+              "type": "string",
+              "maxLength": 100
+            },
+            "superseded_label": {
+              "type": "string",
+              "maxLength": 100
+            }
+          }
+        },
         "prompt_context": {
           "type": "boolean",
           "description": "Append the loop's supervision context, as the context command shows it, to wakes, nudges, re-prompts and handoff briefs: on the first send after it is turned on, a control change (enable, resume, a change of owner), a handoff or switch-back, or a new conversation, and again when the context changes. Default false."

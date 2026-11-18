@@ -187,6 +187,11 @@ jobs:
       - name: Verify selected account commands and effective context on Windows
         if: steps.scope.outputs.scope != 'docs'
         run: go test -race -v ./cmd/looptender -run '^(TestAccounts|TestAccountQuota|TestPanelAccountQuota)' -count=1
+      - name: Verify bounded PR backlog evidence and ordinary wake gates on Windows
+        if: steps.scope.outputs.scope != 'docs'
+        run: |
+          go test -race -v ./internal/prbacklog -count=1
+          go test -race -v ./internal/config ./internal/supervise ./cmd/looptender -run '^TestPRBacklog' -count=1
       - name: Verify offline run navigation on Windows
         if: steps.scope.outputs.scope != 'docs'
         run: go test -race -v ./cmd/looptender -run '^TestRuns' -count=1

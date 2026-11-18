@@ -388,3 +388,9 @@ only explicit inventory/review reads bounded BB direct-child list/show metadata.
 assignment outcome and declared availability are independent. No transcript decisions, lane
 actions, self-resume, authenticated worker publication or mandatory turn-end hook are added.
 See [assignment lifecycle](assignments.md) for the explicit initial-review journey and gaps.
+
+## PR backlog consultation (unreleased)
+
+`internal/prbacklog` owns bounded read-only GraphQL acquisition through `gh`, typed aggregate projection, pure policy evaluation and validated private cache/notice records. `config` validates the explicit opt-in repository, threshold, labels and freshness policy; `state` stores one aggregate cache and one notice record. No acquisition is performed by config/state loading. The standalone command acquires fresh evidence without loading or writing loop records.
+
+Only the ordinary-wake branch of `internal/supervise.act` consults this policy, after the existing decision and before reserving the send. Refresh uses optional time, preserves mandatory reserves, has no retries and rechecks effective controls before sending. Failure is notice evidence, never a hold, failover or permission. Cache attempts are interval-throttled; notices use semantic change/known conversation bookkeeping with a three-attempt cap, not new wake decisions. No decision-engine, lane, repository, merge or approval authority is added. See [the full freshness/privacy/acceptance contract](pr-backlog.md).
