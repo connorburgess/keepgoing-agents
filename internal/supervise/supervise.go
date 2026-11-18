@@ -25,6 +25,7 @@ import (
 	"github.com/looptender/looptender/internal/health"
 	"github.com/looptender/looptender/internal/incident"
 	"github.com/looptender/looptender/internal/netretry"
+	"github.com/looptender/looptender/internal/prbacklog"
 	"github.com/looptender/looptender/internal/probe"
 	"github.com/looptender/looptender/internal/prompt"
 	"github.com/looptender/looptender/internal/report"
@@ -69,14 +70,15 @@ type Options struct {
 	CallerThread string
 	// SessionDir is the private directory of session claims shared by every
 	// loop this user runs; empty means session.Dir().
-	SessionDir  string
-	Now         time.Time
-	DryRun      bool // decide and record; send nothing and run no probes
-	Fingerprint func([]string) (string, error)
-	NewAdapter  factory.Func
-	Probe       ProbeFunc
-	Reporter    report.Reporter
-	Busy        func(ctx context.Context, y config.Yield) (bool, error)
+	SessionDir   string
+	Now          time.Time
+	DryRun       bool            // decide and record; send nothing and run no probes
+	BacklogQuery prbacklog.Query // nil uses fixed read-only gh query when opted in
+	Fingerprint  func([]string) (string, error)
+	NewAdapter   factory.Func
+	Probe        ProbeFunc
+	Reporter     report.Reporter
+	Busy         func(ctx context.Context, y config.Yield) (bool, error)
 	// Online reports connectivity once. Nil uses the loop's network settings;
 	// a loop with the check off is never checked.
 	Online func(ctx context.Context) bool
@@ -1906,6 +1908,15 @@ func (t *tick) act(a adapter.Adapter, d decide.Decision) error {
 		} else {
 			text = prompt.WithChildErrorsRetried(text, childErrors, t.lanesRetried)
 		}
+		var backlogNotice *backlogDelivery
+		if d.Action == decide.Wake && !text.NoticeOnly && loop.PRBacklog != nil {
+			var allowed bool
+			text, backlogNotice, allowed = t.withBacklog(a, text)
+			if !allowed {
+				t.res.Action, t.res.Reason = string(decide.None), "controls changed during backlog consultation; no wake sent"
+				return nil
+			}
+		}
 		if !reserved {
 			action := string(d.Action)
 			if d.Reason == decide.RefusedContinueReason {
@@ -1920,6 +1931,7 @@ func (t *tick) act(a adapter.Adapter, d decide.Decision) error {
 			t.res.Recovery = string(decide.RecoverByPrompt)
 		}
 		err = t.send(a, text, mode, t.res.Target, string(d.Action))
+		t.noteBacklog(backlogNotice, err)
 		t.reserve = reserveReports + t.reserveNetwork // the send has been made
 		var refused adapter.ErrNotStarted
 		if errors.As(err, &refused) {

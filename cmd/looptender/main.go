@@ -109,6 +109,7 @@ Reporting:
 
 Tools (no config needed):
   init                     Guide setup of a disabled loop outside the checkout
+  pr-backlog               Check configured GitHub PR WIP policy (read-only)
   ci-wait                  Wait for every CI workflow on a PR head or exact commit
   net-retry -- cmd...      Rerun a network command only while the network is down
   version                  Print the version
@@ -203,6 +204,8 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 	case "version":
 		fmt.Fprintln(stdout, version)
 		return exitOK
+	case "pr-backlog":
+		return prBacklogCommand(e, rest, nil)
 	case "ci-wait":
 		return ciWait(e, rest)
 	case "net-retry":

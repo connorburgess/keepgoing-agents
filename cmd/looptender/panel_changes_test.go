@@ -401,8 +401,8 @@ func TestPanelModeIsFixedAndStatusSaysIt(t *testing.T) {
 	_, body := dockRequest(t, http.MethodGet, w.page+dockServerPath, withCookie(w.cookie))
 	var served dockServed
 	if err := json.Unmarshal([]byte(body), &served); err != nil || served.Changes != "on" || served.ChangesSince == nil ||
-		!strings.HasPrefix(served.ChangesText.render(time.Now()), "Changes allowed for under a minute: started with keepgoing panel --allow-changes at ") ||
-		!strings.HasSuffix(served.ChangesText.render(time.Now()), ". keepgoing panel stop turns them off.") {
+		!strings.HasPrefix(served.ChangesText.render(time.Now()), "Changes allowed for under a minute: started with looptender panel --allow-changes at ") ||
+		!strings.HasSuffix(served.ChangesText.render(time.Now()), ". looptender panel stop turns them off.") {
 		t.Fatalf("%s", body)
 	}
 	// And a read-only server refuses to be reused as one that allows changes.
