@@ -44,7 +44,7 @@ const (
 	panelChangeOrigin   = "panel"
 	panelPrepareContext = "keepgoing-panel-prepare\x00"
 	// panelExposure is said wherever changes are turned on.
-	panelExposure = "While changes are allowed, anyone who can use this browser window can pause, stop and resume loops, and replace the file that runs a loop's checks with this panel's build. They can also review a selected-context Codex subscription-quota read."
+	panelExposure = "While changes are allowed, anyone using this window can pause, stop or resume loops, replace their builds with this panel's build, and read selected Codex subscription quota."
 )
 
 // panelChanges is the change half of a panel server started with changes

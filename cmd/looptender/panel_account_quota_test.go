@@ -161,3 +161,12 @@ func TestPanelAccountQuotaExpiredAndChangedExecutable(t *testing.T) {
 		})
 	}
 }
+
+// The native controls confirmation accepts complete authority text up to
+// 1024 UTF-8 bytes. Its smoke contract independently requires the full CLI
+// statement, not an ellipsis.
+func TestPanelAccountQuotaExposureFitsNativeConfirmation(t *testing.T) {
+	if len(panelExposure) > 1024 {
+		t.Fatal("native controls confirmation would refuse the authority statement")
+	}
+}
