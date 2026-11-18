@@ -77,6 +77,11 @@ func TestAssignmentWakeMalformedHistoryRetainsBytes(t *testing.T) {
 		{"clear-attempt", func(r *AssignmentRecord) { r.Revisions[4].Wake.AttemptedAt = nil; r.Revisions[4].Wake.Disposition = "" }},
 		{"replace-unreconciled", func(r *AssignmentRecord) { r.Revisions[4].Wake.ID = "assignment_00000000000000000000000000000000" }},
 		{"changed-selection", func(r *AssignmentRecord) { r.Revisions[4].Wake.Selections[0].AssignmentRevision++ }},
+		{"missing-digest", func(r *AssignmentRecord) { r.Revisions[2].Wake.EvidenceDigest = "" }},
+		{"changed-digest", func(r *AssignmentRecord) {
+			r.Revisions[4].Wake.EvidenceDigest = "0000000000000000000000000000000000000000000000000000000000000000"
+		}},
+		{"lost-acknowledgement", func(r *AssignmentRecord) { r.Revisions[4].Rows[0].Acknowledged = 0 }},
 		{"future-attempt", func(r *AssignmentRecord) { at := time.Now().Add(time.Hour); r.Revisions[4].Wake.AttemptedAt = &at }},
 	} {
 		t.Run(tc.name, func(t *testing.T) {

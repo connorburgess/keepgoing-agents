@@ -247,6 +247,9 @@ func assignmentTransition(a, b AssignmentRevision) bool {
 			if next.HandoffRevision == old.HandoffRevision && !reflect.DeepEqual(old.Handoff, next.Handoff) {
 				return false
 			}
+			if next.HandoffRevision == old.HandoffRevision && old.Acknowledged > 0 && next.Acknowledged != old.Acknowledged {
+				return false
+			}
 		} else if next.Handoff != nil || next.HandoffRevision != 0 || next.Acknowledged != 0 {
 			return false
 		}

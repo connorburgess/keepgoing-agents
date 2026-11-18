@@ -2,7 +2,9 @@ package control
 
 import (
 	"crypto/rand"
+	"crypto/sha256"
 	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"path/filepath"
 	"reflect"
@@ -12,14 +14,15 @@ import (
 // AssignmentWake is one coordinator-declared batch, never permission to act on
 // children. Historical selection/binding survives changes as stale evidence.
 type AssignmentWake struct {
-	ID           string                    `json:"id"`
-	Binding      AssignmentBinding         `json:"binding"`
-	InventoryAt  time.Time                 `json:"inventoryAt"`
-	DeclaredAt   time.Time                 `json:"declaredAt"`
-	Selections   []AssignmentWakeSelection `json:"selections"`
-	AttemptedAt  *time.Time                `json:"attemptedAt,omitempty"`
-	Disposition  string                    `json:"disposition,omitempty"`
-	ReconciledAt *time.Time                `json:"reconciledAt,omitempty"`
+	ID             string                    `json:"id"`
+	Binding        AssignmentBinding         `json:"binding"`
+	InventoryAt    time.Time                 `json:"inventoryAt"`
+	DeclaredAt     time.Time                 `json:"declaredAt"`
+	Selections     []AssignmentWakeSelection `json:"selections"`
+	EvidenceDigest string                    `json:"evidenceDigest"`
+	AttemptedAt    *time.Time                `json:"attemptedAt,omitempty"`
+	Disposition    string                    `json:"disposition,omitempty"`
+	ReconciledAt   *time.Time                `json:"reconciledAt,omitempty"`
 }
 type AssignmentWakeSelection struct {
 	Assignment         string `json:"assignment"`
@@ -69,6 +72,10 @@ func AssignmentWakeSummaryOf(r *AssignmentRecord, b AssignmentBinding, now time.
 func validAssignmentWake(w *AssignmentWake, at time.Time) bool {
 	if w == nil {
 		return true
+	}
+	digest, err := hex.DecodeString(w.EvidenceDigest)
+	if err != nil || len(digest) != sha256.Size {
+		return false
 	}
 	if !assignmentRecordID.MatchString(w.ID) || !validAssignmentBinding(w.Binding) || w.InventoryAt.IsZero() || w.DeclaredAt.Before(w.InventoryAt) || w.DeclaredAt.After(at) || len(w.Selections) == 0 || len(w.Selections) > 200 {
 		return false
@@ -168,7 +175,7 @@ func AssignmentWakeLocal(r *AssignmentRecord, b AssignmentBinding, now time.Time
 	if len(r.Revisions) >= assignmentHistoryLimit {
 		return 0, "capacity_exhausted"
 	}
-	if w.Binding != b || !w.InventoryAt.Equal(x.Inventory.ObservedAt) || x.Inventory.Coverage != "observed_direct_children" || now.Before(w.DeclaredAt) || now.Sub(w.DeclaredAt) > age || now.Sub(x.Inventory.ObservedAt) > age {
+	if w.EvidenceDigest != assignmentWakeEvidence(x) || w.Binding != b || !w.InventoryAt.Equal(x.Inventory.ObservedAt) || x.Inventory.Coverage != "observed_direct_children" || now.Before(w.DeclaredAt) || now.Sub(w.DeclaredAt) > age || now.Sub(x.Inventory.ObservedAt) > age {
 		return 0, "stale_evidence"
 	}
 	rows := map[string]AssignmentRow{}
@@ -200,7 +207,7 @@ func DeclareAssignmentWake(x *AssignmentRevision, b AssignmentBinding, selection
 	if _, err := rand.Read(random[:]); err != nil {
 		return ErrAssignment
 	}
-	x.Wake = &AssignmentWake{ID: "assignment_" + hex.EncodeToString(random[:]), Binding: b, InventoryAt: x.Inventory.ObservedAt, DeclaredAt: now, Selections: selections}
+	x.Wake = &AssignmentWake{ID: "assignment_" + hex.EncodeToString(random[:]), Binding: b, InventoryAt: x.Inventory.ObservedAt, DeclaredAt: now, Selections: selections, EvidenceDigest: assignmentWakeEvidence(*x)}
 	copy := *x
 	copy.RecordedAt = now
 	r := &AssignmentRecord{Revisions: []AssignmentRevision{copy}}
@@ -227,7 +234,7 @@ func ConsumeAssignmentWake(dir, caller string, b AssignmentBinding, id string, r
 		if x.Wake == nil || x.Wake.ID != grant || x.Wake.Binding != b || x.Wake.AttemptedAt != nil {
 			return ErrAssignment
 		}
-		if _, status := AssignmentWakeLocal(&AssignmentRecord{Revisions: []AssignmentRevision{*x}}, b, now, age); status != "declared_ready" {
+		if _, status := AssignmentWakeLocal(&AssignmentRecord{Revisions: []AssignmentRevision{*x}}, b, now, age); disposition != "superseded_by_ordinary_wake_attempt" && status != "declared_ready" {
 			return ErrAssignment
 		}
 		x.Wake.AttemptedAt = &now
@@ -249,4 +256,25 @@ func assignmentWakeDeclarationValid(history []AssignmentRevision, n int, x Assig
 	}
 	_, state := AssignmentWakeLocal(&AssignmentRecord{Revisions: []AssignmentRevision{x}}, x.Binding, x.RecordedAt, 24*time.Hour)
 	return state == "declared_ready"
+}
+
+// Hash explicit records only to bind freshness, never to interpret reference text
+// or authenticate a declaration. The digest never enters ordinary projection.
+func assignmentWakeEvidence(x AssignmentRevision) string {
+	raw, _ := json.Marshal(struct {
+		Rows      []AssignmentRow
+		Inventory AssignmentInventory
+	}{x.Rows, x.Inventory})
+	sum := sha256.Sum256(raw)
+	return hex.EncodeToString(sum[:])
+}
+
+// AssignmentWakeRetirable identifies a strictly loaded, still-bound grant for
+// descriptive retirement by an ordinary wake; it does not establish readiness.
+func AssignmentWakeRetirable(r *AssignmentRecord, b AssignmentBinding) bool {
+	if r == nil || len(r.Revisions) == 0 || len(r.Revisions) >= assignmentHistoryLimit {
+		return false
+	}
+	x := r.Revisions[len(r.Revisions)-1]
+	return x.Binding == b && x.Wake != nil && x.Wake.Binding == b && x.Wake.AttemptedAt == nil
 }
