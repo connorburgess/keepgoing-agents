@@ -370,3 +370,12 @@ func TestPromptGoalOnChangeNeedsPromptGoal(t *testing.T) {
 		t.Fatalf("with prompt_goal: %+v %v", cfg, err)
 	}
 }
+
+func TestSessionpipeReportingRequiresExplicitBearer(t *testing.T) {
+	if _, err := Parse([]byte(valid + "  report:\n    format: sessionpipe\n    scheme: bearer\n")); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := Parse([]byte(valid + "  report:\n    format: sessionpipe\n")); err == nil || !strings.Contains(err.Error(), "requires bearer") {
+		t.Fatalf("%v", err)
+	}
+}

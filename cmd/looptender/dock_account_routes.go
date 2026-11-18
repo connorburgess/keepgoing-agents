@@ -29,10 +29,10 @@ func dockAccountFactsOf(a config.Agent) dockAccountFacts {
 	return dockAccountFacts{provider: a.Provider, selection: selection, dir: dir, group: a.Group}
 }
 
-// dockAccountUse is one account with the routes that use it: a catalog entry
-// (Card), or an account context that routes use with no catalog entry
-// (Context, unnamed). It is built from loop configurations and the catalog
-// only: nothing on the computer is searched and nothing is adopted.
+// dockAccountUse is a selected catalog entry (Card), or a configuration
+// context for routes with no explicit catalog binding (Context). A context
+// does not identify an account or establish a separate subscription. It is
+// built from loop configurations and the catalog only: nothing on the computer is searched and nothing is adopted.
 type dockAccountUse struct {
 	Card    string `json:"card,omitempty"`
 	Context string `json:"context,omitempty"`
@@ -40,16 +40,12 @@ type dockAccountUse struct {
 	// inherited, explicit_directory, bb_thread or externally_managed.
 	// Directory is sent only with identifiers. Add is the accounts add
 	// command that would name it; it changes no route.
-	Provider  string `json:"provider,omitempty"`
-	Selection string `json:"selection,omitempty"`
-	Group     string `json:"group,omitempty"`
-	Directory string `json:"directory,omitempty"`
-	Add       string `json:"add,omitempty"`
-	Title     string `json:"title,omitempty"`
-	// MayBeSame are catalog entries whose provider and selected directory
-	// (or inherited selection) are the same as this unnamed context's. It
-	// never says they are the same account.
-	MayBeSame []string           `json:"mayBeSame,omitempty"`
+	Provider  string             `json:"provider,omitempty"`
+	Selection string             `json:"selection,omitempty"`
+	Group     string             `json:"group,omitempty"`
+	Directory string             `json:"directory,omitempty"`
+	Add       string             `json:"add,omitempty"`
+	Title     string             `json:"title,omitempty"`
 	Routes    []dockAccountRoute `json:"routes"`
 	Omitted   int                `json:"omitted,omitempty"`
 	// Reading is from the newest recorded reading among its routes only;
@@ -181,7 +177,6 @@ func dockAccountUses(r dockReport, v accounts.View, f *accounts.File, identifier
 			}
 			u.Title = dockAccountTitle(u.Provider)
 			u.Add = dockAccountAddCommand(x.facts, show)
-			u.MayBeSame = dockMayBeSame(f, x.facts)
 		}
 		out = append(out, u)
 	}
@@ -281,32 +276,7 @@ func dockAccountAddCommand(f dockAccountFacts, identifiers bool) string {
 	return s
 }
 
-// dockMayBeSame lists the catalog entries with the same provider as an
-// unnamed headless context and the same selection: the same directory, or
-// both inherited. This is the comparison CheckRoute makes for a stated
-// entry. A BB thread context is never compared: BB has no account per
-// thread.
-func dockMayBeSame(f *accounts.File, x dockAccountFacts) []string {
-	if f == nil || (x.provider != "claude-code" && x.provider != "codex") {
-		return nil
-	}
-	var ids []string
-	for _, e := range f.Entries {
-		if e.Provider != x.provider || e.Mode != x.selection {
-			continue
-		}
-		if x.selection == "explicit_directory" && !accountSameDirectory(e.Directory, x.dir) {
-			continue
-		}
-		if x.selection != "inherited" && x.selection != "explicit_directory" {
-			continue
-		}
-		ids = append(ids, e.ID)
-	}
-	return ids
-}
-
-// dockAccountTitle is "Unnamed Codex account" for an unnamed context.
+// dockAccountTitle describes routes without asserting an account identity.
 func dockAccountTitle(provider string) string {
 	switch provider {
 	case "claude-code":
@@ -316,5 +286,5 @@ func dockAccountTitle(provider string) string {
 	case "cursor":
 		provider = "Cursor"
 	}
-	return strings.TrimSpace("Unnamed " + provider + " account")
+	return strings.TrimSpace(provider + " routes (account unknown)")
 }

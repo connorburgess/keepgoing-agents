@@ -1370,7 +1370,7 @@ func projectDockLoop(in dockInput, now time.Time, staleAfter time.Duration, iden
 		if !c.Stop {
 			l.Can = append(l.Can, "stop")
 		}
-		if c.Paused || c.Stop || c.AwaitingUser || c.Completed {
+		if snap.ControlState != "superseded" && (c.Paused || c.Stop || c.AwaitingUser || c.Completed) {
 			l.Can = append(l.Can, "resume")
 		}
 	}
@@ -1528,6 +1528,12 @@ func projectDockLoop(in dockInput, now time.Time, staleAfter time.Duration, iden
 			need = &dockNeed{Kind: "build_replaced", Reason: "Its last check, since the file that runs its checks was replaced from this panel, failed.",
 				Action: "Look at the check on the loop's page; undo the replacement there if the new build is the cause.", Since: &when, SinceEvidence: "last_check"}
 		}
+	}
+	if snap != nil && snap.ControlState == "superseded" {
+		l.State, l.Phrase = "off", "Superseded"
+		l.Detail = "This loop was replaced. Resume and takeover are refused. Review the successor loop's task and holds before continuing there."
+		l.Hold = dockHoldState{State: "superseded", Phrase: "Superseded"}
+		need = nil // retained source holds are history, not requests to resume it
 	}
 	if need != nil {
 		need.Key, need.Loop = l.Key, l.Name
