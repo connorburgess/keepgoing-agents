@@ -400,3 +400,18 @@ See [assignment lifecycle](assignments.md) for the explicit initial-review journ
 `internal/prbacklog` owns bounded read-only GraphQL acquisition through `gh`, typed aggregate projection, pure policy evaluation and validated private cache/notice records. `config` validates the explicit opt-in repository, threshold, labels and freshness policy; `state` stores one aggregate cache and one notice record. No acquisition is performed by config/state loading. The standalone command acquires fresh evidence without loading or writing loop records.
 
 Only the ordinary-wake branch of `internal/supervise.act` consults this policy, after the existing decision and before reserving the send. Refresh uses optional time, preserves mandatory reserves, has no retries and rechecks effective controls before sending. Failure is notice evidence, never a hold, failover or permission. Cache attempts are interval-throttled; notices use semantic change/known conversation bookkeeping with a three-attempt cap, not new wake decisions. No decision-engine, lane, repository, merge or approval authority is added. See [the full freshness/privacy/acceptance contract](pr-backlog.md).
+
+## Explicit assignment completion review (unreleased)
+
+The command layer's separate `assignment_completion` opt-in guards only explicit
+completion. A bounded typed private declaration identifies the current goal and
+assignment revision and attests whole-objective completion. `internal/control`
+checks local complete/acknowledged obligations; the command composes existing
+bounded structured direct-child inventory and interaction reads under tick.lock,
+then revalidates sources, goal/owner/target binding and exact decoded assignment record in the existing control mutation lock. Completed acknowledged
+historical rows may remain absent after explicit inventory review; unseen
+unfinished obligations never disappear. The pure local precondition cannot
+infer acceptance from inventory. No new package, record schema, supervisor rule,
+host hook, dispatch or authorization source is introduced. Existing completion
+history/reporting projects only a successful explicit declaration. Reads of BB
+and control publication are not a distributed transaction.

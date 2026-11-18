@@ -1407,7 +1407,7 @@ func controlCmd(e env, cfg *config.Config, cmd, note string, takeOver ...bool) i
 // cover the lanes as well, and dropQueued (with lanes) for the messages
 // queued in lanes that have not started to be deleted.
 func controlCmdLanes(e env, cfg *config.Config, cmd, note string, lanes, dropQueued bool, takeOver ...bool) int {
-	if cmd == "enable" || cmd == "resume" || (cmd == "await-user" && cfg.Loop.AssignmentLifecycle) {
+	if cmd == "enable" || cmd == "resume" || (cmd == "await-user" && cfg.Loop.AssignmentLifecycle) || (cmd == "complete" && cfg.Loop.AssignmentCompletion) {
 		acquire := lock.Acquire
 		takingOver := cmd == "enable" && len(takeOver) > 0 && takeOver[0]
 		if takingOver {
@@ -1427,6 +1427,15 @@ func controlCmdLanes(e env, cfg *config.Config, cmd, note string, lanes, dropQue
 		defer l.Release()
 		if err := checkTransferSources(cfg, false); err != nil {
 			return ownershipError(e, err)
+		}
+	}
+	var completionReview *completionSnapshot
+	if cmd == "complete" && cfg.Loop.AssignmentCompletion {
+		var err error
+		completionReview, err = prepareCompletion(e, cfg)
+		if err != nil {
+			e.errf("%v", err)
+			return exitFailed
 		}
 	}
 	var completionDeclaredAt time.Time
@@ -1508,6 +1517,11 @@ func controlCmdLanes(e env, cfg *config.Config, cmd, note string, lanes, dropQue
 				return control.ErrAssignment
 			}
 			if err := control.CheckAssignmentAwaitUser(cfg.Loop.StateDir, b); err != nil {
+				return err
+			}
+		}
+		if cmd == "complete" && cfg.Loop.AssignmentCompletion {
+			if err := completionReview.check(cfg, *f); err != nil {
 				return err
 			}
 		}

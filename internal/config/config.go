@@ -60,10 +60,11 @@ type Config struct {
 // Loop describes one supervised agent loop.
 type Loop struct {
 	// AssignmentLifecycle enables explicit coordinator assignment reconciliation and await-user checks.
-	AssignmentLifecycle bool   `yaml:"assignment_lifecycle,omitempty"`
-	Name                string `yaml:"name"`
-	StateDir            string `yaml:"state_dir"`
-	Agent               `yaml:",inline"`
+	AssignmentLifecycle  bool   `yaml:"assignment_lifecycle,omitempty"`
+	AssignmentCompletion bool   `yaml:"assignment_completion,omitempty"`
+	Name                 string `yaml:"name"`
+	StateDir             string `yaml:"state_dir"`
+	Agent                `yaml:",inline"`
 
 	Prompt     string `yaml:"prompt,omitempty"`
 	PromptFile string `yaml:"prompt_file,omitempty"`
@@ -773,6 +774,9 @@ func (c *Config) Validate() error {
 	}
 	if l.Prompt != "" && l.PromptFile != "" {
 		add("set only one of loop.prompt and loop.prompt_file")
+	}
+	if l.AssignmentCompletion && (!l.AssignmentLifecycle || l.Adapter != "bb" || l.BB == nil) {
+		add("loop.assignment_completion requires assignment_lifecycle and a BB primary")
 	}
 	if l.AssignmentLifecycle && (l.Adapter != "bb" || l.BB == nil) {
 		add("loop.assignment_lifecycle requires a BB primary")

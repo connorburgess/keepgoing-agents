@@ -624,3 +624,15 @@ Windows compilation is distinct from native record fixture execution in CI. A bu
 pre-feature main executable refuses the opt-in configuration key; that is not installed
 reader or live upgrade acceptance. No mandatory turn-end hook, lane scheduling or deployed
 coordinator compliance is established by these tests. See [remaining assignment acceptance](assignments.md#remaining-acceptance).
+
+### Explicit completion safeguard (unreleased source)
+
+`TestAssignmentCompletionJourneyAndHistoricalAbsence` exercises initial review,
+complete handoff, acknowledgement, changed child set, explicit historical-absence
+review and whole-objective completion. `TestAssignmentCompletionUnknownAndLiveNegatives`
+keeps unfinished/unknown/unacknowledged, active/pending/stopping, pending input,
+partial, target/goal/caller and held-self refusals byte-preserving. The publication
+revalidation fixture injects source/goal/owner/target/assignment/retirement changes
+during reads; zero-child tests require explicit true and preserve pause/stop.
+These are fictional CLI/typed fixtures, not installed/live acceptance or mandatory
+host handoff enforcement. Compilation and native execution remain separate evidence.

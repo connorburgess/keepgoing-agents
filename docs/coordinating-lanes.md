@@ -88,3 +88,15 @@ Hold the action that needs approval and continue independent authorized tasks. R
 For example, fictional PR42 awaits the owner's merge approval, while PR43 has an already-authorized independent review and PR44 has an already-authorized test fix. Keep PR42's merge held, perform the PR43 review and PR44 fix, then report their evidence. Do not repeatedly ask to merge PR42 without new information. Ask a person when only approval-dependent work remains. A runtime hold already in place still wins: the supervised session must never clear it or resume itself to perform this scenario.
 
 This is a separate coordination acceptance case. Observed coordinator stalling is not proof of a looptender runtime defect. The backlog safeguard does not inspect assignments or approval text, decide which work is independent, set awaiting-user based on this scenario, infer permission from transcripts, or bypass self-resume restrictions. Automatic scheduling/approval and host handoff compliance remain open; the explicit assignment record does not supply those capabilities.
+
+### Completing the whole objective
+
+Establish the goal's objective/acceptance/scope references before assigning lanes;
+record each lane's explicit scope and reconcile its handoff. A finished milestone,
+an idle roster or a worker disappearing is not a declaration that the whole
+objective is done. Use the separate opt-in [completion review](assignments.md#whole-objective-completion-review-unreleased)
+to require complete acknowledged obligations, fresh direct-child coverage and an
+explicit whole-objective attestation bound to the current goal/review. For a
+zero-child objective the attestation remains required; child inventory cannot
+verify acceptance. This safeguard does not schedule independent work, manufacture
+approval, enforce host turn-end handoffs or resume a held coordinator.

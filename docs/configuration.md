@@ -622,3 +622,14 @@ is false. A current private goal and existing BB ownership are required before w
 Older strict readers reject this key, so verify associated instances before activation.
 No new ordinary queries, automatic lane actions or hold clearing occur. See the full
 [initial review and handoff workflow](assignments.md), limits and remaining acceptance.
+
+### Whole-objective completion review (unreleased)
+
+`loop.assignment_completion: true` separately opts a BB loop with
+`assignment_lifecycle: true` into the explicit `complete --review-file` safeguard.
+Default false preserves prior completion/query behavior. Strict older readers
+refuse the new key; no existing record is migrated. The typed declaration binds
+the current goal and assignment revisions and explicitly attests whole-objective
+completion, including zero-child objectives. It is not inferred authorization or
+proof of acceptance. See [completion review](assignments.md#whole-objective-completion-review-unreleased)
+for query bounds, historical completed-lane absence and hold/source checks.
