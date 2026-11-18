@@ -46,6 +46,7 @@ To change the matrix, edit the table and run `KEEPGOING_UPDATE_ADAPTERS_DOC=1 go
 <!-- capability-matrix:begin -->
 | Behaviour | BB thread | Claude Code headless | Codex headless | Cursor headless | Antigravity | Generic process | Agent defined in configuration |
 | --- | --- | --- | --- | --- | --- | --- | --- |
+| [Explicit whole-objective completion guard](#explicit-whole-objective-completion-guard) | yes · fixture | n/a | n/a | n/a | missing · none | n/a | n/a |
 | [Observe state](#observe-state) | yes · live | yes · fixture | yes · fixture | yes · live | missing · none | yes · fixture | yes · fixture |
 | [Structured error classes](#structured-error-classes) | yes · live | yes · fixture | yes · live | missing · live | missing · none | yes · fixture | partial · fixture |
 | [Refusals continue, restrictions hold](#refusals-continue-restrictions-hold) | partial · fixture | yes · fixture | partial · fixture | missing · none | missing · none | yes · fixture | partial · fixture |
@@ -71,6 +72,18 @@ To change the matrix, edit the table and run `KEEPGOING_UPDATE_ADAPTERS_DOC=1 go
 | [Stop and owned cancellation](#stop-and-owned-cancellation) | yes · live | yes · fixture | yes · fixture | yes · live | missing · none | partial · fixture | partial · fixture |
 | [Stop the lanes too](#stop-the-lanes-too) | yes · fixture | n/a | n/a | n/a | missing · none | n/a | n/a |
 | [Permission prompts](#permission-prompts) | yes · live | missing · none | missing · none | missing · none | missing · fixture | yes · fixture | partial · fixture |
+
+### Explicit whole-objective completion guard
+
+Separately opt in to current goal/review-bound attestation and completed acknowledged direct-child obligations; never infer whole-objective acceptance from idle or missing workers.
+
+- **BB thread:** yes, evidence fixture. Unreleased command-layer guard only. Fresh bounded structured inventory/interaction checks, owner/target/source revalidation, reviewed historical completed absence and supervised hold-clear refusal. No new schema, automatic completion or installed/live claim. [`TestAssignmentCompletionJourneyAndHistoricalAbsence`](../cmd/looptender/assignment_completion_test.go) [`TestAssignmentCompletionPublicationRevalidation`](../cmd/looptender/assignment_completion_test.go) [assignments.md#whole-objective-completion-review-unreleased](assignments.md#whole-objective-completion-review-unreleased)
+- **Claude Code headless:** n/a. Requires a BB primary and explicit assignment lifecycle.
+- **Codex headless:** n/a. Requires a BB primary and explicit assignment lifecycle.
+- **Cursor headless:** n/a. Requires a BB primary and explicit assignment lifecycle.
+- **Antigravity:** missing, evidence none. No adapter is registered, so a loop cannot use it. [antigravity.md](antigravity.md)
+- **Generic process:** n/a. Requires a BB primary and explicit assignment lifecycle.
+- **Agent defined in configuration:** n/a. Requires a BB primary and explicit assignment lifecycle.
 
 ### Observe state
 

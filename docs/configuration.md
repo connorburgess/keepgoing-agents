@@ -633,3 +633,14 @@ expiry withholds the exception without clearing holds or discarding work. Explic
 See the [complete workflow and failure limits](assignments.md#opt-in-coordinator-wake-for-independent-work).
 One optional pre-send structured child scan is bounded to 20s within existing reserves;
 no additional wake cadence, automatic dispatch or new route is enabled.
+
+### Whole-objective completion review (unreleased)
+
+`loop.assignment_completion: true` separately opts a BB loop with
+`assignment_lifecycle: true` into the explicit `complete --review-file` safeguard.
+Default false preserves prior completion/query behavior. Strict older readers
+refuse the new key; no existing record is migrated. The typed declaration binds
+the current goal and assignment revisions and explicitly attests whole-objective
+completion, including zero-child objectives. It is not inferred authorization or
+proof of acceptance. See [completion review](assignments.md#whole-objective-completion-review-unreleased)
+for query bounds, historical completed-lane absence and hold/source checks.

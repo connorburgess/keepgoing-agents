@@ -637,3 +637,23 @@ optional-budget exhaustion; opt-out tests compare exact prompt/query sequences. 
 tables retain controls, cadence, window, network, retry and limit precedence. Malformed grant
 history is refused without repairing bytes. Source fixtures are not installed/live acceptance,
 mandatory host handoff compliance or automatic child-dispatch evidence.
+
+### Explicit completion safeguard (unreleased source)
+
+`TestAssignmentCompletionJourneyAndHistoricalAbsence` exercises initial review,
+complete handoff, acknowledgement, changed child set, explicit historical-absence
+review and whole-objective completion. `TestAssignmentCompletionUnknownAndLiveNegatives`
+keeps unfinished/unknown/unacknowledged, active/pending/stopping, pending input,
+partial, target/goal/caller and held-self refusals byte-preserving. The publication
+revalidation fixture injects source/goal/owner/target/assignment/retirement changes
+during reads; zero-child tests require explicit true and preserve pause/stop.
+These are fictional CLI/typed fixtures, not installed/live acceptance or mandatory
+host handoff enforcement. Compilation and native execution remain separate evidence.
+
+Fresh-loader completion/coordination integration fixtures cover attempted,
+unknown-send, ordinary-wake-retired and unattempted grants against terminal,
+unfinished and unacknowledged obligations. Complete acknowledged work can pass
+without inventing delivery reconciliation; exact stale review inputs and damaged
+version-2 history refuse without rewriting bytes. Completed restarts make no
+ordinary provider queries or sends and preserve the grant/history. Pause and stop
+survive successful completion. These fixtures do not establish live acceptance.

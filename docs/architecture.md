@@ -419,3 +419,18 @@ Send is called. A failed second write spends allowance but sends nothing; a cras
 consumption cannot replay the grant. Ordinary no-active-child wakes preserve the task and
 retire valid grants as attempted, never delivered. No cross-file or BB observation/tell
 transaction is claimed. Capacity withholds coordination notices and refuses record writes rather than dropping obligations; it does not suppress baseline ordinary wakes.
+
+## Explicit assignment completion review (unreleased)
+
+The command layer's separate `assignment_completion` opt-in guards only explicit
+completion. A bounded typed private declaration identifies the current goal and
+assignment revision and attests whole-objective completion. `internal/control`
+checks local complete/acknowledged obligations; the command composes existing
+bounded structured direct-child inventory and interaction reads under tick.lock,
+then revalidates sources, goal/owner/target binding and exact decoded assignment record in the existing control mutation lock. Completed acknowledged
+historical rows may remain absent after explicit inventory review; unseen
+unfinished obligations never disappear. The pure local precondition cannot
+infer acceptance from inventory. No new package, record schema, supervisor rule,
+host hook, dispatch or authorization source is introduced. Existing completion
+history/reporting projects only a successful explicit declaration. Reads of BB
+and control publication are not a distributed transaction.

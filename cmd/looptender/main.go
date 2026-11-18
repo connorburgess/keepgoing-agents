@@ -241,6 +241,7 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 		asJSON:      fs.Bool("json", false, "print machine-readable JSON"),
 		dryRun:      fs.Bool("dry-run", false, "tick/daemon: record decisions only; fallbacks check/report test: preview only"),
 		now:         fs.String("now", "", "RFC 3339 time to use instead of the clock"),
+		reviewFile:  fs.String("review-file", "", "complete: bounded private whole-objective and assignment review JSON"),
 		note:        fs.String("note", "", "a short note stored in control.json"),
 		id:          fs.String("id", "", "fallbacks check: only this candidate"),
 		exact:       fs.Bool("exact", false, "fallbacks check: probe the target model, not the cheap one"),
@@ -261,6 +262,10 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 		return exitUsage
 	}
 	positional = append(positional, fs.Args()...)
+	if *f.reviewFile != "" && cmd != "complete" {
+		e.errf("--review-file is only supported by complete")
+		return exitUsage
+	}
 	if *f.takeOver && cmd != "enable" && cmd != "daemon" && cmd != "validate" {
 		e.errf("--take-over is only supported by enable, daemon, and validate")
 		return exitUsage
@@ -387,7 +392,9 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 		return code
 	case "stop":
 		return stopCmd(e, cfg, *f.note, *f.lanes, *f.dropQueued, *f.immediately)
-	case "disable", "pause", "resume", "await-user", "complete":
+	case "complete":
+		return completionCommand(e, cfg, *f.note, *f.reviewFile)
+	case "disable", "pause", "resume", "await-user":
 		return controlCmd(e, cfg, cmd, *f.note, *f.takeOver, *f.keepStop)
 	case "session reset":
 		if *f.dryRun {
@@ -423,6 +430,7 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 type cliFlags struct {
 	staleAfter                      *time.Duration
 	cfgPath, now, note, id, routine *string
+	reviewFile                      *string
 	client                          *string
 	target                          *string
 	here                            *bool

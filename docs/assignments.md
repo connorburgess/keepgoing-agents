@@ -142,3 +142,89 @@ Refresh the record revision variables before each write. This declares coordinat
 This implements explicit initial reconciliation, handoff import/acknowledgement, visibility and the declared hold precondition. It does **not** require a handoff before BB ends a turn: the available idle event is post-turn and the dispatch hook is not a turn-completion checkpoint. The separate coordinator-wake opt-in above covers explicitly declared independent work alongside a healthy worker. It does not dispatch ready lanes, authenticate worker publication, enforce turn-end handoffs or resume a held coordinator after owner continuation. Unknown or missing evidence still requires explicit reconciliation; passing this slice does not close the whole idle-work incident.
 
 Fixture evidence is separate from deployed acceptance. After reviewed artifacts and exact-head checks, the authorized rollout must inventory all BB-associated instances (including newly discovered associated apps), preserve identity/controls/accounting, satisfy ordinary owner-terminal execution constraints, and verify installed behavior. No source test proves that upgrade or live coordinator scheduling happened.
+
+## Whole-objective completion review (unreleased)
+
+A milestone is not the whole objective. Before delegating, the coordinator records
+an explicit goal with objective, acceptance and scope references, then accounts
+for direct children and their assignments. References remain opaque declarations:
+looptender never reads a roadmap or transcript to decide the scope or whether
+acceptance was met. A worker's idle state, disappearance or completed handoff
+cannot establish the coordinator's whole-objective completion.
+
+Separately opt in with `loop.assignment_completion: true`, requiring
+`assignment_lifecycle` and a BB primary. Default is false; existing loops keep
+their completion behavior and make no additional queries. Old strict readers
+reject this new key. Verify all associated readers before enabling it; it adds
+no record schema, migration, permission or automatic completion.
+
+For opted-in loops, bare `complete` refuses. Inspect the current private goal and
+assignment record, evaluate the whole objective under existing authority, and
+prepare a private regular file outside configuration/runtime/progress directories:
+
+```json
+{
+  "wholeObjectiveComplete": true,
+  "goal": "goal_0123456789abcdef0123456789abcdef",
+  "goalRevision": 1,
+  "assignments": "assignment_0123456789abcdef0123456789abcdef",
+  "assignmentRevision": 4
+}
+```
+
+```sh
+keepgoing goal show -c /private/example/looptender.yaml --private
+keepgoing assignment show -c /private/example/looptender.yaml --private
+keepgoing complete -c /private/example/looptender.yaml --review-file /private/example/completion.json
+```
+
+Use the exact current IDs/revisions, not those example values. The file is bounded
+to 4 KiB and rejects unknown, duplicate, null or missing fields and symlink inputs.
+Its explicit true statement is required even for a reviewed zero-child objective;
+zero children and completed assignments are preconditions, never proof of global
+acceptance. No new attestation ledger is saved: success uses existing completion
+control/history/report semantics, while the goal stays descriptive metadata.
+
+The current strict assignment record must match the goal, config/runtime,
+coordinator, owner generation and durable target. The current diagnostic target
+must remain primary; damaged diagnostic state or a fallback route refuses this
+primary-coordinator review. Every retained obligation must
+have an explicit complete handoff acknowledged at that exact revision. Unknown,
+unacknowledged, unfinished, person/dependency-waiting and superseded remaining
+work refuse completion. Partial/unavailable inventories and stale identities or
+revisions refuse without changing runtime evidence. Review and reconcile first.
+
+Coordination grants in a version-2 record remain historical evidence. Readiness,
+an attempted or uncertain notification, and ordinary-wake retirement never prove
+whole-objective completion. Conversely, an old unreconciled notification attempt
+does not block completion once every current obligation is explicitly complete
+and acknowledged and the exact whole-objective attestation passes. Unfinished,
+unacknowledged or changed-revision work still refuses. Completion neither erases
+nor reconciles nor rearms grants; the completed control gate prevents a pending
+unattempted grant from sending. Strict version-2 history validation still applies.
+
+Previously completed and acknowledged historical assignments may remain absent
+**only after an explicit assignment review records that absence**. Retain their
+rows in the plan to keep the completion evidence visible; old revisions remain
+in history. A disappearance after review refuses until reviewed again. An absent
+unfinished or unknown obligation never becomes completed or disappears by this
+rule. Current children must all be accounted for and idle; active, pending,
+starting, stopping and error states refuse. Separate bounded interaction reads
+must establish no pending or unknown child interaction.
+
+Only this explicit command queries BB metadata: two bracketed inventories and
+interaction lists, under a single twenty-second ceiling, existing 200-child
+listing bounds, two seconds per query, 64 KiB per show/interaction response and
+fewer than 500 interaction entries. No provider model, Git, events or transcript
+query is made. The command revalidates sources, goal, owner, target and the exact
+loaded assignment record under the existing tick/control locks before saving.
+External BB observation and control publication are not atomic; a change after
+the final observation cannot be cancelled by this contract.
+
+Pause and stop remain unconditional and survive successful completion. Automatic
+safety holds retain precedence; an explicit attestation is no self-resume or
+hold-clear authorization. When completion would end awaiting-user, the existing
+supervised-caller hold-clear refusal applies. Refusal leaves controls, assignment
+history and goal evidence unchanged. No lane is messaged, started, stopped,
+archived or retried. Missing handoff recovery, host-enforced publication and live
+rollout remain separate acceptance.

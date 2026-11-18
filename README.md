@@ -261,6 +261,8 @@ dated status/panel counts. Missing evidence stays unknown. Its explicit awaiting
 rejects declared independent work; it does not schedule lanes, mandate turn-end handoffs or
 clear existing holds.
 
+Unreleased source separately adds opt-in [whole-objective completion review](docs/assignments.md#whole-objective-completion-review-unreleased). Explicit completion requires a current goal/review-bound declaration, completed acknowledged obligations and fresh direct-child metadata; zero children never prove objective acceptance. Default loops are unchanged. No automatic completion, new hold-clear permission or installed/live acceptance is claimed.
+
 A separate unreleased `assignment_coordination` opt-in can wake that existing coordinator
 once for a revision-bound declaration of independent unfinished work while a healthy
 lane stays busy. [Readiness and attempt reconciliation](docs/assignments.md#opt-in-coordinator-wake-for-independent-work)
