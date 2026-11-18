@@ -56,6 +56,7 @@ type panelRouteReview struct {
 	account  *accounts.Entry
 }
 type panelRouteReply struct {
+	AccountLabels map[string]string `json:"accountLabels,omitempty"`
 	Lines         []string          `json:"lines,omitempty"`
 	SchemaVersion int               `json:"schemaVersion"`
 	Editor        *panelRouteEditor `json:"editor,omitempty"`
@@ -321,6 +322,9 @@ func (c *panelChanges) prepareRoutes(session string, in panelRouteInput) panelRo
 	}
 	c.keep(value, panelForm{session: session, key: "routes", action: in.Op, expires: c.now().Add(panelHoldFormTTL), route: review})
 	reply.Lines = review.lines
+	if review.account != nil {
+		reply.AccountLabels = map[string]string{review.requests[0].id: review.account.Label}
+	}
 	reply.Form = value
 	reply.Text = "Review before saving. Holds, budgets, ownership and conversation-creation limits stay in place. This does not run a model or check account access."
 	if in.Op == "follow_standard" {
@@ -402,6 +406,9 @@ func (c *panelChanges) confirmRoutes(session, value, op string) panelRouteReply 
 		return out
 	})
 	reply.Lines = review.lines
+	if review.account != nil {
+		reply.AccountLabels = map[string]string{review.requests[0].id: review.account.Label}
+	}
 	c.reader.forget()
 	return reply
 }

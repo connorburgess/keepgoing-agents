@@ -34,11 +34,12 @@ class H(BaseHTTPRequestHandler):
    changes=[change]
    if data['op']=='follow_standard': changes=[dict(change,loop='example-loop-'+str(i+1)) for i in range(len(data['loops']))]
    pending['changes']=changes
-   self.reply(dict(form='fictional-review',outcome='preview',changes=changes,text='Review before saving. Each loop saves separately; earlier successful saves remain.'));return
+   pending['accountLabels']={'route-generated':next((a['label'] for a in accounts if a['id']==data.get('account')),'')} if data['op']=='add' else {}
+   self.reply(dict(form='fictional-review',outcome='preview',changes=changes,accountLabels=pending['accountLabels'],text='Review before saving. Each loop saves separately; earlier successful saves remain.'));return
   if step=='confirm':
    changes=copy.deepcopy(pending.get('changes',[]))
    for i,c in enumerate(changes):c['outcome']=['changed','refused','not_attempted'][min(i,2)]
-   self.reply(dict(outcome='partial' if len(changes)>1 else 'changed',changes=changes,text='Saving stopped. Earlier successful saves remain; remaining loops were not changed.' if len(changes)>1 else 'Saved the reviewed change.'));return
+   self.reply(dict(outcome='partial' if len(changes)>1 else 'changed',changes=changes,accountLabels=pending.get('accountLabels',{}),text='Saving stopped. Earlier successful saves remain; remaining loops were not changed.' if len(changes)>1 else 'Saved the reviewed change.'));return
 s=ThreadingHTTPServer(('127.0.0.1',0),H)
 print('Fictional fixture: http://127.0.0.1:'+str(s.server_port)+'/owner/#/routes',flush=True)
 s.serve_forever()

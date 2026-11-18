@@ -1559,7 +1559,7 @@
     wrap.appendChild(input); wrap.appendChild(el("span", null, label)); parent.appendChild(wrap); return input;
   }
   function routeProvider(provider) { return provider === "claude-code" ? "Claude Code" : provider === "codex" ? "Codex" : provider || "Configured provider"; }
-  function routeTitle(row) { var label = routeEdit.data && routeEdit.data.accountLabels && routeEdit.data.accountLabels[row.id]; return (row.model || "Configured default model") + (row.effort ? " · " + row.effort : "") + " · " + routeProvider(row.provider) + " · " + (label || "Account unknown") + (row.disabled ? " · Off" : ""); }
+  function routeTitle(row) { var label = routeEdit.data && routeEdit.data.accountLabels && routeEdit.data.accountLabels[row.id]; if (!label && routeEdit.reply && routeEdit.reply.accountLabels) label = routeEdit.reply.accountLabels[row.id]; return (row.model || "Configured default model") + (row.effort ? " · " + row.effort : "") + " · " + routeProvider(row.provider) + " · " + (label || "Account unknown") + (row.disabled ? " · Off" : ""); }
   function routeEffects(parent, r) {
     var labels = {}, beforeLabels = {};
     list(routeEdit.data && routeEdit.data.standard && routeEdit.data.standard.routes).forEach(function (row) { beforeLabels[row.id] = routeTitle(row); });

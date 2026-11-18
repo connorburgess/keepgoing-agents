@@ -34,14 +34,14 @@ func TestPanelRoutePreviewSaveAndSingleUse(t *testing.T) {
 	r, c, a := routePanelFixture(t)
 	before, _ := os.ReadFile(r.own.cfg)
 	p := c.prepareRoutes("page", panelRouteInput{Op: "add", Account: a.ID, Model: "example-large", Limit: "owner-selected-limit", Behavior: config.EnterHeadless})
-	if p.Outcome != "preview" || p.Form == "" {
+	if p.Outcome != "preview" || p.Form == "" || p.AccountLabels[p.Changes[0].Route] != a.Label {
 		t.Fatalf("preview: %+v", p)
 	}
 	if _, err := os.Stat(r.list); !os.IsNotExist(err) {
 		t.Fatal("preview wrote route list")
 	}
 	out := c.confirmRoutes("page", p.Form, "add")
-	if out.Outcome != "changed" {
+	if out.Outcome != "changed" || out.AccountLabels[out.Changes[0].Route] != a.Label {
 		t.Fatalf("save: %+v", out)
 	}
 	saved := r.read()
