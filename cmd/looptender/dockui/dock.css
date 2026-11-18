@@ -523,3 +523,34 @@ details[open] > .how-summary::before { transform: rotate(45deg); }
 .how-group .how:last-child { border-bottom: 0; }
 .how-group .how-summary { padding-inline: 0.25rem; border-radius: 6px; }
 .how-group .how-body { padding-inline: 0.25rem; }
+
+/* Configuration uses ordinary labelled controls, retaining drafts on reads. */
+.route-editor { overflow-wrap: anywhere; min-width: 0; }
+.route-editor h3 { margin: 1.6rem 0 .7rem; }
+.route-editor h4 { margin: 1rem 0 .4rem; }
+.route-editor p { max-width: 72ch; }
+.route-editor .more { display: block; margin-top: 1.2rem; }
+.route-field { display: grid; gap: .4rem; margin: 1rem 0; max-width: 36rem; min-width: 0; }
+.route-field label { font-weight: 600; }
+.route-field input, .route-field select { width: 100%; min-width: 0; box-sizing: border-box; font: inherit; color: var(--ink); background: var(--surface); border: 1px solid var(--line-2); border-radius: 5px; padding: .65rem; caret-color: var(--focus); }
+.route-editor input:focus-visible, .route-editor select:focus-visible { outline: 2px solid var(--focus); outline-offset: 3px; }
+.route-editor input[type="checkbox"] { accent-color: var(--focus); flex: none; width: 1.2rem; height: 1.2rem; }
+.route-check { display: flex; align-items: start; gap: .65rem; padding: .6rem 0; min-height: 44px; }
+.route-check input { margin-top: .2rem; }
+.route-editor fieldset { border: 1px solid var(--line); padding: 1rem; min-width: 0; }
+.route-editor legend { font-weight: 600; }
+.route-settings { margin: 1rem 0; }
+.route-settings summary { cursor: pointer; padding: .6rem 0; }
+.route-edit-order { padding-left: 1.5rem; }
+.route-edit-order > li { padding: .7rem 0; border-bottom: 1px solid var(--line); }
+.route-actions { display: flex; flex-wrap: wrap; gap: .5rem; }
+.route-editor .btn { min-height: 44px; white-space: normal; }
+.route-feedback { border: 1px solid var(--line-2); border-radius: var(--radius); padding: 1rem; margin: 1rem 0; background: var(--sunk); }
+.route-feedback .btn { margin: .5rem .5rem 0 0; }
+.route-add-form, .route-follow-form { margin-top: 1.5rem; }
+.route-effect { border-top: 1px solid var(--line); margin-top: 1rem; }
+.route-help { max-width: 72ch; padding: 2rem 1.2rem; margin: auto; overflow-wrap: anywhere; }
+.route-help h1 { margin: 1.5rem 0 1rem; }
+.route-help h2 { margin: 2rem 0 .75rem; }
+.route-help p { margin: .75rem 0; }
+.route-help pre { white-space: pre-wrap; overflow-wrap: anywhere; padding: 1rem; background: var(--sunk); border: 1px solid var(--line); border-radius: var(--radius); }
