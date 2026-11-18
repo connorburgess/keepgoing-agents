@@ -415,6 +415,10 @@ func (h *panelHandler) served(w http.ResponseWriter) func(session string) {
 			out.Changes = "off"
 			out.ChangesText = txt("Read-only: started without --allow-changes. To pause, stop or resume from here, run keepgoing panel stop, then keepgoing panel --allow-changes.")
 		} else {
+			out.RouteChanges = "person"
+			if h.changes.caller != "" {
+				out.RouteChanges = "bb_caller"
+			}
 			since := h.changes.since
 			out.Changes, out.ChangesSince, out.Form = "on", &since, h.changes.prepareValue(session)
 			out.AccountQuota = true

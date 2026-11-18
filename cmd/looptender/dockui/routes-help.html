@@ -1,0 +1,43 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="color-scheme" content="light dark">
+<meta name="referrer" content="no-referrer">
+<title>Route configuration help · looptender</title>
+<link rel="icon" href="data:,">
+<link rel="stylesheet" href="dock.css">
+</head>
+<body>
+<main class="route-help">
+<a href="./#/routes">Back to Routes</a>
+<h1>Configure preferred routes</h1>
+<p>The standard list is one order of routes for loops that follow it. Each change has a preview before it is saved. Existing holds, budgets, ownership, handoff settings and permission to create conversations stay in place.</p>
+<h2>Open an owner panel</h2>
+<p>Run these commands in an ordinary terminal outside BB. A running panel keeps its startup caller; reopening a window cannot turn a BB-started panel into a person-started panel.</p>
+<pre><code>looptender panel stop
+looptender panel --allow-changes</code></pre>
+<p>The first command stops the panel, not supervision. Closing this page leaves supervision running. A read-only panel and <code>looptender dock</code> offer no route editor. This is the existing environment-based caller rule, not human authentication.</p>
+<h2>Add and arrange routes</h2>
+<p>Read the current configuration. Choose an existing account selection, model and optional effort. Loading models is optional: it asks BB for a read-only structured listing and does not call a model. A missing listing requires manual names from your provider's supported settings.</p>
+<p>Choose how the route runs and which recorded limit it shares. These are your statements, not verified account identity, access, available quota or independent subscriptions. Conversation routes keep their existing login. CLI routes keep each loop's executable and working directory, with an inherited login or a selected existing directory. Headless Codex has no effort override.</p>
+<p>A route that may start a conversation requires explicit permission. Each loop must also already opt in; existing caps and spacing apply. Move routes earlier or later, turn them on or off, or remove them using the reviewed actions.</p>
+<h2>Choose following loops separately</h2>
+<p>Saving a standard route does not enroll other loops. Select eligible loops and review that separate change. Up to 64 loops fit one review. Each loop saves separately: if one refuses, earlier successful saves remain and remaining loops are not attempted. This is not an atomic batch.</p>
+<h2>A stale review or an unknown result</h2>
+<p>Reviews are single-use, session-bound and expire after two minutes. A changed account selection, route list or affected loop requires a fresh review. A lost save response is an unknown outcome: read the configuration before preparing another change. Nothing is retried automatically.</p>
+<h2>CLI reference</h2>
+<p>Run these outside BB for standard-list changes. They preview before writing. The full command reference and supported fields are in <code>docs/routes.md</code> in your checkout.</p>
+<pre><code>looptender routes list
+looptender routes add --help
+looptender routes move ROUTE_ID --to PLACE
+looptender routes off ROUTE_ID
+looptender routes on ROUTE_ID
+looptender routes remove ROUTE_ID
+looptender routes follow-standard --loop LOOP_NAME</code></pre>
+<p>Custom loop lists, advanced permission/probe settings and leaving the standard list remain CLI capabilities. Naming an account does not switch a live conversation's credentials.</p>
+<a href="./#/routes">Back to Routes</a>
+</main>
+</body>
+</html>

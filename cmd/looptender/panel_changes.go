@@ -44,19 +44,20 @@ const (
 	panelChangeOrigin   = "panel"
 	panelPrepareContext = "keepgoing-panel-prepare\x00"
 	// panelExposure is said wherever changes are turned on.
-	panelExposure = "While changes are allowed, anyone using this window can pause, stop or resume loops, replace their builds with this panel's build, and read selected Codex subscription quota."
+	panelExposure = "While changes are allowed, anyone using this window can pause, stop or resume loops, replace their check builds with this panel's build, edit routes within the startup caller's authority, and read selected Codex subscription quota."
 )
 
 // panelChanges is the change half of a panel server started with changes
 // allowed. A server without it routes no write request at all.
 type panelChanges struct {
-	ctx      context.Context // the server's lifetime; changes never run on a request's
-	registry string          // the --directory value, as given
-	caller   string          // immutable startup BB caller; never supplied by the page or a later opening
-	reader   *dockReader
-	since    time.Time
-	now      func() time.Time
-	secret   []byte // keys the per-session prepare value; never leaves the process
+	ctx          context.Context // the server's lifetime; changes never run on a request's
+	registry     string          // the --directory value, as given
+	routeCatalog string          // optional catalog directory for isolated fixtures
+	caller       string          // immutable startup BB caller; never supplied by the page or a later opening
+	reader       *dockReader
+	since        time.Time
+	now          func() time.Time
+	secret       []byte // keys the per-session prepare value; never leaves the process
 
 	mu       sync.Mutex
 	forms    map[string]panelForm
@@ -77,6 +78,7 @@ type panelForm struct {
 	// record reviewed for it; names, for the result.
 	group []panelGroupTarget
 	names map[string]string
+	route *panelRouteReview
 	quota *accountQuotaSelection
 }
 
@@ -234,6 +236,10 @@ var panelDone = map[string]string{"pause": "paused", "stop": "stopped", "resume"
 
 // serve answers one change request. rest is the path under the session.
 func (c *panelChanges) serve(w http.ResponseWriter, r *http.Request, rest, session string) {
+	if strings.HasPrefix(rest, panelRoutesPrefix) {
+		c.serveRoutes(w, r, rest, session)
+		return
+	}
 	if strings.HasPrefix(rest, panelAccountQuotaPrefix) {
 		c.serveAccountQuota(w, r, rest, session)
 		return

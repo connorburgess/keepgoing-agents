@@ -38,7 +38,7 @@ import (
 // report from the existing read paths. Nothing in this file writes, controls a
 // loop, or talks to a provider.
 
-//go:embed dockui/index.html dockui/dock.css dockui/dock.js dockui/expired.js
+//go:embed dockui/index.html dockui/dock.css dockui/dock.js dockui/expired.js dockui/routes-help.html
 var dockUI embed.FS
 
 const (
@@ -208,6 +208,7 @@ type dockServed struct {
 	ChangesSince *time.Time `json:"changesSince,omitempty"`
 	ChangesText  dockText   `json:"changesText,omitempty"`
 	Form         string     `json:"form,omitempty"`
+	RouteChanges string     `json:"routeChanges,omitempty"`
 	AccountQuota bool       `json:"accountQuota,omitempty"` // explicit reviewed account-scoped refresh
 }
 
@@ -274,6 +275,8 @@ func (s *dockServer) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		s.asset(w, "dockui/index.html", "text/html; charset=utf-8")
 	case "dock.css":
 		s.asset(w, "dockui/dock.css", "text/css; charset=utf-8")
+	case "routes-help.html":
+		s.asset(w, "dockui/routes-help.html", "text/html; charset=utf-8")
 	case "dock.js":
 		s.asset(w, "dockui/dock.js", "text/javascript; charset=utf-8")
 	case dockServerPath:
