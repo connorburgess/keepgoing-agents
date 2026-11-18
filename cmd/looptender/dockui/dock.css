@@ -554,3 +554,7 @@ details[open] > .how-summary::before { transform: rotate(45deg); }
 .route-help h2 { margin: 2rem 0 .75rem; }
 .route-help p { margin: .75rem 0; }
 .route-help pre { white-space: pre-wrap; overflow-wrap: anywhere; padding: 1rem; background: var(--sunk); border: 1px solid var(--line); border-radius: var(--radius); }
+/* Unbound route contexts are separate from selected-account cards. */
+.unknown-account-routes { margin-top: 2rem; }
+.unknown-route-context { padding-block: 1rem; border-top: 1px solid var(--line); overflow-wrap: anywhere; min-width: 0; }
+.unknown-route-context > p { margin: 0 0 .5rem; }

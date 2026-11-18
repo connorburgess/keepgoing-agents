@@ -113,7 +113,7 @@ func TestDockHowToBlocksP1(t *testing.T) {
 			"looptender accounts add --label ACCOUNT_LABEL --provider PROVIDER --selection explicit_directory --account-dir FOLDER",
 			"looptender accounts add --label ACCOUNT_LABEL --provider PROVIDER --selection externally_managed",
 			"looptender accounts add --label ACCOUNT_LABEL --provider other --selection externally_managed",
-			"NAMES_ONLY", "looptender never takes the key", "not named yet",
+			"NAMES_ONLY", "looptender never takes the key",
 		},
 		"addRouteBox": {
 			`"Add a route to this loop"`,
@@ -151,9 +151,8 @@ func TestDockHowToBlocksP1(t *testing.T) {
 		// The first-run state, open; otherwise a closed disclosure.
 		`pane.appendChild(emptyBox("No accounts selected here yet", FIRST_RUN));
       pane.appendChild(addAccountBox(true));`,
-		"pane.appendChild(addAccountBox(false, unnamed.length > 0));",
+		"pane.appendChild(addAccountBox(!cards.length));",
 		"pane.appendChild(routeEditorBox());",
-
 		"how.appendChild(addRouteBox(l));",
 	} {
 		if !strings.Contains(js, want) {
