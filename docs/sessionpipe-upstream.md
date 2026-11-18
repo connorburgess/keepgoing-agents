@@ -30,8 +30,9 @@ integration.
 
 Delivery is best effort, with one bounded POST per report, bearer authentication, no
 redirects, strict 202 counts, and private sequence reservation before sending.
-It does not claim the full durable sender contract: outbox replay, indefinite
-backoff, persistent authentication pause and full conformance remain follow-up.
+POST-401 pauses persist across restart until explicit report-only resume; resuming
+sends nothing and does not clear loop holds. It does not claim the full durable
+sender contract: outbox replay, indefinite backoff and full conformance remain follow-up.
 Receiver/board/phone live acceptance remains open.
 
 A reproducible local fixture uses the real Sessionpipe core schema and privacy

@@ -9,6 +9,9 @@ import (
 )
 
 func printDeliveryStatus(w io.Writer, s report.DeliveryStatus) {
+	if s.SessionpipeGate != "" {
+		fmt.Fprintf(w, "Sessionpipe reports: %s; report resume clears a valid pause without sending or changing loop holds\n", s.SessionpipeGate)
+	}
 	fmt.Fprintf(w, "notifications: %s; receipt unverified\n", s.State)
 	if s.State == "unavailable" {
 		fmt.Fprintln(w, "notification warning: delivery history unavailable; check private state storage")
@@ -34,6 +37,8 @@ func printDeliveryStatus(w io.Writer, s report.DeliveryStatus) {
 
 func doctorDeliveries(r *doctorReport, s report.DeliveryStatus) {
 	switch {
+	case s.SessionpipeGate != "" && s.SessionpipeGate != "ready":
+		r.add("notifications", "warning", "Sessionpipe reporting is paused or its gate is unavailable.", "Inspect receiver credentials and private state, then explicitly run report resume for a valid gate. This never resumes a loop or replays a report.")
 	case s.State == "unavailable":
 		r.add("notifications", "warning", "Notification delivery history is unavailable.", "Check private state storage; no delivery success can be inferred.")
 	case s.State == "not_recorded":

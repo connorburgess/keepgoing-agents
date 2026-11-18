@@ -107,6 +107,7 @@ Fallbacks:
 
 Reporting:
   report test              Send a test webhook (--dry-run prints it instead)
+  report resume            Clear a Sessionpipe report pause without sending or resuming a loop
 
 Tools (no config needed):
   init                     Guide setup of a disabled loop outside the checkout
@@ -420,6 +421,12 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 		return fallbacksCheck(e, cfg, now, *f.id, *f.exact, *f.asJSON, *f.dryRun)
 	case "fallbacks list":
 		return fallbacksList(e, cfg, now, *f.asJSON)
+	case "report resume":
+		if *f.dryRun || len(positional) != 0 {
+			e.errf("usage: keepgoing report resume [-c looptender.yaml]; sends nothing")
+			return exitUsage
+		}
+		return resumeReport(e, cfg)
 	case "report test":
 		return reportTest(e, cfg, *f.dryRun)
 	}

@@ -207,6 +207,20 @@ func (w *Webhook) reportPipe(ctx context.Context, e Event, observe func(Delivery
 	if !filepath.IsAbs(w.stateDir) {
 		return fail("body_failed")
 	}
+	gateLock, err := lock.AcquireNamed(w.stateDir, SessionpipeLock)
+	if err != nil {
+		return fail("body_failed")
+	}
+	defer gateLock.Release()
+	gate, err := LoadSessionpipeGate(w.stateDir)
+	if err != nil {
+		save("body_failed")
+		return err
+	}
+	if gate.Status != "ready" {
+		save("body_failed")
+		return errors.Join(ErrSessionpipePaused, ErrNoRetry)
+	}
 	ctx, cancel := context.WithTimeout(ctx, min(w.cfg.Timeout.Duration, 15*time.Second))
 	defer cancel()
 	client := *w.client
@@ -288,9 +302,22 @@ func (w *Webhook) reportPipe(ctx context.Context, e Event, observe func(Delivery
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Authorization", "Bearer "+w.secret)
 	req.Header.Set("sessionpipe-protocol", "1")
+	// Publish the conservative gate before any bytes can reach the receiver.
+	if err := savePipeGate(w.stateDir, "pending"); err != nil {
+		save("body_failed")
+		return err
+	}
 	d.Attempts = append(d.Attempts, Attempt{StartedAt: w.now().UTC(), Outcome: "unconfirmed"})
 	save("attempt_started")
 	resp, err = client.Do(req)
+	// A 401 keeps the gate closed, including when the diagnostic write fails.
+	// Other completed calls keep the established per-episode no-retry behavior.
+	gateStatus := "ready"
+	if err == nil && resp.StatusCode == http.StatusUnauthorized {
+		gateStatus = "unauthorized"
+	}
+	gateErr := savePipeGate(w.stateDir, gateStatus)
+
 	a := &d.Attempts[0]
 	a.FinishedAt = w.now().UTC()
 	if err != nil {
@@ -298,6 +325,12 @@ func (w *Webhook) reportPipe(ctx context.Context, e Event, observe func(Delivery
 		return fail("transport_failed")
 	}
 	defer resp.Body.Close()
+	if gateErr != nil {
+		a.HTTPStatus = resp.StatusCode
+		a.Outcome = "protocol_failed"
+		return fail("protocol_failed")
+	}
+
 	a.HTTPStatus = resp.StatusCode
 	if resp.StatusCode != 202 {
 		a.Outcome = "protocol_failed"

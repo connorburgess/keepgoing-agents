@@ -19,6 +19,7 @@ import (
 	"github.com/looptender/looptender/internal/envvar"
 	"github.com/looptender/looptender/internal/lock"
 	"github.com/looptender/looptender/internal/registry"
+	"github.com/looptender/looptender/internal/report"
 	"github.com/looptender/looptender/internal/session"
 	"github.com/looptender/looptender/internal/userdir"
 )
@@ -82,7 +83,7 @@ var migrateLockWait = 3 * time.Second
 // looked at nor held while those directories move.
 var migrateLockNames = func() map[string]bool {
 	names := map[string]bool{}
-	for _, n := range []string{lock.Tick, lock.Daemon, lock.Control, lock.Service, "turn", panelOpenLock, panelServerLock, "routes", registry.LockName, "incident", "delivery", "graph", clientsLock} {
+	for _, n := range []string{lock.Tick, lock.Daemon, lock.Control, lock.Service, "turn", panelOpenLock, panelServerLock, "routes", registry.LockName, "incident", "delivery", report.SessionpipeLock, "graph", clientsLock} {
 		names[n+".lock"] = true
 	}
 	return names
