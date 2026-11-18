@@ -172,7 +172,7 @@ func TestAssignmentCompletionJourneyAndHistoricalAbsence(t *testing.T) {
 	}
 }
 func TestAssignmentCompletionUnknownAndLiveNegatives(t *testing.T) {
-	for _, kind := range []string{"unfinished-absent", "active", "pending", "stopping", "interaction", "partial", "added", "corrupt", "target", "goal", "caller", "held-self", "fallback", "damaged-state"} {
+	for _, kind := range []string{"unfinished-absent", "active", "pending", "stopping", "interaction", "partial", "added", "corrupt", "target", "goal", "caller", "held-self", "fallback", "damaged-state", "null-state", "symlink-state"} {
 		t.Run(kind, func(t *testing.T) {
 			f, cfg, plan := completionFixture(t, true)
 			outcome := "complete"
@@ -213,6 +213,14 @@ func TestAssignmentCompletionUnknownAndLiveNegatives(t *testing.T) {
 				write(t, filepath.Join(cfg.Loop.StateDir, state.FileName), `{"activeTarget":"example-fallback"}`, 0600)
 			case "damaged-state":
 				write(t, filepath.Join(cfg.Loop.StateDir, state.FileName), `{`, 0600)
+			case "null-state":
+				write(t, filepath.Join(cfg.Loop.StateDir, state.FileName), `null`, 0600)
+			case "symlink-state":
+				other := filepath.Join(t.TempDir(), "state.json")
+				write(t, other, `{}`, 0600)
+				if err := os.Symlink(other, filepath.Join(cfg.Loop.StateDir, state.FileName)); err != nil {
+					t.Fatal(err)
+				}
 			case "caller":
 				t.Setenv("BB_THREAD_ID", "thr_example_other")
 			case "held-self":

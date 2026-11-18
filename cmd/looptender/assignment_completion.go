@@ -7,6 +7,7 @@ import (
 	"errors"
 	"io"
 	"os"
+	"path/filepath"
 	"reflect"
 	"time"
 
@@ -107,9 +108,24 @@ func completionCommand(e env, cfg *config.Config, note, file string) int {
 	e.ctx = context.WithValue(e.ctx, completionKey{}, declaration)
 	return controlCmd(e, cfg, "complete", note)
 }
+
+// Missing diagnostic state is the documented initial primary. An existing
+// record must be a bounded regular JSON object; null/damage is not primary.
+func completionPrimary(dir string) bool {
+	path := filepath.Join(dir, state.FileName)
+	if _, err := os.Lstat(path); errors.Is(err, os.ErrNotExist) {
+		return true
+	}
+	raw, err := control.ReadMigrationFile(path, control.AssignmentLimit)
+	if err != nil {
+		return false
+	}
+	raw = bytes.TrimSpace(raw)
+	var st state.File
+	return len(raw) > 0 && raw[0] == '{' && json.Unmarshal(raw, &st) == nil && st.Target() == state.Primary
+}
 func completionBinding(cfg *config.Config, c control.File, d completionDeclaration) (control.AssignmentBinding, error) {
-	st, stateErr := state.Load(cfg.Loop.StateDir)
-	if stateErr != nil || st.Target() != state.Primary {
+	if !completionPrimary(cfg.Loop.StateDir) {
 		return control.AssignmentBinding{}, errCompletion
 	}
 	if control.CheckTransferReady(c) != nil || control.CheckOwner(c, os.Getenv("BB_THREAD_ID"), false) != nil {
