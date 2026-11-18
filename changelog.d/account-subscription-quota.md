@@ -1,0 +1,1 @@
+- Explicit selected-context Codex subscription-quota reads in `accounts usage` and the reviewed Accounts panel, with a separate private cache, original successful-read freshness and independent failed-refresh evidence.

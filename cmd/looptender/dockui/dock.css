@@ -523,3 +523,9 @@ details[open] > .how-summary::before { transform: rotate(45deg); }
 .how-group .how:last-child { border-bottom: 0; }
 .how-group .how-summary { padding-inline: 0.25rem; border-radius: 6px; }
 .how-group .how-body { padding-inline: 0.25rem; }
+.account-quota { margin-top: 1.2rem; padding-top: 1rem; border-top: 1px solid var(--line); min-width: 0; overflow-wrap: anywhere; }
+.account-quota h3 { margin: 0 0 .4rem; font-size: 1rem; }
+.account-quota h4 { margin: 1rem 0 .5rem; font-size: 1rem; }
+.account-quota .work-facts { margin: .8rem 0; font-variant-numeric: tabular-nums; }
+.account-quota-actions { display: flex; flex-wrap: wrap; gap: .6rem; margin-top: .8rem; }
+.account-quota .btn { white-space: normal; max-width: 100%; min-height: 2.75rem; }
