@@ -59,6 +59,12 @@ The reason is a host behaviour, not style. macOS checks a file the first time it
 
 To replace a script installed this way, call the helper again; never write through the path, because a shared script is a hard link. Scripts that are written but never executed, such as service-file fixtures, do not need it. Compiled programs go in a `testexec.Dir`; see below.
 
+### Agent programs found on PATH
+
+A route that names no `cli` runs the program `PATH` finds: `claude`, `codex` and the rest. On a developer's machine that is the real CLI, signed in to their own account. CI has none installed. A test that reaches one is then decided by that machine's account rather than by its fixture. `TestTimingUncertainBBUpdateWaitsForRepair` failed every time on one Mac and passed in CI because its probe of the loop's first route ran the real Claude Code. The reply carried a real usage reading, which replaced the fixture's. It failed only when the session ran on the default account (`CLAUDE_CONFIG_DIR` set but empty); another account's reply carried no reading.
+
+In `cmd/looptender`, `newFixture` puts its stand-ins first on `PATH`. `TestMain` also puts a guard program first for each of `claude`, `codex`, `cursor-agent`, `agent` and `bb`. The guard records the call and exits 127, as a missing program would, and the package fails at the end and lists the calls. A test that needs one of these programs installs its own stand-in ahead of the guard. The guard is not installed on Windows, where these scripts do not run. When this was added, a run of every other package with logging stand-ins first on `PATH` found no calls.
+
 ### Executables that tests run
 
 A test that creates an executable and runs it is exposed to one more host behaviour: **macOS can refuse a file it has not run before, and a refusal kills the process as it starts.** The caller sees `signal: killed` with no deadline of its own involved. It happens on a busy machine, and it was behind a day of reports of tests that failed once and then passed.
