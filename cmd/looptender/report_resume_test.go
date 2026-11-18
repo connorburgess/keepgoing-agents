@@ -1,5 +1,3 @@
-//go:build unix
-
 package main
 
 import (
@@ -16,21 +14,13 @@ import (
 )
 
 func TestReportResumePreservesHoldsAndChecksOwnership(t *testing.T) {
-	f := newFixture(t)
-	b, err := os.ReadFile(f.cfg)
+	path, _ := sessionResetFixture(t, func(text string) string {
+		return strings.Replace(text, "state_dir: state", "state_dir: state\n  report: {format: sessionpipe, scheme: bearer}", 1)
+	})
+	runCommand := func(args ...string) (int, string, string) { return runKeepgoing(append(args, "-c", path)...) }
+	cfg, err := config.Load(path)
 	if err != nil {
 		t.Fatal(err)
-	}
-	b = bytes.Replace(b, []byte("report: {events:"), []byte("report: {format: sessionpipe, scheme: bearer, events:"), 1)
-	if err = os.WriteFile(f.cfg, b, 0600); err != nil {
-		t.Fatal(err)
-	}
-	cfg, err := config.Load(f.cfg)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if code, out, errs := f.run("enable"); code != 0 {
-		t.Fatalf("%d %s %s", code, out, errs)
 	}
 	_, err = control.Update(cfg.Loop.StateDir, func(c *control.File) {
 		c.AwaitingUser = true
@@ -45,7 +35,7 @@ func TestReportResumePreservesHoldsAndChecksOwnership(t *testing.T) {
 		t.Fatal(err)
 	}
 	before, _ := os.ReadFile(filepath.Join(cfg.Loop.StateDir, control.FileName))
-	if code, out, errs := f.run("status"); code != 0 || !strings.Contains(out, "Sessionpipe reports: unauthorized") {
+	if code, out, errs := runCommand("status"); code != 0 || !strings.Contains(out, "Sessionpipe reports: unauthorized") {
 		t.Fatalf("status %d %s %s", code, out, errs)
 	}
 	var status bytes.Buffer
@@ -55,7 +45,7 @@ func TestReportResumePreservesHoldsAndChecksOwnership(t *testing.T) {
 	}
 
 	t.Setenv("BB_THREAD_ID", "thr_example_outsider")
-	if code, _, _ := f.run("report", "resume"); code == 0 {
+	if code, _, _ := runCommand("report", "resume"); code == 0 {
 		t.Fatal("foreign caller resumed")
 	}
 	after, _ := os.ReadFile(gate)
@@ -67,16 +57,16 @@ func TestReportResumePreservesHoldsAndChecksOwnership(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if code, _, _ := f.run("report", "resume"); code == 0 {
+	if code, _, _ := runCommand("report", "resume"); code == 0 {
 		t.Fatal("resumed during check")
 	}
 	guard.Release()
 	for _, args := range [][]string{{"report", "resume", "--dry-run"}, {"report", "resume", "extra"}} {
-		if code, _, _ := f.run(args...); code == 0 {
+		if code, _, _ := runCommand(args...); code == 0 {
 			t.Fatal("invalid resume accepted")
 		}
 	}
-	if code, out, errs := f.run("report", "resume"); code != 0 || !strings.Contains(out, "no report sent or replayed") {
+	if code, out, errs := runCommand("report", "resume"); code != 0 || !strings.Contains(out, "no report sent or replayed") {
 		t.Fatalf("%d %s %s", code, out, errs)
 	}
 	after, _ = os.ReadFile(filepath.Join(cfg.Loop.StateDir, control.FileName))
