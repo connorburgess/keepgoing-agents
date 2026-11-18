@@ -77,3 +77,19 @@ test("SDK RPC resolves host metadata, persists references, and routes controls w
     assert.equal(blocked.canStart, false); assert.equal(operations.length, before);
   } finally { await activeHarness.lifecycle.dispose(); }
 });
+
+test("reference coverage failures withhold private configured paths and remain unavailable", async () => {
+  const path = "/private/fictional-sensitive/looptender.yaml";
+  const { bb, harness } = createFakePluginHost({ pluginId: "keepgoing", settings: { keepgoingPath: "fictional-nonexistent-looptender", configs: path } });
+  try {
+    await plugin(bb);
+    const r = await harness.behavior.callRpc("forThread", { threadId: "thr_example" }) as { loops: unknown[]; errors: string[] };
+    assert.equal(r.loops.length, 0); assert.equal(r.errors.length, 1);
+    assert.ok(!JSON.stringify(r).includes(path));
+    const cli = await harness.behavior.runCli(["status"]);
+    assert.equal(cli.exitCode, 1); assert.ok(!JSON.stringify(cli).includes(path));
+    assert.match(String(cli.stdout), /CLI registry\/menu coverage is separate/);
+    assert.match(String(cli.stderr), /configured loop reference is unavailable/);
+    assert.deepEqual(harness.inspection.sdk.callsTo("threads.spawn"), []);
+  } finally { await harness.lifecycle.dispose(); }
+});
