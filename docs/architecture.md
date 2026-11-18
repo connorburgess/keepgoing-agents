@@ -18,7 +18,7 @@ A manually created successor with separate loop state has no inferred relationsh
 ## Packages
 
 ```
-cmd/looptender               CLI: start, service, tick, daemon, status, context, timeline, goal, registry, client status/pause/stop/prepare-resume/resume/review/apply, dock, panel, transfer, control, fallbacks, report, adapter check, pr-backlog, ci-wait, net-retry
+cmd/looptender               CLI: start, service, tick, daemon, status, context, timeline, goal, assignment, registry, client status/pause/stop/prepare-resume/resume/review/apply, dock, panel, transfer, control, fallbacks, report, adapter check, pr-backlog, ci-wait, net-retry
 internal/config             a loop's configuration file (looptender.yaml, or keepgoing.yaml) and fallbacks.yaml: loading, defaults, validation
 internal/envvar             the environment variables' two names: LOOPTENDER_X, and the earlier KEEPGOING_X
 internal/userdir            the per-user directories and their name: looptender, or keepgoing where one already exists; the explicit move between them
@@ -369,6 +369,25 @@ The command layer composes existing read-only transfer inventories into two comp
 ## Sessionpipe reporting (unreleased)
 
 The report package owns the opt-in OUT integration described in [Sessionpipe reporting](sessionpipe.md). It reserves an opaque stream identity and sequences in a private snapshot under the existing delivery lock before bounded discovery/POST transport. No network operation holds that lock. A shared report.ErrNoRetry transport marker stops once-per-episode notification retry through an optional persisted retryStopped flag; it does not mark delivery sent or suppress new episodes/independent per-check reports. Ordinary webhook retries retain their behavior. Report results remain diagnostics; the pure decision engine, agent observation classifications, ownership, controls, budgets and send permissions do not read this state. No supervision adapter, provider process or inbound control channel is added.
+
+## Explicit assignment lifecycle (unreleased)
+
+`loop.assignment_lifecycle` opts a BB coordinator into a separate private
+`assignments.json` record in `internal/control`, command-layer inventory/import/acknowledgement,
+and a pure minimized summary. It does not overload goals, migration checklists or run graphs.
+Record writes hold tick then control locks, verify source/owner/current goal bindings, use
+strict regular-file snapshots and atomic replacement, and refuse stale revisions or capacity
+without dropping unfinished IDs. The 32-revision/200-assignment/1-MiB limits are refusals,
+not eviction. History transition invariants apply on load as well as write.
+
+Only explicit coordinator `await-user` consults this opt-in record under those locks.
+All remaining unfinished work must be explicitly acknowledged as person-blocked; missing,
+stale or partial evidence refuses that declaration. Pause/stop and automatic safety holds
+are unchanged. Ordinary status/panel read minimized local counts/dates without new queries;
+only explicit inventory/review reads bounded BB direct-child list/show metadata. Lane execution,
+assignment outcome and declared availability are independent. No transcript decisions, lane
+actions, self-resume, authenticated worker publication or mandatory turn-end hook are added.
+See [assignment lifecycle](assignments.md) for the explicit initial-review journey and gaps.
 
 ## PR backlog consultation (unreleased)
 
