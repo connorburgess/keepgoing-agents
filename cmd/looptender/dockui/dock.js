@@ -522,6 +522,18 @@
       if (mr && mr.availability !== "not_recorded" && (!mr.counts || mr.counts.unfinished > 0)) {
         summary.appendChild(el("span", "sub work-migration", "Migration review: " + mr.text + (mr.observedAt ? " · historical evidence from " + fmt(dayTimeYearFmt, mr.observedAt) : "")));
       }
+      var qs = c.quota && c.quota.summary;
+      var compact = el("span", "quota-compact");
+      if (qs && qs.state === "reported") {
+        list(qs.rows).filter(function (w) { return typeof w.usedPercent === "number"; }).slice(0, 2).forEach(function (w) {
+          var item = el("span", "quota-chip"); item.appendChild(el("span", "sub", w.name));
+          item.appendChild(el("strong", null, w.ended ? "Window ended" : w.usedPercent + "% used")); compact.appendChild(item);
+        });
+        if (!compact.childNodes.length) compact.appendChild(el("span", "sub", qs.partial ? "Partial quota evidence" : "Quota details recorded"));
+        compact.appendChild(el("span", "sub", qs.freshness === "stale" ? "Older quota reading" : "Saved quota reading"));
+        compact.title = "Saved account quota; expand for all recorded detail";
+      } else if (c.provider === "codex" || c.provider === "claude-code") compact.appendChild(el("span", "sub", "Account quota unavailable"));
+      summary.appendChild(compact);
       details.appendChild(summary);
       var body = el("div", "work-body");
       body.appendChild(el("p", "detail", l.detail));
@@ -1394,22 +1406,30 @@
   }
   function accountQuotaBox(c) {
     var q = c.quota || {}, box = el("div", "account-quota");
-    box.appendChild(el("h3", null, "Subscription quota"));
-    box.appendChild(el("p", "sub", "For this selected Codex context. Separate from route-probe readings and token totals."));
-    if (q.state === "reported" && q.observedAt && list(q.windows).length) {
-      box.appendChild(el("p", "sub", "Read " + when({ at: q.observedAt }) + (q.freshness === "stale" ? " · Older reading; refresh before relying on it." : " · Recorded snapshot.")));
-      var windows = el("dl", "work-facts");
-      list(q.windows).forEach(function (w) {
-        var ended = w.resetsAt && Date.parse(w.resetsAt) <= readTime();
-        var name = w.name === "primary" ? "Primary window" : "Secondary window";
-        var value = w.usedPercent + "% used" + (w.durationMinutes ? " · " + w.durationMinutes + " minutes" : "");
-        value += ended ? " · Window ended; refresh needed." : w.resetsAt ? " · Resets " + when({ at: w.resetsAt }) : " · Reset time unavailable.";
-        windows.appendChild(fact(name, value));
+    box.appendChild(el("h3", null, "Account quota"));
+    box.appendChild(el("p", "sub", "Saved for this selection; separate from route readings. Live thread account binding is not verified."));
+    var saved = q.summary || {};
+    if (saved.state === "reported" && saved.observedAt) {
+      box.appendChild(el("p", "quota-stamp", "Read " + when({ at: saved.observedAt }) + (saved.freshness === "stale" ? " · Older reading" : " · Saved snapshot")));
+      var rows = el("ul", "quota-windows");
+      list(saved.rows).forEach(function (w) {
+        var row = el("li", "quota-window" + (w.ended ? " is-ended" : ""));
+        row.appendChild(el("h4", null, w.name));
+        row.appendChild(el("p", "quota-value", w.text));
+        if (typeof w.usedPercent === "number" && !w.ended) {
+          var meter = el("meter", "quota-meter"); meter.min = 0; meter.max = 100; meter.value = w.usedPercent;
+          meter.setAttribute("aria-label", w.name + ": " + w.text); meter.textContent = w.text; row.appendChild(meter);
+        }
+        if (w.resetsAt) row.appendChild(el("p", "sub", (w.ended ? "Ended " : "Resets ") + when({ at: w.resetsAt })));
+        else if (typeof w.usedPercent === "number" || typeof w.remainingPercent === "number") row.appendChild(el("p", "sub", "Reset time unavailable."));
+        rows.appendChild(row);
       });
-      box.appendChild(windows);
-      box.appendChild(el("p", "sub", "Source: " + q.source));
-    } else box.appendChild(el("p", "sub", accountQuotaReason(q.reason || "not_checked")));
-    if (q.failedRefreshAt) box.appendChild(el("p", "sub", "Refresh failed " + when({ at: q.failedRefreshAt }) + ". " + accountQuotaReason(q.failedRefreshReason) + (q.state === "reported" ? " The earlier reading retains its original time." : "")));
+      box.appendChild(rows);
+      if (saved.partial || saved.omitted) box.appendChild(el("p", "sub quota-incomplete", "Partial evidence: some quota detail is unavailable" + (saved.omitted ? "; " + saved.omitted + " additional buckets not shown" : "") + ". Missing values are not zero."));
+      box.appendChild(el("p", "sub", "Source: " + saved.source));
+    } else box.appendChild(el("p", "sub", saved.text || (c.provider === "claude-code" ? "No supported model-free account quota source is available for Claude. Dated route observations remain on Routes." : accountQuotaReason(q.reason || "not_checked"))));
+    if (saved.failedRefreshAt) box.appendChild(el("p", "sub", "Refresh failed " + when({ at: saved.failedRefreshAt }) + ". " + saved.failedRefreshText + " Any earlier reading retains its original time."));
+    if (c.provider !== "codex") return box;
     var change = state.accountQuotaChange, current = change && change.id === c.id ? change : null;
     if (current) {
       var review = el("div", "account-quota-review");
@@ -1484,6 +1504,18 @@
       plan.appendChild(el("span", "sub", "Reported plan"));
       var auth = c.auth || {}, sameCheck = !!(c.plan && c.plan.observedAt && c.plan.observedAt === auth.observedAt && c.plan.source === auth.source);
       plan.appendChild(accountEvidence(c.plan, sameCheck)); summary.appendChild(plan);
+      var qs = c.quota && c.quota.summary;
+      var compact = el("span", "quota-compact");
+      if (qs && qs.state === "reported") {
+        list(qs.rows).filter(function (w) { return typeof w.usedPercent === "number"; }).slice(0, 2).forEach(function (w) {
+          var item = el("span", "quota-chip"); item.appendChild(el("span", "sub", w.name));
+          item.appendChild(el("strong", null, w.ended ? "Window ended" : w.usedPercent + "% used")); compact.appendChild(item);
+        });
+        if (!compact.childNodes.length) compact.appendChild(el("span", "sub", qs.partial ? "Partial quota evidence" : "Quota details recorded"));
+        compact.appendChild(el("span", "sub", qs.freshness === "stale" ? "Older quota reading" : "Saved quota reading"));
+        compact.title = "Saved account quota; expand for all recorded detail";
+      } else if (c.provider === "codex" || c.provider === "claude-code") compact.appendChild(el("span", "sub", "Account quota unavailable"));
+      summary.appendChild(compact);
       details.appendChild(summary);
       var body = el("div", "account-body");
       var facts = el("dl", "work-facts");
@@ -1492,7 +1524,7 @@
       var use = byCard[c.id];
       facts.appendChild(fact("Routes", use && list(use.routes).length ? accountRouteList(d, use, true) : accountRoutes(c)));
       body.appendChild(facts);
-      if (c.provider === "codex") body.appendChild(accountQuotaBox(c));
+      if (c.provider === "codex" || c.provider === "claude-code") body.appendChild(accountQuotaBox(c));
       // The catalog records no model: a route chooses it, and a check never
       // calls one. Said once, quietly, in place of two empty rows.
       if (c.configuredModel && c.configuredModel.missing === "not_recorded" && c.observedModel && c.observedModel.missing === "not_recorded") body.appendChild(el("p", "sub", "Models are not recorded here: a route chooses the model, and a check never calls one."));

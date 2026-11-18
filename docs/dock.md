@@ -570,3 +570,15 @@ its controls confirmation, including combined route-editing and subscription
 quota capabilities. It refuses empty, control-containing or over-1024-byte
 disclosures instead of truncating authority text. Compact menu metadata keeps
 its separate 180-character limit.
+
+### Saved account quota summaries (unreleased)
+
+Accounts now shows compact named quota windows and an expanded saved-evidence
+summary shared with the native menu's additive `panel list.accountQuotas`
+projection. Codex buckets remain separate; windows show percent used and
+remaining, independent resets, source and read age. Credits and individual
+limits retain their own units, not invented currency or percentages. Unknown,
+partial, ended and failed-refresh states remain visible. Claude selected-account
+quota is explicitly unavailable; dated route observations stay separate.
+Neither polling surface refreshes a provider. Only the existing reviewed Codex
+refresh path does so. See [source, cache and capability limits](accounts.md#read-selected-context-subscription-quota).

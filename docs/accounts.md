@@ -610,24 +610,53 @@ own ordinary authentication/network work. The read has a five-second deadline,
 a 64 KiB stdout bound, discarded stderr, strict response correlation and owned
 process cleanup. A rejected or unsupported CLI returns unavailable evidence.
 
-Only the documented Codex bucket's primary/secondary windows are retained:
-integer percent used (including a reported zero), optional duration in minutes
-and optional reset time. Other buckets are never joined. Missing windows,
-API-key contexts without subscription windows, unknown buckets/windows and
-malformed responses are unavailable, not an inferred zero. Credits, account
-IDs, email addresses, plan/model labels and raw payloads are discarded. Plan
-and login evidence remain independent; quota does not establish model access
-or a stable account identity. Changing credentials inside the same selected
-directory cannot be detected as an identity change by this mechanism.
+The supported Codex response can expose several metered buckets. Up to eight
+are retained separately, with primary and secondary windows where present,
+including fractional percentages, duration and reset times. The legacy single
+bucket is used only when the bucket map is absent or empty; it is never added
+a second time. Individual limits retain decimal used/limit values in provider
+units and their reported remaining percentage. Credits retain availability,
+unlimited status and a bounded decimal balance; the response supplies no
+currency, so no currency or percentage is invented. A nullable ordinary-usage
+permission remains unknown; percentages and reset times never establish access.
+No reserve-experiment capability or reset-credit consumption is requested.
 
-The private `subscription-quota.json` cache is bounded to 1 MiB and 64 entries
-with strict schema 1 validation. It stores opaque catalog ID/revision/context
-bindings, allowlisted windows, successful read time and last attempt time/reason;
-it contains no executable/account paths or provider identifiers. It does not
-rewrite or promote `accounts.json`, and older catalog readers ignore it. All
-catalog schema-2 upgrade and rollback precautions above still apply to plan
-checks. Upgrade the panel/CLI separately to expose this action; deployment and
-installed-reader acceptance are not supplied by this source change.
+Unknown or malformed parts are visibly partial or unavailable; missing values
+are never zero. A reported zero is preserved. Raw provider display names,
+account IDs, email addresses, banners and plan/model aliases are discarded.
+Known Codex labels and generic additional-bucket labels keep independent rows
+without implying a model, subscription identity or quota pooling. Plan and
+login evidence remain independent. Changing credentials inside the same
+selected directory cannot be detected as an identity change by this mechanism.
+
+**Claude account quota remains unavailable.** No supported standalone,
+model-free selected-context quota source has been established. The experimental
+Claude usage control path is not used: its default reads local transcripts and
+its reply can conceal cached data and lost freshness/error provenance. Existing
+dated Claude route observations remain on Routes; they are not borrowed as
+selected-account quota. This is a remaining acceptance gap, not complete
+acquisition of all Claude and Codex quotas.
+
+The Accounts page shows compact named windows before expansion. Expanded rows
+show used and remaining values, independent reset timestamps, source, read age,
+partial evidence and failed refreshes. The native menu shows the same saved
+summary in account submenus, capped at six accounts/eight details per submenu
+with explicit omitted counts; the panel lists the remaining details. Neither
+page polling nor native menu polling contacts providers. Native output contains
+no catalog IDs, account-directory paths or provider account identities.
+
+The private `subscription-quota.json` cache remains bounded to 1 MiB and 64
+entries. A refresh writes quota-cache schema 2 for separate bucket/unit data;
+schema 1 remains readable without rewriting it on reads and is marked partial
+because it cannot establish additional buckets. Older quota readers reject
+schema 2 as unavailable. Back up this private cache before downgrading; no
+automatic migration repair or rollback rewrite is performed. Catalog schema is
+unchanged. Stored data includes opaque catalog ID/revision/context bindings,
+bounded meter keys and typed quota detail, successful read time and attempt
+failure evidence; it never stores executable/account paths or raw payloads.
+The native additive `panel list` contract is optional for older CLIs, strictly
+bounded and reads saved evidence only. This source change does not establish
+installed or live provider acceptance.
 
 Reads run outside the catalog writer lock. Checks and quota reads for one
 selection share a single-flight guard. Publication revalidates the ID, revision,

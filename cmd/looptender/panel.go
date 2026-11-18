@@ -1001,6 +1001,7 @@ func panelStopAt(e env, dir string) (bool, error) {
 // the page's own words, from the same code that builds the page. It carries
 // no registration ID, thread ID, path or note.
 type panelList struct {
+	AccountQuotas *panelQuotaList `json:"accountQuotas,omitempty"`
 	SchemaVersion int             `json:"schemaVersion"`
 	ReadAt        time.Time       `json:"readAt"`
 	Registry      string          `json:"registry"` // available or unavailable
@@ -1040,6 +1041,7 @@ type panelListLoop struct {
 func buildPanelList(r dockReport) panelList {
 	out := panelList{SchemaVersion: 1, ReadAt: r.ReadAt, Registry: r.Registry.Availability, Complete: r.Complete, AllClear: r.AllClear,
 		NeedsYou: len(r.NeedsYou), Unread: r.Unread, Omitted: r.Registry.Omitted, Loops: []panelListLoop{}}
+	out.AccountQuotas = panelQuotaSummary(r)
 	needs := map[string]bool{}
 	overdue := map[string]*time.Time{}
 	for _, n := range r.NeedsYou {

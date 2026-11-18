@@ -50,6 +50,7 @@ func (w *QuotaWindow) UnmarshalJSON(b []byte) error {
 }
 
 type QuotaAttempt struct {
+	Details *QuotaDetails `json:"details,omitempty"`
 	At      time.Time     `json:"observedAt"`
 	Reason  string        `json:"reason,omitempty"`
 	Windows []QuotaWindow `json:"windows,omitempty"`
@@ -66,6 +67,8 @@ type QuotaFile struct {
 	Entries       []QuotaEntry `json:"entries"`
 }
 type QuotaView struct {
+	Details             *QuotaDetails `json:"details,omitempty"`
+	Summary             *QuotaSummary `json:"summary,omitempty"`
 	State               string        `json:"state"`
 	Reason              string        `json:"reason,omitempty"`
 	Source              string        `json:"source,omitempty"`
@@ -89,9 +92,12 @@ func validQuotaAttempt(a QuotaAttempt) bool {
 		return false
 	}
 	if a.Reason != "" {
-		return len(a.Windows) == 0
+		return len(a.Windows) == 0 && a.Details == nil
 	}
-	if len(a.Windows) == 0 || len(a.Windows) > 2 {
+	if a.Details != nil && !ValidQuotaDetails(a.Details) {
+		return false
+	}
+	if (len(a.Windows) == 0 && a.Details == nil) || len(a.Windows) > 2 {
 		return false
 	}
 	seen := map[string]bool{}
@@ -110,7 +116,7 @@ func validQuotaAttempt(a QuotaAttempt) bool {
 	return true
 }
 func validQuota(f QuotaFile) bool {
-	if f.SchemaVersion != 1 || f.Entries == nil || len(f.Entries) > MaxEntries {
+	if (f.SchemaVersion != 1 && f.SchemaVersion != 2) || f.Entries == nil || len(f.Entries) > MaxEntries {
 		return false
 	}
 	seen := map[string]bool{}
@@ -119,6 +125,9 @@ func validQuota(f QuotaFile) bool {
 			return false
 		}
 		seen[e.ID] = true
+		if f.SchemaVersion == 1 && (e.Attempt.Details != nil || (e.Success != nil && e.Success.Details != nil)) {
+			return false
+		}
 		if e.Success != nil && (!validQuotaAttempt(*e.Success) || e.Success.Reason != "" || e.Success.At.After(e.Attempt.At)) {
 			return false
 		}
@@ -285,6 +294,7 @@ func PublishQuota(dir string, selected Entry, bound string, a QuotaAttempt, env 
 		x.Success = &copy
 	}
 	q.Entries[i] = x
+	q.SchemaVersion = 2
 	if !validQuota(q) {
 		return ErrInvalid
 	}
@@ -339,10 +349,13 @@ func QuotaViews(dir string, catalog File, env []string, now time.Time) map[strin
 						v.Freshness = "stale"
 					}
 					v.Windows = x.Success.Windows
+					v.Details = x.Success.Details
 				}
 				break
 			}
 		}
+		summary := SummarizeQuota(v, now)
+		v.Summary = &summary
 		out[e.ID] = v
 	}
 	return out
