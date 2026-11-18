@@ -28,7 +28,7 @@ No loop/task names, prompts, transcript, files, account/model or private report
 data are included. No remote command can answer a looptender hold through this
 integration.
 
-Delivery is best effort, with one bounded POST, bearer authentication, no
+Delivery is best effort, with one bounded POST per report, bearer authentication, no
 redirects, strict 202 counts, and private sequence reservation before sending.
 It does not claim the full durable sender contract: outbox replay, indefinite
 backoff, persistent authentication pause and full conformance remain follow-up.
@@ -43,10 +43,10 @@ uses fictional data. The script and its limits are in
 ## Proposed upstream contribution path
 
 The primary project is [spacesheep-dev/sessionpipe](https://github.com/spacesheep-dev/sessionpipe).
-Start with its [contribution guide](https://github.com/spacesheep-dev/sessionpipe/blob/baf8022ce0b685dc93393557208593e479dea3ed/CONTRIBUTING.md),
-[protocol](https://github.com/spacesheep-dev/sessionpipe/blob/baf8022ce0b685dc93393557208593e479dea3ed/spec/PROTOCOL.md),
-[HTTP binding](https://github.com/spacesheep-dev/sessionpipe/blob/baf8022ce0b685dc93393557208593e479dea3ed/spec/HTTP.md)
-and [website source](https://github.com/spacesheep-dev/sessionpipe/tree/baf8022ce0b685dc93393557208593e479dea3ed/website).
+Start with its [contribution guide](https://github.com/spacesheep-dev/sessionpipe/blob/06b826852a8b71b0306e47598dab719bee8fb130/CONTRIBUTING.md),
+[protocol](https://github.com/spacesheep-dev/sessionpipe/blob/06b826852a8b71b0306e47598dab719bee8fb130/spec/PROTOCOL.md),
+[HTTP binding](https://github.com/spacesheep-dev/sessionpipe/blob/06b826852a8b71b0306e47598dab719bee8fb130/spec/HTTP.md)
+and [website source](https://github.com/spacesheep-dev/sessionpipe/tree/06b826852a8b71b0306e47598dab719bee8fb130/website).
 A proposed documentation PR would add a short external-sender example to the
 integration documentation (location to agree with maintainers), link the
 looptender setup and fixture, and explicitly label partial sender coverage.

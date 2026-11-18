@@ -197,7 +197,13 @@ func (w *Webhook) reportPipe(ctx context.Context, e Event, observe func(Delivery
 		}
 	}
 	save("prepared")
-	fail := func(outcome string) error { save(outcome); return errSessionpipe }
+	fail := func(outcome string) error {
+		save(outcome)
+		if len(d.Attempts) > 0 {
+			return errors.Join(errSessionpipe, ErrNoRetry)
+		}
+		return errSessionpipe
+	}
 	if !filepath.IsAbs(w.stateDir) {
 		return fail("body_failed")
 	}

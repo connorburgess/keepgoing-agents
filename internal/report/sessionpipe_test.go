@@ -3,6 +3,7 @@ package report
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -117,7 +118,7 @@ func TestSessionpipeAcknowledgementUncertainNeverRetries(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			if err = r.Report(context.Background(), Event{Type: "await_user"}); err == nil || calls != 1 {
+			if err = r.Report(context.Background(), Event{Type: "await_user"}); !errors.Is(err, ErrNoRetry) || calls != 1 {
 				t.Fatalf("err=%v calls=%d", err, calls)
 			}
 			h, err := LoadDeliveries(dir)
@@ -336,7 +337,7 @@ func TestSessionpipeTransportNoRedirectRetryOrSecretError(t *testing.T) {
 	w.stateDir = t.TempDir()
 	tr := &failedTransport{}
 	w.client = &http.Client{Transport: tr}
-	if err = w.Report(context.Background(), Event{Type: "error"}); err == nil || tr.calls.Load() != 1 {
+	if err = w.Report(context.Background(), Event{Type: "error"}); err == nil || errors.Is(err, ErrNoRetry) || tr.calls.Load() != 1 {
 		t.Fatalf("discovery err=%v calls=%d", err, tr.calls.Load())
 	}
 	for _, bad := range []string{"https://fictional-token@example.com", "https://example.com/events", "https://example.com?token=fictional-token", "https://example.com/#fictional-token"} {
@@ -396,5 +397,23 @@ func TestSessionpipeMissingStateFieldsPreserveBytesAndPreventPOST(t *testing.T) 
 				t.Fatalf("corrupt bytes changed: %s err=%v", after, err)
 			}
 		})
+	}
+}
+
+func TestSessionpipeAcceptedPOSTWithUnavailableHistoryForbidsRetry(t *testing.T) {
+	posts := 0
+	srv := pipeReceiver(t, pipeAck, func(_ *http.Request, _ pipeBatch) { posts++ })
+	c := pipeConfig(t, srv.URL)
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, DeliveryFile), []byte("corrupt-history"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	r, err := NewRecorded(c, dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	err = r.Report(context.Background(), Event{Type: "error"})
+	if !errors.Is(err, ErrNoRetry) || !errors.Is(err, ErrDeliveryHistory) || posts != 1 {
+		t.Fatalf("err=%v posts=%d", err, posts)
 	}
 }

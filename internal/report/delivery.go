@@ -240,6 +240,10 @@ func (r recorded) Report(ctx context.Context, e Event) error {
 	}
 	// Diagnostic failure must never suppress the original request, trigger another
 	// attempt, or alter a hold. Callers report the error after the existing action.
+	if r.cfg.Format == "sessionpipe" && sendErr == nil && historyErr != nil {
+		// An accepted POST must not be replayed because its diagnostics failed.
+		return errors.Join(historyErr, ErrNoRetry)
+	}
 	return errors.Join(sendErr, historyErr)
 }
 

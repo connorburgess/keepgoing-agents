@@ -35,6 +35,10 @@ type Event struct {
 	Data map[string]any `json:"data,omitempty"`
 }
 
+// ErrNoRetry marks a report outcome whose delivery must not be repeated.
+// It is transport evidence only, never a provider classification or authority.
+var ErrNoRetry = errors.New("report delivery must not be retried")
+
 // Reporter sends events.
 type Reporter interface {
 	Report(ctx context.Context, e Event) error

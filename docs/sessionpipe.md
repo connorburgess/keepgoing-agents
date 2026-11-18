@@ -102,20 +102,22 @@ This is **best-effort reporting**, not a conformant durable Sessionpipe sender:
 it has no outbox, cursor, indefinite backoff, replay, daily discovery cache or
 persistent authentication-error pause. It does not retry uncertain delivery;
 a later report is a new event with new sequences. Discovery runs per report.
-Report history failure never changes loop holds or authorizes another send.
+An attempted Sessionpipe POST that fails or has an uncertain acknowledgement returns the shared transport marker `report.ErrNoRetry`. Once-per-episode supervision reports persist `retryStopped: true` while retaining `sent: false` and the actual attempt count; later checks and fresh reporter instances do not repeat that episode, even after receiver recovery. A new episode starts its own accounting. Independent per-check failed-check reports remain new events and can still send; this is not global notification deduplication. Failures before POST remain eligible for the existing bounded episode retry, as no delivery was attempted. An accepted POST followed by diagnostic-history failure also forbids retry. Ordinary webhook backend retry behavior is unchanged.
+
+The optional `OnceReport.retryStopped` state field is ignored by older builds; downgrade does not preserve this reporting suppression. Persistence depends on the check successfully publishing its state. A crash after POST but before that publication is not protected by an atomic delivery journal; durable episode replay/suppression remains follow-up work. Report history failure never changes loop holds or authorizes another agent send.
 The existing report event subscription still applies. No delivery outcome is
 used as a provider limit, refusal, policy or availability signal.
 
 ## Evidence and remaining scope
 
 The integration follows the upstream draft
-[protocol v1](https://github.com/spacesheep-dev/sessionpipe/blob/baf8022ce0b685dc93393557208593e479dea3ed/spec/PROTOCOL.md),
-[HTTP binding](https://github.com/spacesheep-dev/sessionpipe/blob/baf8022ce0b685dc93393557208593e479dea3ed/spec/HTTP.md)
-and [privacy rules](https://github.com/spacesheep-dev/sessionpipe/blob/baf8022ce0b685dc93393557208593e479dea3ed/spec/PRIVACY.md),
-read from a local upstream checkout. The specification is licensed CC BY 4.0;
+[protocol v1](https://github.com/spacesheep-dev/sessionpipe/blob/06b826852a8b71b0306e47598dab719bee8fb130/spec/PROTOCOL.md),
+[HTTP binding](https://github.com/spacesheep-dev/sessionpipe/blob/06b826852a8b71b0306e47598dab719bee8fb130/spec/HTTP.md)
+and [privacy rules](https://github.com/spacesheep-dev/sessionpipe/blob/06b826852a8b71b0306e47598dab719bee8fb130/spec/PRIVACY.md),
+rechecked from the primary public repository at `06b826852a8b71b0306e47598dab719bee8fb130` after review. The specification is licensed CC BY 4.0;
 fixtures here use fictional envelopes derived from its documented shapes, with
 no copied transcripts. This is a narrow integration, not full upstream
-conformance certification. The earlier roadmap research used core `8eada32` and
+conformance certification. Initial implementation read a local fork checkout at `baf8022`; that revision is not present in the primary repository, and the original pinned public links were unavailable. The published protocol/HTTP/privacy source at `06b8268` retains the tier-0 fields and transport used here; links now name that accessible revision. The earlier roadmap research used core `8eada32` and
 GUI `c7a813d`; the current protocol was rechecked before implementation.
 
 Regression fixtures cover privacy, restart identity/sequence, reservation
@@ -139,7 +141,7 @@ remote-answer or coordinator-message authority.
 
 | Surface | Supported and exercised | Deliberate limits / next work |
 | --- | --- | --- |
-| Compatibility | Protocol integer 1; draft core source `baf8022`, local built core 0.11.0 schema/data/privacy validation | Earlier research pins are not acceptance evidence; future incompatible integers refuse. No release or installed-package claim. |
+| Compatibility | Protocol integer 1; published draft core source `06b8268`, local fork built core 0.11.0 schema/data/privacy validation | Earlier research pins are not acceptance evidence; future incompatible integers refuse. No release or installed-package claim. |
 | Discovery | Origin-root GET, protocol/events/bearer/tier checks; same-origin endpoint; absent batch limits use 50/262144 | Per-report read, no 24-hour cache; no authenticated discovery, redirected discovery or foreign endpoint. |
 | Event endpoint | POST `{events:[...]}`, content type, bearer and `sessionpipe-protocol: 1`; advertised two-event/byte bounds | No native endpoint, file sink, outbox, control or pairing endpoint. No webhook HMAC is needed for v1 bearer delivery. |
 | Envelopes / fields | Protocol, ULID, fixed harness, opaque session ID, reserved seq, UTC milliseconds, tier 0, empty privacy rulesets, typed data | No source/loop/task names, transcript, arbitrary report data, account/model, machine/path/repo/title/URL or attention words. |
