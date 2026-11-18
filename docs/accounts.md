@@ -596,7 +596,8 @@ fingerprint. A panel started with `--allow-changes` offers the same read after
 an inline review and confirmation on that Accounts card. Ordinary page refresh,
 `accounts list`, the read-only panel and route observations never trigger it.
 
-The fixed Codex app-server exchange is `initialize`, `initialized`, then
+The [official Codex app-server protocol](https://learn.chatgpt.com/docs/app-server)
+exchange is `initialize`, `initialized`, then
 `account/rateLimits/read` with `excludeResetCreditDetails:true`. It does not
 start a login, explicitly refresh tokens, open credential files, call a model
 or call the separate token-usage endpoint. The official CLI may perform its

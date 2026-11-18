@@ -203,3 +203,38 @@ func TestQuotaRejectsDivergentSuccessfulAttempt(t *testing.T) {
 		t.Fatal("divergent success accepted", err)
 	}
 }
+
+func TestQuotaRefreshPreservesUnrelatedSelection(t *testing.T) {
+	dir, first, env := quotaFixture(t)
+	var second Entry
+	if err := Update(dir, func(f *File) error {
+		second = NewEntry(*f, first, "", time.Now().UTC(), env)
+		second.Label = "Example second"
+		f.Entries = append(f.Entries, second)
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	at := time.Now().UTC().Add(-time.Minute)
+	a := QuotaAttempt{At: at, Windows: []QuotaWindow{{Name: "primary", UsedPercent: 17}}}
+	if err := quotaPublish(t, dir, second, env, a); err != nil {
+		t.Fatal(err)
+	}
+	before, err := LoadQuota(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	original, _ := json.Marshal(before.Entries[0])
+	a.Windows[0].UsedPercent = 84
+	if err := quotaPublish(t, dir, first, env, a); err != nil {
+		t.Fatal(err)
+	}
+	after, err := LoadQuota(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	retained, _ := json.Marshal(after.Entries[0])
+	if len(after.Entries) != 2 || !bytes.Equal(original, retained) {
+		t.Fatal("unrelated quota evidence changed")
+	}
+}
