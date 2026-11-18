@@ -344,7 +344,9 @@ func TestDefinedAgentOutputBound(t *testing.T) {
 	if st, err := h.dir.Status(); err != nil || (st.Phase != Running && st.Phase != Finished) {
 		t.Fatalf("the turn after oversize output reads as %+v %v", st, err)
 	}
-	h.dir.Stop()
+	// Let that turn's wrapper finish before the directory is removed: one
+	// still publishing its exit code makes the removal fail.
+	waitPhase(t, h.dir, Finished)
 }
 
 // A saved session is checked again when it is read. One that is not a
