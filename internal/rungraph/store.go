@@ -163,5 +163,5 @@ func updateGraph(dir string, now time.Time, create bool, fn func(*Graph) (bool, 
 
 // GateOf reduces a saved control record to what a run boundary needs.
 func GateOf(f control.File) Gate {
-	return Gate{Enabled: f.Enabled, Paused: f.Paused, Stop: f.Stop, AwaitingUser: f.AwaitingUser, Completed: f.Completed, PendingTransfer: f.PendingTransfer != nil}
+	return Gate{Enabled: f.Gate().Enabled, Paused: f.Paused, Stop: f.Stop, AwaitingUser: f.AwaitingUser, Completed: f.Completed, PendingTransfer: f.PendingTransfer != nil}
 }

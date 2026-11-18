@@ -10,7 +10,7 @@ export type SetupTarget = z.infer<typeof targetSchema>;
 // from, run by that binary, advertised `start --json`. Absent on older records.
 // `followsStandard` records that the loop was set up to follow the person's
 // standard route list. Absent on older records and on single-agent setups.
-export const recordSchema = targetSchema.extend({ id: text, configPath: text, loop: text, startJson: z.literal(true).optional(), startJsonBin: text.optional(), followsStandard: z.literal(true).optional() });
+export const recordSchema = targetSchema.extend({ id: text, configPath: text, loop: text, registryId: z.string().regex(/^loop_[0-9a-f]{32}$/).optional(), registryStateDir: text.optional(), startJson: z.literal(true).optional(), startJsonBin: text.optional(), followsStandard: z.literal(true).optional() });
 export type SetupRecord = z.infer<typeof recordSchema>;
 /** The target a record was saved for: its target fields and no others, so a
  * field added to records later can never make the comparison fail. */

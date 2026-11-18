@@ -67,7 +67,11 @@ func TestAccountsFixedCommandsContextAndCaller(t *testing.T) {
 			if provider == "codex" {
 				want = []string{"login", "status"}
 			}
-			if len(calls) != 2 || !reflect.DeepEqual(calls[1], want) {
+			count := 2
+			if provider == "codex" {
+				count = 3
+			}
+			if len(calls) != count || !reflect.DeepEqual(calls[1], want) {
 				t.Fatalf("unexpected calls %v", calls)
 			}
 			f, _ := accounts.Load(dir)

@@ -1,0 +1,1 @@
+- Show saved migration-review counts and dated historical evidence in the panel, including unfinished declarations beside each loop. Missing, unavailable and changed-binding records remain distinct from valid counts. The view adds no private assignment details, queries, control changes or lane actions.

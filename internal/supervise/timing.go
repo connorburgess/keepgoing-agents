@@ -184,7 +184,7 @@ func (t *tick) applyStep(a adapter.Adapter, move state.TimingMove, note *TimingN
 	}
 	// Stop and pause win: a control change written during this check means
 	// the thread is not changed.
-	if c, err := control.Load(l.StateDir); err != nil || !c.Enabled || c.Paused || c.Stop || c.AwaitingUser || c.Completed {
+	if c, err := control.Load(l.StateDir); err != nil || !c.Gate().Enabled || c.Paused || c.Stop || c.AwaitingUser || c.Completed {
 		note.Outcome = "held"
 		return a
 	}
@@ -343,7 +343,7 @@ func timingPast(text string) string {
 // routeChangeAllowed rechecks the holds immediately before a thread update.
 func (t *tick) routeChangeAllowed() bool {
 	c, err := control.Load(t.loop.StateDir)
-	return err == nil && c.Enabled && !c.Paused && !c.Stop && !c.AwaitingUser && !c.Completed
+	return err == nil && c.Gate().Enabled && !c.Paused && !c.Stop && !c.AwaitingUser && !c.Completed
 }
 
 // timingIdleKnown requires a verified boundary with no pending interaction,
