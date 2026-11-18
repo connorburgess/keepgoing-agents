@@ -127,11 +127,14 @@ refuses transfer fences and a running check, and rejects dry-run/extra arguments
 
 A separate nonwaiting `sessionpipe` lock serializes network reporting and resume;
 contention refuses a report rather than waiting. Before POST the gate is atomically
-published as `pending`. A crash during the request or failed final publication
-leaves it closed; explicit resume is required even if delivery is unknown. A 401
-retains the pause; other completed requests return the gate to `ready`, preserving
-the existing no-retry-per-episode contract. This is not a durable delivery journal.
-Corrupt, oversized, nonregular or missing/null required gate fields refuse network
+published as `pending`. Exit before `client.Do` returns, or failure to publish the final gate, leaves
+it closed; explicit resume is required even if delivery is unknown. On return
+from `client.Do` (response headers or a transport error), a 401 retains the pause;
+other results immediately return the gate to `ready`, before acknowledgement-body
+validation or history publication. Pending therefore does not protect a crash
+during acknowledgement/history processing. The existing no-retry-per-episode
+contract still applies; this is not a durable delivery journal.
+Corrupt, oversized, nonregular or missing/null/duplicate or incorrectly cased gate fields refuse network
 and resume without replacing the evidence. Genuine absence means ready for
 compatibility with existing state. The gate contains no URL, token, payload
 or raw error. Migration fences the new lock and moves this state with the loop.

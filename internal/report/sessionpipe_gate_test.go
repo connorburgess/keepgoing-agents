@@ -87,7 +87,7 @@ func TestSessionpipeInvalidGatePreservedWithoutNetwork(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) { calls.Add(1) }))
 	defer srv.Close()
 	c := pipeConfig(t, srv.URL)
-	for _, body := range []string{`{}`, `{"version":null,"status":"ready"}`, `{"version":1,"status":null}`, `{"version":1,"status":"ready","extra":1}`, `{"version":1,"status":"unknown"}`, `invalid`} {
+	for _, body := range []string{`{}`, `{"version":null,"status":"ready"}`, `{"version":1,"status":null}`, `{"version":1,"status":"ready","extra":1}`, `{"version":1,"status":"unknown"}`, `invalid`, `{"version":1,"status":"unauthorized","status":"ready"}`, `{"version":1,"status":"unauthorized","Status":"ready"}`, `{"version":1,"version":1,"status":"ready"}`, `{"Version":1,"status":"ready"}`} {
 		t.Run(body, func(t *testing.T) {
 			dir := t.TempDir()
 			path := filepath.Join(dir, SessionpipeGateFile)

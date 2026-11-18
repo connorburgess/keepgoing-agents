@@ -21,8 +21,9 @@ var ErrSessionpipePaused = errors.New("Sessionpipe reports paused; inspect recei
 var errPipeGate = errors.New("Sessionpipe report gate unavailable; no delivery or reset attempted")
 
 // Gate status is diagnostic only. It never affects loop controls or routing.
-// pending is published before POST: a crash or failed final write must not
-// silently resume network delivery. The file contains no destination or token.
+// pending is published before POST: exit before client.Do returns, or a failed
+// final gate write, must not silently resume network delivery. It does not
+// journal acknowledgement/history processing after client.Do returns. The file contains no destination or token.
 type SessionpipeGate struct {
 	Version int    `json:"version"`
 	Status  string `json:"status"`
@@ -53,16 +54,38 @@ func LoadSessionpipeGate(dir string) (SessionpipeGate, error) {
 	if err != nil || len(b) > 1024 {
 		return SessionpipeGate{}, errPipeGate
 	}
-	var stored struct {
-		Version *int    `json:"version"`
-		Status  *string `json:"status"`
-	}
+	// Match the private schema exactly. encoding/json's struct decoder accepts
+	// duplicate keys and case-insensitive aliases, which can hide a stored pause.
 	dec := json.NewDecoder(bytes.NewReader(b))
-	dec.DisallowUnknownFields()
-	if dec.Decode(&stored) != nil || dec.Decode(new(any)) != io.EOF || stored.Version == nil || stored.Status == nil || *stored.Version != 1 {
+	opening, err := dec.Token()
+	if err != nil || opening != json.Delim('{') {
 		return SessionpipeGate{}, errPipeGate
 	}
-	g := SessionpipeGate{Version: *stored.Version, Status: *stored.Status}
+	var g SessionpipeGate
+	seen := map[string]bool{}
+	for dec.More() {
+		token, err := dec.Token()
+		key, ok := token.(string)
+		if err != nil || !ok || seen[key] {
+			return SessionpipeGate{}, errPipeGate
+		}
+		seen[key] = true
+		switch key {
+		case "version":
+			err = dec.Decode(&g.Version)
+		case "status":
+			err = dec.Decode(&g.Status)
+		default:
+			return SessionpipeGate{}, errPipeGate
+		}
+		if err != nil {
+			return SessionpipeGate{}, errPipeGate
+		}
+	}
+	closing, err := dec.Token()
+	if err != nil || closing != json.Delim('}') || dec.Decode(new(any)) != io.EOF || len(seen) != 2 || g.Version != 1 {
+		return SessionpipeGate{}, errPipeGate
+	}
 	switch g.Status {
 	case "ready", "pending", "unauthorized":
 		return g, nil
