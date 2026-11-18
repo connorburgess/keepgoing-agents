@@ -13,6 +13,11 @@ await p.click('[data-focus="route-models"]');await p.waitForSelector('select#rou
 check('explicit metadata offers a model select',await p.$eval('#route-field-model',e=>e.tagName==='SELECT'));
 await set('model','example-listed');await set('effort','high');
 check('efforts come from selected model metadata',await p.$eval('#route-field-effort',e=>Array.from(e.options).map(o=>o.value).join(',')===',medium,high'));
+await set('model','example-other');
+check('cross-model switch clears unsupported effort in the visible form',await p.$eval('#route-field-effort',e=>e.value===''&&e.selectedIndex===0&&Array.from(e.options).map(o=>o.value).join(',')===',low'));
+await set('behavior','same_conversation');await set('limitChoice','owner-limit-a');await p.click('[data-focus="route-add-review"]');await p.waitForSelector('[data-focus="route-save"]');
+check('cross-model review payload contains the visible empty effort',await p.$eval('#route-feedback',e=>e.textContent.includes('example-other')&&!e.textContent.includes('example-other · high')));
+await p.click('[data-focus="route-cancel"]');await p.waitForSelector('#route-field-model');await set('model','example-listed');await set('effort','high');
 await set('behavior','new_conversation');await set('limitChoice','new');await p.waitForSelector('#route-field-limit');await set('limit','owner-confirmed-limit');
 check('new conversation requires an explicit unchecked opt-in',await p.$eval('.route-add-form',e=>!e.checkValidity()&&!e.querySelector('[name=newConversation]').checked));
 await p.click('[name=newConversation]');

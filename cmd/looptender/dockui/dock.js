@@ -1545,8 +1545,11 @@
     } else { control = el("input"); control.type = "text"; control.maxLength = 128; control.autocomplete = "off"; }
     control.id = id; control.name = name; control.dataset.focus = id; control.required = !!required;
     control.value = routeEdit.draft[name] || ""; control.disabled = routeEdit.busy;
-    control.addEventListener("input", function () { routeEdit.draft[name] = control.value; });
-    control.addEventListener("change", function () { routeEdit.draft[name] = control.value; if (name === "account") { routeEdit.models = []; routeEdit.draft.model = ""; routeEdit.draft.effort = ""; routeEdit.draft.behavior = ""; routeEdit.draft.newConversation = false; } if (options) render(false, true); });
+    control.addEventListener("input", function () {
+      if (name === "model" && routeEdit.draft.model !== control.value) { routeEdit.draft.effort = ""; var effort = $("route-field-effort"); if (effort) effort.value = ""; }
+      routeEdit.draft[name] = control.value;
+    });
+    control.addEventListener("change", function () { routeEdit.draft[name] = control.value; if (name === "account") { routeEdit.models = []; routeEdit.draft.model = ""; routeEdit.draft.effort = ""; routeEdit.draft.behavior = ""; routeEdit.draft.newConversation = false; } if (name === "model") routeEdit.draft.effort = ""; if (options) render(false, true); });
     wrap.appendChild(control); form.appendChild(wrap); return control;
   }
   function routeCheck(parent, name, label) {
@@ -1645,6 +1648,11 @@
         if (routeEdit.models.length) form.appendChild(routeButton("Enter model names instead", "route-model-manual", function () { routeEdit.models = []; render(false, true); }));
         form.appendChild(routeButton("Load models reported by BB", "route-models", function () { routeRequest("models", { op: "models", provider: chosen.provider }); }));
         form.appendChild(el("p", "sub", "Model listing is optional and read-only. Without a listing, enter names supported by your provider."));
+        if (routeEdit.models.length) {
+          var offered = routeEdit.models.filter(function (m) { return m.model === routeEdit.draft.model; })[0];
+          if (!offered) { routeEdit.draft.model = ""; routeEdit.draft.effort = ""; }
+          else if (!list(offered.supportedReasoningEfforts).some(function (e) { return e.reasoningEffort === routeEdit.draft.effort; })) routeEdit.draft.effort = "";
+        }
         var modelOptions = routeEdit.models.length ? [["", "Choose a model"]].concat(routeEdit.models.map(function (m) { return [m.model, m.displayName || m.model]; })) : null;
         routeField(form, "model", "Model", modelOptions, true);
         var model = routeEdit.models.filter(function (m) { return m.model === routeEdit.draft.model; })[0];
@@ -1666,8 +1674,8 @@
       }
       form.addEventListener("submit", function (ev) {
         ev.preventDefault(); if (!form.reportValidity()) return;
-        var draft = routeEdit.draft;
-        routeRequest("prepare", { op: "add", account: draft.account, model: draft.model, effort: draft.effort || "", behavior: draft.behavior, newConversation: !!draft.newConversation, limit: draft.limitChoice === "new" ? draft.limit : draft.limitChoice });
+        var values = new FormData(form), limitChoice = values.get("limitChoice");
+        routeRequest("prepare", { op: "add", account: values.get("account"), model: values.get("model"), effort: values.get("effort") || "", behavior: values.get("behavior"), newConversation: values.get("newConversation") === "on", limit: limitChoice === "new" ? values.get("limit") : limitChoice });
       }); box.appendChild(form);
     }
     if (rows.length) {

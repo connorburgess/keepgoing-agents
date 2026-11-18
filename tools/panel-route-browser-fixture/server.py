@@ -26,7 +26,7 @@ class H(BaseHTTPRequestHandler):
   step=self.path.rsplit('/',1)[-1]; data=json.loads(self.rfile.read(int(self.headers['Content-Length'])))
   with (root/'routes-browser-posts.jsonl').open('a') as f:f.write(json.dumps(dict(step=step,data=data))+'\n')
   if step=='read':self.reply(dict(editor=dict(standard=dict(state='ok',routes=rows,can=['add','move','off','on','remove']),accounts=accounts,loops=loops,accountLabels={'example-route-a':'Example selected Claude'})));return
-  if step=='models':self.reply(dict(models=[dict(model='example-listed',displayName='Example supported model',supportedReasoningEfforts=[dict(reasoningEffort='medium'),dict(reasoningEffort='high')])],text='Models reported by BB; no access check.'));return
+  if step=='models':self.reply(dict(models=[dict(model='example-listed',displayName='Example supported model',supportedReasoningEfforts=[dict(reasoningEffort='medium'),dict(reasoningEffort='high')]),dict(model='example-other',displayName='Example other model',supportedReasoningEfforts=[dict(reasoningEffort='low')])],text='Models reported by BB; no access check.'));return
   if step=='prepare':
    after=copy.deepcopy(rows)
    if data['op']=='add':after.append(dict(id='route-generated',provider='claude-code',model=data['model'],effort=data.get('effort',''),group=data['limit'],enter=data['behavior'],disabled=False))

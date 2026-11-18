@@ -16,7 +16,8 @@ python3 tools/panel-route-browser-fixture/server.py --artifacts /tmp/fictional-r
 Open the printed loopback URL in a local headless Browser Automation session.
 Run `check.js` in that session after navigation. The script expects the
 DevBrowser page API (`browser.getPage("main")`), checks native labels and
-validation, explicitly requested model/effort metadata, required creation
+validation, explicitly requested model/effort metadata, cross-model effort clearing and
+visible-form payload parity, required creation
 opt-in, retained draft after Read now, keyboard Tab/Enter confirmation,
 partial outcomes, and early capability limitations. It measures document
 width and button targets at 13 widths from 320 to 1920 in light and dark
