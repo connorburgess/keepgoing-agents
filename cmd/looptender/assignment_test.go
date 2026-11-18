@@ -156,6 +156,31 @@ func TestAssignmentInitialReconciliationJourney(t *testing.T) {
 	if f.read("probes") != "" {
 		t.Fatal("metadata probed provider")
 	}
+	// Goal changes invalidate the binding until an explicit review resets every
+	// retained declaration. The previous awaiting-user/pause/stop remain intact.
+	g, err := control.LoadGoal(cfg.Loop.StateDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if c, _, e := f.run("goal", "revise", "--id", g.ID, "--revision", "1", "--file", goal); c != 0 {
+		t.Fatal(e)
+	}
+	if s := assignmentStatus(cfg, mustAssignmentControl(t, cfg)); s.Availability != "stale_binding" || s.Counts != nil {
+		t.Fatal("new goal adopted old declarations", s)
+	}
+	mutate("review", plan)
+	if s := assignmentStatus(cfg, mustAssignmentControl(t, cfg)); s.Counts.Unknown != 2 || s.Counts.Unacknowledged != 0 {
+		t.Fatal("new review retained stale declarations", s)
+	}
+	for _, row := range get().Revisions[len(get().Revisions)-1].Rows {
+		if row.Revision != 2 || row.Handoff != nil || row.Acknowledged != 0 {
+			t.Fatal("binding reset omitted declaration", row)
+		}
+	}
+	ctl = mustAssignmentControl(t, cfg)
+	if !ctl.AwaitingUser || !ctl.Paused || !ctl.Stop {
+		t.Fatal("reconciliation cleared gates")
+	}
 	// Corrupt record is visible unavailable and never a false all-clear.
 	write(t, filepath.Join(cfg.Loop.StateDir, control.AssignmentName), `{"version":2}`, 0600)
 	if s := assignmentStatus(cfg, ctl); s.Availability != "unavailable" || s.Counts != nil {

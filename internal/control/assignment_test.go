@@ -273,3 +273,41 @@ func TestAssignmentLifecycleChangedBindingCannotRetainAcknowledgement(t *testing
 		t.Fatal("damaged bytes repaired")
 	}
 }
+
+func TestAssignmentLifecycleObsoleteLaneRetainsSuccessorObligation(t *testing.T) {
+	dir, b, r := assignmentFixture(t)
+	controls, _ := os.ReadFile(filepath.Join(dir, FileName))
+	h := assignmentWaiting()
+	h.Outcome = "superseded"
+	h.Blocker = "none"
+	h.DependencyRefs = nil
+	h.NextOwner = "successor coordinator"
+	h.SuccessorRef = "private/successor-assignment.json"
+	r, err := WriteAssignments(dir, b.Owner, b, r.ID, 1, func(x *AssignmentRevision) error { x.Rows[0].Handoff = &h; x.Rows[0].HandoffRevision = 1; return nil })
+	if err != nil {
+		t.Fatal(err)
+	}
+	r, err = WriteAssignments(dir, b.Owner, b, r.ID, 2, func(x *AssignmentRevision) error { x.Rows[0].Acknowledged = 1; return nil })
+	if err != nil {
+		t.Fatal(err)
+	}
+	r, err = WriteAssignments(dir, b.Owner, b, r.ID, 3, func(x *AssignmentRevision) error { x.Inventory.Lanes = []AssignmentLane{}; return nil })
+	if err != nil {
+		t.Fatal(err)
+	}
+	s := AssignmentSummaryOf(r, b)
+	if s.Counts.Unfinished != 1 || s.Counts.Absent != 1 || s.Counts.Unknown != 0 {
+		t.Fatal("obsolete/successor reference lost remaining obligation", s)
+	}
+	if CheckAssignmentAwaitUser(dir, b) == nil {
+		t.Fatal("successor reference manufactured person blocking")
+	}
+	row := r.Revisions[3].Rows[0]
+	if row.Handoff.SuccessorRef != h.SuccessorRef || len(row.Handoff.RemainingRefs) != 1 || row.Handoff.Availability != "available" {
+		t.Fatal("explicit declaration lost")
+	}
+	after, _ := os.ReadFile(filepath.Join(dir, FileName))
+	if !bytes.Equal(controls, after) {
+		t.Fatal("successor reference changed controls")
+	}
+}
