@@ -21,6 +21,10 @@ const FileName = "control.json"
 
 // File is the on-disk control record.
 type File struct {
+	// SupersededBy is an explicit declaration that another existing BB thread
+	// continues the work in a separate loop. It grants that thread no authority.
+	// Any nonempty value permanently fences this loop, including malformed ones.
+	SupersededBy    string             `json:"supersededBy,omitempty"`
 	PendingTransfer *PendingBBTransfer `json:"pendingTransfer,omitempty"`
 	BBTarget        string             `json:"bbTarget,omitempty"`
 	Ownership       *Ownership         `json:"ownership,omitempty"`
@@ -130,12 +134,14 @@ func saveAt(stateDir string, f File, now time.Time) error {
 
 // Gate converts the file into the decision engine's view of it.
 func (f File) Gate() decide.Control {
-	return decide.Control{Enabled: f.Enabled, Paused: f.Paused, Stop: f.Stop, AwaitingUser: f.AwaitingUser, Completed: f.Completed}
+	return decide.Control{Enabled: f.Enabled && f.SupersededBy == "", Paused: f.Paused, Stop: f.Stop, AwaitingUser: f.AwaitingUser, Completed: f.Completed}
 }
 
 // Summary is a one-line human description.
 func (f File) Summary() string {
 	switch {
+	case f.SupersededBy != "":
+		return "superseded"
 	case !f.Enabled:
 		return "disabled"
 	case f.Stop:

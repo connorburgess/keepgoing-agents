@@ -2,6 +2,8 @@
 
 `fallbacks.yaml` is the maintained list of agents the loop may move to when its current agent cannot continue. Point the loop at it with `loop.fallbacks`. A loop can instead follow one list kept for all of a person's loops; see [the standard route list](routes.md) (v0.2.0).
 
+To name an account first, or for the steps from sign-in to a loop's order in one place, see [Add an account, a subscription or a model](accounts.md#add-an-account-a-subscription-or-a-model).
+
 ## Add a fallback with guided setup
 
 Released in v0.2.0; v0.1.5 does not include this command. For an existing loop:
@@ -16,6 +18,8 @@ keepgoing fallbacks add -c /private/example-loop/keepgoing.yaml
 keepgoing fallbacks add --loop example-loop
 keepgoing fallbacks move claude-pool-b --to 1 --loop example-loop
 ```
+
+The [panel](dock.md#what-the-page-shows)'s loop page shows `fallbacks add`, `check`, `handoff on` and `move` with `--loop` and the loop's name filled in, to copy and run in Terminal; the page runs none of them.
 
 The guide runs four steps, then a preview and a confirmation. An answer that cannot be used is explained and asked again; nothing is written until the end, and every question that writes has `no` as its default.
 

@@ -55,15 +55,17 @@ Supervision (read -c FILE; default ./looptender.yaml, or ./keepgoing.yaml when o
 
 Transfer planning:
   transfer preview         Inspect a proposed BB move without changing it
+  transfer reconcile       Record an explicit private migration review checklist
   transfer inventory       List a loop's target, lanes and progress worktrees, read-only
   transfer apply|recover   Move a BB primary with an explicit recovery hold
+  transfer supersede       Permanently hold an obsolete BB loop after a manual move
 
 Local client discovery:
   client status            Read a registered loop snapshot without controlling it
   client pause|stop        Save a restrictive hold for a registered loop
   client prepare-resume    Prepare a short-lived snapshot/ticket for review
   client resume            Clear holds using an unchanged prepared ticket
-  accounts list|add|update|check  Select private account contexts; explicit status only, no model calls
+  accounts list|add|update|check|usage  Select private account contexts; explicit status only, no model calls
   registry add|list|remove  Register private loop references; never start supervision
   migrate                  Say what moving the per-user directories from keepgoing/ to looptender/ would do;
                            --apply moves them and leaves a link, --undo --apply moves them back
@@ -163,6 +165,9 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 	case "routes":
 		return routesCommand(e, rest)
 	case "transfer":
+		if len(rest) > 0 && rest[0] == "reconcile" {
+			return transferReconcileCommand(e, rest, doctorExec, doctorExecLimit(inventoryListLimit))
+		}
 		if len(rest) > 0 && rest[0] == "inventory" {
 			// A lane listing is about 1.5 KB per lane, so 200 lanes need
 			// more than doctor's 64 KiB.

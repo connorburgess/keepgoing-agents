@@ -415,8 +415,13 @@ func (h *panelHandler) served(w http.ResponseWriter) func(session string) {
 			out.Changes = "off"
 			out.ChangesText = txt("Read-only: this page cannot pause, resume, stop or start anything.")
 		} else {
+			out.RouteChanges = "person"
+			if h.changes.caller != "" {
+				out.RouteChanges = "bb_caller"
+			}
 			since := h.changes.since
 			out.Changes, out.ChangesSince, out.Form = "on", &since, h.changes.prepareValue(session)
+			out.AccountQuota = true
 			out.ChangesText = txt("Changes allowed for "+dockSpan(now.Sub(since))+": started with looptender panel --allow-changes at ", tm(since, "clock"), ". "+panelExposure+" looptender panel stop turns them off.")
 		}
 		w.Header().Set("Content-Type", "application/json")

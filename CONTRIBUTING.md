@@ -39,6 +39,12 @@ fix(bb): read thread status from JSON instead of exit text
 docs: describe fallbacks.yaml fields
 ```
 
+## Changelog entries
+
+Do not edit `CHANGELOG.md` for a new entry. Add one file, `changelog.d/<topic>.md`, holding the entry as it would read under "Unreleased" (usually one paragraph starting with `- `, no heading). Every pull request editing the top of one file made each merge conflict with every other open pull request; separate files do not. The contribution check refuses a line added under `## Unreleased` and a malformed fragment. `scripts/changelog-release.sh` gathers the fragments into `CHANGELOG.md` when a release is prepared. See [changelog.d/README.md](changelog.d/README.md).
+
+To move an open pull request that already has a line under Unreleased: merge main into it, move your entry into `changelog.d/<topic>.md`, and restore `CHANGELOG.md` to main's version with `git checkout origin/main -- CHANGELOG.md`.
+
 ## Sign off your commits
 
 Every commit needs a `Signed-off-by:` line matching its author:
@@ -69,6 +75,7 @@ This agreement does not apply retroactively. Do not assume that an earlier DCO s
 
 - Use fictional loops, thread IDs, hostnames, and `example.com` addresses.
 - Never include real transcripts, prompts from private projects, webhook URLs, or credentials in issues, PRs, fixtures, or docs.
+- Keep BB thread IDs and personal home paths out of pull request titles and descriptions. The contribution check refuses `thr_` followed by exactly ten lowercase letters or digits (fictional IDs containing `example`, such as `thr_example123`, pass) and an absolute `/Users/<name>` or `/home/<name>` path, with or without a trailing slash (`example`, `runner`, `linuxbrew` and `Shared` pass). Describe the thread, and write paths relative to the repository or with `~`.
 - Add tests for behavior and failure cases. Avoid tests that restate the code.
 - Do not commit built binaries or files larger than 1 MB. The contribution check refuses them; build outputs belong outside the checkout. A file that must be an exception is listed in `scripts/contribution-file-allowlist.txt` with the reason.
 - Resolve every merge before committing it. The contribution check refuses a text file with a line beginning `<<<<<<< ` or `>>>>>>> `, or a line that is exactly `=======`. A file that must contain such lines is listed in `scripts/conflict-marker-allowlist.txt` with the reason.

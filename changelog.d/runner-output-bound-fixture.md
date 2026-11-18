@@ -1,0 +1,1 @@
+- Wait for finalized turn publication in the bounded-output runner fixture, so an exit file visible before publication cleanup cannot cause a false failure.

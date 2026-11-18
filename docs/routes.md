@@ -4,6 +4,8 @@
 
 What exists in this build: the list's file format, how a loop follows it, what happens when the list cannot be read or a route is removed while in use, the read side (`keepgoing routes list`), the commands that change the list (`routes add`, `move`, `remove`, `off`, `on` and `check`), and the commands that make a loop follow it or leave it (`routes follow-standard` and `routes own`, and the offer in `init`).
 
+Unreleased source also offers a [standard-route GUI](dock.md#configure-routes-in-the-panel) in a panel started outside BB with changes allowed. It reviews one list operation at a time and enrolls selected loops through separate per-loop saves; it does not change holds, budgets, handoff settings or conversation opt-in. Model lists load only on request and do not establish account access. Custom loop lists remain in the CLI.
+
 ## The file
 
 `routes.yaml` lives in the user configuration directory, in `looptender/routes.yaml` beside the loop registry (`keepgoing/routes.yaml` on a computer where the tool already keeps its files in a `keepgoing` directory from before the rename; see [per-user directories](configuration.md#per-user-directories)), never inside a loop's directory or a repository. `LOOPTENDER_ROUTES_FILE` (an absolute path; also read under its [earlier name](configuration.md#environment-variables), `KEEPGOING_ROUTES_FILE`) names another location; that path is refused inside a Git checkout, because the list names private account directories. The default location is not checked for a checkout. A JSON schema is in [`schema/routes.schema.json`](../schema/routes.schema.json).

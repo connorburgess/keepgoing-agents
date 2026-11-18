@@ -170,11 +170,22 @@ type dockNeed struct {
 	// Waited is how long, in words.
 	Waited string `json:"waited"`
 	Action string `json:"action"`
+	// Resume is the command that clears the hold from a terminal, set when
+	// resuming is the way out of it. A page that cannot resume (one served
+	// without --allow-changes) shows it to copy. The configuration path is
+	// not part of the report, so it stays the placeholder CONFIG and the
+	// page says where to find it.
+	Resume string `json:"resume,omitempty"`
 }
 
 type dockLoop struct {
 	Key  string `json:"key"`
 	Name string `json:"name"`
+	// LoopArg is "--loop NAME" with the loop's registered name quoted for a
+	// shell, for the commands the loop page shows to copy. It is absent when
+	// the name is longer than a page shows in full, so a clipped name never
+	// reaches a command; also when its quoted form is over dockMaxLoopArg.
+	LoopArg string `json:"loopArg,omitempty"`
 	// State is one of supervising, waiting_for_you, waiting_on_limit,
 	// waiting_on_network, checks_failing, paused, stopped, finished, off,
 	// outside_hours, not_checked_recently or unknown. Phrase is its label,
@@ -210,6 +221,9 @@ type dockLoop struct {
 	// NoProgress is the no-progress flag, the same value status shows; nil
 	// when the loop's status could not be read. It is never a need.
 	NoProgress *noProgressView `json:"noProgress,omitempty"`
+	// MigrationReview describes historical declarations, never execution,
+	// current lane activity, permission or a reason to change supervision.
+	MigrationReview dockMigrationReview `json:"migrationReview"`
 	// Refusals is the refusal gauge and any open question about refusals or
 	// a restriction, as status shows them; nil before the first refusal.
 	Refusals *refusalStatus `json:"refusals,omitempty"`
@@ -227,6 +241,12 @@ type dockLoop struct {
 	// set. Empty when the flags could not be read. A page offers them only
 	// when the server that serves it allows changes.
 	Can []string `json:"can"`
+	// LanesFailed is "1 lane failed" when the last check's current lane
+	// listing has lanes in error, from their structured status only; empty
+	// otherwise. A failed lane does not hold the loop, so it is never a need,
+	// but the row, the page and "Worth knowing" say it in words, so a loop
+	// that is supervising does not read as all well.
+	LanesFailed string `json:"lanesFailed,omitempty"`
 }
 
 type dockTarget struct {
@@ -369,6 +389,9 @@ type dockChain struct {
 	Entries   []dockChainEntry `json:"entries"`
 	Omitted   int              `json:"omitted"`
 	More      string           `json:"more,omitempty"`
+	// Standard is whether the loop follows the standard route list, so the
+	// page shows the routes commands for that list instead of the loop's own.
+	Standard bool `json:"standard,omitempty"`
 }
 
 type dockChainEntry struct {
@@ -984,7 +1007,9 @@ func dockShareAcrossLoops(loops []dockLoop, routes []dockRoute, now time.Time) {
 // dockChainInput is the configuration-derived part of the chain plus the
 // fallbacks list summary; Summary is nil when probe history was unreadable.
 type dockChainInput struct {
-	Primary    config.Candidate
+	Primary config.Candidate
+	// Standard: the loop follows the standard route list.
+	Standard   bool
 	Candidates []config.Candidate
 	// TimingOn and TimingSteps are usage-aware timing's configuration.
 	TimingOn    bool
@@ -1138,12 +1163,22 @@ func buildDockReport(inputs []dockInput, now time.Time, refresh, staleAfter time
 		daemonBuild := l.Versions.Daemon != "" && dockBuildOf(l.Versions.Daemon, version).Availability == "different"
 		otherFile := l.Versions.Service == "different_file"
 		otherBuild := l.Build.Availability == "different" || daemonBuild || otherFile
-		if quiet[l.State] && l.Away == nil && !flagged && !otherBuild {
+		// A loop held for a person is under "Needs you" already.
+		lanesFailed := l.LanesFailed != "" && l.State != "waiting_for_you"
+		if quiet[l.State] && l.Away == nil && !flagged && !otherBuild && !lanesFailed {
 			continue
 		}
 		t := txt()
 		if !quiet[l.State] {
 			t = txt(l.Detail)
+		}
+		// The detail already says it when the loop is not quiet and no need
+		// took its place.
+		if lanesFailed && (quiet[l.State] || !strings.Contains(l.Detail, l.LanesFailed)) {
+			if len(t) > 0 {
+				t = txt(t, " ")
+			}
+			t = txt(t, dockLanesFailedText(l.LanesFailed))
 		}
 		if l.Away != nil {
 			if len(t) > 0 {
@@ -1178,6 +1213,13 @@ func buildDockReport(inputs []dockInput, now time.Time, refresh, staleAfter time
 		r.Worth = append(r.Worth, dockWorth{Key: l.Key, Loop: l.Name, State: l.State, Text: t})
 	}
 	return r
+}
+
+// dockLanesFailedText says what the last check found of the loop's lanes in
+// error and that the loop is not held for them (a child_error is reported, not
+// held). It is built from counts of structured lane status, never lane text.
+func dockLanesFailedText(lanesFailed string) string {
+	return lanesFailed + ", as of its last check; the loop is not held for a failed lane, so look at the lane if it should be working."
 }
 
 // dockLede is "10 loops, 4 supervising" and what the page reads from.
@@ -1302,9 +1344,27 @@ func dockTestingOf(state string, st *statusOut, chain *dockChainInput) dockTesti
 	return t
 }
 
+// dockMaxLoopArg bounds LoopArg in bytes, so 128 loops add at most about
+// 22 KB to the report.
+const dockMaxLoopArg = 160
+
+// dockLoopArg is "--loop NAME" for a command a person copies from the loop
+// page, with the name quoted for a shell. A name the page clips, one whose
+// quoted form is over dockMaxLoopArg bytes, or none gives "", and the page
+// shows a placeholder instead.
+func dockLoopArg(name string) string {
+	if name == "" || utf8.RuneCountInString(name) > dockMaxText {
+		return ""
+	}
+	if arg := "--loop " + shellQuote(name); len(arg) <= dockMaxLoopArg {
+		return arg
+	}
+	return ""
+}
+
 func projectDockLoop(in dockInput, now time.Time, staleAfter time.Duration, identifiers bool) (dockLoop, *dockNeed) {
 	l := dockLoop{Key: dockKey(in.Entry.ID), Name: clip(in.Entry.Loop, dockMaxText), Evidence: in.Client.Outcome,
-		Limits: []dockLimit{}, Issues: []string{}, Can: []string{}}
+		Limits: []dockLimit{}, Issues: []string{}, Can: []string{}, LoopArg: dockLoopArg(in.Entry.Loop)}
 	if snap := in.Client.Snapshot; snap != nil && snap.Controls != nil {
 		c := snap.Controls
 		if !c.Paused {
@@ -1313,7 +1373,7 @@ func projectDockLoop(in dockInput, now time.Time, staleAfter time.Duration, iden
 		if !c.Stop {
 			l.Can = append(l.Can, "stop")
 		}
-		if c.Paused || c.Stop || c.AwaitingUser || c.Completed {
+		if snap.ControlState != "superseded" && (c.Paused || c.Stop || c.AwaitingUser || c.Completed) {
 			l.Can = append(l.Can, "resume")
 		}
 	}
@@ -1327,6 +1387,7 @@ func projectDockLoop(in dockInput, now time.Time, staleAfter time.Duration, iden
 		}
 	}
 	st := in.Status
+	l.MigrationReview = dockMigrationReviewOf(st)
 	if snap != nil && st == nil && len(l.Issues) < dockMaxIssues {
 		l.Issues = append(l.Issues, "Its full status could not be read; some details are unknown.")
 	}
@@ -1346,6 +1407,9 @@ func projectDockLoop(in dockInput, now time.Time, staleAfter time.Duration, iden
 	}
 
 	l.Children = dockChildWork(in.Runs, in.RunsKnown)
+	if l.Children.Availability == "current" && l.Children.Failed > 0 {
+		l.LanesFailed = dockPlural(l.Children.Failed, "lane failed", "lanes failed")
+	}
 	l.Decision = dockLastDecision(st, in.Timeline, now)
 	l.Device = dockDeviceOf(st, in.Hostname, identifiers, now)
 	l.Events = dockRecentEvents(in.Timeline, dockRouteNamesOf(in.Chain), now)
@@ -1469,6 +1533,12 @@ func projectDockLoop(in dockInput, now time.Time, staleAfter time.Duration, iden
 				Action: "Look at the check on the loop's page; undo the replacement there if the new build is the cause.", Since: &when, SinceEvidence: "last_check"}
 		}
 	}
+	if snap != nil && snap.ControlState == "superseded" {
+		l.State, l.Phrase = "off", "Superseded"
+		l.Detail = "This loop was replaced. Resume and takeover are refused. Review the successor loop's task and holds before continuing there."
+		l.Hold = dockHoldState{State: "superseded", Phrase: "Superseded"}
+		need = nil // retained source holds are history, not requests to resume it
+	}
 	if need != nil {
 		need.Key, need.Loop = l.Key, l.Name
 		if need.Since != nil {
@@ -1492,7 +1562,13 @@ func projectDockLoop(in dockInput, now time.Time, staleAfter time.Duration, iden
 	}
 	l.Versions.Service = in.ServiceFile
 	l.BuildChange = in.BuildChange
+	if l.LanesFailed != "" && need == nil {
+		l.Detail += " " + dockLanesFailedText(l.LanesFailed)
+	}
 	l.PickerState = l.Phrase
+	if l.LanesFailed != "" {
+		l.PickerState += " \u00B7 " + l.LanesFailed
+	}
 	if st != nil {
 		np := st.NoProgress
 		l.NoProgress = &np
@@ -1645,11 +1721,15 @@ const (
 	dockHoldAdviceNote = "See the note left with the hold, and the conversation. Resume the loop when what it is waiting for is done."
 )
 
+// dockResumeCommand is the command a person runs to resume a held loop, as
+// operations.md gives it: resume takes the loop's configuration with -c.
+const dockResumeCommand = "keepgoing resume -c CONFIG"
+
 // dockHoldNeed explains an awaiting-user hold from the fixed cause recorded
 // when it started. Nothing is inferred from the note's text. The note is
 // shown with its identifiers masked, or whole with identifiers.
 func dockHoldNeed(st *statusOut, hold *dockHold, identifiers bool) *dockNeed {
-	n := &dockNeed{Kind: "held", Reason: "It is held for a person.", Action: dockHoldAdvice}
+	n := &dockNeed{Kind: "held", Reason: "It is held for a person.", Action: dockHoldAdvice, Resume: dockResumeCommand}
 	cause := ""
 	switch {
 	case hold != nil && hold.Marked:
@@ -2108,6 +2188,7 @@ func dockHandoffChain(in *dockChainInput, use dockRouteUse, test dockTesting, f 
 		c.How = "Unknown: its configuration could not be read."
 		return c
 	}
+	c.Standard = in.Standard
 	for _, class := range in.FailoverOn {
 		c.HandoffOn = append(c.HandoffOn, clip(class, 40))
 	}

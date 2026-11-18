@@ -504,6 +504,8 @@ func controlSignatureWithOpen(stateDir string, open func(string) (*os.File, erro
 }
 
 type statusOut struct {
+	MigrationReview      *control.MigrationSummary `json:"migrationReview,omitempty"`
+	MigrationReviewError string                    `json:"migrationReviewError,omitempty"`
 	// NoProgress is the no-progress flag, the same value the panel shows.
 	NoProgress noProgressView `json:"noProgress"`
 	// SharedWith lists, in words, other enabled loops that share this loop's
@@ -759,6 +761,12 @@ func status(e env, cfg *config.Config, now time.Time, asJSON bool, staleAfter ti
 	if ctl.BBTarget != "" {
 		fmt.Fprintf(w, "bound BB target: %s\n", ctl.BBTarget)
 	}
+	if out.MigrationReview != nil {
+		printReconcile(e, *out.MigrationReview, false)
+	}
+	if out.MigrationReviewError != "" {
+		fmt.Fprintln(w, "Migration review: unavailable; inspect transfer reconcile show privately")
+	}
 	if out.Goal != nil {
 		printGoal(e, *out.Goal, false)
 	}
@@ -842,6 +850,9 @@ func status(e env, cfg *config.Config, now time.Time, asJSON bool, staleAfter ti
 		fmt.Fprintf(w, " (%s)", ctl.Note)
 	}
 	fmt.Fprintln(w)
+	if ctl.SupersededBy != "" {
+		fmt.Fprintln(w, "superseded: successor reference is recorded in control.json; resume and takeover are refused")
+	}
 	if q := ctl.OpenQuestion; q != nil {
 		fmt.Fprintf(w, "open question: the loop was awaiting a person when completion was declared at %s%s\n", when(q.At), noteSuffix(q.Note))
 	}
@@ -1098,6 +1109,20 @@ func readStatus(ctx context.Context, cfg *config.Config, now time.Time, staleAft
 	} else if g != nil {
 		summary := g.Summary()
 		out.Goal = &summary
+	}
+	if review, err := control.LoadMigrationReview(l.StateDir); err != nil {
+		out.MigrationReviewError = "unavailable"
+		if errors.Is(err, control.ErrMigrationBinding) {
+			out.MigrationReviewError = "binding_changed"
+		}
+	} else if review != nil {
+		if !migrationReviewMatchesConfig(review, cfg) {
+			out.MigrationReviewError = "binding_changed"
+		} else {
+			summary := control.MigrationSummaryOf(review.ID, review.Revisions[len(review.Revisions)-1])
+			summary.Digest = ""
+			out.MigrationReview = &summary
+		}
 	}
 	out.PromptSend = describePromptSend(st.LastPromptSend, out.Goal)
 	if st.GoalCopy != nil && st.GoalCopy.Valid() {
@@ -1455,6 +1480,9 @@ func controlCmdLanes(e env, cfg *config.Config, cmd, note string, lanes, dropQue
 			}
 		}
 		if cmd == "resume" {
+			if err := control.CheckTransferReady(*f); err != nil {
+				return err
+			}
 			if err := control.CheckOwner(*f, os.Getenv("BB_THREAD_ID"), false); err != nil {
 				return err
 			}
