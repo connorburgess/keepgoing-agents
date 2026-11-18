@@ -123,8 +123,10 @@ GUI `c7a813d`; the current protocol was rechecked before implementation.
 Regression fixtures cover privacy, restart identity/sequence, reservation
 contention/concurrency, corrupted state, acknowledgement mismatch and bounded
 transport. See [testing](testing.md#sessionpipe-reporting-integration-unreleased).
-Live receiver, GUI, phone, native Windows/Linux execution, installed artifacts and
-upstream conformance remain unverified. No subprocess or OS control is added.
+Live receiver, GUI, phone, installed artifacts and upstream conformance remain
+unverified. Local native fixtures ran on macOS; record exact-head hosted native
+fixture execution separately in the PR, without treating it as live platform
+acceptance. No subprocess or OS control is added.
 
 **IN is separate:** reading a configured filtered tier-0 file sink needs F8 typed
 intake and an owner decision about observing a loop that cannot be woken. Never
