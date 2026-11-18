@@ -169,3 +169,25 @@ func TestAssignmentWakeMissingStaleAndUnknownEvidence(t *testing.T) {
 		})
 	}
 }
+
+func TestAssignmentWakeFullHistoryWithholdsWithoutDiscarding(t *testing.T) {
+	dir, b, r := assignmentWakeFixture(t)
+	for len(r.Revisions) < assignmentHistoryLimit {
+		var err error
+		r, err = WriteAssignments(dir, b.Owner, b, r.ID, uint64(len(r.Revisions)), func(*AssignmentRevision) error { return nil })
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+	before, _ := os.ReadFile(filepath.Join(dir, AssignmentName))
+	if n, s := AssignmentWakeLocal(r, b, time.Now().UTC(), time.Hour); n != 0 || s != "capacity_exhausted" {
+		t.Fatal(n, s)
+	}
+	if err := ConsumeAssignmentWake(dir, b.Owner, b, r.ID, uint64(len(r.Revisions)), r.Revisions[len(r.Revisions)-1].Wake.ID, "assignment_notice_attempt", time.Now().UTC(), time.Hour); err == nil {
+		t.Fatal("full history accepted runtime write")
+	}
+	after, _ := os.ReadFile(filepath.Join(dir, AssignmentName))
+	if !bytes.Equal(before, after) {
+		t.Fatal("full history discarded evidence")
+	}
+}

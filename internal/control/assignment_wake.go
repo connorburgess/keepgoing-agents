@@ -55,8 +55,13 @@ func AssignmentWakeSummaryOf(r *AssignmentRecord, b AssignmentBinding, now time.
 		s.NextAction = "looptender assignment ready --file ready.json --id <record-id> --revision <current-revision>"
 	case "attempted_unreconciled":
 		s.NextAction = "looptender assignment show --private; then assignment reconcile-wake --file reconciliation.json --id <record-id> --revision <current-revision>; delivery is not established"
+	case "capacity_exhausted":
+		s.NextAction = "looptender assignment show --private; preserve the full record and explicitly disable assignment_coordination until supported record rotation; never roll back an attempt"
 	case "declared_ready":
 		s.NextAction = "wait for an eligible ordinary check; no lane is dispatched and no delivery is established"
+	}
+	if r != nil && len(r.Revisions) >= assignmentHistoryLimit {
+		s.NextAction = "looptender assignment show --private; preserve the full record and explicitly disable assignment_coordination until supported record rotation; never roll back an attempt"
 	}
 	return s
 }
@@ -159,6 +164,9 @@ func AssignmentWakeLocal(r *AssignmentRecord, b AssignmentBinding, now time.Time
 			return 0, "attempted_unreconciled"
 		}
 		return 0, "reviewed_attempt"
+	}
+	if len(r.Revisions) >= assignmentHistoryLimit {
+		return 0, "capacity_exhausted"
 	}
 	if w.Binding != b || !w.InventoryAt.Equal(x.Inventory.ObservedAt) || x.Inventory.Coverage != "observed_direct_children" || now.Before(w.DeclaredAt) || now.Sub(w.DeclaredAt) > age || now.Sub(x.Inventory.ObservedAt) > age {
 		return 0, "stale_evidence"

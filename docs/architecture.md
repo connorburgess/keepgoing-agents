@@ -412,4 +412,4 @@ Sends allowance is reserved before atomic assignment consumption, then the exist
 Send is called. A failed second write spends allowance but sends nothing; a crash after
 consumption cannot replay the grant. Ordinary no-active-child wakes preserve the task and
 retire valid grants as attempted, never delivered. No cross-file or BB observation/tell
-transaction is claimed. Capacity refuses rather than dropping obligations.
+transaction is claimed. Capacity withholds coordination notices and refuses record writes rather than dropping obligations; it does not suppress baseline ordinary wakes.
