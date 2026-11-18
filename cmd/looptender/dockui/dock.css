@@ -529,3 +529,8 @@ details[open] > .how-summary::before { transform: rotate(45deg); }
 .account-quota .work-facts { margin: .8rem 0; font-variant-numeric: tabular-nums; }
 .account-quota-actions { display: flex; flex-wrap: wrap; gap: .6rem; margin-top: .8rem; }
 .account-quota .btn { white-space: normal; max-width: 100%; min-height: 2.75rem; }
+
+/* Unbound route contexts are separate from selected-account cards. */
+.unknown-account-routes { margin-top: 2rem; }
+.unknown-route-context { padding-block: 1rem; border-top: 1px solid var(--line); overflow-wrap: anywhere; min-width: 0; }
+.unknown-route-context > p { margin: 0 0 .5rem; }
