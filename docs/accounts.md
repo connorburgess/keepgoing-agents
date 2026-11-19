@@ -648,7 +648,9 @@ the inspected Claude Code 2.1.326 native artifact; wrappers, other platform
 artifacts and upgrades return unavailable before launch until independently
 verified. Admitted bytes are copied through the selected open handle into a fresh
 private directory, verified there and launched from that private image; replacing
-the selected path cannot substitute an unreviewed executable. The image is
+the selected path cannot substitute an unreviewed executable. Admission opens
+nonblocking without following a final symlink and verifies a regular file; a
+FIFO replacement cannot stall the read before its deadline. The image is
 removed only after the owned child exits. No wrapper is substituted and no login
 or default is changed.
 The process stays parked with `--await-claim`, safe mode, disabled hooks, no

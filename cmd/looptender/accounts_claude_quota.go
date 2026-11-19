@@ -90,7 +90,10 @@ func accountClaudeQuotaEnvironment(env []string) bool {
 // The private image survives until the owned child has been killed and waited.
 func accountClaudeQuotaStage(ctx context.Context, path, digest string) (image string, cleanup func(), resultErr error) {
 	unavailable := errors.New("unverified_cli")
-	f, err := os.Open(path)
+	if err := ctx.Err(); err != nil {
+		return "", nil, err
+	}
+	f, err := accountClaudeQuotaOpen(path)
 	if err != nil {
 		return "", nil, unavailable
 	}
