@@ -1383,8 +1383,20 @@
     }).then(function (d) { return accountQuotaReply(d, id, step, recovery); })
       .finally(function () { clearTimeout(timer); });
   }
+  function accountQuotaSupported(c) {
+    var providers = state.server.accountQuotaProviders;
+    return !!state.server.accountQuota && (Array.isArray(providers) ? providers.indexOf(c.provider) >= 0 : c.provider === "codex");
+  }
+  function accountQuotaSummary(c) {
+    var s = c.quota && c.quota.summary;
+    if (!s || s.state !== "reported") return null;
+    function date(v) { return typeof v === "string" && isFinite(Date.parse(v)); }
+    if (c.provider === "codex" && s.source === "codex account/rateLimits/read" && date(s.observedAt) && !s.retrievedAt && (s.freshness === "fresh" || s.freshness === "stale")) return s;
+    if (c.provider === "claude-code" && s.source === "claude:get_usage" && date(s.retrievedAt) && !s.observedAt && s.freshness === "provider_unknown") return s;
+    return null;
+  }
   function accountQuotaRequest(c, confirm, recovery) {
-    if (!changesOn() || !(recovery ? state.server.accountSelectionReview : state.server.accountQuota)) return;
+    if (!changesOn() || !(recovery ? state.server.accountSelectionReview : accountQuotaSupported(c))) return;
     var old = state.accountQuotaChange, p = confirm && old && old.id === c.id && !!old.recovery === !!recovery && old.preview;
     if (confirm && !p) return;
     var request = { id: c.id, recovery: !!recovery, busy: true, preview: p || null };
@@ -1415,9 +1427,10 @@
     var q = c.quota || {}, box = el("div", "account-quota");
     box.appendChild(el("h3", null, "Account quota"));
     box.appendChild(el("p", "sub", "Saved for this selection; separate from route readings. Live thread account binding is not verified."));
-    var saved = q.summary || {};
-    if (saved.state === "reported" && saved.observedAt) {
-      box.appendChild(el("p", "quota-stamp", "Read " + when({ at: saved.observedAt }) + (saved.freshness === "stale" ? " · Older reading" : " · Saved snapshot")));
+    var saved = accountQuotaSummary(c) || {};
+    if (saved.state === "reported") {
+      box.appendChild(el("p", "quota-stamp", saved.retrievedAt ? "Retrieved " + when({ at: saved.retrievedAt }) + " · Provider freshness unknown" : "Read " + when({ at: saved.observedAt }) + (saved.freshness === "stale" ? " · Older reading" : " · Saved snapshot")));
+      if (saved.retrievedAt) box.appendChild(el("p", "sub", "Retrieval may return cached or seeded usage. The provider's observation time is unavailable."));
       var rows = el("ul", "quota-windows");
       list(saved.rows).forEach(function (w) {
         var row = el("li", "quota-window" + (w.ended ? " is-ended" : ""));
@@ -1434,9 +1447,9 @@
       box.appendChild(rows);
       if (saved.partial || saved.omitted) box.appendChild(el("p", "sub quota-incomplete", "Partial evidence: some quota detail is unavailable" + (saved.omitted ? "; " + saved.omitted + " additional buckets not shown" : "") + ". Missing values are not zero."));
       box.appendChild(el("p", "sub", "Source: " + saved.source));
-    } else box.appendChild(el("p", "sub", saved.text || (c.provider === "claude-code" ? "No supported model-free account quota source is available for Claude. Dated route observations remain on Routes." : accountQuotaReason(q.reason || "not_checked"))));
+    } else box.appendChild(el("p", "sub", (q.summary && q.summary.state !== "reported" && q.summary.text) || accountQuotaReason(q.reason || "schema_unavailable")));
     if (saved.failedRefreshAt) box.appendChild(el("p", "sub", "Refresh failed " + when({ at: saved.failedRefreshAt }) + ". " + saved.failedRefreshText + " Any earlier reading retains its original time."));
-    if (c.provider !== "codex") return box;
+    if (c.provider !== "codex" && c.provider !== "claude-code") return box;
     var change = state.accountQuotaChange, current = change && change.id === c.id ? change : null;
     if (current) {
       var review = el("div", "account-quota-review");
@@ -1460,9 +1473,9 @@
       } else box.appendChild(el("p", "sub", "Open a panel with changes allowed, then return to Accounts to review this selection. The native menu's Open Panel with Controls… provides that entry point."));
       return box;
     }
-    if (changesOn() && state.server.accountQuota) {
-      if (!current) box.appendChild(button("Refresh subscription quota…", "quota-refresh-" + c.id, "", function () { accountQuotaRequest(c, false); }));
-    } else box.appendChild(el("p", "sub", "Refresh explicitly with looptender accounts usage --id ACCOUNT_ID, or review a refresh in a panel started with changes allowed."));
+    if (changesOn() && accountQuotaSupported(c)) {
+      if (!current) box.appendChild(button(c.provider === "claude-code" ? "Retrieve usage…" : "Refresh subscription quota…", "quota-refresh-" + c.id, "", function () { accountQuotaRequest(c, false); }));
+    } else box.appendChild(el("p", "sub", c.provider === "claude-code" ? "Claude usage retrieval requires a panel with changes allowed on Darwin arm64 and the inspected native Claude Code 2.1.326 image. Each selection is checked before a request; other images remain unavailable." : "Review a refresh in a panel with changes allowed."));
     return box;
   }
   function renderAccounts(d, pane) {
@@ -1533,7 +1546,7 @@
       plan.appendChild(el("span", "sub", "Reported plan"));
       var auth = c.auth || {}, sameCheck = !!(c.plan && c.plan.observedAt && c.plan.observedAt === auth.observedAt && c.plan.source === auth.source);
       plan.appendChild(accountEvidence(c.plan, sameCheck)); summary.appendChild(plan);
-      var qs = c.quota && c.quota.summary;
+      var qs = accountQuotaSummary(c);
       var compact = el("span", "quota-compact");
       if (qs && qs.state === "reported") {
         list(qs.rows).filter(function (w) { return typeof w.usedPercent === "number"; }).slice(0, 2).forEach(function (w) {
@@ -1541,7 +1554,7 @@
           item.appendChild(el("strong", null, w.ended ? "Window ended" : w.usedPercent + "% used")); compact.appendChild(item);
         });
         if (!compact.childNodes.length) compact.appendChild(el("span", "sub", qs.partial ? "Partial quota evidence" : "Quota details recorded"));
-        compact.appendChild(el("span", "sub", qs.freshness === "stale" ? "Older quota reading" : "Saved quota reading"));
+        compact.appendChild(el("span", "sub", qs.freshness === "provider_unknown" ? "Provider freshness unknown" : qs.freshness === "stale" ? "Older quota reading" : "Saved quota reading"));
         compact.title = "Saved account quota; expand for all recorded detail";
       } else if (c.provider === "codex" || c.provider === "claude-code") compact.appendChild(el("span", "sub", "Account quota unavailable"));
       summary.appendChild(compact);

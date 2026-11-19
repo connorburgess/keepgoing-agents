@@ -21,7 +21,7 @@ may still contact a provider.
 Page refresh reads retained catalog and quota evidence only and executes no provider
 command. In a panel started with `--allow-changes`, an explicit reviewed
 **Refresh subscription quota** action contacts the selected Codex CLI without a
-model request. The read-only panel offers no such action. The `accounts` commands below do not start
+model request. Supported Darwin arm64 panels also offer **Retrieve usage** for the inspected native Claude image, with provider freshness always unknown. Same-selection recovery for either provider is a separate local revision review, never a provider read. The read-only panel offers no such action. The `accounts` commands below do not start
 a loop, enroll a route, sign in or copy credentials. Complete provider sign-in in
 the official provider tool first.
 
@@ -474,7 +474,7 @@ selection itself. Read-only panels offer guidance without a write action.
 The single-use review pins the current revision, startup caller, effective
 context and native path identities. Drift, a concurrent check/refresh, expiry or
 replay refuses publication; a lost reply is never retried automatically. This
-recovery currently supports selected Codex contexts only. The guard-tag family is retained so definition-2 readers also
+recovery supports selected Claude Code and Codex contexts; it makes no provider call. Claude retrieval afterward still requires its separately reviewed platform, native-image and isolation checks. The guard-tag family is retained so definition-2 readers also
 refuse new definition-3 bindings instead of treating them as pre-tag legacy.
 Authentication, provider, executable, directory, home/config,
 proxy/TLS and other environment checks remain; the actual execution environment
@@ -695,11 +695,15 @@ Claude evidence uses a separate private `claude-subscription-quota.json`, schema
 1, bounded to the same 1 MiB and 64-selection limits. Its timestamps are named
 `retrievedAt`. It neither promotes the catalog nor rewrites the Codex cache;
 older binaries ignore that file. The additive shared summary includes
-`retrievedAt`/`provider_unknown`, so native/web consumers need the coordinated
-consumer update before displaying Claude evidence. The existing panel action
-still advertises Codex only until that integration is available; the explicit
-CLI command supplies the acquisition path. Do not claim installed-panel
-acceptance from a source-only change.
+`retrievedAt`/`provider_unknown`. Matching web and native readers show “Retrieved”
+and “Provider freshness unknown”, including after a successful read; failed
+refreshes retain the original retrieval timestamp. The panel advertises Claude
+retrieval only on Darwin arm64, where the inspected native image can run. This
+is a platform prerequisite, not admission of the selected executable: wrappers,
+unreviewed images, preload injection or unavailable isolation still refuse.
+Other platforms can show saved evidence but offer no Claude refresh action.
+There is no automatic refresh, login, account switch or model call. Do not claim
+installed-panel acceptance from a source-only change.
 
 The Accounts page shows compact named windows before expansion. Expanded rows
 show used and remaining values, independent reset timestamps, source, read age,

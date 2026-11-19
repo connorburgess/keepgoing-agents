@@ -134,8 +134,11 @@ rows with saved quota detail in submenus. The same minimized summary powers
 Accounts in the web panel: named windows, used/remaining values, independent
 reset times, source/read time, stale/ended/partial and failed-refresh evidence.
 Credits and individual limits retain provider units. No currency, identity,
-account equivalence or access is inferred. Claude selected-account quota has no
-supported model-free source and remains unavailable; route readings are separate.
+account equivalence or access is inferred. Claude summaries show retrieval time
+and provider freshness unknown, even just after retrieval: the inspected native
+reply may contain cached or seeded usage. Strict decoding binds the provider,
+source and timestamp type; contradictory evidence refuses rather than becoming
+fresh or zero. Route readings stay separate.
 
 The additive `panel list --json` field `accountQuotas` is optional: an older CLI
 keeps the old loop menu. New data is validated before rendering (16 projected
@@ -144,7 +147,7 @@ menus show six accounts and eight details each with explicit counts for more.
 Long menu text is shortened visibly, with complete accessible labels/tooltips.
 The existing 180-character generic and 1024-byte authority bounds are unchanged.
 Saved quota does not alter loop badges, grant controls or run provider reads.
-Choose Open Panel, then Accounts for full details and an explicit reviewed Codex
+Choose Open Panel, then Accounts for full details and an explicit reviewed provider
 refresh. Unsupported or corrupt data never becomes zero quota. Native menu
 polling remains saved-evidence only; rebuilding does not replace or restart a
 running menu. See [quota capability limits](../../docs/accounts.md#read-selected-context-subscription-quota).

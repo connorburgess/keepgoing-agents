@@ -9,6 +9,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -17,11 +18,23 @@ import (
 )
 
 func TestPanelAccountSelectionRecoveryAndSeparateQuota(t *testing.T) {
+	for _, provider := range []string{"codex", "claude-code"} {
+		t.Run(provider, func(t *testing.T) { testPanelSelectionRecovery(t, provider) })
+	}
+}
+func testPanelSelectionRecovery(t *testing.T, provider string) {
+	if provider == "claude-code" && (runtime.GOOS != "darwin" || runtime.GOARCH != "arm64") {
+		t.Skip("Claude quota acquisition capability requires Darwin arm64; local recovery negatives run independently")
+	}
 	for _, mode := range []string{"inherited", "explicit_directory"} {
 		t.Run(mode, func(t *testing.T) {
-			t.Setenv("CODEX_SESSION_ID", "fictional-terminal-session")
+			key := "CODEX_SESSION_ID"
+			if provider == "claude-code" {
+				key = "CLAUDE_CODE_OAUTH_TOKEN"
+			}
+			t.Setenv(key, "fictional-terminal-session")
 			t.Setenv("BB_THREAD_ID", "thr_example_panel_owner")
-			dir, e := accountFixture(t, "codex")
+			dir, e := accountFixture(t, provider)
 			if mode == "explicit_directory" {
 				if err := accounts.Update(dir, func(f *accounts.File) error {
 					e.Mode, e.Directory = mode, e.Workdir
@@ -35,12 +48,19 @@ func TestPanelAccountSelectionRecoveryAndSeparateQuota(t *testing.T) {
 			calls := 0
 			run := func(context.Context, string, string, []string, string) ([]byte, error) {
 				calls++
+				if provider == "claude-code" {
+					return []byte(claudeQuotaUsage), nil
+				}
 				return []byte(quotaResponse), nil
 			}
 			if _, err := accountQuotaRefresh(context.Background(), dir, e.ID, nil, run, os.Environ(), time.Now); err != nil {
 				t.Fatal(err)
 			}
-			cached, err := os.ReadFile(filepath.Join(dir, accounts.QuotaName))
+			cacheName := accounts.QuotaName
+			if provider == "claude-code" {
+				cacheName = accounts.ClaudeQuotaName
+			}
+			cached, err := os.ReadFile(filepath.Join(dir, cacheName))
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -80,7 +100,7 @@ func TestPanelAccountSelectionRecoveryAndSeparateQuota(t *testing.T) {
 			if !reflect.DeepEqual(fixed, e) {
 				t.Fatal("selection fields changed")
 			}
-			afterCache, _ := os.ReadFile(filepath.Join(dir, accounts.QuotaName))
+			afterCache, _ := os.ReadFile(filepath.Join(dir, cacheName))
 			if !bytes.Equal(cached, afterCache) {
 				t.Fatal("recovery changed saved quota")
 			}
@@ -101,7 +121,7 @@ func TestPanelAccountSelectionRecoveryAndSeparateQuota(t *testing.T) {
 				t.Fatal(r, calls)
 			}
 			v = accounts.QuotaViews(dir, f, c.quotaEnv, time.Now())[e.ID]
-			if v.State != "reported" {
+			if v.State != "reported" || (provider == "claude-code" && (v.Freshness != "provider_unknown" || v.RetrievedAt == nil || v.ObservedAt != nil)) {
 				t.Fatal(v)
 			}
 		})
@@ -109,9 +129,14 @@ func TestPanelAccountSelectionRecoveryAndSeparateQuota(t *testing.T) {
 }
 
 func TestPanelAccountSelectionReviewDriftAndSpentForms(t *testing.T) {
-	for _, kind := range []string{"revision", "label", "environment", "caller", "cli", "workdir", "expired", "cancelled", "busy", "session", "quota_ticket", "selection_ticket"} {
+	for _, provider := range []string{"codex", "claude-code"} {
+		t.Run(provider, func(t *testing.T) { testPanelSelectionDrift(t, provider) })
+	}
+}
+func testPanelSelectionDrift(t *testing.T, provider string) {
+	for _, kind := range []string{"revision", "label", "provider", "environment", "caller", "cli", "workdir", "expired", "cancelled", "busy", "session", "quota_ticket", "selection_ticket"} {
 		t.Run(kind, func(t *testing.T) {
-			dir, e := accountFixture(t, "codex")
+			dir, e := accountFixture(t, provider)
 			if kind == "workdir" {
 				wd := filepath.Join(e.Workdir, "reviewed-workdir")
 				if err := os.Mkdir(wd, 0700); err != nil {
@@ -141,10 +166,15 @@ func TestPanelAccountSelectionReviewDriftAndSpentForms(t *testing.T) {
 			}
 			session := "session"
 			switch kind {
-			case "revision", "label":
+			case "revision", "label", "provider":
 				if err := accounts.Update(dir, func(f *accounts.File) error {
 					if kind == "revision" {
 						f.Entries[0].Revision = strings.Repeat("a", 32)
+					} else if kind == "provider" {
+						f.Entries[0].Provider = "claude-code"
+						if provider == "claude-code" {
+							f.Entries[0].Provider = "codex"
+						}
 					} else {
 						f.Entries[0].Label = "Different workshop"
 					}
@@ -177,6 +207,9 @@ func TestPanelAccountSelectionReviewDriftAndSpentForms(t *testing.T) {
 			case "session":
 				session = "other"
 			case "quota_ticket":
+				if !panelQuotaProviderSupported(provider) {
+					t.Skip("quota action unavailable on this platform; recovery checks still execute")
+				}
 				q := c.prepareAccountQuota("session", e.ID)
 				if q.Preview == nil {
 					t.Fatal(q)
@@ -211,6 +244,26 @@ func TestPanelAccountSelectionReviewDriftAndSpentForms(t *testing.T) {
 				t.Fatal("refusal did not spend form", r)
 			}
 		})
+	}
+}
+
+func TestPanelAccountSelectionUnsupportedProviderRefuses(t *testing.T) {
+	dir, _ := accountFixture(t, "codex")
+	if err := accounts.Update(dir, func(f *accounts.File) error {
+		e := f.Entries[0]
+		e.Provider, e.Mode, e.CLI, e.Workdir = "other", "externally_managed", "", ""
+		f.Entries[0] = accounts.NewEntry(*f, e, "thr_example_owner", time.Now(), os.Environ())
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	f, _ := accounts.Load(dir)
+	before, _ := os.ReadFile(filepath.Join(dir, accounts.FileName))
+	c, _ := newPanelChanges(context.Background(), "", &dockReader{accountsDir: dir}, time.Now(), time.Now)
+	r := c.prepareAccountSelection("session", f.Entries[0].ID)
+	after, _ := os.ReadFile(filepath.Join(dir, accounts.FileName))
+	if r.Preview != nil || r.Result == nil || r.Result.Outcome != "refused" || !bytes.Equal(before, after) {
+		t.Fatal("unsupported provider recovery accepted", r)
 	}
 }
 

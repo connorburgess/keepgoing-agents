@@ -6,6 +6,8 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"reflect"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -127,6 +129,9 @@ func TestPanelAccountQuotaGuardsAndSingleUseReview(t *testing.T) {
 		_ = json.Unmarshal(w.Body.Bytes(), &served)
 		if served.AccountQuota != on {
 			t.Fatal("wrong capability", served)
+		}
+		if on && !reflect.DeepEqual(served.AccountQuotaProviders, panelQuotaProvidersFor(runtime.GOOS, runtime.GOARCH)) || !on && len(served.AccountQuotaProviders) != 0 {
+			t.Fatal("provider capability differs from platform/authorization", served.AccountQuotaProviders)
 		}
 	}
 }

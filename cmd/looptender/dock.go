@@ -209,8 +209,9 @@ type dockServed struct {
 	ChangesText            dockText   `json:"changesText,omitempty"`
 	Form                   string     `json:"form,omitempty"`
 	RouteChanges           string     `json:"routeChanges,omitempty"`
+	AccountQuotaProviders  []string   `json:"accountQuotaProviders,omitempty"` // explicit provider allowlist; absent means legacy Codex only
+	AccountQuota           bool       `json:"accountQuota,omitempty"`          // explicit reviewed account-scoped refresh
 	AccountSelectionReview bool       `json:"accountSelectionReview,omitempty"`
-	AccountQuota           bool       `json:"accountQuota,omitempty"` // explicit reviewed account-scoped refresh
 }
 
 func newDockServer(port int, auth dockAuth, reader *dockReader) *dockServer {

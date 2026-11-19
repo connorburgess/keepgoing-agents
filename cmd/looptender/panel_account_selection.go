@@ -30,7 +30,7 @@ func accountSelectionForReview(dir, id string, env []string) (accountQuotaSelect
 		return accountQuotaSelection{}, err
 	}
 	e := accounts.Find(&f, id)
-	if e == nil || e.Provider != "codex" {
+	if e == nil || (e.Provider != "codex" && e.Provider != "claude-code") {
 		return accountQuotaSelection{}, accounts.ErrChanged
 	}
 	s := accountQuotaSelection{Entry: *e, Bound: accounts.Context(f, *e, env)}
@@ -104,10 +104,14 @@ func (c *panelChanges) prepareAccountSelection(session, id string) panelChangeRe
 	}
 	expires := c.now().UTC().Add(panelHoldFormTTL)
 	c.keep(value, panelForm{session: session, key: id, action: panelAccountSelectionAction, expires: expires, selection: &panelAccountSelectionReview{selection: s, caller: c.caller}})
+	provider := "Codex"
+	if s.Entry.Provider == "claude-code" {
+		provider = "Claude Code"
+	}
 	lines := []dockText{txt("Rebinds this unchanged selection to this panel's startup environment. That environment may authenticate differently from another terminal; account identity is not verified."),
-		txt("Provider and label stay: Codex · " + s.Entry.Label), txt("Executable stays: " + s.Entry.CLI), txt("Working directory stays: " + s.Entry.Workdir)}
+		txt("Provider and label stay: " + provider + " · " + s.Entry.Label), txt("Executable stays: " + s.Entry.CLI), txt("Working directory stays: " + s.Entry.Workdir)}
 	if s.Entry.Mode == "explicit_directory" {
-		lines = append(lines, txt("Explicit Codex directory stays: "+s.Entry.Directory))
+		lines = append(lines, txt("Explicit "+provider+" directory stays: "+s.Entry.Directory))
 	} else {
 		lines = append(lines, txt("Authentication remains inherited in this panel's environment. No login or default is changed."))
 	}

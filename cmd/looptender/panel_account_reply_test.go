@@ -33,7 +33,7 @@ func panelAccountReplyRuntime(t *testing.T, node, js string) {
 	// extraction input; execute the same client functions and assertions.
 	js = strings.ReplaceAll(js, "\r\n", "\n")
 	source := "const assert=require('node:assert/strict');\n"
-	for _, head := range []string{"function accountQuotaReply(d, id, step, recovery) {", "function accountQuotaPost(id, step, form, recovery) {", "function accountQuotaRequest(c, confirm, recovery) {"} {
+	for _, head := range []string{"function accountQuotaReply(d, id, step, recovery) {", "function accountQuotaPost(id, step, form, recovery) {", "function accountQuotaSupported(c) {", "function accountQuotaRequest(c, confirm, recovery) {"} {
 		source += jsFunction(t, js, head) + "\n}\n"
 	}
 	source += `
@@ -46,7 +46,7 @@ global.fetch=async(url,options)=>{posts++;
  assert.equal(JSON.parse(options.body).action,state.accountQuotaChange.recovery?'review_selection':'subscription_quota');
  assert.equal(options.method,'POST');assert.ok(options.signal instanceof AbortSignal);
  return{ok:true,json:async()=>reply};};
-const id='b'.repeat(32),c={id};
+const id='b'.repeat(32),c={id,provider:"codex"};
 const preview={action:'review_selection',key:id,title:'Review Example?',confirm:'Use unchanged selection',form:'c'.repeat(64),expiresAt:'2030-01-01T00:00:00Z',lines:[[{t:'Fixed fictional paths.'}]],lost:'Reviewed reply lost: outcome unknown.',refused:'Refused before publication.'};
 async function run(raw,confirm=true,recovery=true){
  reply=raw;posts=0;loads=0;focused='';

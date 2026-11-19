@@ -41,4 +41,27 @@ final class QuotaTests: XCTestCase {
         XCTAssertEqual(Contract.text(String(repeating: "x", count: 200)).count, 180)
         XCTAssertNotNil(Contract.panelAuthority(String(repeating: "x", count: 231)))
     }
+    func testClaudeRetrievalNeverBecomesFreshProviderEvidence() throws {
+        let q = #"{"state":"reported","text":"Provider freshness unknown; may be cached or seeded.","source":"claude:get_usage","retrievedAt":"2030-03-04T12:00:00Z","freshness":"provider_unknown","rows":[{"name":"5-hour","text":"0% used · 100% remaining","usedPercent":0,"remainingPercent":100}]}"#
+        func claude(_ value: String) -> Data {
+            Data(String(decoding: payload(value), as: UTF8.self).replacingOccurrences(of: "Example Codex", with: "Example Claude").replacingOccurrences(of: #""provider":"codex""#, with: #""provider":"claude-code""#).utf8)
+        }
+        let list = try Contract.panelList(claude(q), exit: 0)
+        let row = try XCTUnwrap(MenuBuilder.build(.read(list, at: Date()), now: Date()).rows.first { $0.title == "Example Claude" })
+        XCTAssertTrue(row.detail.contains("0.0% used")) // Explicit zero only.
+        XCTAssertTrue(row.detail.contains("freshness unknown"))
+        XCTAssertTrue(row.submenu.contains { $0.accessibilityLabel.contains("Retrieved 2030-03-04T12:00:00Z") && $0.accessibilityLabel.contains("cached or seeded") })
+        XCTAssertFalse(row.submenu.contains { $0.accessibilityLabel.contains("saved snapshot") || $0.accessibilityLabel.hasPrefix("Read ") })
+        XCTAssertEqual(row.submenu.compactMap(\.command), [.openPanel])
+        for bad in [q.replacingOccurrences(of: "provider_unknown", with: "fresh"),
+                    q.replacingOccurrences(of: "retrievedAt", with: "observedAt"),
+                    q.replacingOccurrences(of: "2030-03-04T12:00:00Z", with: "not-a-date"),
+                    q.replacingOccurrences(of: "claude:get_usage", with: "codex account/rateLimits/read"),
+                    q.replacingOccurrences(of: #""retrievedAt":"2030-03-04T12:00:00Z",""#, with: "")] {
+            XCTAssertThrowsError(try Contract.panelList(claude(bad), exit: 0))
+        }
+        XCTAssertThrowsError(try Contract.panelList(payload(q), exit: 0)) // Wrong provider.
+        let mixedTimes = q.replacingOccurrences(of: #""freshness":"provider_unknown""#, with: #""observedAt":"2030-03-04T11:00:00Z","freshness":"provider_unknown""#)
+        XCTAssertThrowsError(try Contract.panelList(claude(mixedTimes), exit: 0))
+    }
 }
