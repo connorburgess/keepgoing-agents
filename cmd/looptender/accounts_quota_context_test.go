@@ -111,7 +111,7 @@ func TestAccountQuotaSandboxCLIWebAndNativeProjection(t *testing.T) {
 	r := reader.read(context.Background(), false)
 	q := r.Accounts.Cards[0].Quota
 	n := buildPanelList(r).AccountQuotas.Accounts[0].Summary
-	if q.State != "unavailable" || q.Reason != "selection_review_required" || n.State != "unavailable" || len(n.Rows) != 0 || !strings.Contains(n.Text, "explicitly update") {
+	if q.State != "unavailable" || q.Reason != "selection_review_required" || n.State != "unavailable" || len(n.Rows) != 0 || !strings.Contains(n.Text, "Open Accounts") {
 		t.Fatalf("real drift lost: %+v %+v", q, n)
 	}
 	if out := os.Getenv("LOOPTENDER_SANDBOX_QUOTA_FIXTURE"); out != "" {
