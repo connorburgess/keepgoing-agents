@@ -779,3 +779,16 @@ The web hard response ceiling remains the existing 8 MiB. The combined widest
 registry/route-list plus 64 detailed quota fixture requires the existing main
 6 MiB regression threshold; all quota rows remain obtainable in the separate
 1 MiB response. Native remains bounded to 1 MiB.
+
+
+## Connect an account in the panel (unreleased)
+
+The Accounts row offers **Connect Claude** or **Connect Codex** when quota is unavailable. This is an action, not a diagnosis: a missing quota reading can also mean an unsupported source or a failed request. A structured missing-login observation is shown separately as **Sign-in required**.
+
+Open the panel with controls enabled, choose Connect for the intended account, and review the change before starting sign-in. Finish authentication on the provider's page. Looptender does not ask for your password or copy credentials from another account. Each attempt creates a private, separate provider context. Only confirmed sign-in and an unchanged reviewed selection allow publication to that account's catalog entry. Its label, provider, executable and working directory are retained; routes and held loops are not changed. Retrieve quota separately after connection succeeds.
+
+For multiple accounts, choose **Connect another Claude account** or **Connect another Codex account**, enter a distinct label, and review the new connection. The existing selection supplies the CLI and working directory; successful sign-in adds a new entry rather than replacing that selection. Duplicate labels and the catalog limit are checked again before publication. Adding the first provider selection still uses the existing explicit catalog setup; the panel does not discover or import other credentials.
+
+If the reply is lost, **Check connection** checks the already reviewed attempt. It never repeats sign-in. **Cancel sign-in** cancels that attempt; an unknown outcome is not automatically retried. The panel can retain an unused private context after failure rather than risk deleting authentication files of uncertain state. Closing the panel stops its owned connection processes. Opening the native menu, reading status or refreshing the saved account list never starts sign-in.
+
+Codex connection requires a supported standalone native CLI on macOS or Linux. Claude connection is limited to the inspected macOS arm64 native Claude Code artifact and Claude subscription login; Console authentication is excluded. Unsupported binaries, wrappers, platform admission and conflicting authentication overrides refuse before sign-in. The provider may require a person to finish authentication; terminal-only fallback is not silently automated. Windows connection is not enabled. The native Connect row opens the selected account through the existing panel-controls confirmation. Source and fictional tests do not establish live provider acceptance.

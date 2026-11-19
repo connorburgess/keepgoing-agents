@@ -1,0 +1,1 @@
+- Add person-started Connect Claude and Connect Codex actions to Accounts, separate named account connections, and native-menu navigation to the selected account. Sign-in uses a new private provider context after review; polling never starts authentication or clears loop holds. Platform and executable admission apply.

@@ -175,8 +175,8 @@ func (s *panelState) pagePath() string { return "/s/" + s.segment + "/" }
 // also writes the launch page and returns that file's name; otherwise it
 // returns the opening address.
 func (s *panelState) mint(key string, asFile bool) (address, file string, err error) {
-	if key != "" && !panelKeyPattern.MatchString(key) {
-		return "", "", errors.New("not a loop key")
+	if key != "" && !panelKeyPattern.MatchString(key) && !(strings.HasPrefix(key, "a") && panelAccountID.MatchString(strings.TrimPrefix(key, "a"))) {
+		return "", "", errors.New("not a panel page key")
 	}
 	code, err := panelRandom(32)
 	if err != nil {
@@ -458,7 +458,9 @@ func (h *panelHandler) open(w http.ResponseWriter, r *http.Request) {
 	// session, and with this server whichever comes first.
 	http.SetCookie(w, &http.Cookie{Name: panelCookieName, Value: session, Path: h.state.pagePath(), HttpOnly: true, SameSite: http.SameSiteStrictMode})
 	target := h.state.pagePath()
-	if opening.key != "" {
+	if strings.HasPrefix(opening.key, "a") {
+		target += "#/accounts/" + strings.TrimPrefix(opening.key, "a")
+	} else if opening.key != "" {
 		target += "#/loop/" + opening.key
 	}
 	// The target is this server's own path and a validated key.
