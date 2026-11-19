@@ -1389,7 +1389,7 @@
       });
   }
   function accountQuotaReason(reason) {
-    return ({ not_checked: "No subscription quota reading is saved for this selection.", context_changed: "The selected context changed. Review it before refreshing quota.", cache_unavailable: "Private quota evidence could not be read. No usage is assumed.",
+    return ({ not_checked: "No subscription quota reading is saved for this selection.", selection_review_required: "Review and explicitly update the selection, even if its paths are unchanged, then refresh quota. Saved quota was not reused.", context_changed: "The selected context changed. Review it before refreshing quota.", cache_unavailable: "Private quota evidence could not be read. No usage is assumed.",
       time_unavailable: "The reading's time cannot be established.", unsupported_provider: "Subscription quota reads are available for selected Codex contexts only.", unsupported: "This Codex CLI does not support subscription quota reads.",
       timeout: "The quota read timed out.", cancelled: "The quota read was cancelled.", status_unavailable: "Codex could not provide a quota reading.", schema_unavailable: "The quota response was not recognized.",
       no_windows: "Codex reported no subscription windows.", unknown_bucket: "Codex did not report the supported subscription bucket.", unknown_windows: "Codex reported an unsupported quota window shape." })[reason] || "Subscription quota is unavailable.";
@@ -1420,6 +1420,10 @@
     } else box.appendChild(el("p", "sub", saved.text || (c.provider === "claude-code" ? "No supported model-free account quota source is available for Claude. Dated route observations remain on Routes." : accountQuotaReason(q.reason || "not_checked"))));
     if (saved.failedRefreshAt) box.appendChild(el("p", "sub", "Refresh failed " + when({ at: saved.failedRefreshAt }) + ". " + saved.failedRefreshText + " Any earlier reading retains its original time."));
     if (c.provider !== "codex") return box;
+    if (q.reason === "selection_review_required") {
+      box.appendChild(el("p", "sub", "Use looptender accounts update to review this selection before requesting another quota read."));
+      return box;
+    }
     var change = state.accountQuotaChange, current = change && change.id === c.id ? change : null;
     if (current) {
       var review = el("div", "account-quota-review");
