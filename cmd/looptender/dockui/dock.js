@@ -1354,31 +1354,31 @@
   }
   // Explicit subscription-quota reads have their own review and never run from
   // a page poll. This state cannot be mistaken for a loop or route action.
-  function accountQuotaPost(id, step, form) {
+  function accountQuotaPost(id, step, form, recovery) {
     var abort = new AbortController(), timer = setTimeout(function () { abort.abort(); }, 15000);
-    return fetch("api/v1/accounts/" + encodeURIComponent(id) + "/" + step, {
+    return fetch((recovery ? "api/v1/account-selections/" : "api/v1/accounts/") + encodeURIComponent(id) + "/" + step, {
       method: "POST", cache: "no-store", credentials: "same-origin", signal: abort.signal,
       headers: { "Content-Type": "application/json", Accept: "application/json", "X-Keepgoing-Form": form },
-      body: JSON.stringify({ action: "subscription_quota" })
+      body: JSON.stringify({ action: recovery ? "review_selection" : "subscription_quota" })
     }).then(function (r) {
       if (!r.ok) { var e = new Error("status " + r.status); e.status = r.status; throw e; }
       return r.json();
     }).then(function (d) { if (!d || d.schemaVersion !== 1) throw new Error("schema"); return d; })
       .finally(function () { clearTimeout(timer); });
   }
-  function accountQuotaRequest(c, confirm) {
-    if (!changesOn() || !state.server.accountQuota) return;
-    var old = state.accountQuotaChange, p = confirm && old && old.id === c.id && old.preview;
+  function accountQuotaRequest(c, confirm, recovery) {
+    if (!changesOn() || !(recovery ? state.server.accountSelectionReview : state.server.accountQuota)) return;
+    var old = state.accountQuotaChange, p = confirm && old && old.id === c.id && !!old.recovery === !!recovery && old.preview;
     if (confirm && !p) return;
-    var request = { id: c.id, busy: true, preview: p || null };
+    var request = { id: c.id, recovery: !!recovery, busy: true, preview: p || null };
     state.accountQuotaChange = request;
     render(false, true);
-    accountQuotaPost(c.id, confirm ? "confirm" : "prepare", confirm ? p.form : state.server.form)
+    accountQuotaPost(c.id, confirm ? "confirm" : "prepare", confirm ? p.form : state.server.form, recovery)
       .then(function (d) { request.preview = d.preview; request.result = d.result; })
       .catch(function (err) {
         var refused = err && err.status >= 400 && err.status < 500;
         request.preview = null;
-        request.result = { text: !confirm ? "The quota review could not be prepared. Nothing was refreshed." : refused ? p.refused : p.lost };
+        request.result = { text: !confirm ? (recovery ? "The selection review could not be prepared. Nothing was updated." : "The quota review could not be prepared. Nothing was refreshed.") : refused ? p.refused : p.lost };
       }).then(function () {
         if (state.accountQuotaChange !== request) return;
         request.busy = false;
@@ -1389,7 +1389,7 @@
       });
   }
   function accountQuotaReason(reason) {
-    return ({ not_checked: "No subscription quota reading is saved for this selection.", selection_review_required: "Review and explicitly update the selection, even if its paths are unchanged, then refresh quota. Saved quota was not reused.", context_changed: "The selected context changed. Review it before refreshing quota.", cache_unavailable: "Private quota evidence could not be read. No usage is assumed.",
+    return ({ not_checked: "No subscription quota reading is saved for this selection.", selection_review_required: "Review this unchanged selection for the panel, then refresh quota. Saved quota was not reused.", context_changed: "The selected context changed. Review it before refreshing quota.", cache_unavailable: "Private quota evidence could not be read. No usage is assumed.",
       time_unavailable: "The reading's time cannot be established.", unsupported_provider: "Subscription quota reads are available for selected Codex contexts only.", unsupported: "This Codex CLI does not support subscription quota reads.",
       timeout: "The quota read timed out.", cancelled: "The quota read was cancelled.", status_unavailable: "Codex could not provide a quota reading.", schema_unavailable: "The quota response was not recognized.",
       no_windows: "Codex reported no subscription windows.", unknown_bucket: "Codex did not report the supported subscription bucket.", unknown_windows: "Codex reported an unsupported quota window shape." })[reason] || "Subscription quota is unavailable.";
@@ -1420,10 +1420,6 @@
     } else box.appendChild(el("p", "sub", saved.text || (c.provider === "claude-code" ? "No supported model-free account quota source is available for Claude. Dated route observations remain on Routes." : accountQuotaReason(q.reason || "not_checked"))));
     if (saved.failedRefreshAt) box.appendChild(el("p", "sub", "Refresh failed " + when({ at: saved.failedRefreshAt }) + ". " + saved.failedRefreshText + " Any earlier reading retains its original time."));
     if (c.provider !== "codex") return box;
-    if (q.reason === "selection_review_required") {
-      box.appendChild(el("p", "sub", "Use looptender accounts update to review this selection before requesting another quota read."));
-      return box;
-    }
     var change = state.accountQuotaChange, current = change && change.id === c.id ? change : null;
     if (current) {
       var review = el("div", "account-quota-review");
@@ -1431,14 +1427,21 @@
         review.appendChild(el("h4", null, current.preview.title));
         list(current.preview.lines).forEach(function (line) { review.appendChild(el("p", null, say(line))); });
         var controls = el("div", "account-quota-actions");
-        controls.appendChild(button("Cancel", "quota-cancel-" + c.id, "", function () { state.accountQuotaChange = null; render(false, true); focusOn("quota-refresh-" + c.id); }, current.busy));
-        controls.appendChild(button(current.busy ? "Reading…" : current.preview.confirm, "quota-confirm-" + c.id, "is-primary", function () { accountQuotaRequest(c, true); }, current.busy));
+        controls.appendChild(button("Cancel", "quota-cancel-" + c.id, "", function () { state.accountQuotaChange = null; render(false, true); focusOn(current.recovery ? "selection-review-" + c.id : "quota-refresh-" + c.id); }, current.busy));
+        controls.appendChild(button(current.busy ? (current.recovery ? "Updating…" : "Reading…") : current.preview.confirm, "quota-confirm-" + c.id, "is-primary", function () { accountQuotaRequest(c, true, current.recovery); }, current.busy));
         review.appendChild(controls);
       } else if (current.result) {
         var result = el("p", null, current.result.text); result.tabIndex = -1; result.setAttribute("data-focus", "quota-result-" + c.id); review.appendChild(result);
-        review.appendChild(button("Close", "quota-close-" + c.id, "", function () { state.accountQuotaChange = null; render(false, true); focusOn("quota-refresh-" + c.id); }));
-      } else review.appendChild(el("p", "sub", "Preparing quota review…"));
+        review.appendChild(button("Close", "quota-close-" + c.id, "", function () { state.accountQuotaChange = null; render(false, true); focusOn("account-" + c.id); }));
+      } else review.appendChild(el("p", "sub", current.recovery ? "Preparing selection review…" : "Preparing quota review…"));
       box.appendChild(review);
+    }
+    var needsSelectionReview = q.reason === "selection_review_required";
+    if (needsSelectionReview) {
+      if (changesOn() && state.server.accountSelectionReview) {
+        if (!current) box.appendChild(button("Review selection for this panel…", "selection-review-" + c.id, "", function () { accountQuotaRequest(c, false, true); }));
+      } else box.appendChild(el("p", "sub", "Open a panel with changes allowed, then return to Accounts to review this selection. The native menu's Open Panel with Controls… provides that entry point."));
+      return box;
     }
     if (changesOn() && state.server.accountQuota) {
       if (!current) box.appendChild(button("Refresh subscription quota…", "quota-refresh-" + c.id, "", function () { accountQuotaRequest(c, false); }));
@@ -1458,7 +1461,17 @@
     if (d.accountsReference && (savedAccounts.reference !== d.accountsReference || savedAccounts.status !== "ready")) {
       var failed = savedAccounts.reference === d.accountsReference && savedAccounts.status === "failed";
       var pending = emptyBox(failed ? "Saved accounts unavailable" : "Reading saved accounts", failed ? "This saved snapshot could not be read. Use Read now to try the current panel snapshot. Missing quota is not zero; no provider refresh was made." : "Reading the saved selections and quota evidence for this panel snapshot. No provider is queried.");
-      pending.setAttribute("role", "status"); pane.appendChild(pending); return;
+      pending.setAttribute("role", "status"); pane.appendChild(pending);
+      // A saved-only read after confirmation temporarily replaces the cards.
+      // Keep its non-sensitive outcome and focus target through that gap;
+      // old selection fields and quota rows remain withheld.
+      var outcome = state.accountQuotaChange;
+      if (outcome && outcome.result) {
+        var feedback = el("p", null, outcome.result.text);
+        feedback.tabIndex = -1; feedback.setAttribute("data-focus", "quota-result-" + outcome.id);
+        pane.appendChild(feedback);
+      }
+      return;
     }
     if (!a.complete || a.state !== "available") {
       pane.appendChild(emptyBox("Accounts unavailable", "The private account catalog could not be read completely. This does not mean no accounts are selected."));

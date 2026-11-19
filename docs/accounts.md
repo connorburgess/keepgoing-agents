@@ -459,7 +459,22 @@ the additional CODEX_SANDBOX marker. A valid tagged definition-2 catalog binding
 silently accepted or rewritten: review and explicitly update the same selection
 (even if its paths are unchanged), then refresh quota. Definition-2 quota cache
 evidence is not reused under a new definition-3 binding. Reads do not modify
-either file. The guard-tag family is retained so definition-2 readers also
+either file. In a panel with changes allowed, open Accounts and choose
+**Review selection for this panel…**. The review retains the exact provider,
+label, executable, account-directory selection and working directory; it binds
+a new revision to that panel's startup environment. Review the displayed paths
+and authentication mode: inherited authentication may differ from a terminal,
+and this action does not verify account identity. Confirmation clears prior
+login/plan observations and invalidates prior quota. It makes no provider call,
+changes no login/default or loop control, and does not refresh quota. Review
+**Refresh subscription quota…** separately afterward. The native menu directs
+you to Accounts through **Open Panel with Controls…**; it cannot revise a
+selection itself. Read-only panels offer guidance without a write action.
+
+The single-use review pins the current revision, startup caller, effective
+context and native path identities. Drift, a concurrent check/refresh, expiry or
+replay refuses publication; a lost reply is never retried automatically. This
+recovery currently supports selected Codex contexts only. The guard-tag family is retained so definition-2 readers also
 refuse new definition-3 bindings instead of treating them as pre-tag legacy.
 Authentication, provider, executable, directory, home/config,
 proxy/TLS and other environment checks remain; the actual execution environment
