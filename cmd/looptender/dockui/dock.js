@@ -1,5 +1,5 @@
 "use strict";
-// keepgoing panel page. Reads one versioned JSON endpoint relative to this
+// keepgoing panel page. Reads bounded versioned JSON relative to this
 // page and renders it with DOM text nodes only; no data is parsed as HTML.
 // Ages come from the report's read time, never this browser's clock, so the
 // page reads the same wherever it is opened. Every sentence about a loop or a
@@ -14,6 +14,8 @@
   var FAIL_LONG_MS = 120000;
   var API = "api/v1/dock";
   var SERVER = "api/v1/server";
+  var SAVED_ACCOUNTS = "api/v1/saved-accounts";
+  var savedAccounts = { reference: "", status: "", data: null, serial: 0, abort: null };
   // The end of the route brief that says a missing standby does not touch the
   // route in use; the line is then a plain notice, not a warning. Kept in step
   // with dockCurrentUnaffected in dock_view.go (a test checks).
@@ -366,7 +368,7 @@
     var rs = d.routesSummary || {};
     fixed.appendChild(pickRow("#/routes", rs.trouble ? "dot-limit" : "dot-calm", "Routes", rs.picker || "", r.view === "routes"));
     var ac = d.accounts || {};
-    fixed.appendChild(pickRow("#/accounts", "dot-calm", "Accounts", ac.complete ? list(ac.cards).length + " selected" : "Unavailable", r.view === "accounts"));
+    fixed.appendChild(pickRow("#/accounts", "dot-calm", "Accounts", ac.complete ? (d.accountsReference ? d.selectedAccounts || 0 : list(ac.cards).length) + " selected" : "Unavailable", r.view === "accounts"));
     var vs = d.versions || {};
     fixed.appendChild(pickRow("#/versions", vs.behind ? "dot-limit" : "dot-calm", "Versions", vs.summary || "", r.view === "versions"));
     fixed.appendChild(pickRow("#/usage", "dot-calm", "Usage", d.usagePicker || "", r.view === "usage"));
@@ -1394,22 +1396,30 @@
   }
   function accountQuotaBox(c) {
     var q = c.quota || {}, box = el("div", "account-quota");
-    box.appendChild(el("h3", null, "Subscription quota"));
-    box.appendChild(el("p", "sub", "For this selected Codex context. Separate from route-probe readings and token totals."));
-    if (q.state === "reported" && q.observedAt && list(q.windows).length) {
-      box.appendChild(el("p", "sub", "Read " + when({ at: q.observedAt }) + (q.freshness === "stale" ? " · Older reading; refresh before relying on it." : " · Recorded snapshot.")));
-      var windows = el("dl", "work-facts");
-      list(q.windows).forEach(function (w) {
-        var ended = w.resetsAt && Date.parse(w.resetsAt) <= readTime();
-        var name = w.name === "primary" ? "Primary window" : "Secondary window";
-        var value = w.usedPercent + "% used" + (w.durationMinutes ? " · " + w.durationMinutes + " minutes" : "");
-        value += ended ? " · Window ended; refresh needed." : w.resetsAt ? " · Resets " + when({ at: w.resetsAt }) : " · Reset time unavailable.";
-        windows.appendChild(fact(name, value));
+    box.appendChild(el("h3", null, "Account quota"));
+    box.appendChild(el("p", "sub", "Saved for this selection; separate from route readings. Live thread account binding is not verified."));
+    var saved = q.summary || {};
+    if (saved.state === "reported" && saved.observedAt) {
+      box.appendChild(el("p", "quota-stamp", "Read " + when({ at: saved.observedAt }) + (saved.freshness === "stale" ? " · Older reading" : " · Saved snapshot")));
+      var rows = el("ul", "quota-windows");
+      list(saved.rows).forEach(function (w) {
+        var row = el("li", "quota-window" + (w.ended ? " is-ended" : ""));
+        row.appendChild(el("h4", null, w.name));
+        row.appendChild(el("p", "quota-value", w.text));
+        if (typeof w.usedPercent === "number" && !w.ended) {
+          var meter = el("meter", "quota-meter"); meter.min = 0; meter.max = 100; meter.value = w.usedPercent;
+          meter.setAttribute("aria-label", w.name + ": " + w.text); meter.textContent = w.text; row.appendChild(meter);
+        }
+        if (w.resetsAt) row.appendChild(el("p", "sub", (w.ended ? "Ended " : "Resets ") + when({ at: w.resetsAt })));
+        else if (typeof w.usedPercent === "number" || typeof w.remainingPercent === "number") row.appendChild(el("p", "sub", "Reset time unavailable."));
+        rows.appendChild(row);
       });
-      box.appendChild(windows);
-      box.appendChild(el("p", "sub", "Source: " + q.source));
-    } else box.appendChild(el("p", "sub", accountQuotaReason(q.reason || "not_checked")));
-    if (q.failedRefreshAt) box.appendChild(el("p", "sub", "Refresh failed " + when({ at: q.failedRefreshAt }) + ". " + accountQuotaReason(q.failedRefreshReason) + (q.state === "reported" ? " The earlier reading retains its original time." : "")));
+      box.appendChild(rows);
+      if (saved.partial || saved.omitted) box.appendChild(el("p", "sub quota-incomplete", "Partial evidence: some quota detail is unavailable" + (saved.omitted ? "; " + saved.omitted + " additional buckets not shown" : "") + ". Missing values are not zero."));
+      box.appendChild(el("p", "sub", "Source: " + saved.source));
+    } else box.appendChild(el("p", "sub", saved.text || (c.provider === "claude-code" ? "No supported model-free account quota source is available for Claude. Dated route observations remain on Routes." : accountQuotaReason(q.reason || "not_checked"))));
+    if (saved.failedRefreshAt) box.appendChild(el("p", "sub", "Refresh failed " + when({ at: saved.failedRefreshAt }) + ". " + saved.failedRefreshText + " Any earlier reading retains its original time."));
+    if (c.provider !== "codex") return box;
     var change = state.accountQuotaChange, current = change && change.id === c.id ? change : null;
     if (current) {
       var review = el("div", "account-quota-review");
@@ -1441,6 +1451,11 @@
     usage.appendChild(link("#/routes", "View recorded usage", "work-inspect"));
     usage.appendChild(el("span", "sub", ". Readings come from configured routes and are not live. Each account shows the readings of the routes that use it."));
     pane.appendChild(usage);
+    if (d.accountsReference && (savedAccounts.reference !== d.accountsReference || savedAccounts.status !== "ready")) {
+      var failed = savedAccounts.reference === d.accountsReference && savedAccounts.status === "failed";
+      var pending = emptyBox(failed ? "Saved accounts unavailable" : "Reading saved accounts", failed ? "This saved snapshot could not be read. Use Read now to try the current panel snapshot. Missing quota is not zero; no provider refresh was made." : "Reading the saved selections and quota evidence for this panel snapshot. No provider is queried.");
+      pending.setAttribute("role", "status"); pane.appendChild(pending); return;
+    }
     if (!a.complete || a.state !== "available") {
       pane.appendChild(emptyBox("Accounts unavailable", "The private account catalog could not be read completely. This does not mean no accounts are selected."));
       return;
@@ -1484,6 +1499,18 @@
       plan.appendChild(el("span", "sub", "Reported plan"));
       var auth = c.auth || {}, sameCheck = !!(c.plan && c.plan.observedAt && c.plan.observedAt === auth.observedAt && c.plan.source === auth.source);
       plan.appendChild(accountEvidence(c.plan, sameCheck)); summary.appendChild(plan);
+      var qs = c.quota && c.quota.summary;
+      var compact = el("span", "quota-compact");
+      if (qs && qs.state === "reported") {
+        list(qs.rows).filter(function (w) { return typeof w.usedPercent === "number"; }).slice(0, 2).forEach(function (w) {
+          var item = el("span", "quota-chip"); item.appendChild(el("span", "sub", w.name));
+          item.appendChild(el("strong", null, w.ended ? "Window ended" : w.usedPercent + "% used")); compact.appendChild(item);
+        });
+        if (!compact.childNodes.length) compact.appendChild(el("span", "sub", qs.partial ? "Partial quota evidence" : "Quota details recorded"));
+        compact.appendChild(el("span", "sub", qs.freshness === "stale" ? "Older quota reading" : "Saved quota reading"));
+        compact.title = "Saved account quota; expand for all recorded detail";
+      } else if (c.provider === "codex" || c.provider === "claude-code") compact.appendChild(el("span", "sub", "Account quota unavailable"));
+      summary.appendChild(compact);
       details.appendChild(summary);
       var body = el("div", "account-body");
       var facts = el("dl", "work-facts");
@@ -1492,7 +1519,7 @@
       var use = byCard[c.id];
       facts.appendChild(fact("Routes", use && list(use.routes).length ? accountRouteList(d, use, true) : accountRoutes(c)));
       body.appendChild(facts);
-      if (c.provider === "codex") body.appendChild(accountQuotaBox(c));
+      if (c.provider === "codex" || c.provider === "claude-code") body.appendChild(accountQuotaBox(c));
       // The catalog records no model: a route chooses it, and a check never
       // calls one. Said once, quietly, in place of two empty rows.
       if (c.configuredModel && c.configuredModel.missing === "not_recorded" && c.observedModel && c.observedModel.missing === "not_recorded") body.appendChild(el("p", "sub", "Models are not recorded here: a route chooses the model, and a check never calls one."));
@@ -2093,6 +2120,38 @@
       .finally(function () { clearTimeout(timer); });
   }
 
+  // A bounded companion to the current main read, only on Accounts. No
+  // independent timer or provider refresh. A new snapshot or privacy view
+  // invalidates both successful and delayed replies from the previous read.
+  function loadSavedAccounts(retry) {
+    var d = state.data;
+    if (!d || !d.accountsReference || route().view !== "accounts") return;
+    var ref = d.accountsReference, asked = state.identifiers;
+    if (savedAccounts.reference === ref && savedAccounts.status === "ready") { d.accounts = savedAccounts.data; return; }
+    if (savedAccounts.reference === ref && (savedAccounts.status === "loading" || (!retry && savedAccounts.status === "failed"))) return;
+    if (savedAccounts.abort) savedAccounts.abort.abort();
+    var ctl = new AbortController(), seq = ++savedAccounts.serial;
+    savedAccounts.reference = ref; savedAccounts.status = "loading"; savedAccounts.data = null; savedAccounts.abort = ctl;
+    var timer = setTimeout(function () { ctl.abort(); }, readTimeoutMs());
+    function current() { return seq === savedAccounts.serial && state.data && state.data.accountsReference === ref && state.identifiers === asked; }
+    fetch(SAVED_ACCOUNTS + "?reference=" + encodeURIComponent(ref), { cache: "no-store", credentials: "same-origin", headers: { Accept: "application/json" }, signal: ctl.signal })
+      .then(function (r) { if (!r.ok) throw new Error("saved accounts unavailable"); return r.text(); })
+      .then(function (text) {
+        if (new TextEncoder().encode(text).length > 1048576) throw new Error("saved accounts bound");
+        var result = JSON.parse(text);
+        if (!result || result.schemaVersion !== SCHEMA || result.reference !== ref || !result.accounts || !Array.isArray(result.accounts.cards) || result.accounts.cards.length > 64) throw new Error("saved accounts schema");
+        if (!current()) return;
+        savedAccounts.status = "ready"; savedAccounts.data = result.accounts; state.data.accounts = result.accounts;
+      })
+      .catch(function () { if (current()) savedAccounts.status = "failed"; })
+      .finally(function () {
+        clearTimeout(timer);
+        if (!current()) return;
+        savedAccounts.abort = null;
+        if (route().view === "accounts") render(false, true);
+      });
+  }
+
   function loadServer() {
     getJSON(SERVER)
       .then(function (d) {
@@ -2131,9 +2190,12 @@
         // Identifiers were turned on or off while this read was out: the
         // reply is for the other view, so it is dropped and read again.
         if (asked !== state.identifiers) { state.again = true; return; }
+        if (savedAccounts.reference !== d.accountsReference && savedAccounts.abort) { savedAccounts.abort.abort(); ++savedAccounts.serial; }
+        if (d.accountsReference && savedAccounts.reference === d.accountsReference && savedAccounts.status === "ready") d.accounts = savedAccounts.data;
         state.data = d; state.lastOk = Date.now(); state.failed = false; state.failedSince = 0; state.failedLong = false;
         if (wantsUsage(route())) loadUsage();
         if (render(false) !== false) notice("cut", d.complete === false ? "This read was cut off before every loop was read. Loops that were not read are listed as could not be read; it reads again shortly." : "");
+        loadSavedAccounts(true);
       })
       .catch(function (err) {
         state.failed = true;
@@ -2187,6 +2249,7 @@
     });
     window.addEventListener("hashchange", function () {
       render(true);
+      loadSavedAccounts(false);
       if (wantsUsage(route())) loadUsage();
     });
     document.addEventListener("keydown", function (ev) {

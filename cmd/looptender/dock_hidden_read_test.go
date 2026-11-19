@@ -31,10 +31,10 @@ func TestDockHiddenTabReadsNothingG1(t *testing.T) {
 
 // G2 (design pass 2): reads had no timeout, so a server that accepted the
 // connection and never answered left the page stuck, and a read out when
-// identifiers were toggled was applied anyway. Every read now goes through
-// getJSON, which aborts a little under the refresh interval; the timed-out
-// read takes the failed-read path, notice(); a reply for the other
-// identifiers view is dropped.
+// identifiers were toggled was applied anyway. Main/server reads use
+// getJSON; Usage, explicit quota and saved Accounts each own a bounded read.
+// Every bounded path passes its abort signal, clears its timer and handles
+// failure. Replies for a superseded snapshot or identifier view are dropped.
 func TestDockReadsTimeOutG2(t *testing.T) {
 	js := dockUIText(t, "dock.js")
 	for _, want := range []string{
@@ -49,13 +49,48 @@ func TestDockReadsTimeOutG2(t *testing.T) {
 			t.Errorf("dock.js lacks %q", want)
 		}
 	}
-	// The report and server reads go through getJSON; fetch is otherwise
-	// called by post(), the changes, which are not retried and are not timed
-	// out, and by loadUsage(), which has its own timeout and runs only after
-	// a report read, so a hidden tab never starts it. Subscription quota has
-	// its own bounded explicit POST, never called by the polling functions.
-	if n := strings.Count(js, "fetch("); n != 4 || !strings.Contains(jsFunction(t, js, "function loadUsage() {"), "signal: abort.signal") {
-		t.Errorf("fetch( appears %d times", n)
+	// Inventory fetch owners rather than treating a new transport as a count
+	// increment. Each bounded read must retain its own deadline, signal, cleanup
+	// and failure path; generic reviewed changes deliberately keep unknown-save
+	// semantics without automatic timeout/replay.
+	owners := []string{"function getJSON(url) {", "function loadUsage() {", "function loadSavedAccounts(retry) {", "function accountQuotaPost(id, step, form) {", "function post(path, form, body) {"}
+	ownedFetches := 0
+	for _, head := range owners {
+		source := jsFunction(t, js, head)
+		n := strings.Count(source, "fetch(")
+		if n != 1 {
+			t.Errorf("%s owns %d fetches, want one", head, n)
+		}
+		ownedFetches += n
+	}
+	if n := strings.Count(js, "fetch("); n != ownedFetches {
+		t.Errorf("%d fetches but only %d have reviewed owners", n, ownedFetches)
+	}
+	for _, tc := range []struct {
+		head     string
+		required []string
+	}{
+		{"function getJSON(url) {", []string{"new AbortController()", "ctl.abort()", "readTimeoutMs()", "signal: ctl.signal", "if (!r.ok) throw", ".finally(function () { clearTimeout(timer); });"}},
+		{"function loadUsage() {", []string{"new AbortController()", "abort.abort()", "usageTimeout()", "signal: abort.signal", "if (!r.ok) throw", ".catch(function () { state.usageFailed = true; })", "clearTimeout(timer)", "state.usageBusy = false"}},
+		{"function loadSavedAccounts(retry) {", []string{"new AbortController()", "ctl.abort()", "readTimeoutMs()", "signal: ctl.signal", "if (!r.ok) throw", ".catch(function () { if (current()) savedAccounts.status = \"failed\"; })", ".finally(function () {", "clearTimeout(timer)", "seq === savedAccounts.serial", "state.data.accountsReference === ref", "state.identifiers === asked"}},
+		{"function accountQuotaPost(id, step, form) {", []string{"new AbortController()", "abort.abort()", "15000", "signal: abort.signal", "if (!r.ok)", ".finally(function () { clearTimeout(timer); });"}},
+	} {
+		source := jsFunction(t, js, tc.head)
+		for _, want := range tc.required {
+			if !strings.Contains(source, want) {
+				t.Errorf("%s lacks timeout/failure protection %q", tc.head, want)
+			}
+		}
+	}
+	saved := jsFunction(t, js, "function loadSavedAccounts(retry) {")
+	finallyAt := strings.Index(saved, ".finally(function () {")
+	if finallyAt < 0 {
+		t.Fatal("saved-read cleanup missing")
+	}
+	cleanup := saved[finallyAt:]
+	clearAt, staleAt := strings.Index(cleanup, "clearTimeout(timer)"), strings.Index(cleanup, "if (!current()) return")
+	if clearAt < 0 || staleAt < 0 || clearAt > staleAt {
+		t.Error("superseded saved reads must clear their timer before returning")
 	}
 	if !strings.Contains(jsFunction(t, js, "function loadServer() {"), "getJSON(SERVER)") {
 		t.Error("loadServer must read through getJSON")
@@ -91,7 +126,7 @@ func TestDockQuotaOnlyReadsAfterExplicitReview(t *testing.T) {
 			t.Errorf("quota POST lacks %q", want)
 		}
 	}
-	for _, head := range []string{"function load(byHand) {", "function loadServer() {", "function loadUsage() {", "function schedule() {"} {
+	for _, head := range []string{"function load(byHand) {", "function loadServer() {", "function loadUsage() {", "function loadSavedAccounts(retry) {", "function schedule() {"} {
 		source := jsFunction(t, js, head)
 		if strings.Contains(source, "accountQuotaPost(") || strings.Contains(source, "accountQuotaRequest(") {
 			t.Errorf("automatic quota read in %s", head)

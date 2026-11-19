@@ -24,6 +24,7 @@ import (
 	"strconv"
 	"strings"
 	"syscall"
+	"time"
 )
 
 func main() {
@@ -38,7 +39,13 @@ func main() {
 			if left != "always" {
 				os.WriteFile(kills, []byte(strconv.Itoa(n-1)), 0o600)
 			}
-			syscall.Kill(os.Getpid(), syscall.SIGKILL)
+			if err := syscall.Kill(os.Getpid(), syscall.SIGKILL); err != nil {
+				panic(err)
+			}
+			// Delivery may follow the syscall return. Never race it with exit(3).
+			for {
+				time.Sleep(time.Hour)
+			}
 		}
 	}
 	os.Exit(3)

@@ -111,7 +111,10 @@ func accountQuotaRefresh(ctx context.Context, dir, id string, expected *accountQ
 		c, cancel := context.WithTimeout(ctx, 5*time.Second)
 		raw, err := run(c, s.Entry.CLI, accounts.ExecutionEnvironment(s.Entry, env), s.Entry.Workdir)
 		cancel()
-		a.Windows, a.Reason = accountQuotaParse(raw, err)
+		a.Details, a.Reason = accountQuotaDetailsParse(raw, err)
+		if a.Reason == "" {
+			a.Windows, _ = accountQuotaParse(raw, nil)
+		}
 	}
 	a.At = now().UTC()
 	verify := func() error {
@@ -253,8 +256,19 @@ func accountsUsage(e env, dir, id string, asJSON bool) int {
 		if v.ObservedAt != nil {
 			fmt.Fprintf(e.stdout, "Read %s (%s); source: %s\n", v.ObservedAt.Format(time.RFC3339), v.Freshness, v.Source)
 		}
-		for _, w := range v.Windows {
-			fmt.Fprintf(e.stdout, "%s: %d%% used\n", w.Name, w.UsedPercent)
+		summary := accounts.SummarizeQuota(v, time.Now())
+		for _, row := range summary.Rows {
+			fmt.Fprintf(e.stdout, "%s: %s", row.Name, row.Text)
+			if row.ResetsAt != nil {
+				fmt.Fprintf(e.stdout, "; reset %s", row.ResetsAt.Format(time.RFC3339))
+			}
+			fmt.Fprintln(e.stdout)
+		}
+		if summary.Partial {
+			fmt.Fprintln(e.stdout, "Partial quota evidence; missing values are not zero.")
+		}
+		if summary.Omitted > 0 {
+			fmt.Fprintf(e.stdout, "%d additional buckets not shown.\n", summary.Omitted)
 		}
 		if v.FailedRefreshReason != "" {
 			fmt.Fprintf(e.stdout, "Refresh failed %s (%s); any retained reading has its original timestamp.\n", v.FailedRefreshAt.Format(time.RFC3339), v.FailedRefreshReason)
