@@ -204,14 +204,15 @@ type dockServed struct {
 	// --allow-changes, otherwise "off". keepgoing dock never allows them.
 	// ChangesText says so in the footer's words. Form is the session's
 	// anti-forgery value for preparing a change, only when changes are on.
-	Changes                string     `json:"changes,omitempty"`
-	ChangesSince           *time.Time `json:"changesSince,omitempty"`
-	ChangesText            dockText   `json:"changesText,omitempty"`
-	Form                   string     `json:"form,omitempty"`
-	RouteChanges           string     `json:"routeChanges,omitempty"`
-	AccountQuotaProviders  []string   `json:"accountQuotaProviders,omitempty"` // explicit provider allowlist; absent means legacy Codex only
-	AccountQuota           bool       `json:"accountQuota,omitempty"`          // explicit reviewed account-scoped refresh
-	AccountSelectionReview bool       `json:"accountSelectionReview,omitempty"`
+	Changes                 string     `json:"changes,omitempty"`
+	ChangesSince            *time.Time `json:"changesSince,omitempty"`
+	ChangesText             dockText   `json:"changesText,omitempty"`
+	Form                    string     `json:"form,omitempty"`
+	RouteChanges            string     `json:"routeChanges,omitempty"`
+	AccountQuotaProviders   []string   `json:"accountQuotaProviders,omitempty"` // explicit provider allowlist; absent means legacy Codex only
+	AccountQuota            bool       `json:"accountQuota,omitempty"`          // explicit reviewed account-scoped refresh
+	AccountConnectProviders []string   `json:"accountConnectProviders,omitempty"`
+	AccountSelectionReview  bool       `json:"accountSelectionReview,omitempty"`
 }
 
 func newDockServer(port int, auth dockAuth, reader *dockReader) *dockServer {

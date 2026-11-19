@@ -424,6 +424,7 @@ func (h *panelHandler) served(w http.ResponseWriter) func(session string) {
 			out.AccountQuota = true
 			out.AccountQuotaProviders = panelQuotaProvidersFor(runtime.GOOS, runtime.GOARCH)
 			out.AccountSelectionReview = true
+			out.AccountConnectProviders = panelConnectProvidersFor(runtime.GOOS, runtime.GOARCH)
 			out.ChangesText = txt("Changes allowed for "+dockSpan(now.Sub(since))+": started with looptender panel --allow-changes at ", tm(since, "clock"), ". "+panelExposure+" looptender panel stop turns them off.")
 		}
 		w.Header().Set("Content-Type", "application/json")
@@ -668,6 +669,7 @@ func runPanelServer(parent context.Context, c panelServerConfig) int {
 		if handler.changes, err = newPanelChanges(ctx, c.registry, reader, rec.StartedAt, c.now); err != nil {
 			return exitFailed
 		}
+		defer handler.changes.closeAccountConnect()
 	}
 	if rec.IdleSeconds < 1 {
 		rec.IdleSeconds = 1
