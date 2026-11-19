@@ -40,7 +40,7 @@ func TestAccountQuotaSandboxCLIWebAndNativeProjection(t *testing.T) {
 	reader.now = func() time.Time { return at.Add(time.Second) }
 	const response = `{"rateLimits":{"limitId":"codex","secondary":{"usedPercent":64,"windowDurationMins":10080,"resetsAt":1900500000}}}`
 	calls := 0
-	run := func(_ context.Context, _ string, env []string, _ string) ([]byte, error) {
+	run := func(_ context.Context, _, _ string, env []string, _ string) ([]byte, error) {
 		calls++
 		if !strings.Contains(strings.Join(env, "\n"), "CODEX_SANDBOX=example-restricted") {
 			t.Fatal("execution sandbox was stripped")

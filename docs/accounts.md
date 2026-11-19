@@ -657,13 +657,49 @@ without implying a model, subscription identity or quota pooling. Plan and
 login evidence remain independent. Changing credentials inside the same
 selected directory cannot be detected as an identity change by this mechanism.
 
-**Claude account quota remains unavailable.** No supported standalone,
-model-free selected-context quota source has been established. The experimental
-Claude usage control path is not used: its default reads local transcripts and
-its reply can conceal cached data and lost freshness/error provenance. Existing
-dated Claude route observations remain on Routes; they are not borrowed as
-selected-account quota. This is a remaining acceptance gap, not complete
-acquisition of all Claude and Codex quotas.
+**Experimental Claude selected-context reads** use a separate, explicitly
+initiated native control exchange. The current acquisition allowlist admits only
+the inspected Claude Code 2.1.326 native artifact; wrappers, other platform
+artifacts and upgrades return unavailable before launch until independently
+verified. Admitted bytes are copied through the selected open handle into a fresh
+private directory, verified there and launched from that private image; replacing
+the selected path cannot substitute an unreviewed executable. Admission opens
+nonblocking without following a final symlink and verifies a regular file; a
+FIFO replacement cannot stall the read before its deadline. The image is
+removed only after the owned child exits. No wrapper is substituted and no login
+or default is changed.
+The process stays parked with `--await-claim`, safe mode, disabled hooks, no
+session persistence, empty tools and strict empty MCP configuration. It receives
+only `initialize`, a disabled-hook-policy check, then
+`get_usage` with `skip_behaviors:true`. It never receives `claim_session`, a user
+message, resume, hook response or model request. An unrecognized version,
+managed/unreadable hook policy, unexpected conversation/control request, malformed
+response or incorrect correlation refuses the read. Runtime preload injection
+also refuses. The pinned native UI invalidation notification is discarded without
+a response; other unexpected frames refuse. The selected environment and caller provenance are retained.
+The five-second deadline, 64 KiB output bound and owned-child cleanup apply.
+
+Claude's experimental reply conceals whether quota came from a provider request,
+a cache or seeded evidence, and strips provider observation time and some error
+provenance. Successful output therefore has source `claude:get_usage`,
+`retrievedAt` and freshness `provider_unknown`, **never `observedAt` or fresh**.
+A new retrieval does not establish new provider evidence. Five-hour, seven-day,
+seven-day OAuth-app, seven-day Opus and seven-day Sonnet scopes retain their own
+explicit percentages and reset times. Missing values are not zero; unsupported
+scopes/extra-usage units make a recognized reading partial. Session tokens,
+costs, subscription/identity data, behavior output and raw display names are
+discarded. Existing dated Claude route observations remain separate.
+No live authenticated read is established by the offline fixture evidence.
+
+Claude evidence uses a separate private `claude-subscription-quota.json`, schema
+1, bounded to the same 1 MiB and 64-selection limits. Its timestamps are named
+`retrievedAt`. It neither promotes the catalog nor rewrites the Codex cache;
+older binaries ignore that file. The additive shared summary includes
+`retrievedAt`/`provider_unknown`, so native/web consumers need the coordinated
+consumer update before displaying Claude evidence. The existing panel action
+still advertises Codex only until that integration is available; the explicit
+CLI command supplies the acquisition path. Do not claim installed-panel
+acceptance from a source-only change.
 
 The Accounts page shows compact named windows before expansion. Expanded rows
 show used and remaining values, independent reset timestamps, source, read age,
@@ -697,8 +733,8 @@ and back them up privately before an operator removes the cache to start over.
 No automatic repair or provider retry occurs. After a lost reply, read the
 cached state before explicitly retrying.
 
-A successful reading retains its original timestamp. After 30 minutes it is
-marked stale; an ended reset is shown as an ended window and needs a fresh
+A successful reading retains its original timestamp. Codex evidence is marked
+stale after 30 minutes; Claude provider freshness remains unknown at every age; an ended reset is shown as an ended window and needs a fresh
 read. A later failed refresh has a separate time/reason and never makes old
 windows fresh. Future-dated or context-mismatched evidence is withheld. These
 are subscription-quota observations for the selected context, not turn token

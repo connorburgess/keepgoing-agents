@@ -20,6 +20,8 @@ import (
 // ignore this display-only cache; refreshing it never promotes catalog schema.
 const QuotaName = "subscription-quota.json"
 const QuotaSource = "codex account/rateLimits/read"
+const ClaudeQuotaName = "claude-subscription-quota.json"
+const ClaudeQuotaSource = "claude:get_usage"
 
 type QuotaWindow struct {
 	Name            string     `json:"name"`
@@ -73,6 +75,7 @@ type QuotaView struct {
 	Reason              string        `json:"reason,omitempty"`
 	Source              string        `json:"source,omitempty"`
 	ObservedAt          *time.Time    `json:"observedAt,omitempty"`
+	RetrievedAt         *time.Time    `json:"retrievedAt,omitempty"`
 	AgeSeconds          *int64        `json:"ageSeconds,omitempty"`
 	Freshness           string        `json:"freshness"`
 	Windows             []QuotaWindow `json:"windows"`
@@ -82,7 +85,7 @@ type QuotaView struct {
 
 func ValidQuotaReason(s string) bool {
 	switch s {
-	case "", "unsupported_provider", "unsupported", "timeout", "cancelled", "status_unavailable", "schema_unavailable", "no_windows", "unknown_bucket", "unknown_windows":
+	case "", "unsupported_provider", "unsupported", "timeout", "cancelled", "status_unavailable", "schema_unavailable", "no_windows", "unknown_bucket", "unknown_windows", "isolation_unavailable", "quota_unavailable", "unverified_cli":
 		return true
 	}
 	return false
@@ -140,11 +143,15 @@ func validQuota(f QuotaFile) bool {
 
 // LoadQuota never repairs damaged evidence or reads provider files.
 func LoadQuota(dir string) (QuotaFile, error) {
+	return loadQuotaFile(dir, QuotaName, decodeQuotaFile)
+}
+
+func loadQuotaFile(dir, name string, decode func([]byte) (QuotaFile, error)) (QuotaFile, error) {
 	empty := QuotaFile{SchemaVersion: 1, Entries: []QuotaEntry{}}
 	if checkDir(dir) != nil {
 		return empty, ErrInvalid
 	}
-	p := filepath.Join(dir, QuotaName)
+	p := filepath.Join(dir, name)
 	st, err := snapshot.LstatRecord(p)
 	if errors.Is(err, os.ErrNotExist) {
 		return empty, nil
@@ -169,6 +176,11 @@ func LoadQuota(dir string) (QuotaFile, error) {
 	if err != nil || len(b) > MaxBytes {
 		return empty, ErrInvalid
 	}
+	return decode(b)
+}
+
+func decodeQuotaFile(b []byte) (QuotaFile, error) {
+	empty := QuotaFile{SchemaVersion: 1, Entries: []QuotaEntry{}}
 	var out QuotaFile
 	d := json.NewDecoder(bytes.NewReader(b))
 	d.DisallowUnknownFields()
@@ -235,6 +247,10 @@ func QuotaJSONUnique(b []byte) bool {
 // overlapping refreshes/checks cannot publish out of order. External edits are
 // caught by selection/context and executable/directory revalidation.
 func PublishQuota(dir string, selected Entry, bound string, a QuotaAttempt, env []string, verify func() error) error {
+	return publishQuotaFile(dir, QuotaName, selected, bound, a, env, verify, LoadQuota, func(q QuotaFile) ([]byte, error) { return json.Marshal(q) })
+}
+
+func publishQuotaFile(dir, name string, selected Entry, bound string, a QuotaAttempt, env []string, verify func() error, load func(string) (QuotaFile, error), encode func(QuotaFile) ([]byte, error)) error {
 	if checkDir(dir) != nil || checkFile(filepath.Join(dir, "accounts.lock")) != nil || !validQuotaAttempt(a) {
 		return ErrInvalid
 	}
@@ -258,7 +274,7 @@ func PublishQuota(dir string, selected Entry, bound string, a QuotaAttempt, env 
 	if verify == nil || verify() != nil {
 		return ErrChanged
 	}
-	q, err := LoadQuota(dir)
+	q, err := load(dir)
 	if err != nil {
 		return err
 	}
@@ -298,22 +314,27 @@ func PublishQuota(dir string, selected Entry, bound string, a QuotaAttempt, env 
 	if !validQuota(q) {
 		return ErrInvalid
 	}
-	b, err := json.Marshal(q)
+	b, err := encode(q)
 	if err != nil || len(b) > MaxBytes {
 		return ErrInvalid
 	}
-	return control.WritePrivateFile(filepath.Join(dir, QuotaName), append(b, '\n'))
+	return control.WritePrivateFile(filepath.Join(dir, name), append(b, '\n'))
 }
 func SameSelection(a, b Entry) bool {
 	return a.ID == b.ID && a.Revision == b.Revision && a.Context == b.Context && a.Label == b.Label && a.Provider == b.Provider && a.Mode == b.Mode && a.CLI == b.CLI && a.Workdir == b.Workdir && a.Directory == b.Directory
 }
 
 func QuotaViews(dir string, catalog File, env []string, now time.Time) map[string]QuotaView {
-	q, err := LoadQuota(dir)
+	codex, codexErr := LoadQuota(dir)
+	claude, claudeErr := LoadClaudeQuota(dir)
 	out := map[string]QuotaView{}
 	for _, e := range catalog.Entries {
 		v := QuotaView{State: "unavailable", Reason: "not_checked", Freshness: "unavailable", Windows: []QuotaWindow{}}
-		if e.Provider != "codex" {
+		q, err := codex, codexErr
+		if e.Provider == "claude-code" {
+			q, err = claude, claudeErr
+		}
+		if e.Provider != "codex" && e.Provider != "claude-code" {
 			v.Reason = "unsupported_provider"
 		} else if err != nil {
 			v.Reason = "cache_unavailable"
@@ -359,6 +380,10 @@ func QuotaViews(dir string, catalog File, env []string, now time.Time) map[strin
 					}
 					v.Windows = x.Success.Windows
 					v.Details = x.Success.Details
+					if e.Provider == "claude-code" {
+						v.Source, v.Freshness = ClaudeQuotaSource, "provider_unknown"
+						v.RetrievedAt, v.ObservedAt = &at, nil
+					}
 				}
 				break
 			}
@@ -372,7 +397,7 @@ func QuotaViews(dir string, catalog File, env []string, now time.Time) map[strin
 
 func AttachQuota(v *View, readings map[string]QuotaView) {
 	for i := range v.Cards {
-		if v.Cards[i].Provider == "codex" {
+		if v.Cards[i].Provider == "codex" || v.Cards[i].Provider == "claude-code" {
 			q, ok := readings[v.Cards[i].ID]
 			if ok {
 				v.Cards[i].Quota = &q

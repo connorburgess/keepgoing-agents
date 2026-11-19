@@ -33,7 +33,7 @@ func TestPanelAccountSelectionRecoveryAndSeparateQuota(t *testing.T) {
 				}
 			}
 			calls := 0
-			run := func(context.Context, string, []string, string) ([]byte, error) {
+			run := func(context.Context, string, string, []string, string) ([]byte, error) {
 				calls++
 				return []byte(quotaResponse), nil
 			}
@@ -131,7 +131,7 @@ func TestPanelAccountSelectionReviewDriftAndSpentForms(t *testing.T) {
 			defer cancel()
 			c, _ := newPanelChanges(ctx, "", &dockReader{accountsDir: dir}, now, func() time.Time { return now })
 			calls := 0
-			c.quotaRun = func(context.Context, string, []string, string) ([]byte, error) {
+			c.quotaRun = func(context.Context, string, string, []string, string) ([]byte, error) {
 				calls++
 				return []byte(quotaResponse), nil
 			}

@@ -14,7 +14,7 @@ import (
 	"github.com/looptender/looptender/internal/snapshot"
 )
 
-type accountQuotaRun func(context.Context, string, []string, string) ([]byte, error)
+type accountQuotaRun func(context.Context, string, string, []string, string) ([]byte, error)
 type accountQuotaSelection struct {
 	Entry                   accounts.Entry
 	Bound                   string
@@ -35,7 +35,7 @@ func accountQuotaCapture(dir, id string, env []string) (accountQuotaSelection, e
 		return accountQuotaSelection{}, accounts.ErrChanged
 	}
 	s := accountQuotaSelection{Entry: *e, Bound: bound}
-	if e.Provider != "codex" {
+	if e.Provider != "codex" && e.Provider != "claude-code" {
 		return s, nil
 	}
 	// Selection paths must remain canonical: a replacement symlink is not the
@@ -81,7 +81,13 @@ func (s accountQuotaSelection) same(t accountQuotaSelection) bool {
 	}
 	return s.CLI == nil || (s.CLI.Size() == t.CLI.Size() && s.CLI.ModTime().Equal(t.CLI.ModTime()) && s.CLI.Mode() == t.CLI.Mode())
 }
-func accountQuotaRead(ctx context.Context, cli string, env []string, workdir string) ([]byte, error) {
+func accountQuotaRead(ctx context.Context, provider, cli string, env []string, workdir string) ([]byte, error) {
+	if provider == "claude-code" {
+		return accountClaudeQuotaRead(ctx, cli, env, workdir)
+	}
+	if provider != "codex" {
+		return nil, errors.New("unsupported")
+	}
 	return accountCodexRPC(ctx, cli, env, workdir, "account/rateLimits/read", map[string]bool{"excludeResetCreditDetails": true})
 }
 
@@ -101,19 +107,27 @@ func accountQuotaRefresh(ctx context.Context, dir, id string, expected *accountQ
 	if expected != nil && !expected.same(s) {
 		return unavailable, accounts.ErrChanged
 	}
-	if _, err := accounts.LoadQuota(dir); err != nil {
+	load, publish := accounts.LoadQuota, accounts.PublishQuota
+	if s.Entry.Provider == "claude-code" {
+		load, publish = accounts.LoadClaudeQuota, accounts.PublishClaudeQuota
+	}
+	if _, err := load(dir); err != nil {
 		return unavailable, err
 	}
 	a := accounts.QuotaAttempt{}
-	if s.Entry.Provider != "codex" {
+	if s.Entry.Provider != "codex" && s.Entry.Provider != "claude-code" {
 		a.Reason = "unsupported_provider"
 	} else {
 		c, cancel := context.WithTimeout(ctx, 5*time.Second)
-		raw, err := run(c, s.Entry.CLI, accounts.ExecutionEnvironment(s.Entry, env), s.Entry.Workdir)
+		raw, err := run(c, s.Entry.Provider, s.Entry.CLI, accountQuotaExecutionEnvironment(s.Entry, env), s.Entry.Workdir)
 		cancel()
-		a.Details, a.Reason = accountQuotaDetailsParse(raw, err)
-		if a.Reason == "" {
-			a.Windows, _ = accountQuotaParse(raw, nil)
+		if s.Entry.Provider == "claude-code" {
+			a.Details, a.Reason = accountClaudeQuotaParse(raw, err)
+		} else {
+			a.Details, a.Reason = accountQuotaDetailsParse(raw, err)
+			if a.Reason == "" {
+				a.Windows, _ = accountQuotaParse(raw, nil)
+			}
 		}
 	}
 	a.At = now().UTC()
@@ -124,7 +138,7 @@ func accountQuotaRefresh(ctx context.Context, dir, id string, expected *accountQ
 		}
 		return nil
 	}
-	if err := accounts.PublishQuota(dir, s.Entry, s.Bound, a, env, verify); err != nil {
+	if err := publish(dir, s.Entry, s.Bound, a, env, verify); err != nil {
 		return unavailable, err
 	}
 	f, err := accounts.Load(dir)
@@ -255,6 +269,9 @@ func accountsUsage(e env, dir, id string, asJSON bool) int {
 		fmt.Fprintln(e.stdout)
 		if v.ObservedAt != nil {
 			fmt.Fprintf(e.stdout, "Read %s (%s); source: %s\n", v.ObservedAt.Format(time.RFC3339), v.Freshness, v.Source)
+		}
+		if v.RetrievedAt != nil {
+			fmt.Fprintf(e.stdout, "Retrieved %s; provider freshness unknown (may be cached or seeded); source: %s\n", v.RetrievedAt.Format(time.RFC3339), v.Source)
 		}
 		summary := accounts.SummarizeQuota(v, time.Now())
 		for _, row := range summary.Rows {
