@@ -17,6 +17,8 @@ import (
 	"time"
 
 	"github.com/looptender/looptender/internal/accounts"
+	"github.com/looptender/looptender/internal/snapshot"
+	"golang.org/x/text/unicode/norm"
 )
 
 var errConnectProtocol = errors.New("provider sign-in protocol unavailable")
@@ -117,7 +119,7 @@ func accountConnectClaude(ctx context.Context, e accounts.Entry, env []string) e
 		AuthMethod      string `json:"authMethod"`
 		ConfigDirectory string `json:"configDirectory"`
 	}
-	if json.Unmarshal(raw, &status) != nil || !status.LoggedIn || status.AuthMethod != "claude.ai" || status.ConfigDirectory != e.Directory {
+	if json.Unmarshal(raw, &status) != nil || !status.LoggedIn || status.AuthMethod != "claude.ai" || !accountConnectClaudeDirectory(e.Directory, status.ConfigDirectory) {
 		return errConnectProtocol
 	}
 	return nil
@@ -131,7 +133,7 @@ func accountConnectAuthorizationURL(raw string) bool {
 	if err != nil || u.Scheme != "https" || u.User != nil || u.Port() != "" || u.Fragment != "" {
 		return false
 	}
-	return (u.Host == "auth.openai.com" || u.Host == "auth0.openai.com" || u.Host == "chatgpt.com") && strings.HasPrefix(u.Path, "/")
+	return u.Host == "auth.openai.com" && u.EscapedPath() == "/oauth/authorize"
 }
 
 // login-only app-server task. The caller keeps it alive until completion or
@@ -334,4 +336,24 @@ func accountConnectJSON(raw []byte) bool {
 		return true
 	}
 	return valid(value)
+}
+
+// The admitted native 2.1.326 status emits Ye(), which normalizes the explicit
+// CLAUDE_CONFIG_DIR to NFC. Permit only that demonstrated transformation, and
+// still require the emitted path to identify the same real directory. Neither
+// arbitrary aliases nor a missing destination field establish a connection.
+func accountConnectClaudeDirectory(expected, reported string) bool {
+	if expected == "" || reported == "" || norm.NFC.String(expected) != reported {
+		return false
+	}
+	real, err := filepath.EvalSymlinks(reported)
+	if err != nil || real != reported {
+		return false
+	}
+	want, err := snapshot.Lstat(expected)
+	if err != nil || !want.IsDir() || want.Mode()&os.ModeSymlink != 0 {
+		return false
+	}
+	got, err := snapshot.Lstat(reported)
+	return err == nil && got.IsDir() && got.Mode()&os.ModeSymlink == 0 && os.SameFile(want, got)
 }

@@ -248,7 +248,7 @@ func TestPanelAccountConnectStrictRequestsAndEnvironment(t *testing.T) {
 
 const connectCodexResponses = `{"id":1,"result":{}}
 {"id":2,"result":{"config":{"cli_auth_credentials_store":"file"}}}
-{"id":3,"result":{"type":"chatgpt","loginId":"example-login","authUrl":"https://auth.openai.com/authorize?state=fictional"}}
+{"id":3,"result":{"type":"chatgpt","loginId":"example-login","authUrl":"https://auth.openai.com/oauth/authorize?state=fictional"}}
 {"method":"account/login/completed","params":{"loginId":"example-login","success":true}}
 {"id":4,"result":{"account":{"type":"chatgpt","email":"private@example.com"}}}
 `
@@ -265,7 +265,7 @@ func TestAccountConnectCodexProtocolAndPrivacy(t *testing.T) {
 			case "api-key":
 				input = strings.Replace(input, `"type":"chatgpt","email"`, `"type":"apiKey","email"`, 1)
 			case "unsafe-url":
-				input = strings.Replace(input, "https://auth.openai.com/authorize?state=fictional", "https://example.com/steal", 1)
+				input = strings.Replace(input, "https://auth.openai.com/oauth/authorize?state=fictional", "https://example.com/steal", 1)
 			case "managed-store":
 				input = strings.Replace(input, `"cli_auth_credentials_store":"file"`, `"cli_auth_credentials_store":"keyring"`, 1)
 			case "error":
