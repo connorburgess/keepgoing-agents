@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"os/exec"
+	"strings"
 	"testing"
 	"time"
 )
@@ -20,7 +21,17 @@ func TestPanelAccountReplyMalformedOutcome(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	js := string(b)
+	lf := strings.ReplaceAll(string(b), "\r\n", "\n")
+	for name, js := range map[string]string{"LF": lf, "CRLF": strings.ReplaceAll(lf, "\n", "\r\n")} {
+		t.Run(name, func(t *testing.T) { panelAccountReplyRuntime(t, node, js) })
+	}
+}
+
+func panelAccountReplyRuntime(t *testing.T, node, js string) {
+	t.Helper()
+	// Git's Windows checkout can embed CRLF. Normalize only this test's
+	// extraction input; execute the same client functions and assertions.
+	js = strings.ReplaceAll(js, "\r\n", "\n")
 	source := "const assert=require('node:assert/strict');\n"
 	for _, head := range []string{"function accountQuotaReply(d, id, step, recovery) {", "function accountQuotaPost(id, step, form, recovery) {", "function accountQuotaRequest(c, confirm, recovery) {"} {
 		source += jsFunction(t, js, head) + "\n}\n"
