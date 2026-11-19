@@ -298,12 +298,9 @@ jobs:
       - name: Check the note for a job that ran out of time
         if: runner.os == 'Linux'
         run: scripts/ci-timeout-note-test.sh
-      - name: Check workflow selection and early guard coverage
+      - name: Check workflow selection and native race execution
         if: runner.os == 'Linux'
         run: python3 scripts/ci-workflow-test.py
-      - name: Check static panel read guards before the full suite
-        if: steps.scope.outputs.scope != 'docs' || matrix.os == 'ubuntu-24.04'
-        run: go test -race ./cmd/looptender -run '^(TestDockHiddenTabReadsNothingG1|TestDockReadsTimeOutG2|TestDockQuotaOnlyReadsAfterExplicitReview)$' -count=1
       - run: test -z "$(gofmt -l .)" || { gofmt -l .; exit 1; }
         if: steps.scope.outputs.scope != 'docs' || matrix.os == 'ubuntu-24.04'
       - run: go vet ./...
@@ -313,8 +310,20 @@ jobs:
       - name: Check third-party notices match the executable's modules
         if: steps.scope.outputs.scope != 'docs' || matrix.os == 'ubuntu-24.04'
         run: scripts/third-party-notices.sh --check
-      - run: go test -race ./...
+      - name: Check race partition coverage and failure handling
+        if: runner.os == 'Linux'
+        run: python3 scripts/ci-race-test.py
+      - name: Run native race suite with disjoint command partitions
+        run: python3 -u scripts/ci-race.py
         if: steps.scope.outputs.scope != 'docs' || matrix.os == 'ubuntu-24.04'
+      - name: Retain race inventory and partition logs
+        if: always() && (steps.scope.outputs.scope != 'docs' || matrix.os == 'ubuntu-24.04')
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: native-race-${{ matrix.os }}
+          path: ${{ runner.temp }}/ci-race/
+          if-no-files-found: warn
+          retention-days: 7
       - name: Smoke check setup and recovery with local fixtures
         if: steps.scope.outputs.scope != 'docs' || matrix.os == 'ubuntu-24.04'
         run: |

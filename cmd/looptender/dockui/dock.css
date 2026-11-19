@@ -598,3 +598,17 @@ details[open] > .how-summary::before { transform: rotate(45deg); }
 .unknown-account-routes { margin-top: 2rem; }
 .unknown-route-context { padding-block: 1rem; border-top: 1px solid var(--line); overflow-wrap: anywhere; min-width: 0; }
 .unknown-route-context > p { margin: 0 0 .5rem; }
+
+/* Saved account quota uses its provider's windows; it is never route evidence. */
+.quota-compact { display: flex; flex-wrap: wrap; gap: .5rem 1rem; min-width: 0; overflow-wrap: anywhere; }
+.quota-chip { display: grid; gap: .15rem; font-size: .875rem; font-variant-numeric: tabular-nums; }
+.quota-windows { list-style: none; padding: 0; margin: .8rem 0; display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 15rem), 1fr)); gap: 1rem; }
+.quota-window { min-width: 0; overflow-wrap: anywhere; padding-block: .75rem; border-top: 1px solid var(--line); }
+.quota-window h4 { font-size: .875rem; margin: 0 0 .35rem; font-weight: 600; }
+.quota-window p { margin: .3rem 0; }
+.quota-value { font-variant-numeric: tabular-nums; font-size: .95rem; }
+.quota-meter { width: 100%; height: .7rem; }
+.quota-stamp, .quota-incomplete { font-size: .8125rem; color: var(--ink-2); }
+@media (min-width: 761px) {
+ .account-summary { grid-template-columns: minmax(0, 1.2fr) minmax(0, 1fr) minmax(0, .7fr) minmax(0, 1.1fr); }
+}
