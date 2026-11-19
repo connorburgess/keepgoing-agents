@@ -434,3 +434,15 @@ infer acceptance from inventory. No new package, record schema, supervisor rule,
 host hook, dispatch or authorization source is introduced. Existing completion
 history/reporting projects only a successful explicit declaration. Reads of BB
 and control publication are not a distributed transaction.
+
+Explicit panel connection tasks also remain in the command layer. A session-bound
+review allocates the attempt identity before starting the provider's native login
+flow. Every attempt uses an exclusive new private directory and an immutable
+staged executable; the original selection is never a login write target. Completion
+verification belongs to that same bounded task, while status polling reads only
+its local state. Catalog publication takes the existing writer lock and checks
+reviewed identities again. Additive connections append a distinct selection;
+replacement connections retain the old directory and revise only the selected row.
+Neither path grants loop, route or BB provider authority. Cancellation never
+claims credential rollback; failed/uncertain directories remain private and are
+not automatically adopted. See [explicit connection limits](accounts.md#explicit-provider-sign-in-unreleased-source).

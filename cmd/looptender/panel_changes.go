@@ -44,7 +44,7 @@ const (
 	panelChangeOrigin   = "panel"
 	panelPrepareContext = "keepgoing-panel-prepare\x00"
 	// panelExposure is said wherever changes are turned on.
-	panelExposure = "While changes are allowed, anyone using this window can pause, stop or resume loops, replace their check builds with this panel's build, edit routes within the startup caller's authority, review unchanged account selections in this panel's environment, and read selected Codex subscription quota or retrieve supported Claude usage (provider freshness unknown)."
+	panelExposure = "While changes are allowed, anyone using this window can pause, stop or resume loops, replace their check builds with this panel's build, edit routes within the startup caller's authority, review unchanged account selections in this panel's environment, start isolated provider sign-in for selected account rows, and read selected Codex subscription quota or retrieve supported Claude usage (provider freshness unknown)."
 )
 
 // panelChanges is the change half of a panel server started with changes
@@ -59,11 +59,14 @@ type panelChanges struct {
 	now          func() time.Time
 	secret       []byte // keys the per-session prepare value; never leaves the process
 
-	mu       sync.Mutex
-	forms    map[string]panelForm
-	order    []string        // form values, oldest first
-	quotaEnv []string        // immutable startup context, never browser supplied
-	quotaRun accountQuotaRun // tests may substitute a fictional RPC
+	mu              sync.Mutex
+	forms           map[string]panelForm
+	order           []string            // form values, oldest first
+	quotaEnv        []string            // immutable startup context, never browser supplied
+	quotaRun        accountQuotaRun     // tests may substitute a fictional RPC
+	connectRun      accountConnectRun   // fictional provider fixtures only
+	connectAdmit    accountConnectAdmit // fictional admission fixtures only
+	connectAttempts map[string]*panelAccountConnectAttempt
 }
 
 // panelForm is one prepared change waiting for its confirmation. The value
@@ -80,6 +83,7 @@ type panelForm struct {
 	names     map[string]string
 	route     *panelRouteReview
 	quota     *accountQuotaSelection
+	connect   *panelAccountConnectReview
 	selection *panelAccountSelectionReview
 }
 
@@ -193,6 +197,7 @@ func panelReadAction(body io.Reader) (panelChangeRequest, bool) {
 // panelPreview is what the page shows before the person confirms. Every
 // sentence is built here from a fresh read.
 type panelPreview struct {
+	AttemptID string     `json:"attemptId,omitempty"`
 	Action    string     `json:"action"`
 	Key       string     `json:"key"`
 	Title     string     `json:"title"`   // "Pause payments-reconciler?"
@@ -227,9 +232,10 @@ type panelResult struct {
 }
 
 type panelChangeReply struct {
-	SchemaVersion int           `json:"schemaVersion"`
-	Preview       *panelPreview `json:"preview,omitempty"`
-	Result        *panelResult  `json:"result,omitempty"`
+	SchemaVersion int                       `json:"schemaVersion"`
+	Connect       *panelAccountConnectState `json:"connect,omitempty"`
+	Preview       *panelPreview             `json:"preview,omitempty"`
+	Result        *panelResult              `json:"result,omitempty"`
 }
 
 var panelActions = map[string]string{"pause": "Pause", "stop": "Stop", "resume": "Resume"}
@@ -237,6 +243,10 @@ var panelDone = map[string]string{"pause": "paused", "stop": "stopped", "resume"
 
 // serve answers one change request. rest is the path under the session.
 func (c *panelChanges) serve(w http.ResponseWriter, r *http.Request, rest, session string) {
+	if strings.HasPrefix(rest, panelAccountConnectPrefix) {
+		c.serveAccountConnect(w, r, rest, session)
+		return
+	}
 	if strings.HasPrefix(rest, panelRoutesPrefix) {
 		c.serveRoutes(w, r, rest, session)
 		return
