@@ -434,10 +434,11 @@ selection mode/account directory, home/config locations and effective
 authentication-related environment prefixes and proxy/TLS inputs. Values are
 fingerprinted with a per-catalog keyed digest, never copied into storage.
 
-Two kinds of variable describe the session running the command, not the
+The following variables describe the execution running the command, not the
 account context, and are not bound:
 
 - The exact CODEX_TOOL_CALL_ID name identifies one agent tool invocation.
+  CODEX_SANDBOX describes the execution sandbox, not the selected login.
   Windows applies its existing case-insensitive name comparison; Unix excludes
   only that exact case. Its value still passes through to execution.
 - The caller-session list that supervised turns already drop (see
@@ -453,9 +454,20 @@ account context, and are not bound:
 
 All other bindings remain.
 
-**Entries recorded by an earlier build.** Earlier builds bound those session
+**Definition-2 bindings require review.** Fingerprint definition 3 excludes only
+the additional CODEX_SANDBOX marker. A valid tagged definition-2 catalog binding is never
+silently accepted or rewritten: review and explicitly update the same selection
+(even if its paths are unchanged), then refresh quota. Definition-2 quota cache
+evidence is not reused under a new definition-3 binding. Reads do not modify
+either file. The guard-tag family is retained so definition-2 readers also
+refuse new definition-3 bindings instead of treating them as pre-tag legacy.
+Authentication, provider, executable, directory, home/config,
+proxy/TLS and other environment checks remain; the actual execution environment
+and caller authority are unchanged.
+
+**Entries recorded before keyed tags.** Earlier builds bound those session
 variables too, and their digests cannot be recomputed without the old values.
-A digest now carries a keyed tag of the binding definition, so this build
+A digest carries a keyed guard tag, so this build
 recognizes an earlier one without a new stored field (older builds refuse
 unknown fields). The first check of such an entry by this build is not reported
 as a changed context: it runs, and records the current digest in place of the
