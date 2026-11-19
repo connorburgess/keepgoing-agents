@@ -578,10 +578,15 @@ summary shared with the native menu's additive `panel list.accountQuotas`
 projection. Codex buckets remain separate; windows show percent used and
 remaining, independent resets, source and read age. Credits and individual
 limits retain their own units, not invented currency or percentages. Unknown,
-partial, ended and failed-refresh states remain visible. Claude selected-account
-quota is explicitly unavailable; dated route observations stay separate.
-Neither polling surface refreshes a provider. Only the existing reviewed Codex
-refresh path does so. See [source, cache and capability limits](accounts.md#read-selected-context-subscription-quota).
+partial, ended and failed-refresh states remain visible. Claude saved usage
+shows retrieval time and provider freshness unknown: the inspected experimental
+reply may be cached or seeded. It never becomes a fresh observation by being
+retrieved again. Dated route observations stay separate.
+Neither polling surface refreshes a provider. Explicit review can refresh Codex
+or retrieve Claude usage on Darwin arm64, subject to exact native-image and
+isolation admission. The additive server `accountQuotaProviders` allowlist names
+the enabled providers; when absent, the legacy `accountQuota` capability enables
+Codex only. Read-only panels and unsupported platforms offer no provider action. See [source, cache and capability limits](accounts.md#read-selected-context-subscription-quota).
 
 Saved account cards and quota detail use a bounded companion snapshot in
 unreleased source. The main read carries only account availability/count and a

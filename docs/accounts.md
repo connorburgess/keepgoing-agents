@@ -680,11 +680,15 @@ Claude evidence uses a separate private `claude-subscription-quota.json`, schema
 1, bounded to the same 1 MiB and 64-selection limits. Its timestamps are named
 `retrievedAt`. It neither promotes the catalog nor rewrites the Codex cache;
 older binaries ignore that file. The additive shared summary includes
-`retrievedAt`/`provider_unknown`, so native/web consumers need the coordinated
-consumer update before displaying Claude evidence. The existing panel action
-still advertises Codex only until that integration is available; the explicit
-CLI command supplies the acquisition path. Do not claim installed-panel
-acceptance from a source-only change.
+`retrievedAt`/`provider_unknown`. Matching web and native readers show “Retrieved”
+and “Provider freshness unknown”, including after a successful read; failed
+refreshes retain the original retrieval timestamp. The panel advertises Claude
+retrieval only on Darwin arm64, where the inspected native image can run. This
+is a platform prerequisite, not admission of the selected executable: wrappers,
+unreviewed images, preload injection or unavailable isolation still refuse.
+Other platforms can show saved evidence but offer no Claude refresh action.
+There is no automatic refresh, login, account switch or model call. Do not claim
+installed-panel acceptance from a source-only change.
 
 The Accounts page shows compact named windows before expansion. Expanded rows
 show used and remaining values, independent reset timestamps, source, read age,

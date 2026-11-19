@@ -1,0 +1,1 @@
+- Show supported saved Claude usage windows in Accounts and the native menu with retrieval time and unknown provider freshness. Explicit panel retrieval is available only on the reviewed Darwin arm64 platform and still requires exact native-image and isolation admission; polling never queries a provider.

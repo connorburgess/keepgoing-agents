@@ -17,6 +17,7 @@ public struct AccountQuotaSummary: Decodable, Equatable {
     public let text: String
     public let source: String?
     public let observedAt: String?
+    public let retrievedAt: String?
     public let freshness: String
     public let rows: [AccountQuotaRow]
     public let partial: Bool?
@@ -43,16 +44,18 @@ extension Contract {
             let q = a.summary
             guard quotaText(a.label), ["codex", "claude-code"].contains(a.provider),
                   ["reported", "unavailable"].contains(q.state), quotaText(q.text),
-                  ["fresh", "stale", "unavailable"].contains(q.freshness), q.rows.count <= 41,
+                  ["fresh", "stale", "unavailable", "provider_unknown"].contains(q.freshness), q.rows.count <= 41,
                   (q.omitted ?? 0) >= 0, (q.omitted ?? 0) <= 256,
                   q.observedAt == nil || date(q.observedAt) != nil,
+                  q.retrievedAt == nil || date(q.retrievedAt) != nil,
                   q.failedRefreshAt == nil || date(q.failedRefreshAt) != nil,
                   q.failedRefreshText == nil || quotaText(q.failedRefreshText!),
-                  q.source == nil || q.source == "codex account/rateLimits/read" else { return false }
+                  q.source == nil || ["codex account/rateLimits/read", "claude:get_usage"].contains(q.source!) else { return false }
             if q.state == "reported" {
-                guard a.provider == "codex", q.observedAt != nil, q.source != nil,
-                      q.freshness != "unavailable" else { return false }
-            } else if !q.rows.isEmpty || q.observedAt != nil || q.source != nil { return false }
+                let codex = a.provider == "codex" && q.source == "codex account/rateLimits/read" && q.observedAt != nil && q.retrievedAt == nil && ["fresh", "stale"].contains(q.freshness)
+                let claude = a.provider == "claude-code" && q.source == "claude:get_usage" && q.retrievedAt != nil && q.observedAt == nil && q.freshness == "provider_unknown"
+                guard codex || claude else { return false }
+            } else if !q.rows.isEmpty || q.observedAt != nil || q.retrievedAt != nil || q.source != nil || q.freshness != "unavailable" { return false }
             for r in q.rows {
                 guard quotaText(r.name, bytes: 160), quotaText(r.text),
                       r.resetsAt == nil || date(r.resetsAt) != nil else { return false }
@@ -77,6 +80,7 @@ extension MenuBuilder {
         for a in list.accounts.prefix(6) {
             let q = a.summary
             var children = [quotaStatus(q.text)]
+            if let at = q.retrievedAt { children.append(quotaStatus("Retrieved \(at) · provider freshness unknown; may be cached or seeded")) }
             if let at = q.observedAt { children.append(quotaStatus("Read \(at) · \(q.freshness == "stale" ? "older reading" : "saved snapshot")")) }
             for r in q.rows.prefix(8) {
                 var value = "\(r.name): \(r.text)"
@@ -90,7 +94,8 @@ extension MenuBuilder {
             if let failed = q.failedRefreshAt { children.append(quotaStatus("Refresh failed \(failed). \(q.failedRefreshText ?? "Earlier evidence retains its time.")")) }
             children.append(MenuRow(kind: .action, title: "Open Panel", detail: "", symbol: "macwindow", accessibilityLabel: "Open panel for quota details", accessibilityHelp: "Choose Accounts for saved quota details; explicit refresh is reviewed there.", toolTip: "", command: .openPanel))
             let first = q.rows.first(where: { $0.usedPercent != nil })
-            let detail = q.state == "reported" ? (first.map { $0.ended == true ? "Window ended" : "\($0.usedPercent!)% used" } ?? "Quota details recorded") : "Quota unavailable"
+            var detail = q.state == "reported" ? (first.map { $0.ended == true ? "Window ended" : "\($0.usedPercent!)% used" } ?? "Quota details recorded") : "Quota unavailable"
+            if q.freshness == "provider_unknown" { detail += " · freshness unknown" }
             result.append(MenuRow(kind: .action, title: shortened(a.label, to: maxName), detail: detail, symbol: "gauge.with.dots.needle.33percent", accessibilityLabel: "\(a.label), \(a.provider), \(detail). Selected account identity not verified.", accessibilityHelp: "Opens saved quota details; reads no provider.", toolTip: a.label, command: nil, submenu: children))
         }
         let more = list.omitted + max(0, list.accounts.count - 6)
