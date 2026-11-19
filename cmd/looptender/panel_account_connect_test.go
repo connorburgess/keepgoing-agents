@@ -401,3 +401,59 @@ func TestPanelAccountConnectReplayAndLateDuplicateLabel(t *testing.T) {
 		t.Fatal("concurrent unrelated publication overwritten")
 	}
 }
+
+func TestPanelAccountConnectAdditivePreviewAndCloseJoin(t *testing.T) {
+	c, dir, e := connectFixture(t)
+	p := c.prepareAccountConnectLabel("example-session", e.ID, "Example second")
+	if p.Preview == nil {
+		t.Fatal("prepare")
+	}
+	raw, _ := json.Marshal(p.Preview.Lines)
+	if !strings.Contains(string(raw), "new row named Example second") || !strings.Contains(string(raw), "template row Example workshop") || strings.Contains(string(raw), "this row select") {
+		t.Fatal("misleading additive review", string(raw))
+	}
+	started, cleaning, finish := make(chan struct{}), make(chan struct{}), make(chan struct{})
+	c.connectRun = func(ctx context.Context, _ accounts.Entry, _ []string, _ func(string)) error {
+		close(started)
+		<-ctx.Done()
+		close(cleaning)
+		<-finish
+		return ctx.Err()
+	}
+	a := connectStart(t, c, e, "")
+	<-started
+	closed := make(chan struct{})
+	go func() { c.closeAccountConnect(); close(closed) }()
+	<-cleaning
+	select {
+	case <-closed:
+		t.Fatal("close returned before owned task cleanup")
+	default:
+	}
+	p = c.prepareAccountConnect("example-session", e.ID)
+	if p.Preview != nil && c.startAccountConnect("example-session", e.ID, p.Preview.Form).Connect != nil {
+		t.Fatal("shutdown admitted another provider")
+	}
+	close(finish)
+	select {
+	case <-closed:
+	case <-time.After(3 * time.Second):
+		t.Fatal("close failed to join owned task")
+	}
+	select {
+	case <-a.done:
+	default:
+		t.Fatal("attempt survives close")
+	}
+	if g, err := accounts.CheckGuard(dir, e.ID); err != nil {
+		t.Fatal("selection guard survives close")
+	} else {
+		g.Release()
+	}
+	v := c.readAccountConnect("example-session", e.ID, a.view.ID, false).Connect
+	if v.State != "cancelled" || v.ConnectedAccountID != "" {
+		t.Fatal("shutdown published", v)
+	}
+	// Close is repeatable and never restarts a task.
+	c.closeAccountConnect()
+}

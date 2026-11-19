@@ -66,6 +66,7 @@ type panelChanges struct {
 	quotaRun        accountQuotaRun     // tests may substitute a fictional RPC
 	connectRun      accountConnectRun   // fictional provider fixtures only
 	connectAdmit    accountConnectAdmit // fictional admission fixtures only
+	connectClosing  bool
 	connectAttempts map[string]*panelAccountConnectAttempt
 }
 

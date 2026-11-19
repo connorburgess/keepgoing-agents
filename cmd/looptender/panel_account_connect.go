@@ -199,10 +199,12 @@ func (c *panelChanges) prepareAccountConnectLabel(session, id, label string) pan
 	expires := c.now().UTC().Add(panelHoldFormTTL)
 	c.keep(token, panelForm{session: session, key: id, action: panelAccountConnectAction, expires: expires, connect: &panelAccountConnectReview{selection: s, caller: c.caller, digest: digest, label: label, attemptID: attemptID}})
 	title := "Connect " + s.Entry.Label + "?"
+	publication := "Only after verified sign-in will this row select the new context. Existing credentials, other accounts, routes and defaults are retained. This does not connect a BB provider account."
 	if label != "" {
 		title = "Connect another account: " + label + "?"
+		publication = "Only after verified sign-in will a new row named " + label + " be added. The template row " + s.Entry.Label + " and its selected context remain unchanged. Existing credentials, routes and defaults are retained. This does not connect a BB provider account."
 	}
-	return panelChangeReply{Preview: &panelPreview{AttemptID: attemptID, Action: panelAccountConnectAction, Key: id, Title: title, Confirm: "Start provider sign-in", Form: token, ExpiresAt: expires, Lines: []dockText{txt("Starts the provider's own browser sign-in in a new private account context. Complete sign-in personally. No model or quota request is made."), txt("Only after verified sign-in will this row select the new context. Existing credentials, other accounts, routes and defaults are retained. This does not connect a BB provider account."), txt("A lost reply never restarts sign-in. Cancel stops this owned attempt; provider-written credentials may remain in its private context. Manual-code or organization-required terminal flows may need a terminal.")}, Lost: "The sign-in start reply was lost. Do not start again automatically; inspect this selection before a new review.", Refused: "Sign-in was not started."}}
+	return panelChangeReply{Preview: &panelPreview{AttemptID: attemptID, Action: panelAccountConnectAction, Key: id, Title: title, Confirm: "Start provider sign-in", Form: token, ExpiresAt: expires, Lines: []dockText{txt("Starts the provider's own browser sign-in in a new private account context. Complete sign-in personally. No model or quota request is made."), txt(publication), txt("A lost reply never restarts sign-in. Cancel stops this owned attempt; provider-written credentials may remain in its private context. Manual-code or organization-required terminal flows may need a terminal.")}, Lost: "The sign-in start reply was lost. Do not start again automatically; inspect this selection before a new review.", Refused: "Sign-in was not started."}}
 }
 func (c *panelChanges) startAccountConnect(session, id, form string) panelChangeReply {
 	f, ok := c.take(form)
@@ -234,6 +236,10 @@ func (c *panelChanges) startAccountConnect(session, id, form string) panelChange
 	}
 	// Bounded session memory, including terminal records: no automatic eviction
 	// that could hide a lost reply and encourage another login.
+	if c.connectClosing || c.ctx.Err() != nil {
+		c.mu.Unlock()
+		return connectRefused("This panel is closing. No sign-in was started.")
+	}
 	if len(c.connectAttempts) >= accountConnectMaxAttempts {
 		c.mu.Unlock()
 		return connectRefused("This panel reached its sign-in attempt limit. Reopen it before another reviewed attempt.")
@@ -420,4 +426,23 @@ func accountConnectLabelAvailable(f accounts.File, label string) bool {
 		}
 	}
 	return true
+}
+
+// Called by runPanelServer on every return after newPanelChanges succeeds,
+// before its earlier resource-release defers. Close admission under the same
+// mutex used to install attempts, cancel ALL tasks first, then join them all.
+// Owned provider commands kill/wait on cancellation; staging also checks ctx.
+// The done channel closes only after image cleanup and guard release.
+func (c *panelChanges) closeAccountConnect() {
+	c.mu.Lock()
+	c.connectClosing = true
+	attempts := make([]*panelAccountConnectAttempt, 0, len(c.connectAttempts))
+	for _, a := range c.connectAttempts {
+		a.cancel()
+		attempts = append(attempts, a)
+	}
+	c.mu.Unlock()
+	for _, a := range attempts {
+		<-a.done
+	}
 }
