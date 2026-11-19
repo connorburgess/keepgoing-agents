@@ -53,7 +53,7 @@ func TestDockReadsTimeOutG2(t *testing.T) {
 	// increment. Each bounded read must retain its own deadline, signal, cleanup
 	// and failure path; generic reviewed changes deliberately keep unknown-save
 	// semantics without automatic timeout/replay.
-	owners := []string{"function getJSON(url) {", "function loadUsage() {", "function loadSavedAccounts(retry) {", "function accountQuotaPost(id, step, form) {", "function post(path, form, body) {"}
+	owners := []string{"function getJSON(url) {", "function loadUsage() {", "function loadSavedAccounts(retry) {", "function accountQuotaPost(id, step, form, recovery) {", "function post(path, form, body) {"}
 	ownedFetches := 0
 	for _, head := range owners {
 		source := jsFunction(t, js, head)
@@ -73,7 +73,7 @@ func TestDockReadsTimeOutG2(t *testing.T) {
 		{"function getJSON(url) {", []string{"new AbortController()", "ctl.abort()", "readTimeoutMs()", "signal: ctl.signal", "if (!r.ok) throw", ".finally(function () { clearTimeout(timer); });"}},
 		{"function loadUsage() {", []string{"new AbortController()", "abort.abort()", "usageTimeout()", "signal: abort.signal", "if (!r.ok) throw", ".catch(function () { state.usageFailed = true; })", "clearTimeout(timer)", "state.usageBusy = false"}},
 		{"function loadSavedAccounts(retry) {", []string{"new AbortController()", "ctl.abort()", "readTimeoutMs()", "signal: ctl.signal", "if (!r.ok) throw", ".catch(function () { if (current()) savedAccounts.status = \"failed\"; })", ".finally(function () {", "clearTimeout(timer)", "seq === savedAccounts.serial", "state.data.accountsReference === ref", "state.identifiers === asked"}},
-		{"function accountQuotaPost(id, step, form) {", []string{"new AbortController()", "abort.abort()", "15000", "signal: abort.signal", "if (!r.ok)", ".finally(function () { clearTimeout(timer); });"}},
+		{"function accountQuotaPost(id, step, form, recovery) {", []string{"new AbortController()", "abort.abort()", "15000", "signal: abort.signal", "if (!r.ok)", ".finally(function () { clearTimeout(timer); });"}},
 	} {
 		source := jsFunction(t, js, tc.head)
 		for _, want := range tc.required {
@@ -120,8 +120,8 @@ func jsFunction(t *testing.T, js, head string) string {
 
 func TestDockQuotaOnlyReadsAfterExplicitReview(t *testing.T) {
 	js := dockUIText(t, "dock.js")
-	post := jsFunction(t, js, "function accountQuotaPost(id, step, form) {")
-	for _, want := range []string{"abort.abort()", "15000", "signal: abort.signal", `method: "POST"`, `action: "subscription_quota"`, "clearTimeout(timer)"} {
+	post := jsFunction(t, js, "function accountQuotaPost(id, step, form, recovery) {")
+	for _, want := range []string{"abort.abort()", "15000", "signal: abort.signal", `method: "POST"`, `action: recovery ? "review_selection" : "subscription_quota"`, `recovery ? "api/v1/account-selections/" : "api/v1/accounts/"`, "accountQuotaReply(d, id, step, recovery)", "clearTimeout(timer)"} {
 		if !strings.Contains(post, want) {
 			t.Errorf("quota POST lacks %q", want)
 		}

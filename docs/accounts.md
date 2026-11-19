@@ -21,7 +21,7 @@ may still contact a provider.
 Page refresh reads retained catalog and quota evidence only and executes no provider
 command. In a panel started with `--allow-changes`, an explicit reviewed
 **Refresh subscription quota** action contacts the selected Codex CLI without a
-model request. The read-only panel offers no such action. The `accounts` commands below do not start
+model request. Supported Darwin arm64 panels also offer **Retrieve usage** for the inspected native Claude image, with provider freshness always unknown. Same-selection recovery for either provider is a separate local revision review, never a provider read. The read-only panel offers no such action. The `accounts` commands below do not start
 a loop, enroll a route, sign in or copy credentials. Complete provider sign-in in
 the official provider tool first.
 
@@ -459,7 +459,22 @@ the additional CODEX_SANDBOX marker. A valid tagged definition-2 catalog binding
 silently accepted or rewritten: review and explicitly update the same selection
 (even if its paths are unchanged), then refresh quota. Definition-2 quota cache
 evidence is not reused under a new definition-3 binding. Reads do not modify
-either file. The guard-tag family is retained so definition-2 readers also
+either file. In a panel with changes allowed, open Accounts and choose
+**Review selection for this panel…**. The review retains the exact provider,
+label, executable, account-directory selection and working directory; it binds
+a new revision to that panel's startup environment. Review the displayed paths
+and authentication mode: inherited authentication may differ from a terminal,
+and this action does not verify account identity. Confirmation clears prior
+login/plan observations and invalidates prior quota. It makes no provider call,
+changes no login/default or loop control, and does not refresh quota. Review
+**Refresh subscription quota…** separately afterward. The native menu directs
+you to Accounts through **Open Panel with Controls…**; it cannot revise a
+selection itself. Read-only panels offer guidance without a write action.
+
+The single-use review pins the current revision, startup caller, effective
+context and native path identities. Drift, a concurrent check/refresh, expiry or
+replay refuses publication; a lost reply is never retried automatically. This
+recovery supports selected Claude Code and Codex contexts; it makes no provider call. Claude retrieval afterward still requires its separately reviewed platform, native-image and isolation checks. The guard-tag family is retained so definition-2 readers also
 refuse new definition-3 bindings instead of treating them as pre-tag legacy.
 Authentication, provider, executable, directory, home/config,
 proxy/TLS and other environment checks remain; the actual execution environment

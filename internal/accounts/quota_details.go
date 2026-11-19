@@ -114,7 +114,7 @@ func QuotaReasonText(reason string) string {
 	case "not_checked":
 		return "No quota reading is saved for this selection."
 	case "selection_review_required":
-		return "Review and explicitly update the selection, even if its paths are unchanged, then refresh quota. Saved quota was not reused."
+		return "Open Accounts in a panel with changes allowed to review this unchanged selection, then refresh quota. Saved quota was not reused."
 	case "context_changed":
 		return "Saved quota belongs to another context or selection revision. Review the selection, then refresh quota."
 	case "cache_unavailable":

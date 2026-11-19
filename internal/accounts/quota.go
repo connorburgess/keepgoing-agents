@@ -352,6 +352,9 @@ func QuotaViews(dir string, catalog File, env []string, now time.Time) map[strin
 				}
 				if x.Revision != e.Revision || x.Context != bound {
 					v.Reason = "context_changed"
+					if e.Context != bound {
+						v.Reason = "selection_review_required"
+					}
 					break
 				}
 				if x.Attempt.At.After(now) {
