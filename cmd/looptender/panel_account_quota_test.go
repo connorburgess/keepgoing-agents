@@ -21,7 +21,7 @@ func TestPanelAccountQuotaGuardsAndSingleUseReview(t *testing.T) {
 		t.Fatal(err)
 	}
 	calls := 0
-	c.quotaRun = func(context.Context, string, []string, string) ([]byte, error) {
+	c.quotaRun = func(context.Context, string, string, []string, string) ([]byte, error) {
 		calls++
 		return []byte(quotaResponse), nil
 	}
@@ -138,7 +138,7 @@ func TestPanelAccountQuotaExpiredAndChangedExecutable(t *testing.T) {
 			now := time.Now().UTC()
 			c, _ := newPanelChanges(context.Background(), "", &dockReader{accountsDir: dir}, now, func() time.Time { return now })
 			calls := 0
-			c.quotaRun = func(context.Context, string, []string, string) ([]byte, error) {
+			c.quotaRun = func(context.Context, string, string, []string, string) ([]byte, error) {
 				calls++
 				return []byte(quotaResponse), nil
 			}

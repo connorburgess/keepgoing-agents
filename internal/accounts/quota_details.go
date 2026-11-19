@@ -90,6 +90,7 @@ type QuotaSummary struct {
 	Text              string            `json:"text"`
 	Source            string            `json:"source,omitempty"`
 	ObservedAt        *time.Time        `json:"observedAt,omitempty"`
+	RetrievedAt       *time.Time        `json:"retrievedAt,omitempty"`
 	Freshness         string            `json:"freshness"`
 	Rows              []QuotaSummaryRow `json:"rows"`
 	Partial           bool              `json:"partial,omitempty"`
@@ -122,6 +123,12 @@ func QuotaReasonText(reason string) string {
 		return "The quota read was cancelled."
 	case "unsupported":
 		return "This CLI does not support the quota read."
+	case "unverified_cli":
+		return "This native CLI build is not verified for isolated quota reads."
+	case "isolation_unavailable":
+		return "The CLI could not establish an isolated model-free quota read."
+	case "quota_unavailable":
+		return "The selected CLI context does not expose subscription quota."
 	case "no_windows":
 		return "The provider reported no supported quota detail."
 	case "schema_unavailable", "unknown_windows", "unknown_bucket":
@@ -137,12 +144,22 @@ func SummarizeQuota(v QuotaView, now time.Time) QuotaSummary {
 	if v.FailedRefreshAt != nil {
 		s.FailedRefreshText = QuotaReasonText(v.FailedRefreshReason)
 	}
-	if v.State != "reported" || v.ObservedAt == nil {
+	if v.State != "reported" {
+		return s
+	}
+	claude := v.Source == ClaudeQuotaSource && v.Freshness == "provider_unknown" && v.RetrievedAt != nil && v.ObservedAt == nil
+	codex := v.Source == QuotaSource && (v.Freshness == "fresh" || v.Freshness == "stale") && v.ObservedAt != nil && v.RetrievedAt == nil
+	if !claude && !codex {
+		s.State, s.Freshness, s.Text = "unavailable", "unavailable", QuotaReasonText("schema_unavailable")
 		return s
 	}
 	s.Source = v.Source
 	s.ObservedAt = v.ObservedAt
+	s.RetrievedAt = v.RetrievedAt
 	s.Text = "Saved selected-context quota; account identity and live thread binding are not verified."
+	if claude {
+		s.Text = "Saved selected-context quota; provider freshness unknown. Retrieval may return cached or seeded data. Account identity and live thread binding are not verified."
+	}
 	d := v.Details
 	if d == nil { // Legacy evidence says nothing about additional provider buckets.
 		d = &QuotaDetails{Partial: true, Buckets: []QuotaBucket{{Key: "codex", Windows: []QuotaMeter{}}}}
@@ -172,6 +189,13 @@ func SummarizeQuota(v QuotaView, now time.Time) QuotaSummary {
 			}
 			used, remaining := w.UsedPercent, 100-w.UsedPercent
 			row := QuotaSummaryRow{Name: label + " · " + name, Text: fmt.Sprintf("%g%% used · %g%% remaining", used, remaining), UsedPercent: &used, RemainingPercent: &remaining, ResetsAt: w.ResetsAt}
+			if claude {
+				row.Name = map[string]string{"five_hour": "5-hour", "seven_day": "7-day", "seven_day_oauth_apps": "7-day OAuth apps", "seven_day_opus": "7-day Opus", "seven_day_sonnet": "7-day Sonnet"}[b.Key]
+				if row.Name == "" {
+					s.Partial = true
+					continue
+				}
+			}
 			if w.ResetsAt != nil && !w.ResetsAt.After(now) {
 				row.Ended = true
 				row.Text = "Window ended; refresh needed. Last reading: " + row.Text
