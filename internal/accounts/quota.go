@@ -340,11 +340,17 @@ func QuotaViews(dir string, catalog File, env []string, now time.Time) map[strin
 			v.Reason = "cache_unavailable"
 		} else {
 			bound, ok := Bound(catalog, e, env)
+			if !ok {
+				v.Reason = "selection_review_required"
+			}
 			for _, x := range q.Entries {
 				if x.ID != e.ID {
 					continue
 				}
-				if !ok || x.Revision != e.Revision || x.Context != bound {
+				if !ok {
+					break
+				}
+				if x.Revision != e.Revision || x.Context != bound {
 					v.Reason = "context_changed"
 					break
 				}

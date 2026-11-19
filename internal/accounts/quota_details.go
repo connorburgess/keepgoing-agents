@@ -113,8 +113,10 @@ func QuotaReasonText(reason string) string {
 		return "No supported model-free account quota source is available for this provider."
 	case "not_checked":
 		return "No quota reading is saved for this selection."
+	case "selection_review_required":
+		return "Review and explicitly update the selection, even if its paths are unchanged, then refresh quota. Saved quota was not reused."
 	case "context_changed":
-		return "The selected context changed; refresh after reviewing the selection."
+		return "Saved quota belongs to another context or selection revision. Review the selection, then refresh quota."
 	case "cache_unavailable":
 		return "Saved quota evidence is unavailable. No usage is assumed."
 	case "timeout":
