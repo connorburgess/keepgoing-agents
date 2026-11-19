@@ -121,7 +121,7 @@ func jsFunction(t *testing.T, js, head string) string {
 func TestDockQuotaOnlyReadsAfterExplicitReview(t *testing.T) {
 	js := dockUIText(t, "dock.js")
 	post := jsFunction(t, js, "function accountQuotaPost(id, step, form, recovery) {")
-	for _, want := range []string{"abort.abort()", "15000", "signal: abort.signal", `method: "POST"`, `action: "subscription_quota"`, "clearTimeout(timer)"} {
+	for _, want := range []string{"abort.abort()", "15000", "signal: abort.signal", `method: "POST"`, `action: recovery ? "review_selection" : "subscription_quota"`, `recovery ? "api/v1/account-selections/" : "api/v1/accounts/"`, "accountQuotaReply(d, id, step, recovery)", "clearTimeout(timer)"} {
 		if !strings.Contains(post, want) {
 			t.Errorf("quota POST lacks %q", want)
 		}

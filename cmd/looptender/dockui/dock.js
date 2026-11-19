@@ -1354,6 +1354,23 @@
   }
   // Explicit subscription-quota reads have their own review and never run from
   // a page poll. This state cannot be mistaken for a loop or route action.
+  function accountQuotaReply(d, id, step, recovery) {
+    function text(v) { return typeof v === "string" && v.trim().length > 0 && v.length <= 16384; }
+    if (!d || d.schemaVersion !== 1 || (!!d.preview === !!d.result)) throw new Error("quota reply");
+    if (d.result) {
+      var outcomes = step === "prepare" ? ["refused", "review_again"] : ["done", "refused", "review_again"];
+      if (outcomes.indexOf(d.result.outcome) < 0 || !text(d.result.text)) throw new Error("quota outcome");
+      return d;
+    }
+    var p = d.preview;
+    if (step !== "prepare" || p.action !== (recovery ? "review_selection" : "subscription_quota") || p.key !== id ||
+        !text(p.title) || !text(p.confirm) || !text(p.lost) || !text(p.refused) ||
+        typeof p.form !== "string" || !/^[a-f0-9]{64}$/.test(p.form) ||
+        typeof p.expiresAt !== "string" || !isFinite(Date.parse(p.expiresAt)) ||
+        !Array.isArray(p.lines) || !p.lines.length || p.lines.length > 32 ||
+        !p.lines.every(function (line) { return Array.isArray(line) && line.length > 0 && line.length <= 32 && line.every(function (part) { return part && text(part.t) && !part.at; }); })) throw new Error("quota review");
+    return d;
+  }
   function accountQuotaPost(id, step, form, recovery) {
     var abort = new AbortController(), timer = setTimeout(function () { abort.abort(); }, 15000);
     return fetch((recovery ? "api/v1/account-selections/" : "api/v1/accounts/") + encodeURIComponent(id) + "/" + step, {
@@ -1363,7 +1380,7 @@
     }).then(function (r) {
       if (!r.ok) { var e = new Error("status " + r.status); e.status = r.status; throw e; }
       return r.json();
-    }).then(function (d) { if (!d || d.schemaVersion !== 1) throw new Error("schema"); return d; })
+    }).then(function (d) { return accountQuotaReply(d, id, step, recovery); })
       .finally(function () { clearTimeout(timer); });
   }
   function accountQuotaRequest(c, confirm, recovery) {
