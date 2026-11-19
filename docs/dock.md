@@ -571,6 +571,27 @@ quota capabilities. It refuses empty, control-containing or over-1024-byte
 disclosures instead of truncating authority text. Compact menu metadata keeps
 its separate 180-character limit.
 
+### Review an unchanged selection (unreleased)
+
+When a Codex selection needs context review, an expanded Accounts card offers
+**Review selection for this panel…** only when changes are allowed. It shows
+its existing label, provider, executable, working directory and authentication
+selection; these fields are fixed. Confirmation creates a revision bound to
+this panel's startup environment, retains startup caller provenance and clears
+prior login/plan observations. Earlier quota is invalidated. Authentication may
+differ from a terminal; identity is not verified. No provider call, login,
+default change, route or loop-control write is part of this action. Quota read
+remains a separate review afterward. The native menu points to Accounts via
+its existing **Open Panel with Controls…** entry.
+
+The additive `accountSelectionReview` served capability advertises this action.
+Session/origin-protected `api/v1/account-selections/ID/prepare` and `/confirm`
+accept only the fixed `review_selection` action. The bounded single-use ticket
+binds the exact catalog revision, startup context/caller and canonical native
+path identities. Confirm revalidates under the catalog writer lock and refuses
+concurrent checks, drift, expiry and replay. Read-only panels cannot route the
+write. Unknown replies never trigger an automatic replay or quota refresh.
+
 ### Saved account quota summaries (unreleased)
 
 Accounts now shows compact named quota windows and an expanded saved-evidence
