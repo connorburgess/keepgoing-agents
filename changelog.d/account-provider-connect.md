@@ -1,1 +1,0 @@
-- Add explicitly reviewed provider-native account connection tasks in the panel backend, with separate private contexts, optional additional named selections, bounded start/status/cancel ownership, and publication fenced against selection changes. Sign-in completion remains personal; quota reads, routes and BB connections remain separate.
