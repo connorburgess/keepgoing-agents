@@ -11,6 +11,7 @@ import (
 	"math"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"strings"
 	"time"
 
@@ -65,10 +66,12 @@ func accountClaudeQuotaRead(ctx context.Context, cli string, env []string, workd
 	if !accountClaudeQuotaEnvironment(env) {
 		return nil, errors.New("isolation_unavailable")
 	}
-	if !accountClaudeQuotaExecutable(ctx, cli) {
-		return nil, errors.New("unverified_cli")
+	image, cleanup, err := accountClaudeQuotaStage(ctx, cli, accountClaudeQuotaDigest)
+	if err != nil {
+		return nil, err
 	}
-	return accountClaudeQuotaProcess(ctx, cli, env, workdir)
+	defer cleanup()
+	return accountClaudeQuotaProcess(ctx, image, env, workdir)
 }
 
 func accountClaudeQuotaEnvironment(env []string) bool {
@@ -82,29 +85,74 @@ func accountClaudeQuotaEnvironment(env []string) bool {
 	return true
 }
 
-func accountClaudeQuotaExecutable(ctx context.Context, path string) bool {
+// Launch only bytes copied from the admitted handle, never the selected pathname
+// again. Provider updates may replace that pathname during or after admission.
+// The private image survives until the owned child has been killed and waited.
+func accountClaudeQuotaStage(ctx context.Context, path, digest string) (image string, cleanup func(), resultErr error) {
+	unavailable := errors.New("unverified_cli")
 	f, err := os.Open(path)
 	if err != nil {
-		return false
+		return "", nil, unavailable
 	}
 	defer f.Close()
 	st, err := f.Stat()
 	if err != nil || !st.Mode().IsRegular() || st.Size() > 512<<20 {
-		return false
+		return "", nil, unavailable
 	}
+	dir, err := os.MkdirTemp("", "looptender-claude-quota-")
+	if err != nil {
+		return "", nil, unavailable
+	}
+	cleanup = func() { os.RemoveAll(dir) }
+	defer func() {
+		if resultErr != nil {
+			cleanup()
+		}
+	}()
+	image = filepath.Join(dir, "claude")
+	staged, err := os.OpenFile(image, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0600)
+	if err != nil {
+		return "", cleanup, unavailable
+	}
+	defer staged.Close()
 	h := sha256.New()
 	buf := make([]byte, 64<<10)
-	for ctx.Err() == nil {
-		n, err := f.Read(buf)
-		h.Write(buf[:n])
-		if err == io.EOF {
-			return hex.EncodeToString(h.Sum(nil)) == accountClaudeQuotaDigest
+	var total int64
+	for {
+		if err := ctx.Err(); err != nil {
+			return "", cleanup, err
 		}
-		if err != nil {
-			return false
+		n, readErr := f.Read(buf)
+		total += int64(n)
+		if total > 512<<20 {
+			return "", cleanup, unavailable
+		}
+		if n > 0 {
+			if _, err := staged.Write(buf[:n]); err != nil {
+				return "", cleanup, unavailable
+			}
+			h.Write(buf[:n])
+		}
+		if readErr == io.EOF {
+			break
+		}
+		if readErr != nil {
+			return "", cleanup, unavailable
 		}
 	}
-	return false
+	if hex.EncodeToString(h.Sum(nil)) != digest {
+		return "", cleanup, unavailable
+	}
+	if err := staged.Close(); err != nil {
+		return "", cleanup, unavailable
+	}
+	if err := os.Chmod(image, 0500); err != nil {
+		return "", cleanup, unavailable
+	}
+	if err := ctx.Err(); err != nil {
+		return "", cleanup, err
+	}
+	return image, cleanup, nil
 }
 
 // Kept separate so fictional subprocess fixtures can verify the exchange and
@@ -156,12 +204,26 @@ func accountClaudeQuotaExchange(out io.Reader, in io.Writer) ([]byte, error) {
 		if err := json.NewEncoder(in).Encode(map[string]any{"type": "control_request", "request_id": id, "request": fields}); err != nil {
 			return nil, errors.New("status_unavailable")
 		}
-		if !lines.Scan() {
-			return nil, errors.New("status_unavailable")
-		}
-		frame, ok := accountClaudeObject(lines.Bytes())
-		if !ok || !accountClaudeCanonical(frame, "type", "response") || string(frame["type"]) != `"control_response"` {
-			return nil, schema
+		var frame map[string]json.RawMessage
+		for {
+			if !lines.Scan() {
+				return nil, errors.New("status_unavailable")
+			}
+			var ok bool
+			frame, ok = accountClaudeObject(lines.Bytes())
+			if !ok || !accountClaudeCanonical(frame, "type", "subtype", "response") {
+				return nil, schema
+			}
+			// The pinned native image may emit this UI-only invalidation before
+			// its control reply. Discard the entire notification, including IDs.
+			// It is never answered; all other system/conversation frames refuse.
+			if string(frame["type"]) == `"system"` && string(frame["subtype"]) == `"ui_invalidate"` {
+				continue
+			}
+			if string(frame["type"]) != `"control_response"` {
+				return nil, schema
+			}
+			break
 		}
 		response, ok := accountClaudeObject(frame["response"])
 		if !ok || !accountClaudeCanonical(response, "request_id", "subtype", "response", "error") || string(response["request_id"]) != `"`+id+`"` {

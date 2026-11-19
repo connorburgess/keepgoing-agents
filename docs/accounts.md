@@ -634,7 +634,11 @@ selected directory cannot be detected as an identity change by this mechanism.
 initiated native control exchange. The current acquisition allowlist admits only
 the inspected Claude Code 2.1.326 native artifact; wrappers, other platform
 artifacts and upgrades return unavailable before launch until independently
-verified. No wrapper is substituted and no login or default is changed.
+verified. Admitted bytes are copied through the selected open handle into a fresh
+private directory, verified there and launched from that private image; replacing
+the selected path cannot substitute an unreviewed executable. The image is
+removed only after the owned child exits. No wrapper is substituted and no login
+or default is changed.
 The process stays parked with `--await-claim`, safe mode, disabled hooks, no
 session persistence, empty tools and strict empty MCP configuration. It receives
 only `initialize`, a disabled-hook-policy check, then
@@ -642,7 +646,8 @@ only `initialize`, a disabled-hook-policy check, then
 message, resume, hook response or model request. An unrecognized version,
 managed/unreadable hook policy, unexpected conversation/control request, malformed
 response or incorrect correlation refuses the read. Runtime preload injection
-also refuses; the selected environment and caller provenance are retained.
+also refuses. The pinned native UI invalidation notification is discarded without
+a response; other unexpected frames refuse. The selected environment and caller provenance are retained.
 The five-second deadline, 64 KiB output bound and owned-child cleanup apply.
 
 Claude's experimental reply conceals whether quota came from a provider request,

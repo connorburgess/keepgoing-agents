@@ -3,9 +3,12 @@ package main
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"runtime"
 	"strings"
@@ -110,6 +113,8 @@ func TestClaudeQuotaControlBoundary(t *testing.T) {
 		requests               int
 	}{
 		{"reported", good, "", 3},
+		{"ui-invalidation", `{"type":"system","subtype":"ui_invalidate","event":"private-event","session_id":"private-session"}` + "\n" + good, "", 3},
+		{"other-system", `{"type":"system","subtype":"init"}` + "\n" + good, "schema_unavailable", 1},
 		{"version", strings.Replace(good, "2.1.326", "2.1.327", 1), "isolation_unavailable", 1},
 		{"hooks-not-applied", strings.Replace(good, `"hooks_applied":true`, `"hooks_applied":false`, 1), "isolation_unavailable", 1},
 		{"active", strings.Replace(good, `"idle"`, `"running"`, 1), "isolation_unavailable", 1},
@@ -290,6 +295,77 @@ func TestClaudeQuotaRefreshSelectionAndSavedFailure(t *testing.T) {
 			after, _ = os.ReadFile(path)
 			if err == nil || !bytes.Equal(before, after) || (mode == "corrupt-cache" && calls != 0) {
 				t.Fatal("stale/damaged evidence published or queried", err, calls)
+			}
+		})
+	}
+}
+
+func TestClaudeQuotaStagedAdmission(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("Unix executable fixture")
+	}
+	for _, mode := range []string{"replace", "invalid", "cancel"} {
+		t.Run(mode, func(t *testing.T) {
+			dir := t.TempDir()
+			staging := t.TempDir()
+			t.Setenv("TMPDIR", staging)
+			source := filepath.Join(dir, "selected")
+			marker := filepath.Join(dir, "ran-unverified")
+			testexec.Script(t, source, "#!/bin/sh\nprintf verified")
+			original, err := os.ReadFile(source)
+			if err != nil {
+				t.Fatal(err)
+			}
+			digest := fmt.Sprintf("%x", sha256.Sum256(original))
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
+			if mode == "invalid" {
+				digest = strings.Repeat("0", 64)
+			}
+			if mode == "cancel" {
+				cancel()
+			}
+			image, cleanup, err := accountClaudeQuotaStage(ctx, source, digest)
+			if mode != "replace" {
+				if err == nil {
+					cleanup()
+					t.Fatal("admitted invalid/cancelled image")
+				}
+				if image != "" {
+					t.Fatal("returned failed admission image")
+				}
+				entries, readErr := os.ReadDir(staging)
+				if readErr != nil || len(entries) != 0 {
+					t.Fatalf("failed admission retained staging: %v %v", entries, readErr)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer cleanup()
+			info, err := os.Stat(image)
+			if err != nil || info.Mode().Perm() != 0500 {
+				t.Fatalf("image mode: %v %v", info, err)
+			}
+			info, err = os.Stat(filepath.Dir(image))
+			if err != nil || info.Mode().Perm() != 0700 {
+				t.Fatalf("directory mode: %v %v", info, err)
+			}
+			if err := os.Rename(source, source+".old"); err != nil {
+				t.Fatal(err)
+			}
+			testexec.Script(t, source, "#!/bin/sh\nprintf unverified > '"+marker+"'")
+			out, err := exec.Command(image).Output()
+			if err != nil || string(out) != "verified" {
+				t.Fatalf("staged launch: %q %v", out, err)
+			}
+			if _, err := os.Stat(marker); !errors.Is(err, os.ErrNotExist) {
+				t.Fatal("replacement executed")
+			}
+			cleanup()
+			if _, err := os.Stat(filepath.Dir(image)); !errors.Is(err, os.ErrNotExist) {
+				t.Fatal("staged image retained")
 			}
 		})
 	}
