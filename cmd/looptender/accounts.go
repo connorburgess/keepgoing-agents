@@ -32,7 +32,7 @@ func accountsDirectory(path string) (string, error) {
 }
 func accountsCommand(e env, args []string, run accountRun) int {
 	if len(args) == 0 {
-		e.errf("usage: accounts list|add|update|check [flags]")
+		e.errf("usage: accounts list|add|update|check|usage [flags]")
 		return exitUsage
 	}
 	op := args[0]
@@ -41,7 +41,7 @@ func accountsCommand(e env, args []string, run accountRun) int {
 	dir := fs.String("directory", "", "private catalog directory")
 	id := fs.String("id", "", "selected connection ID")
 	label := fs.String("label", "", "owner-selected account label")
-	provider := fs.String("provider", "", "claude-code, codex, cursor, bb or other")
+	provider := fs.String("provider", "", "claude-code, codex, antigravity, cursor, bb or other")
 	mode := fs.String("selection", "inherited", "inherited, explicit_directory or externally_managed")
 	cli := fs.String("cli", "", "selected provider executable")
 	accountDir := fs.String("account-dir", "", "existing selected account directory; never copied")
@@ -57,20 +57,23 @@ func accountsCommand(e env, args []string, run accountRun) int {
 	supplied := map[string]bool{}
 	fs.Visit(func(f *flag.Flag) { supplied[f.Name] = true })
 	for k := range supplied {
-		allowed := k == "directory" || k == "json" || ((op == "check" || op == "update") && k == "id") ||
+		allowed := k == "directory" || k == "json" || ((op == "check" || op == "update" || op == "usage") && k == "id") ||
 			((op == "add" || op == "update") && (k == "label" || k == "provider" || k == "selection" || k == "cli" || k == "account-dir" || k == "workdir" || (op == "update" && k == "expect")))
 		if !allowed {
 			e.errf("accounts: flag not allowed for this operation")
 			return exitUsage
 		}
 	}
-	if op != "list" && op != "add" && op != "update" && op != "check" {
+	if op != "list" && op != "add" && op != "update" && op != "check" && op != "usage" {
 		return exitUsage
 	}
 	path, err := accountsDirectory(*dir)
 	if err != nil {
 		e.errf("accounts: private catalog directory unavailable")
 		return exitFailed
+	}
+	if op == "usage" {
+		return accountsUsage(e, path, *id, *asJSON)
 	}
 	now := time.Now().UTC()
 	caller := os.Getenv("BB_THREAD_ID")
@@ -84,12 +87,20 @@ func accountsCommand(e env, args []string, run accountRun) int {
 	case "list":
 	case "add", "update":
 		selected := accounts.Entry{Label: *label, Provider: *provider, Mode: *mode}
-		if *provider == "claude-code" || *provider == "codex" {
+		if *provider == "claude-code" || *provider == "codex" || *provider == "antigravity" {
+			if *provider == "antigravity" && *mode == "explicit_directory" {
+				e.errf("accounts: explicit_directory is not supported for antigravity")
+				return exitUsage
+			}
 			name := *cli
 			if name == "" {
-				name = "claude"
-				if *provider == "codex" {
+				switch *provider {
+				case "codex":
 					name = "codex"
+				case "antigravity":
+					name = "agy"
+				default:
+					name = "claude"
 				}
 			}
 			resolved, lookup := exec.LookPath(name)
@@ -264,6 +275,18 @@ func accountCheck(ctx context.Context, dir, id, caller string, run accountRun, n
 				raw, callErr = call("login", "status")
 			}
 			o = accountLogin(selected, o, raw, callErr)
+			if selected.Provider == "codex" && o.Auth == "reported_present" {
+				raw, callErr = call("app-server")
+				o.Plan, o.PlanReason = accountCodexPlan(raw, callErr)
+				if o.Plan != "" {
+					o.PlanAt = &now
+				} else if (o.PlanReason == "timeout" || o.PlanReason == "cancelled" || o.PlanReason == "status_unavailable") && selected.Last != nil && selected.Last.Plan != "" {
+					o.Plan, o.PlanAt = selected.Last.Plan, selected.Last.PlanAt
+					if o.PlanAt == nil {
+						o.PlanAt = &selected.Last.At
+					}
+				}
+			}
 		}
 	}
 	return accounts.Update(dir, func(latest *accounts.File) error {
@@ -337,6 +360,9 @@ func accountLogin(e accounts.Entry, o accounts.Observation, raw []byte, err erro
 	return o
 }
 func accountExec(ctx context.Context, cli string, args []string, env []string, workdir string) ([]byte, error) {
+	if len(args) == 1 && args[0] == "app-server" {
+		return accountCodexRead(ctx, cli, env, workdir)
+	}
 	cmd := exec.CommandContext(ctx, cli, args...)
 	cmd.Env = env
 	cmd.Dir = workdir
@@ -355,7 +381,7 @@ func accountExec(ctx context.Context, cli string, args []string, env []string, w
 }
 
 func accountContextExists(e accounts.Entry) bool {
-	if e.Provider != "claude-code" && e.Provider != "codex" {
+	if e.Provider != "claude-code" && e.Provider != "codex" && e.Provider != "antigravity" {
 		return true
 	}
 	cli, err := filepath.EvalSymlinks(e.CLI)

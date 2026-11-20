@@ -10,11 +10,20 @@ name: Checks
 # longer starts these jobs by itself. Branch protection requires the branch to
 # be up to date with its base, so merging the new base in pushes a commit and
 # runs them; otherwise close and reopen the pull request.
+#
+# `merge_group` runs every job on a merge queue entry: the commit GitHub builds
+# from main plus the queued pull requests, which is exactly what lands. A
+# required check must report there under the same name as on the pull
+# request, or the queue waits for it until it times out. Every job here keeps
+# its name in the queue (it has no `base` input), and ci-scope.sh answers
+# "full" for this event, so the queue never skips the macOS or Windows work.
 on:
   push:
     branches: [main]
   pull_request:
     types: [opened, synchronize, reopened]
+  merge_group:
+    types: [checks_requested]
   workflow_dispatch:
     inputs:
       base:
@@ -34,17 +43,21 @@ on:
 # decide, and every later step has a condition. The jobs themselves always run
 # and keep their names, because branch protection requires "Build and test
 # (macos-15)" and "Build and test (ubuntu-24.04)" by name and a job that never
-# reported would block the pull request. Pushes to main and ordinary manual
-# runs always run everything. A change to this file or to the script is not
-# documentation, so it runs everything.
+# reported would block the pull request. Pushes to main, merge queue runs and
+# ordinary manual runs always run everything. A change to this file or to the
+# script is not documentation, so it runs everything.
 
 permissions:
   contents: read
 
 # A newer head supersedes an older run of this workflow. An edit to the pull
 # request does not start this workflow, so it cannot cancel a run in progress.
+# A merge queue run has a group of its own (its run ID), so nothing cancels it
+# or makes it wait: not a push to the pull request, not another queue entry,
+# and not the same pull request queued again. The queue decides when a run is
+# no longer needed.
 concurrency:
-  group: checks-${{ github.event.pull_request.number || github.ref }}
+  group: checks-${{ github.event_name == 'merge_group' && github.run_id || github.event.pull_request.number || github.ref }}
   cancel-in-progress: true
 
 jobs:
@@ -139,6 +152,9 @@ jobs:
       - name: Verify guided fallback setup on Windows
         if: steps.scope.outputs.scope != 'docs'
         run: go test -v ./cmd/looptender -run '^TestFallbacks(Add|Handoff|Remove|Move|Manage)' -count=1
+      - name: Verify explicit assignment lifecycle and coordination records on Windows
+        if: steps.scope.outputs.scope != 'docs'
+        run: go test -race -v ./internal/control ./internal/config ./cmd/looptender -run '^Test(Assignment|DockAssignment)' -count=1
       - name: Verify private goal records on Windows
         if: steps.scope.outputs.scope != 'docs'
         run: go test -v ./internal/control -run '^TestGoal' -count=1
@@ -171,7 +187,12 @@ jobs:
         run: go test -race -v ./internal/accounts -count=1
       - name: Verify selected account commands and effective context on Windows
         if: steps.scope.outputs.scope != 'docs'
-        run: go test -race -v ./cmd/looptender -run '^TestAccounts' -count=1
+        run: go test -race -v ./cmd/looptender -run '^(TestAccounts|TestAccountQuota|TestPanelAccountQuota|TestPanelAccountSelection|TestPanelAccountReply)' -count=1
+      - name: Verify bounded PR backlog evidence and ordinary wake gates on Windows
+        if: steps.scope.outputs.scope != 'docs'
+        run: |
+          go test -race -v ./internal/prbacklog -count=1
+          go test -race -v ./internal/config ./internal/supervise ./cmd/looptender -run '^TestPRBacklog' -count=1
       - name: Verify offline run navigation on Windows
         if: steps.scope.outputs.scope != 'docs'
         run: go test -race -v ./cmd/looptender -run '^TestRuns' -count=1
@@ -268,6 +289,18 @@ jobs:
         if: steps.scope.outputs.scope != 'docs' || matrix.os == 'ubuntu-24.04'
         with:
           go-version-file: go.mod
+      - name: Check the rule that decides what a change needs
+        if: runner.os == 'Linux'
+        run: scripts/ci-scope-test.sh
+      - name: Check the rule against large files and committed executables
+        if: runner.os == 'Linux'
+        run: scripts/check-contributions-test.sh
+      - name: Check the note for a job that ran out of time
+        if: runner.os == 'Linux'
+        run: scripts/ci-timeout-note-test.sh
+      - name: Check workflow selection and native race execution
+        if: runner.os == 'Linux'
+        run: python3 scripts/ci-workflow-test.py
       - run: test -z "$(gofmt -l .)" || { gofmt -l .; exit 1; }
         if: steps.scope.outputs.scope != 'docs' || matrix.os == 'ubuntu-24.04'
       - run: go vet ./...
@@ -277,8 +310,20 @@ jobs:
       - name: Check third-party notices match the executable's modules
         if: steps.scope.outputs.scope != 'docs' || matrix.os == 'ubuntu-24.04'
         run: scripts/third-party-notices.sh --check
-      - run: go test -race ./...
+      - name: Check race partition coverage and failure handling
+        if: runner.os == 'Linux'
+        run: python3 scripts/ci-race-test.py
+      - name: Run native race suite with disjoint command partitions
+        run: python3 -u scripts/ci-race.py
         if: steps.scope.outputs.scope != 'docs' || matrix.os == 'ubuntu-24.04'
+      - name: Retain race inventory and partition logs
+        if: always() && (steps.scope.outputs.scope != 'docs' || matrix.os == 'ubuntu-24.04')
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: native-race-${{ matrix.os }}
+          path: ${{ runner.temp }}/ci-race/
+          if-no-files-found: warn
+          retention-days: 7
       - name: Smoke check setup and recovery with local fixtures
         if: steps.scope.outputs.scope != 'docs' || matrix.os == 'ubuntu-24.04'
         run: |
@@ -301,15 +346,6 @@ jobs:
         if: steps.scope.outputs.scope == 'docs' && matrix.os != 'ubuntu-24.04'
         shell: bash
         run: echo "Every changed file is documentation, so this job did no work. The Ubuntu build-and-test job ran every check." >> "$GITHUB_STEP_SUMMARY"
-      - name: Check the rule that decides what a change needs
-        if: runner.os == 'Linux'
-        run: scripts/ci-scope-test.sh
-      - name: Check the rule against large files and committed executables
-        if: runner.os == 'Linux'
-        run: scripts/check-contributions-test.sh
-      - name: Check the note for a job that ran out of time
-        if: runner.os == 'Linux'
-        run: scripts/ci-timeout-note-test.sh
       - name: Say so if the job ran out of time
         if: cancelled()
         shell: bash

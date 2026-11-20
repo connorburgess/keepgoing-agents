@@ -55,22 +55,25 @@ Supervision (read -c FILE; default ./looptender.yaml, or ./keepgoing.yaml when o
 
 Transfer planning:
   transfer preview         Inspect a proposed BB move without changing it
+  transfer reconcile       Record an explicit private migration review checklist
   transfer inventory       List a loop's target, lanes and progress worktrees, read-only
   transfer apply|recover   Move a BB primary with an explicit recovery hold
+  transfer supersede       Permanently hold an obsolete BB loop after a manual move
 
 Local client discovery:
   client status            Read a registered loop snapshot without controlling it
   client pause|stop        Save a restrictive hold for a registered loop
   client prepare-resume    Prepare a short-lived snapshot/ticket for review
   client resume            Clear holds using an unchanged prepared ticket
-  accounts list|add|update|check  Select private account contexts; explicit status only, no model calls
-  registry add|list|remove  Register private loop references; never start supervision
+  accounts list|add|update|check|usage  Select private account contexts; explicit status only, no model calls
+  registry add|list|remove|reconcile  Register private loop references; never start supervision
   migrate                  Say what moving the per-user directories from keepgoing/ to looptender/ would do;
                            --apply moves them and leaves a link, --undo --apply moves them back
   dock                     Serve the read-only keepgoing panel for every registered loop on 127.0.0.1
   panel                    Open the keepgoing panel in your browser, starting it when needed; also status, stop, list
 
 Goal metadata:
+  assignment inventory|review|handoff|acknowledge|ready|reconcile-wake|show  Explicit BB assignment evidence (opt-in; no dispatch)
   goal create|revise|show   Record private, revisioned goal metadata
 
 Control:
@@ -93,6 +96,7 @@ Fallbacks:
   fallbacks move ID --to N Change a fallback's place in the handoff order
   fallbacks check          Probe candidates now (--dry-run previews; --id ID, --exact)
   fallbacks list           Show recorded health and the redundancy picture
+                           Every fallbacks command takes --loop NAME in place of -c
   routes list              Show the standard route list and each registered loop's routes
   routes add|move|remove|off|on
                            Change the standard route list (a person only), or with
@@ -106,6 +110,7 @@ Reporting:
 
 Tools (no config needed):
   init                     Guide setup of a disabled loop outside the checkout
+  pr-backlog               Check configured GitHub PR WIP policy (read-only)
   ci-wait                  Wait for every CI workflow on a PR head or exact commit
   net-retry -- cmd...      Rerun a network command only while the network is down
   version                  Print the version
@@ -162,12 +167,17 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 	case "routes":
 		return routesCommand(e, rest)
 	case "transfer":
+		if len(rest) > 0 && rest[0] == "reconcile" {
+			return transferReconcileCommand(e, rest, doctorExec, doctorExecLimit(inventoryListLimit))
+		}
 		if len(rest) > 0 && rest[0] == "inventory" {
 			// A lane listing is about 1.5 KB per lane, so 200 lanes need
 			// more than doctor's 64 KiB.
 			return transferInventoryCommand(e, rest, doctorExec, doctorExecLimit(inventoryListLimit))
 		}
 		return transferCommand(e, rest, doctorExec)
+	case "assignment":
+		return assignmentCommand(e, rest, doctorExecLimit(inventoryListLimit))
 	case "goal":
 		return goalCommand(e, rest)
 	case "service":
@@ -197,6 +207,8 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 	case "version":
 		fmt.Fprintln(stdout, version)
 		return exitOK
+	case "pr-backlog":
+		return prBacklogCommand(e, rest, nil)
 	case "ci-wait":
 		return ciWait(e, rest)
 	case "net-retry":
@@ -207,12 +219,17 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 			return exitUsage
 		}
 		if cmd == "fallbacks" {
+			args, code, ok := fallbacksByLoop(e, rest[0], rest[1:])
+			if !ok {
+				return code
+			}
 			switch rest[0] {
 			case "add":
-				return fallbacksAddCommand(e, rest[1:])
+				return fallbacksAddCommand(e, args)
 			case "handoff", "remove", "move":
-				return fallbacksManageCommand(e, rest[0], rest[1:])
+				return fallbacksManageCommand(e, rest[0], args)
 			}
+			rest = append([]string{rest[0]}, args...)
 		}
 		cmd, rest = cmd+" "+rest[0], rest[1:]
 	}
@@ -224,6 +241,7 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 		asJSON:      fs.Bool("json", false, "print machine-readable JSON"),
 		dryRun:      fs.Bool("dry-run", false, "tick/daemon: record decisions only; fallbacks check/report test: preview only"),
 		now:         fs.String("now", "", "RFC 3339 time to use instead of the clock"),
+		reviewFile:  fs.String("review-file", "", "complete: bounded private whole-objective and assignment review JSON"),
 		note:        fs.String("note", "", "a short note stored in control.json"),
 		id:          fs.String("id", "", "fallbacks check: only this candidate"),
 		exact:       fs.Bool("exact", false, "fallbacks check: probe the target model, not the cheap one"),
@@ -244,6 +262,10 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 		return exitUsage
 	}
 	positional = append(positional, fs.Args()...)
+	if *f.reviewFile != "" && cmd != "complete" {
+		e.errf("--review-file is only supported by complete")
+		return exitUsage
+	}
 	if *f.takeOver && cmd != "enable" && cmd != "daemon" && cmd != "validate" {
 		e.errf("--take-over is only supported by enable, daemon, and validate")
 		return exitUsage
@@ -370,7 +392,9 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 		return code
 	case "stop":
 		return stopCmd(e, cfg, *f.note, *f.lanes, *f.dropQueued, *f.immediately)
-	case "disable", "pause", "resume", "await-user", "complete":
+	case "complete":
+		return completionCommand(e, cfg, *f.note, *f.reviewFile)
+	case "disable", "pause", "resume", "await-user":
 		return controlCmd(e, cfg, cmd, *f.note, *f.takeOver, *f.keepStop)
 	case "session reset":
 		if *f.dryRun {
@@ -406,6 +430,7 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 type cliFlags struct {
 	staleAfter                      *time.Duration
 	cfgPath, now, note, id, routine *string
+	reviewFile                      *string
 	client                          *string
 	target                          *string
 	here                            *bool

@@ -130,3 +130,9 @@ Available in v0.1.5. Ordinary `keepgoing status` and `status --json` show the la
 The bounded latest-call record lives in `state.json`, saved after the tick's action path. A crash or failed state write can lose newer attempt evidence and leave an older record. Only the last returned call survives when one tick tries multiple candidates; earlier attempts are not a complete history. Dry runs, failed composition/reservation and checks without sends do not invent or refresh a record. Holds preserve it across later checks and restarts. Primary transfer clears it along with old thread observations; other target aliases refer to the configuration at that historical check, not verified current session identity. No prompt text, source path, reference contents or raw adapter error is added to this metadata.
 
 Offline fixtures cover goal changes across fresh ticks, failed and unsupported sends, queued revision history, handoff/switch-back composition, transfer reset, legacy/malformed state, status comparison and privacy. This does not add source-file revision tracking, durable pre-send intents, a full attempt ledger, confirmed delivery, incident-timeline or registered-client projection, or live provider verification. These remain separate F2 acceptance work.
+
+Unreleased source adds a separate opt-in [whole-objective completion review](assignments.md#whole-objective-completion-review-unreleased)
+for BB loops using assignment lifecycle. Only that opt-in binds explicit completion
+to the current goal and assignment revisions plus a whole-objective declaration.
+The goal record remains descriptive and its references are not fetched or treated
+as independently verified acceptance. Other loops retain prior completion behavior.

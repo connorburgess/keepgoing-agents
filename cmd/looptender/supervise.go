@@ -504,6 +504,9 @@ func controlSignatureWithOpen(stateDir string, open func(string) (*os.File, erro
 }
 
 type statusOut struct {
+	Assignments          control.AssignmentSummary `json:"assignments"`
+	MigrationReview      *control.MigrationSummary `json:"migrationReview,omitempty"`
+	MigrationReviewError string                    `json:"migrationReviewError,omitempty"`
 	// NoProgress is the no-progress flag, the same value the panel shows.
 	NoProgress noProgressView `json:"noProgress"`
 	// SharedWith lists, in words, other enabled loops that share this loop's
@@ -759,6 +762,15 @@ func status(e env, cfg *config.Config, now time.Time, asJSON bool, staleAfter ti
 	if ctl.BBTarget != "" {
 		fmt.Fprintf(w, "bound BB target: %s\n", ctl.BBTarget)
 	}
+	if cfg.Loop.AssignmentLifecycle || out.Assignments.Availability != "not_recorded" {
+		printAssignmentSummary(e, out.Assignments)
+	}
+	if out.MigrationReview != nil {
+		printReconcile(e, *out.MigrationReview, false)
+	}
+	if out.MigrationReviewError != "" {
+		fmt.Fprintln(w, "Migration review: unavailable; inspect transfer reconcile show privately")
+	}
 	if out.Goal != nil {
 		printGoal(e, *out.Goal, false)
 	}
@@ -842,6 +854,9 @@ func status(e env, cfg *config.Config, now time.Time, asJSON bool, staleAfter ti
 		fmt.Fprintf(w, " (%s)", ctl.Note)
 	}
 	fmt.Fprintln(w)
+	if ctl.SupersededBy != "" {
+		fmt.Fprintln(w, "superseded: successor reference is recorded in control.json; resume and takeover are refused")
+	}
 	if q := ctl.OpenQuestion; q != nil {
 		fmt.Fprintf(w, "open question: the loop was awaiting a person when completion was declared at %s%s\n", when(q.At), noteSuffix(q.Note))
 	}
@@ -1099,6 +1114,21 @@ func readStatus(ctx context.Context, cfg *config.Config, now time.Time, staleAft
 		summary := g.Summary()
 		out.Goal = &summary
 	}
+	if review, err := control.LoadMigrationReview(l.StateDir); err != nil {
+		out.MigrationReviewError = "unavailable"
+		if errors.Is(err, control.ErrMigrationBinding) {
+			out.MigrationReviewError = "binding_changed"
+		}
+	} else if review != nil {
+		if !migrationReviewMatchesConfig(review, cfg) {
+			out.MigrationReviewError = "binding_changed"
+		} else {
+			summary := control.MigrationSummaryOf(review.ID, review.Revisions[len(review.Revisions)-1])
+			summary.Digest = ""
+			out.MigrationReview = &summary
+		}
+	}
+	out.Assignments = assignmentStatus(cfg, ctl)
 	out.PromptSend = describePromptSend(st.LastPromptSend, out.Goal)
 	if st.GoalCopy != nil && st.GoalCopy.Valid() {
 		out.PromptSend.GoalCopy = st.GoalCopy
@@ -1377,7 +1407,7 @@ func controlCmd(e env, cfg *config.Config, cmd, note string, takeOver ...bool) i
 // cover the lanes as well, and dropQueued (with lanes) for the messages
 // queued in lanes that have not started to be deleted.
 func controlCmdLanes(e env, cfg *config.Config, cmd, note string, lanes, dropQueued bool, takeOver ...bool) int {
-	if cmd == "enable" || cmd == "resume" {
+	if cmd == "enable" || cmd == "resume" || (cmd == "await-user" && cfg.Loop.AssignmentLifecycle) || (cmd == "complete" && cfg.Loop.AssignmentCompletion) {
 		acquire := lock.Acquire
 		takingOver := cmd == "enable" && len(takeOver) > 0 && takeOver[0]
 		if takingOver {
@@ -1397,6 +1427,15 @@ func controlCmdLanes(e env, cfg *config.Config, cmd, note string, lanes, dropQue
 		defer l.Release()
 		if err := checkTransferSources(cfg, false); err != nil {
 			return ownershipError(e, err)
+		}
+	}
+	var completionReview *completionSnapshot
+	if cmd == "complete" && cfg.Loop.AssignmentCompletion {
+		var err error
+		completionReview, err = prepareCompletion(e, cfg)
+		if err != nil {
+			e.errf("%v", err)
+			return exitFailed
 		}
 	}
 	var completionDeclaredAt time.Time
@@ -1455,6 +1494,9 @@ func controlCmdLanes(e env, cfg *config.Config, cmd, note string, lanes, dropQue
 			}
 		}
 		if cmd == "resume" {
+			if err := control.CheckTransferReady(*f); err != nil {
+				return err
+			}
 			if err := control.CheckOwner(*f, os.Getenv("BB_THREAD_ID"), false); err != nil {
 				return err
 			}
@@ -1465,6 +1507,23 @@ func controlCmdLanes(e env, cfg *config.Config, cmd, note string, lanes, dropQue
 				return fmt.Errorf("%w, so nothing was changed and the loop is still %s: %v", errEpisodeState, f.Summary(), err)
 			}
 			newEpisode, settledBriefs = f.EpisodeHold, f.BriefHold
+		}
+		if cmd == "await-user" && cfg.Loop.AssignmentLifecycle {
+			if err := control.CheckOwner(*f, os.Getenv("BB_THREAD_ID"), false); err != nil {
+				return err
+			}
+			b, err := assignmentBinding(cfg, *f)
+			if err != nil {
+				return control.ErrAssignment
+			}
+			if err := control.CheckAssignmentAwaitUser(cfg.Loop.StateDir, b); err != nil {
+				return err
+			}
+		}
+		if cmd == "complete" && cfg.Loop.AssignmentCompletion {
+			if err := completionReview.check(cfg, *f); err != nil {
+				return err
+			}
 		}
 		wasAwaiting := f.AwaitingUser
 		if !transfer {

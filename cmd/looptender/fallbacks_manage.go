@@ -82,10 +82,12 @@ Usage:
   keepgoing fallbacks handoff on|off -c looptender.yaml    turn automatic handoff for rate limits on or off
   keepgoing fallbacks remove ID -c looptender.yaml         take a fallback out of the loop
   keepgoing fallbacks move ID --to N -c looptender.yaml    change its place in the handoff order
+  keepgoing fallbacks move ID --to N --loop NAME           the same, naming a registered loop
 
 Each command previews the result and writes only after you answer yes, or
 with --yes. --dry-run previews only. Nothing is run: no agent, model or check.
 
+` + fallbacksLoopFlagHelp + `
 Flags:
 `
 

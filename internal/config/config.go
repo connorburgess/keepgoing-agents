@@ -59,9 +59,13 @@ type Config struct {
 
 // Loop describes one supervised agent loop.
 type Loop struct {
-	Name     string `yaml:"name"`
-	StateDir string `yaml:"state_dir"`
-	Agent    `yaml:",inline"`
+	// AssignmentLifecycle enables explicit coordinator assignment reconciliation and await-user checks.
+	AssignmentLifecycle    bool                    `yaml:"assignment_lifecycle,omitempty"`
+	AssignmentCompletion   bool                    `yaml:"assignment_completion,omitempty"`
+	AssignmentCoordination *AssignmentCoordination `yaml:"assignment_coordination,omitempty"`
+	Name                   string                  `yaml:"name"`
+	StateDir               string                  `yaml:"state_dir"`
+	Agent                  `yaml:",inline"`
 
 	Prompt     string `yaml:"prompt,omitempty"`
 	PromptFile string `yaml:"prompt_file,omitempty"`
@@ -70,6 +74,8 @@ type Loop struct {
 	// the conversation, and otherwise one line naming its ID and revision.
 	// It requires PromptGoal.
 	PromptGoalOnChange bool `yaml:"prompt_goal_on_change,omitempty"`
+	// PRBacklog is opt-in GitHub evidence on ordinary wakes, never a decision gate.
+	PRBacklog *PRBacklog `yaml:"pr_backlog,omitempty"`
 	// PromptContext appends the loop's supervision context (see
 	// internal/loopcontext) to wakes, re-prompts and handoff briefs, when it
 	// is new to the conversation or has changed. Off by default.
@@ -368,7 +374,7 @@ type Report struct {
 	SecretFile string   `yaml:"secret_file,omitempty"`
 	Source     string   `yaml:"source,omitempty"`
 	Scheme     string   `yaml:"scheme,omitempty"` // standard-webhooks or bearer
-	Format     string   `yaml:"format,omitempty"` // standard or text
+	Format     string   `yaml:"format,omitempty"` // standard, text or sessionpipe
 	Events     []string `yaml:"events,omitempty"`
 	Timeout    Duration `yaml:"timeout,omitempty"`
 }
@@ -672,6 +678,12 @@ func (c *Config) applyDefaults() {
 			l.Probe.Kind = "codex"
 		}
 	}
+	if l.AssignmentCoordination != nil && l.AssignmentCoordination.MaxEvidenceAge.Duration == 0 {
+		l.AssignmentCoordination.MaxEvidenceAge.Duration = 30 * time.Minute
+	}
+	if l.PRBacklog != nil {
+		l.PRBacklog.defaults()
+	}
 	setDur(&l.Daemon.Interval, DefaultDaemonInterval)
 	l.tickTimeoutDefaulted = l.TickTimeout.Duration == 0
 	setDur(&l.TickTimeout, DefaultTickTimeout)
@@ -767,6 +779,22 @@ func (c *Config) Validate() error {
 	if l.Prompt != "" && l.PromptFile != "" {
 		add("set only one of loop.prompt and loop.prompt_file")
 	}
+	if l.AssignmentCompletion && (!l.AssignmentLifecycle || l.Adapter != "bb" || l.BB == nil) {
+		add("loop.assignment_completion requires assignment_lifecycle and a BB primary")
+	}
+	if l.AssignmentLifecycle && (l.Adapter != "bb" || l.BB == nil) {
+		add("loop.assignment_lifecycle requires a BB primary")
+	}
+	if p := l.AssignmentCoordination; p != nil {
+		if !l.AssignmentLifecycle || l.Adapter != "bb" || l.BB == nil || p.MaxEvidenceAge.Duration < time.Minute || p.MaxEvidenceAge.Duration > 24*time.Hour {
+			add("loop.assignment_coordination requires assignment_lifecycle, a BB primary, and max_evidence_age between 1m and 24h")
+		}
+	}
+	if l.PRBacklog != nil {
+		if err := l.PRBacklog.Policy().Validate(); err != nil {
+			add("loop.pr_backlog: %v", err)
+		}
+	}
 	if l.PromptGoalOnChange && !l.PromptGoal {
 		add("loop.prompt_goal_on_change needs loop.prompt_goal: true")
 	}
@@ -842,8 +870,11 @@ func (c *Config) Validate() error {
 		if r.Scheme != "standard-webhooks" && r.Scheme != "bearer" {
 			add("loop.report.scheme must be standard-webhooks or bearer")
 		}
-		if r.Format != "standard" && r.Format != "text" {
-			add("loop.report.format must be standard or text")
+		if r.Format != "standard" && r.Format != "text" && r.Format != "sessionpipe" {
+			add("loop.report.format must be standard, text or sessionpipe")
+		}
+		if r.Format == "sessionpipe" && r.Scheme != "bearer" {
+			add("loop.report: sessionpipe format requires bearer scheme")
 		}
 		for _, e := range r.Events {
 			if e != "all" && !contains(ReportEvents, e) {

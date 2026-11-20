@@ -38,7 +38,7 @@ import (
 // report from the existing read paths. Nothing in this file writes, controls a
 // loop, or talks to a provider.
 
-//go:embed dockui/index.html dockui/dock.css dockui/dock.js dockui/expired.js
+//go:embed dockui/index.html dockui/dock.css dockui/dock.js dockui/expired.js dockui/routes-help.html
 var dockUI embed.FS
 
 const (
@@ -204,16 +204,20 @@ type dockServed struct {
 	// --allow-changes, otherwise "off". keepgoing dock never allows them.
 	// ChangesText says so in the footer's words. Form is the session's
 	// anti-forgery value for preparing a change, only when changes are on.
-	Changes      string     `json:"changes,omitempty"`
-	ChangesSince *time.Time `json:"changesSince,omitempty"`
-	ChangesText  dockText   `json:"changesText,omitempty"`
-	Form         string     `json:"form,omitempty"`
+	Changes                string     `json:"changes,omitempty"`
+	ChangesSince           *time.Time `json:"changesSince,omitempty"`
+	ChangesText            dockText   `json:"changesText,omitempty"`
+	Form                   string     `json:"form,omitempty"`
+	RouteChanges           string     `json:"routeChanges,omitempty"`
+	AccountQuotaProviders  []string   `json:"accountQuotaProviders,omitempty"` // explicit provider allowlist; absent means legacy Codex only
+	AccountQuota           bool       `json:"accountQuota,omitempty"`          // explicit reviewed account-scoped refresh
+	AccountSelectionReview bool       `json:"accountSelectionReview,omitempty"`
 }
 
 func newDockServer(port int, auth dockAuth, reader *dockReader) *dockServer {
 	return &dockServer{port: port, guard: newDockGuard(port), auth: auth, reader: reader, served: dockServed{SchemaVersion: 1, ServedBy: "dock",
 		Version: dockBuildLabel(version), VersionText: dockPanelVersionText(version),
-		ChangesText: txt("Read-only. keepgoing dock never pauses, resumes, stops or starts anything; keepgoing panel --allow-changes can.")}}
+		ChangesText: txt("Read-only: this page cannot pause, resume, stop or start anything.")}}
 }
 
 func (s *dockServer) url(token string) string {
@@ -273,14 +277,30 @@ func (s *dockServer) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		s.asset(w, "dockui/index.html", "text/html; charset=utf-8")
 	case "dock.css":
 		s.asset(w, "dockui/dock.css", "text/css; charset=utf-8")
+	case "routes-help.html":
+		s.asset(w, "dockui/routes-help.html", "text/html; charset=utf-8")
 	case "dock.js":
 		s.asset(w, "dockui/dock.js", "text/javascript; charset=utf-8")
 	case dockServerPath:
 		w.Header().Set("Content-Type", "application/json")
 		_ = json.NewEncoder(w).Encode(s.served)
-	case dockAPIPath:
+	case dockAccountsPath:
+		body, err := s.reader.accountsJSON(r.URL.Query().Get("reference"))
+		if err != nil {
+			http.Error(w, "saved accounts changed or expired; read the panel again", http.StatusConflict)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write(body)
+	case dockAPIPath, dockUsagePath:
 		identifiers := r.URL.Query().Get("identifiers") == "1"
-		body, err := s.reader.json(identifiers)
+		var body []byte
+		var err error
+		if resource == dockUsagePath {
+			body, err = s.reader.usageJSON()
+		} else {
+			body, err = s.reader.json(identifiers)
+		}
 		if err != nil {
 			http.Error(w, "unavailable", http.StatusServiceUnavailable)
 			return
@@ -320,8 +340,10 @@ type dockReader struct {
 	hostOnce sync.Once
 	host     string
 
-	mu    sync.Mutex
-	cache map[bool]dockCached
+	mu            sync.Mutex
+	cache         map[bool]dockCached
+	accountsMu    sync.Mutex
+	accountBodies map[bool]dockAccountCached
 
 	// versions asks for the Versions view: the page's endpoint does, while
 	// panel list and client review/apply, which never show it, do not, so
@@ -336,6 +358,8 @@ type dockReader struct {
 type dockCached struct {
 	at   time.Time
 	body []byte
+	// usage is the Usage page worded by the same read, encoded on its own.
+	usage []byte
 }
 
 // hostname is this computer's name, read once. It is an identifier and
@@ -357,10 +381,32 @@ func (d *dockReader) clock() time.Time {
 // cannot be served again as if they were the current picture. A read cut off
 // because the command is exiting is an error.
 func (d *dockReader) json(identifiers bool) ([]byte, error) {
+	c, err := d.bodies(identifiers)
+	return c.body, err
+}
+
+// usageJSON returns the Usage page from the newest read of the last two
+// seconds, either view's, or from a new read. It is the same read as the
+// main report's: no check, probe, usage refresh or model call, no write.
+func (d *dockReader) usageJSON() ([]byte, error) {
+	d.mu.Lock()
+	for _, identifiers := range []bool{false, true} {
+		if c, ok := d.cache[identifiers]; ok && c.usage != nil && time.Since(c.at) < 2*time.Second {
+			d.mu.Unlock()
+			return c.usage, nil
+		}
+	}
+	d.mu.Unlock()
+	c, err := d.bodies(false)
+	return c.usage, err
+}
+
+// bodies reads once and encodes both the report and the Usage page.
+func (d *dockReader) bodies(identifiers bool) (dockCached, error) {
 	d.mu.Lock()
 	defer d.mu.Unlock()
 	if c, ok := d.cache[identifiers]; ok && time.Since(c.at) < 2*time.Second {
-		return c.body, nil
+		return c, nil
 	}
 	base := d.ctx
 	if base == nil {
@@ -374,22 +420,43 @@ func (d *dockReader) json(identifiers bool) ([]byte, error) {
 	defer cancel()
 	report := d.read(ctx, identifiers)
 	if base.Err() != nil {
-		return nil, base.Err()
+		return dockCached{}, base.Err()
 	}
-	var buf bytes.Buffer
-	if err := json.NewEncoder(&buf).Encode(report); err != nil {
-		return nil, err
+	reference, err := panelRandom(16)
+	if err != nil {
+		return dockCached{}, err
+	}
+	web, accountBody, err := dockSplitAccounts(report, reference)
+	if err != nil {
+		return dockCached{}, err
+	}
+	var buf, usage bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(web); err != nil {
+		return dockCached{}, err
 	}
 	if buf.Len() > dockMaxResponse {
-		return nil, errors.New("dock report exceeds its bound")
+		return dockCached{}, errors.New("dock report exceeds its bound")
 	}
+	if err := json.NewEncoder(&usage).Encode(report.usage); err != nil {
+		return dockCached{}, err
+	}
+	if usage.Len() > dockMaxUsageResponse {
+		return dockCached{}, errors.New("usage page exceeds its bound")
+	}
+	out := dockCached{at: time.Now(), body: buf.Bytes(), usage: usage.Bytes()}
+	d.accountsMu.Lock()
+	if d.accountBodies == nil {
+		d.accountBodies = map[bool]dockAccountCached{}
+	}
+	d.accountBodies[identifiers] = dockAccountCached{at: out.at, reference: reference, body: accountBody}
+	d.accountsMu.Unlock()
 	if report.Complete {
 		if d.cache == nil {
 			d.cache = map[bool]dockCached{}
 		}
-		d.cache[identifiers] = dockCached{at: time.Now(), body: buf.Bytes()}
+		d.cache[identifiers] = out
 	}
-	return buf.Bytes(), nil
+	return out, nil
 }
 
 // read uses the same code paths as registry list, client status, status,
@@ -397,11 +464,16 @@ func (d *dockReader) json(identifiers bool) ([]byte, error) {
 func (d *dockReader) read(ctx context.Context, identifiers bool) (result dockReport) {
 	defer func() {
 		view := accounts.View{State: "unavailable", Complete: false, Cards: []accounts.Card{}}
+		var catalog *accounts.File
 		if dir, err := accountsDirectory(d.accountsDir); err == nil && ctx.Err() == nil {
-			view = accounts.ReadView(dir, d.clock())
+			if f, err := accounts.Load(dir); err == nil {
+				view, catalog = accounts.Project(f, d.clock()), &f
+				accounts.AttachQuota(&view, accounts.QuotaViews(dir, f, os.Environ(), d.clock()))
+			}
 		}
 		dockLinkAccountRoutes(&view, result)
 		result.Accounts = &view
+		result.AccountUses, result.AccountUsesOmitted = dockAccountUses(result, view, catalog, identifiers, d.clock())
 	}()
 
 	now := d.clock()
@@ -496,7 +568,7 @@ func (d *dockReader) readLoop(ctx context.Context, dir string, entry registry.En
 		return in
 	}
 	if cfg := validated[entry.ID]; cfg != nil {
-		in.Chain = &dockChainInput{Primary: cfg.Loop.PrimaryCandidate(), FailoverOn: cfg.Loop.Errors.FailoverOn, SwitchBack: cfg.Loop.SwitchBack.Enabled, TimingOn: cfg.Loop.TimingOn()}
+		in.Chain = &dockChainInput{Primary: cfg.Loop.PrimaryCandidate(), Standard: cfg.Loop.FollowsStandard(), FailoverOn: cfg.Loop.Errors.FailoverOn, SwitchBack: cfg.Loop.SwitchBack.Enabled, TimingOn: cfg.Loop.TimingOn()}
 		if cfg.Loop.Timing != nil {
 			in.Chain.TimingSteps = cfg.Loop.Timing.Steps
 		}

@@ -293,8 +293,21 @@ loop:
 		_, err := os.Stat(filepath.Join(dir, "stop"))
 		return err == nil
 	})
-	wait("successful stop record", func() bool {
-		st, _ := state.Load(stateDir)
+	// The marker means the stop command entered, not that it exited. Allow
+	// its configured command deadline, then a bounded five seconds for the
+	// successful result to be synced and published. The separate five-second
+	// control-response assertion above stays independent of command duration.
+	loaded, err := config.Load(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	completionBudget := loaded.Loop.Process.Timeout.Duration + 5*time.Second
+	t.Logf("stop command entered; waiting up to %s for its recorded outcome (command timeout %s)", completionBudget, loaded.Loop.Process.Timeout.Duration)
+	waitFor("successful stop record", completionBudget, func() bool {
+		st, err := state.Load(stateDir)
+		if err == nil && st.LastCheck != nil && st.LastCheck.Action == "stop" && st.LastCheck.Outcome == "failed" {
+			t.Fatalf("stop command entered but its recorded outcome failed: stopRequestedSent=%t, check=%+v", st.StopRequestedSent, st.LastCheck)
+		}
 		return st.StopRequestedSent && st.LastCheck != nil && st.LastCheck.Outcome == "succeeded"
 	})
 	if _, err := os.Stat(filepath.Join(dir, "resume")); !os.IsNotExist(err) {

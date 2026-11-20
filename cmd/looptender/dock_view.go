@@ -4,7 +4,6 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"fmt"
-	"slices"
 	"sort"
 	"strings"
 	"time"
@@ -36,12 +35,19 @@ const (
 	dockMaxChain      = 8   // fallbacks listed per loop; the rest are counted
 	dockMaxRoutes     = 64  // routes in the view across loops; the rest are counted
 	dockMaxRouteLoops = 16  // loops listed under one route, per list; the rest are counted
-	dockMaxAllowances = 32  // account lines in the allowances strip
+	dockMaxAllowances = 32  // blocks in the allowances strip
 )
 
 type dockReport struct {
-	Accounts      *accounts.View `json:"accounts,omitempty"`
-	SchemaVersion int            `json:"schemaVersion"`
+	AccountsReference string         `json:"accountsReference,omitempty"`
+	SelectedAccounts  int            `json:"selectedAccounts,omitempty"`
+	Accounts          *accounts.View `json:"accounts,omitempty"`
+	// AccountUses is each account card, then each account context routes
+	// use with no catalog entry, with the routes and loops that use it
+	// (dock_account_routes.go). It is filled with Accounts.
+	AccountUses        []dockAccountUse `json:"accountUses,omitempty"`
+	AccountUsesOmitted int              `json:"accountUsesOmitted,omitempty"`
+	SchemaVersion      int              `json:"schemaVersion"`
 	// ReadOnly is true for every response of this schema: the page offers no
 	// control and there is no write endpoint.
 	ReadOnly          bool         `json:"readOnly"`
@@ -75,14 +81,19 @@ type dockReport struct {
 	Routes        []dockRoute    `json:"routes"`
 	RoutesOmitted int            `json:"routesOmitted"`
 	RoutesSummary dockRoutesLine `json:"routesSummary"`
-	// Allowances is one line per account: the freshest usage reading
-	// recorded for any of its routes, and a usage limit a loop left one of
-	// them on whose reset has not passed.
+	// Allowances combines explicit consistent assignments under a label,
+	// with each route's own reading; other routes remain separate.
 	Allowances        []dockAllowance `json:"allowances"`
 	AllowancesOmitted int             `json:"allowancesOmitted"`
 	// Versions is where each build on this computer runs, against the newest
 	// one seen here. Only the page's endpoint fills it.
 	Versions *dockVersions `json:"versions,omitempty"`
+	// UsagePicker is the Usage row's sub-line in the picker: the week's
+	// withheld wakes across loops, as a plain count. The page itself is
+	// served from dockUsagePath, worded by the same read.
+	UsagePicker string `json:"usagePicker"`
+	// usage is that page, kept out of this response for its size.
+	usage dockUsagePage
 }
 
 // dockRoutesLine is the count line of the routes view and the picker.
@@ -105,23 +116,51 @@ type dockWorth struct {
 	Text  dockText `json:"text"`
 }
 
-// dockAllowance is what is recorded about one account's usage: the newest
-// reading any loop holds for a route on it. An account is what selects the
-// account a test reads (the probe's usage identity), so two accounts under
-// one group name are two lines.
+// dockAllowance is one block of the allowances strip. Only explicit,
+// consistent catalog assignments combine routes beneath an account label.
+// Every route keeps its own reading; unassigned routes stay separate even
+// when their configured usage contexts match.
 type dockAllowance struct {
-	Title    string          `json:"title"`
-	Sub      string          `json:"sub"`
-	Provider string          `json:"provider,omitempty"`
-	Account  string          `json:"account,omitempty"`
-	Routes   int             `json:"routes"`
-	Usage    dockUsageTarget `json:"usage"`
-	Notes    []dockNote      `json:"notes"`
-	Next     dockText        `json:"next,omitempty"`
-	identity string
+	Title    string `json:"title"`
+	Sub      string `json:"sub"`
+	Provider string `json:"provider,omitempty"`
+	Account  string `json:"account,omitempty"`
+	Routes   int    `json:"routes"`
+	// Assigned is "by_you" for a block headed by a catalog entry's label.
+	Assigned string `json:"assigned,omitempty"`
+	// Assignment is why a block is not under a catalog entry: "Not assigned
+	// to an account." or the failed check of the account its routes state.
+	Assignment string `json:"assignment,omitempty"`
+	// Lines are the routes of a catalog entry's block, the route that is
+	// out first, each read from the report's routes by its key. LinesOmitted
+	// counts those past dockMaxAccountRoutes.
+	Lines        []dockAllowanceLine `json:"lines,omitempty"`
+	LinesOmitted int                 `json:"linesOmitted,omitempty"`
+	Usage        *dockUsageTarget    `json:"usage,omitempty"`
+	Notes        []dockNote          `json:"notes"`
+	Next         dockText            `json:"next,omitempty"`
 	// kinds says what each of its routes is, in route order and without
 	// repeats, for telling apart lines that share a name.
 	kinds []string
+	out   bool
+}
+
+// dockAllowanceLine is one route of a catalog entry's block. Its reading is
+// the route's own, in the report's routes under the same key.
+type dockAllowanceLine struct {
+	Route    string `json:"route"`
+	Title    string `json:"title"`
+	BBThread bool   `json:"bbThread,omitempty"`
+	// Reading says when the route's own reading was taken ("Read 18 min
+	// ago"), as an unassigned block does, when it has windows to draw: the
+	// windows then say whether it was out and when it resets, so the reset
+	// is said once. A route with no windows to draw has the account card's
+	// sentence instead ("No usage reading is recorded for its route.").
+	Reading dockText `json:"reading"`
+	// Notes are each loop that left this route on a usage limit.
+	Notes []dockNote `json:"notes,omitempty"`
+	out   bool
+	group string
 }
 
 type dockRegistry struct {
@@ -159,11 +198,22 @@ type dockNeed struct {
 	// Waited is how long, in words.
 	Waited string `json:"waited"`
 	Action string `json:"action"`
+	// Resume is the command that clears the hold from a terminal, set when
+	// resuming is the way out of it. A page that cannot resume (one served
+	// without --allow-changes) shows it to copy. The configuration path is
+	// not part of the report, so it stays the placeholder CONFIG and the
+	// page says where to find it.
+	Resume string `json:"resume,omitempty"`
 }
 
 type dockLoop struct {
 	Key  string `json:"key"`
 	Name string `json:"name"`
+	// LoopArg is "--loop NAME" with the loop's registered name quoted for a
+	// shell, for the commands the loop page shows to copy. It is absent when
+	// the name is longer than a page shows in full, so a clipped name never
+	// reaches a command; also when its quoted form is over dockMaxLoopArg.
+	LoopArg string `json:"loopArg,omitempty"`
 	// State is one of supervising, waiting_for_you, waiting_on_limit,
 	// waiting_on_network, checks_failing, paused, stopped, finished, off,
 	// outside_hours, not_checked_recently or unknown. Phrase is its label,
@@ -199,6 +249,10 @@ type dockLoop struct {
 	// NoProgress is the no-progress flag, the same value status shows; nil
 	// when the loop's status could not be read. It is never a need.
 	NoProgress *noProgressView `json:"noProgress,omitempty"`
+	// MigrationReview describes historical declarations, never execution,
+	// current lane activity, permission or a reason to change supervision.
+	MigrationReview dockMigrationReview `json:"migrationReview"`
+	Assignments     dockAssignments     `json:"assignments"`
 	// Refusals is the refusal gauge and any open question about refusals or
 	// a restriction, as status shows them; nil before the first refusal.
 	Refusals *refusalStatus `json:"refusals,omitempty"`
@@ -216,6 +270,12 @@ type dockLoop struct {
 	// set. Empty when the flags could not be read. A page offers them only
 	// when the server that serves it allows changes.
 	Can []string `json:"can"`
+	// LanesFailed is "1 lane failed" when the last check's current lane
+	// listing has lanes in error, from their structured status only; empty
+	// otherwise. A failed lane does not hold the loop, so it is never a need,
+	// but the row, the page and "Worth knowing" say it in words, so a loop
+	// that is supervising does not read as all well.
+	LanesFailed string `json:"lanesFailed,omitempty"`
 }
 
 type dockTarget struct {
@@ -358,6 +418,9 @@ type dockChain struct {
 	Entries   []dockChainEntry `json:"entries"`
 	Omitted   int              `json:"omitted"`
 	More      string           `json:"more,omitempty"`
+	// Standard is whether the loop follows the standard route list, so the
+	// page shows the routes commands for that list instead of the loop's own.
+	Standard bool `json:"standard,omitempty"`
 }
 
 type dockChainEntry struct {
@@ -408,6 +471,7 @@ type dockChainEntry struct {
 	// CatalogAccount is the accounts-catalog entry the route names, or its
 	// derived account context (route_account.go).
 	CatalogAccount *accounts.RouteAccount `json:"catalogAccount,omitempty"`
+	acct           dockAccountFacts
 	identity       string
 	probeOK        bool
 }
@@ -786,19 +850,67 @@ func anyAtLimit(ds []dockDeparture) bool {
 	return false
 }
 
-// dockAllowances groups routes by account (provider, group and usage
-// identity), in route order.
-func dockAllowances(routes []dockRoute) ([]dockAllowance, int) {
+// dockRouteAssignment is the account a route's loops state for it, from the
+// catalogAccount of its chain entries. Mixed is true when two loops state
+// different accounts, or one was checked differently, for the same route.
+type dockRouteAssignment struct {
+	account *accounts.RouteAccount
+	mixed   bool
+}
+
+func dockRouteAssignments(loops []dockLoop) map[string]*dockRouteAssignment {
+	out := map[string]*dockRouteAssignment{}
+	for _, l := range loops {
+		for _, e := range l.Chain.Entries {
+			x := out[e.Route]
+			switch {
+			case x == nil:
+				out[e.Route] = &dockRouteAssignment{account: e.CatalogAccount}
+			case x.account == nil || e.CatalogAccount == nil:
+				x.mixed = x.mixed || x.account != e.CatalogAccount
+			case x.account.Account != e.CatalogAccount.Account || x.account.Check != e.CatalogAccount.Check || x.account.Context != e.CatalogAccount.Context:
+				x.mixed = true
+			}
+		}
+	}
+	return out
+}
+
+// dockAllowanceAssignment is the catalog entry a route's block is headed by,
+// or "" and why the route is not under one. A route is under an entry only
+// when every loop states that entry and its check passed (consistent, or
+// not verified for a BB thread), as on the Accounts page.
+func dockAllowanceAssignment(x *dockRouteAssignment) (entry string, a *accounts.RouteAccount, why string) {
+	switch {
+	case x != nil && x.mixed:
+		return "", nil, "Its loops assign it to different accounts."
+	case x == nil || x.account == nil:
+		return "", nil, "Not assigned to an account."
+	}
+	a = x.account
+	if a.Assigned != "by_you" {
+		return "", a, "Not assigned to an account."
+	}
+	if a.Label != "" && (a.Check == accounts.RouteConsistent || a.Check == accounts.RouteNotVerified) {
+		return a.Account, a, ""
+	}
+	return "", a, dockCapital(accounts.RouteCheckText(a.Check)) + "."
+}
+
+// dockAllowances combines headings only for explicit consistent catalog
+// assignments. Shared usage context never identifies an account or selects
+// one route's reading for another. Out routes and blocks come first.
+func dockAllowances(routes []dockRoute, loops []dockLoop, now time.Time) ([]dockAllowance, int) {
+	assigned := dockRouteAssignments(loops)
 	index := map[string]int{}
 	out := []dockAllowance{}
 	omitted := 0
 	limits := map[int][]dockDeparture{}
 	for _, r := range routes {
-		// A route with no recorded account identity is a line of its own: it
-		// is not said to share an allowance with anything.
-		key := r.Provider + "\x00" + r.Account + "\x00" + r.identity
-		if r.identity == "" {
-			key = "route\x00" + r.Key
+		entry, ra, why := dockAllowanceAssignment(assigned[r.Key])
+		key := "route\x00" + r.Key
+		if entry != "" {
+			key = "card\x00" + entry
 		}
 		i, ok := index[key]
 		if !ok {
@@ -809,87 +921,116 @@ func dockAllowances(routes []dockRoute) ([]dockAllowance, int) {
 			}
 			i = len(out)
 			index[key] = i
-			title := r.Account
-			if title == "" {
-				title = r.Provider
+			a := dockAllowance{Provider: r.Provider, Account: r.Account, Assignment: why, Notes: []dockNote{}}
+			if entry != "" {
+				a = dockAllowance{Title: clip(ra.Label, dockMaxText), Assigned: "by_you", Lines: []dockAllowanceLine{}, Notes: []dockNote{}}
+			} else {
+				a.Title = r.Account
+				if a.Title == "" {
+					a.Title = r.Provider
+				}
+				if a.Title == "" {
+					a.Title = "Configured route"
+				}
+				u := r.Usage
+				if u.ReadLine == "" {
+					if u.ObservedAt != nil {
+						u.ReadLine = "Read " + dockAgo(now, *u.ObservedAt)
+					} else {
+						u.ReadLine = "No reading"
+					}
+				}
+				u.ReadLine = strings.Replace(u.ReadLine, "Usage read", "Read", 1)
+				a.Usage = &u
+				title := r.Title
+				if title == "" {
+					title = dockAllowanceRouteKind(r)
+				}
+				a.kinds = []string{clip(title, dockMaxText)}
 			}
-			if title == "" {
-				title = "Account not named"
-			}
-			out = append(out, dockAllowance{Title: title, Provider: r.Provider, Account: r.Account, identity: r.identity, Notes: []dockNote{},
-				Usage: dockUsageTarget{Availability: "unavailable", Windows: []dockUsageWindow{}, ReadLine: "No reading"}})
+			out = append(out, a)
 		}
 		if i < 0 {
 			continue
 		}
 		a := &out[i]
 		a.Routes++
-		if k := dockAllowanceRouteKind(r); !slices.Contains(a.kinds, k) {
-			a.kinds = append(a.kinds, k)
-		}
-		if u := r.Usage; u.AgeSeconds != nil && (a.Usage.AgeSeconds == nil || *u.AgeSeconds < *a.Usage.AgeSeconds) {
-			a.Usage = u
-			a.Usage.ReadLine = strings.Replace(u.ReadLine, "Usage read", "Read", 1)
-			if u.ReadingsNote != "" {
-				a.Usage.ReadingsNote = accountReadingsNote
+		if entry != "" {
+			// The route's own line, with its own notes, compared with its own
+			// reading.
+			if len(a.Lines) >= dockMaxAccountRoutes {
+				a.LinesOmitted++
+				continue
 			}
+			// Under the account's label a route is named by its model alone;
+			// its group is added back below only where two lines of the block
+			// would otherwise have the same name.
+			ln := dockAllowanceLine{Route: r.Key, Title: clip(r.Title, 80), BBThread: ra.Check == accounts.RouteNotVerified, group: r.TitleAccount}
+			for _, d := range r.LeftBy {
+				if d.atLimit() {
+					s := txt(d.loop + " hit a usage limit on this route")
+					if d.At != nil {
+						s = txt(s, " on ", tm(*d.At, "date"))
+					}
+					ln.Notes = append(ln.Notes, dockNote{Tone: "limit", Text: dockLimitReset(s, d, r.Usage, "datetime")})
+				}
+			}
+			ln.Reading, ln.out = dockAccountReading([]dockRouteReading{{title: ln.Title, usage: r.Usage}}, 1, now)
+			if u := r.Usage; u.Availability != "unavailable" && u.ObservedAt != nil && len(u.Windows) > 0 {
+				ln.Reading = txt("Read " + dockAgo(now, *u.ObservedAt))
+			}
+			ln.out = ln.out || len(ln.Notes) > 0
+			a.out = a.out || ln.out
+			a.Lines = append(a.Lines, ln)
+			continue
 		}
+
 		for _, d := range r.LeftBy {
 			if d.atLimit() {
 				limits[i] = append(limits[i], d)
 			}
 		}
 	}
-	// The notes are written once every route is in, so a limit without a
-	// reported reset is compared with the account's newest reading, the one
-	// shown under the note.
+	// Each unassigned block contains one route; compare its departure
+	// with that same route's reading.
 	for i, ds := range limits {
 		a := &out[i]
 		for _, d := range ds {
-			where := " hit a usage limit on a route on this account"
-			if a.identity == "" {
-				where = " hit a usage limit on this route"
-			}
+			where := " hit a usage limit on this route"
 			s := txt(d.loop + where)
 			if d.At != nil {
 				s = txt(s, " on ", tm(*d.At, "date"))
 			}
-			a.Notes = append(a.Notes, dockNote{Tone: "limit", Text: dockLimitReset(s, d, a.Usage, "datetime")})
+			a.Notes = append(a.Notes, dockNote{Tone: "limit", Text: dockLimitReset(s, d, *a.Usage, "datetime")})
 		}
 	}
-	// Lines that share a provider and title each say what their routes are.
-	// Only identified accounts are numbered: a line whose account is not
-	// identified is not said to be, or not to be, any other line's account.
-	names := map[string]int{}
-	shared := map[string]int{}
-	for _, a := range out {
-		shared[a.Provider+"\x00"+a.Title]++
-		if a.identity != "" {
-			names[a.Provider+"\x00"+a.Title]++
-		}
-	}
-	seen := map[string]int{}
 	for i := range out {
 		a := &out[i]
+		if a.Assigned != "" {
+			a.Sub = dockPlural(a.Routes, "route", "routes")
+			same := map[string]int{}
+			for _, l := range a.Lines {
+				same[l.Title]++
+			}
+			for j := range a.Lines {
+				if l := &a.Lines[j]; same[l.Title] > 1 && l.group != "" {
+					l.Title = clip(l.Title+" on "+l.group, 80)
+				}
+			}
+			// Within the block, the routes that are out first.
+			sort.SliceStable(a.Lines, func(x, y int) bool { return a.Lines[x].out && !a.Lines[y].out })
+			continue
+		}
 		parts := []string{}
 		if a.Provider != "" && a.Provider != a.Account {
 			parts = append(parts, "provider "+a.Provider)
 		}
-		count := dockPlural(a.Routes, "route", "routes")
-		if shared[a.Provider+"\x00"+a.Title] > 1 {
-			count = dockAllowanceKinds(count, a.kinds)
-		}
-		parts = append(parts, count)
-		if a.identity == "" {
-			parts = append(parts, "which account is not identified by a test")
-		} else if n := names[a.Provider+"\x00"+a.Title]; n > 1 {
-			seen[a.Provider+"\x00"+a.Title]++
-			parts = append(parts, fmt.Sprintf("account %d of %d named %s", seen[a.Provider+"\x00"+a.Title], n, a.Title))
-		}
+		parts = append(parts, dockAllowanceKinds("1 route", a.kinds), "account unknown")
 		a.Sub = strings.Join(parts, " · ")
 		if len(a.Notes) == 0 && len(a.Usage.UsedUp) > 0 {
 			a.Notes = append(a.Notes, dockNote{Tone: "limit", Text: a.Usage.UsedUp})
 		}
+		a.out = len(a.Notes) > 0 || dockUsedUpWindow(*a.Usage) != nil
 		var next *time.Time
 		future := 0
 		for _, w := range a.Usage.Windows {
@@ -904,6 +1045,8 @@ func dockAllowances(routes []dockRoute) ([]dockAllowance, int) {
 			a.Next = txt("Next reset ", tm(*next, "clock"))
 		}
 	}
+	// The blocks with a route that is out first, otherwise in route order.
+	sort.SliceStable(out, func(x, y int) bool { return out[x].out && !out[y].out })
 	return out, omitted
 }
 
@@ -972,7 +1115,9 @@ func dockShareAcrossLoops(loops []dockLoop, routes []dockRoute, now time.Time) {
 // dockChainInput is the configuration-derived part of the chain plus the
 // fallbacks list summary; Summary is nil when probe history was unreadable.
 type dockChainInput struct {
-	Primary    config.Candidate
+	Primary config.Candidate
+	// Standard: the loop follows the standard route list.
+	Standard   bool
 	Candidates []config.Candidate
 	// TimingOn and TimingSteps are usage-aware timing's configuration.
 	TimingOn    bool
@@ -1074,12 +1219,17 @@ func buildDockReport(inputs []dockInput, now time.Time, refresh, staleAfter time
 		NeedsLine: "Needs you: unknown"}
 	r.RoutesSummary = dockRoutesLine{Picker: "No routes", Total: "No routes", InUseT: "0 running now", Problem: "none at a limit or failing its test"}
 	if !registryOK {
+		r.UsagePicker = "Unavailable"
+		r.usage = buildDockUsagePage(nil, now, complete)
+		r.usage.Total = []string{"The list of loops could not be read, so nothing can be counted."}
 		return r
 	}
 	r.Registry = dockRegistry{Availability: "available", Count: len(inputs) + omitted, Omitted: omitted}
+	statuses := make(map[string]*statusOut, len(inputs))
 	for _, in := range inputs {
 		loop, need := projectDockLoop(in, now, staleAfter, identifiers)
 		r.Loops = append(r.Loops, loop)
+		statuses[loop.Key] = in.Status
 		if need != nil {
 			r.NeedsYou = append(r.NeedsYou, *need)
 			if need.Kind == "unreadable" {
@@ -1097,7 +1247,7 @@ func buildDockReport(inputs []dockInput, now time.Time, refresh, staleAfter time
 	})
 	r.Routes, r.RoutesOmitted = dockRoutes(r.Loops, now)
 	dockShareAcrossLoops(r.Loops, r.Routes, now)
-	r.Allowances, r.AllowancesOmitted = dockAllowances(r.Routes)
+	r.Allowances, r.AllowancesOmitted = dockAllowances(r.Routes, r.Loops, now)
 	dockMarkOldUsage(&r, staleAfter)
 	sort.SliceStable(r.NeedsYou, func(i, j int) bool {
 		a, b := r.NeedsYou[i].WaitedSeconds, r.NeedsYou[j].WaitedSeconds
@@ -1109,18 +1259,34 @@ func buildDockReport(inputs []dockInput, now time.Time, refresh, staleAfter time
 	r.NeedsLine = dockNeedsLine(r)
 	r.Lede = dockLede(r)
 	r.RoutesSummary = dockRoutesSummary(r)
+	usage := make([]dockUsageInput, 0, len(r.Loops))
+	for _, l := range r.Loops {
+		usage = append(usage, dockUsageInput{Key: l.Key, Name: l.Name, Status: statuses[l.Key]})
+	}
+	r.UsagePicker = dockUsagePicker(usage)
+	r.usage = buildDockUsagePage(usage, now, complete)
 	quiet := map[string]bool{"supervising": true, "paused": true, "off": true, "stopped": true, "finished": true, "waiting_for_you": true, "unknown": true}
 	for _, l := range r.Loops {
 		flagged := l.NoProgress != nil && l.NoProgress.Availability == "flagged"
 		daemonBuild := l.Versions.Daemon != "" && dockBuildOf(l.Versions.Daemon, version).Availability == "different"
 		otherFile := l.Versions.Service == "different_file"
 		otherBuild := l.Build.Availability == "different" || daemonBuild || otherFile
-		if quiet[l.State] && l.Away == nil && !flagged && !otherBuild {
+		// A loop held for a person is under "Needs you" already.
+		lanesFailed := l.LanesFailed != "" && l.State != "waiting_for_you"
+		if quiet[l.State] && l.Away == nil && !flagged && !otherBuild && !lanesFailed {
 			continue
 		}
 		t := txt()
 		if !quiet[l.State] {
 			t = txt(l.Detail)
+		}
+		// The detail already says it when the loop is not quiet and no need
+		// took its place.
+		if lanesFailed && (quiet[l.State] || !strings.Contains(l.Detail, l.LanesFailed)) {
+			if len(t) > 0 {
+				t = txt(t, " ")
+			}
+			t = txt(t, dockLanesFailedText(l.LanesFailed))
 		}
 		if l.Away != nil {
 			if len(t) > 0 {
@@ -1157,6 +1323,13 @@ func buildDockReport(inputs []dockInput, now time.Time, refresh, staleAfter time
 	return r
 }
 
+// dockLanesFailedText says what the last check found of the loop's lanes in
+// error and that the loop is not held for them (a child_error is reported, not
+// held). It is built from counts of structured lane status, never lane text.
+func dockLanesFailedText(lanesFailed string) string {
+	return lanesFailed + ", as of its last check; the loop is not held for a failed lane, so look at the lane if it should be working."
+}
+
 // dockLede is "10 loops, 4 supervising" and what the page reads from.
 func dockLede(r dockReport) string {
 	sup := 0
@@ -1172,7 +1345,7 @@ func dockLede(r dockReport) string {
 	if r.Unread > 0 {
 		s += fmt.Sprintf(", %d could not be read", r.Unread)
 	}
-	return s + ". Read from looptender's own records; nothing here is a live view of a conversation."
+	return s + ". Not live: this is what each loop's last check recorded."
 }
 
 // dockNeedsLine is the picker's first line.
@@ -1279,9 +1452,27 @@ func dockTestingOf(state string, st *statusOut, chain *dockChainInput) dockTesti
 	return t
 }
 
+// dockMaxLoopArg bounds LoopArg in bytes, so 128 loops add at most about
+// 22 KB to the report.
+const dockMaxLoopArg = 160
+
+// dockLoopArg is "--loop NAME" for a command a person copies from the loop
+// page, with the name quoted for a shell. A name the page clips, one whose
+// quoted form is over dockMaxLoopArg bytes, or none gives "", and the page
+// shows a placeholder instead.
+func dockLoopArg(name string) string {
+	if name == "" || utf8.RuneCountInString(name) > dockMaxText {
+		return ""
+	}
+	if arg := "--loop " + shellQuote(name); len(arg) <= dockMaxLoopArg {
+		return arg
+	}
+	return ""
+}
+
 func projectDockLoop(in dockInput, now time.Time, staleAfter time.Duration, identifiers bool) (dockLoop, *dockNeed) {
 	l := dockLoop{Key: dockKey(in.Entry.ID), Name: clip(in.Entry.Loop, dockMaxText), Evidence: in.Client.Outcome,
-		Limits: []dockLimit{}, Issues: []string{}, Can: []string{}}
+		Limits: []dockLimit{}, Issues: []string{}, Can: []string{}, LoopArg: dockLoopArg(in.Entry.Loop)}
 	if snap := in.Client.Snapshot; snap != nil && snap.Controls != nil {
 		c := snap.Controls
 		if !c.Paused {
@@ -1290,7 +1481,7 @@ func projectDockLoop(in dockInput, now time.Time, staleAfter time.Duration, iden
 		if !c.Stop {
 			l.Can = append(l.Can, "stop")
 		}
-		if c.Paused || c.Stop || c.AwaitingUser || c.Completed {
+		if snap.ControlState != "superseded" && (c.Paused || c.Stop || c.AwaitingUser || c.Completed) {
 			l.Can = append(l.Can, "resume")
 		}
 	}
@@ -1304,6 +1495,8 @@ func projectDockLoop(in dockInput, now time.Time, staleAfter time.Duration, iden
 		}
 	}
 	st := in.Status
+	l.MigrationReview = dockMigrationReviewOf(st)
+	l.Assignments = dockAssignmentsOf(st)
 	if snap != nil && st == nil && len(l.Issues) < dockMaxIssues {
 		l.Issues = append(l.Issues, "Its full status could not be read; some details are unknown.")
 	}
@@ -1323,6 +1516,9 @@ func projectDockLoop(in dockInput, now time.Time, staleAfter time.Duration, iden
 	}
 
 	l.Children = dockChildWork(in.Runs, in.RunsKnown)
+	if l.Children.Availability == "current" && l.Children.Failed > 0 {
+		l.LanesFailed = dockPlural(l.Children.Failed, "lane failed", "lanes failed")
+	}
 	l.Decision = dockLastDecision(st, in.Timeline, now)
 	l.Device = dockDeviceOf(st, in.Hostname, identifiers, now)
 	l.Events = dockRecentEvents(in.Timeline, dockRouteNamesOf(in.Chain), now)
@@ -1446,6 +1642,12 @@ func projectDockLoop(in dockInput, now time.Time, staleAfter time.Duration, iden
 				Action: "Look at the check on the loop's page; undo the replacement there if the new build is the cause.", Since: &when, SinceEvidence: "last_check"}
 		}
 	}
+	if snap != nil && snap.ControlState == "superseded" {
+		l.State, l.Phrase = "off", "Superseded"
+		l.Detail = "This loop was replaced. Resume and takeover are refused. Review the successor loop's task and holds before continuing there."
+		l.Hold = dockHoldState{State: "superseded", Phrase: "Superseded"}
+		need = nil // retained source holds are history, not requests to resume it
+	}
 	if need != nil {
 		need.Key, need.Loop = l.Key, l.Name
 		if need.Since != nil {
@@ -1469,7 +1671,13 @@ func projectDockLoop(in dockInput, now time.Time, staleAfter time.Duration, iden
 	}
 	l.Versions.Service = in.ServiceFile
 	l.BuildChange = in.BuildChange
+	if l.LanesFailed != "" && need == nil {
+		l.Detail += " " + dockLanesFailedText(l.LanesFailed)
+	}
 	l.PickerState = l.Phrase
+	if l.LanesFailed != "" {
+		l.PickerState += " \u00B7 " + l.LanesFailed
+	}
 	if st != nil {
 		np := st.NoProgress
 		l.NoProgress = &np
@@ -1622,11 +1830,15 @@ const (
 	dockHoldAdviceNote = "See the note left with the hold, and the conversation. Resume the loop when what it is waiting for is done."
 )
 
+// dockResumeCommand is the command a person runs to resume a held loop, as
+// operations.md gives it: resume takes the loop's configuration with -c.
+const dockResumeCommand = "keepgoing resume -c CONFIG"
+
 // dockHoldNeed explains an awaiting-user hold from the fixed cause recorded
 // when it started. Nothing is inferred from the note's text. The note is
 // shown with its identifiers masked, or whole with identifiers.
 func dockHoldNeed(st *statusOut, hold *dockHold, identifiers bool) *dockNeed {
-	n := &dockNeed{Kind: "held", Reason: "It is held for a person.", Action: dockHoldAdvice}
+	n := &dockNeed{Kind: "held", Reason: "It is held for a person.", Action: dockHoldAdvice, Resume: dockResumeCommand}
 	cause := ""
 	switch {
 	case hold != nil && hold.Marked:
@@ -2061,10 +2273,6 @@ func dockUsageOf(v usageView, now time.Time) dockUsageTarget {
 	return t
 }
 
-// accountReadingsNote is readingsNote for a line of the allowances strip,
-// which is an account, not a route.
-const accountReadingsNote = "Readings for this account come only from its routes' probes."
-
 // dockProjection words a window's projection as status does, with each
 // time as a part the page shows in its own time zone and each length of time
 // in the page's own style ("2 days 9 h", "25 h").
@@ -2085,6 +2293,7 @@ func dockHandoffChain(in *dockChainInput, use dockRouteUse, test dockTesting, f 
 		c.How = "Unknown: its configuration could not be read."
 		return c
 	}
+	c.Standard = in.Standard
 	for _, class := range in.FailoverOn {
 		c.HandoffOn = append(c.HandoffOn, clip(class, 40))
 	}
@@ -2126,7 +2335,7 @@ func dockHandoffChain(in *dockChainInput, use dockRouteUse, test dockTesting, f 
 		main.Notes = append(main.Notes, dockNote{Tone: "limit", Text: main.Usage.UsedUp})
 	}
 	main.identity = dockAccountIdentity(in.Primary, main.Usage)
-	main.CatalogAccount = dockCatalogAccount(in, in.Primary.Agent)
+	main.CatalogAccount, main.acct = dockCatalogAccount(in, in.Primary.Agent), dockAccountFactsOf(in.Primary.Agent)
 	c.Entries = append(c.Entries, main)
 	if len(in.Candidates) == 0 {
 		c.Availability = "none_configured"
@@ -2214,7 +2423,7 @@ func dockHandoffChain(in *dockChainInput, use dockRouteUse, test dockTesting, f 
 			e.Notes = append(e.Notes, dockNote{Tone: "limit", Text: e.Usage.UsedUp})
 		}
 		e.identity = dockAccountIdentity(cand, e.Usage)
-		e.CatalogAccount = dockCatalogAccount(in, cand.Agent)
+		e.CatalogAccount, e.acct = dockCatalogAccount(in, cand.Agent), dockAccountFactsOf(cand.Agent)
 		c.Entries = append(c.Entries, e)
 	}
 	if c.Omitted > 0 {
@@ -2233,7 +2442,7 @@ func dockHandoffChain(in *dockChainInput, use dockRouteUse, test dockTesting, f 
 		c.Brief, c.Short = "No standby route is ready", true
 		for _, e := range c.Entries {
 			if e.Current && e.Readiness == "current" {
-				c.Brief += "; its current route is unaffected"
+				c.Brief += "; " + dockCurrentUnaffected
 				break
 			}
 		}
@@ -2244,6 +2453,12 @@ func dockHandoffChain(in *dockChainInput, use dockRouteUse, test dockTesting, f 
 	}
 	return c
 }
+
+// dockCurrentUnaffected ends the chain's brief when no standby is ready but
+// the route in use is fine. The page matches this text (CURRENT_UNAFFECTED in
+// dock.js) to draw the line as a plain notice, not a warning: nothing needs a
+// person.
+const dockCurrentUnaffected = "its current route is unaffected"
 
 // dockAccountIdentity is the route's account identity when one is recorded:
 // the probe's usage identity, when its configuration selects an account (an

@@ -271,3 +271,33 @@ test("a preview that does not come back with the route choice asked for is refus
   (f.state as Record<string, unknown>).redundancy = { healthy: [], min: 1 };
   assert.equal((await f.controller.call({ action: "inspect", threadId: "thr_example" })).canStart, false);
 });
+
+test("an imported registry reference never inherits setup Start even with otherwise healthy diagnostics",async()=>{
+  const f=fixture();
+  await f.d.save([{...f.target,id:"imported-example",loop:f.plan.loop,configPath:f.plan.configPath,registryId:"loop_0123456789abcdef0123456789abcdef",registryStateDir:f.plan.stateDir}]);
+  const result=await f.controller.call({action:"start",threadId:f.target.threadId});
+  assert.equal(result.canStart,false);assert.ok(!f.calls.includes("start"));
+});
+
+test("publication failures preserve created identity and never replay lifecycle to repair visibility", async () => {
+  const f = fixture();
+  const init = f.d.init;
+  f.d.init = async (...args) => {
+    const r = await init(...args);
+    return "plan" in r && !args[4] ? { ...r, registration: { state: "repair_needed", source: "cli_registry" } } : r;
+  };
+  const created = await f.create((await f.preview()).ticket);
+  assert.equal(created.ok, true); assert.equal(created.record?.publication?.state, "repair_needed");
+  assert.match(created.message, /do not repeat setup, start or move/);
+  const id = created.record?.id;
+  const original = f.d.command;
+  f.d.command = async (...args) => {
+    const r = await original(...args);
+    return args[2] === "start" ? { ...r, registration: { state: "registered", source: "cli_registry", id: "loop_" + "a".repeat(32) } } : r;
+  };
+  const started = await f.controller.call({ action: "start", threadId: f.target.threadId });
+  assert.equal(started.started, true); assert.equal(started.record?.id, id);
+  assert.equal(f.records()[0]?.publication?.state, "registered");
+  assert.equal(f.calls.filter(x => x === "create").length, 1);
+  assert.equal(f.calls.filter(x => x === "start").length, 1);
+});

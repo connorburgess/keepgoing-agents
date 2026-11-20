@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync"
 
 	"github.com/looptender/looptender/internal/lock"
 )
@@ -69,14 +70,18 @@ func MaybeRunTurn() {
 	if os.WriteFile(filepath.Join(dir, startedName), []byte(key), 0o600) != nil {
 		os.Exit(2)
 	}
-	drainStopWatcher = startStopWatcher(Dir(dir), key, terminate)
+	stopAll := func() error {
+		killOwnedChild()
+		return terminate()
+	}
+	drainStopWatcher = startStopWatcher(Dir(dir), key, stopAll)
 	code := runOwnedTurn(dir, argv, os.Getenv(envTurnACP), drainStopWatcher)
 	os.Exit(code)
 }
 
 // runOwnedTurn joins the owned watcher even when setup of the agent's IO
 // fails before publishExit. Publication itself drains earlier, before unlock.
-func runOwnedTurn(dir string, argv []string, acp string, drain func()) int {
+func runOwnedTurn(dir string, argv []string, acp string, drain func() bool) int {
 	defer drain()
 	if acp != "" {
 		return runAntigravityACPTurn(dir, argv, acp)
@@ -190,8 +195,39 @@ var (
 // wrapper finds it is not wanted. Only tests set them.
 var afterPublish, onDecline func()
 
-// Initialized only in the owned wrapper, before the agent begins.
-var drainStopWatcher func()
+// Initialized only in the owned wrapper, before the agent begins. It reports
+// whether the wrapper accepted a stop.
+var drainStopWatcher func() bool
+
+var (
+	ownedChildMu   sync.Mutex
+	ownedChildKill func()
+)
+
+// registerOwnedChildTerminator lets a worker that runs its child in a separate
+// process group or nested job ensure wrapper Stop ends that tree as well.
+func registerOwnedChildTerminator(fn func()) func() {
+	ownedChildMu.Lock()
+	ownedChildKill = fn
+	ownedChildMu.Unlock()
+	return func() {
+		ownedChildMu.Lock()
+		ownedChildKill = nil
+		ownedChildMu.Unlock()
+	}
+}
+
+func killOwnedChild() {
+	ownedChildMu.Lock()
+	fn := ownedChildKill
+	ownedChildMu.Unlock()
+	if fn != nil {
+		fn()
+	}
+}
+
+// errStoppedTurn refuses publication for a turn the wrapper was stopping.
+var errStoppedTurn = errors.New("runner: turn was stopped; no exit code is published")
 
 // Publication boundary hooks are set only by deterministic lifecycle tests.
 var beforeExitRename, afterExitRename, afterTurnRelease, afterFinishingRead func()
@@ -223,8 +259,18 @@ func publishExit(dir, tmp string) (result error) {
 			afterPublish()
 		}
 	}()
-	if drainStopWatcher != nil {
-		drainStopWatcher()
+	// A stop terminates the wrapper's whole process group (on Windows, its
+	// job), the wrapper included, but the members do not all end at the same
+	// moment: the wrapper can see its agent exit before its own termination
+	// arrives. Publishing then would make a stopped turn read as finished and
+	// its partial output be read as the turn's result, depending on which
+	// process the signal reached first. A stopped turn has no exit code: it
+	// reads as crashed every time. Joining the watcher first settles whether
+	// a stop was accepted.
+	if drainStopWatcher != nil && drainStopWatcher() {
+		// The watcher is settled and turn.lock still excludes the next setup.
+		_ = os.Remove(tmp)
+		return errStoppedTurn
 	}
 	rec, err := Dir(dir).record()
 	if err != nil || rec.StopKey != turnKey || rec.Abandoned {

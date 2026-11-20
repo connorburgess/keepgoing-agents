@@ -18,10 +18,89 @@ reads only the existing recorded projection; it does not invoke BB usage APIs
 or refresh provider measurements, including APIs whose refresh:false option
 may still contact a provider.
 
-The page is read-only. Refresh reads the catalog only, executes no provider
-command and sends no model request. The setup commands below do not start a
-loop, enroll a route, sign in or copy credentials. Complete provider sign-in in
+Page refresh reads retained catalog and quota evidence only and executes no provider
+command. In a panel started with `--allow-changes`, an explicit reviewed
+**Refresh subscription quota** action contacts the selected Codex CLI without a
+model request. Supported Darwin arm64 panels also offer **Retrieve usage** for the inspected native Claude image, with provider freshness always unknown. Same-selection recovery for either provider is a separate local revision review, never a provider read. The read-only panel offers no such action. The `accounts` commands below do not start
+a loop, enroll a route, sign in or copy credentials. Complete provider sign-in in
 the official provider tool first.
+
+## Add an account, a subscription or a model
+
+The short version. Run these in a terminal of your own, not inside a BB agent
+thread: a BB thread is refused for the standard route list, and for a loop
+that has no recorded owner. Released builds name the command `keepgoing`;
+`looptender` is the same program. Names and paths are examples.
+
+Two lists are involved. The **accounts catalog** is the accounts you name
+(the panel's Accounts page). A **loop's routes** are the order it works
+through when the one it is on runs out. Adding an account to the catalog
+does not put it in any loop. The commands below name a loop by the name
+`looptender registry list` shows; `-c FILE` with its configuration file works
+in place of `--loop NAME` everywhere.
+
+**Another subscription of a provider you already use.** Sign in to it in a
+new, empty directory with the provider's own tool (for Claude Code, run it
+with `CLAUDE_CONFIG_DIR` set to that directory; for Codex, `CODEX_HOME`), then
+name it:
+
+    looptender accounts add --label "personal-pro" --provider claude-code \
+      --selection explicit_directory --account-dir /private/example/claude-personal
+
+This adds one entry and prints its ID. It never signs in, reads a credential,
+calls a model, or changes a loop or route.
+
+**Another provider.** The same, with `--provider codex` and its `CODEX_HOME`.
+A provider that manages its own login, such as Cursor or BB:
+
+    looptender accounts add --label "example-cursor" --provider cursor \
+      --selection externally_managed
+
+**An API key.** Give it its own entry and label. If a CLI uses it, sign in with
+the key in its own directory and add that directory as above. Otherwise:
+
+    looptender accounts add --label "api-team" --provider other \
+      --selection externally_managed
+
+The key is never a field; looptender never stores or reads it.
+
+**Put an account or model into a loop's order, and reorder it.**
+
+    looptender fallbacks add --loop example-loop          # guided questions
+    looptender fallbacks move claude-personal-pro --to 1 --loop example-loop
+    looptender fallbacks list --loop example-loop
+
+The guided questions list your named accounts for the provider; pick one by
+number. Each command previews and writes only after you answer yes; nothing
+runs. Two things to know. A new route counts as not healthy, and is not handed
+off to, until a check of it passes, either the loop's scheduled checks or one
+you run now:
+
+    looptender fallbacks check --id claude-personal-pro --exact --dry-run --loop example-loop   # free preview
+    looptender fallbacks check --id claude-personal-pro --exact --loop example-loop             # one real request
+
+The second sends one real request on that account, which uses its quota and
+may cost money. And automatic handoff stays off until you turn it on:
+
+    looptender fallbacks handoff on --loop example-loop
+
+To keep one order for every loop instead, use the [standard route list](routes.md):
+`routes add`, `routes move`, then `routes follow-standard --loop NAME`.
+
+**Say which account a route uses.** Picking a named account in the guided
+`init` or `fallbacks add` states it. With flags, `--account ID` does the same
+on `init` (the loop's first route), `fallbacks add` (a new fallback) and
+`routes add` (the standard list). For a route that already exists, add
+`account: ID` to it by hand, then run `looptender validate -c FILE`. See
+[below](#say-which-account-a-route-uses). It is your statement and changes
+nothing about how the route runs.
+
+**Check an account again.** `looptender accounts check --id ID`, then
+`looptender accounts list`. This runs the CLI's version and login-status
+commands, plus Codex's bounded plan read when login is reported (the provider's
+status command may contact its account service). It
+never signs in or calls a model, and it does not establish quota or which
+account a login really is.
 
 ## Select an existing context
 
@@ -78,25 +157,40 @@ it. CONNECTION_ID is the opaque ID that accounts add returned, also listed by
 accounts list.
 
 Check runs only the selected executable's version command, then Claude's
-auth status --json or Codex's login status. Each command has a five-second
-deadline and 64 KiB stdout limit; stderr is discarded. The commands do not
+auth status --json or Codex's login status. After Codex reports login, it also
+starts the selected `codex app-server`, sends `initialize`, `initialized`, and
+`account/read` with `{"refreshToken":false}`, then terminates that owned process.
+Each command has a five-second deadline and 64 KiB stdout limit; stderr is
+discarded. The commands do not
 receive the variables of the session that ran the check (the list below). Version output must
 match the existing diagnostic version format. A recognized version string is
-not a guarantee about every release's behavior. No login or model command runs.
+not a guarantee about every release's behavior. No sign-in, explicit token
+refresh or model request runs.
 The provider's own status command may contact its account service.
 
 Claude uses the existing diagnostic loggedIn/exit semantics; Codex exit zero
 reports credentials present and a nonzero exit is ambiguous. No account identity
-is inferred. Only allowlisted broad Claude subscriptionType strings, when
-actually supplied by structured status, become reported plan evidence.
+is inferred. Only allowlisted broad Claude subscriptionType strings and Codex
+ChatGPT planType values become reported plan evidence.
 Raw max displays as Max. Unknown plan values are discarded; no numeric tier,
-capacity or quota is inferred. Codex's login status reports no plan, so a
-Codex card says "Codex does not report a plan." A Claude card without a plan
-says why: "Claude Code's status reported no recognized plan." after a login,
+capacity or quota is inferred. Codex retains only the plan value, fixed
+`codex account/read` source and
+observation time, plus an allowlisted unavailable reason; email, account IDs,
+credentials and raw RPC/error data are discarded. Plus, Pro and other known
+tiers are labels, never capacity claims. Null accounts, API keys, unknown tiers,
+unsupported older CLIs, malformed responses and failed/timed-out reads have
+distinct unavailable reasons. Older login-only snapshots say to check again.
+A successful login check stays independent of a failed plan read. A transient
+plan failure preserves an earlier plan as stale with its original time and
+`plan.reason`; an authoritative null, API-key or unrecognized plan clears it.
+Unsupported or malformed responses withhold the plan as unavailable.
+A Claude card without a plan says why: "Claude Code's status reported no
+recognized plan." after a login,
 "No plan is read without a login." after none, and "Not checked" before any
-check. These are not failures and need nothing; the card's JSON carries the
-reason as `plan.missing` (`not_reported`, `not_recognized`, `no_login`,
-`not_checked`). A check that established no login leaves the plan Unavailable.
+check. Claude checks with no reported plan need no action; the card's JSON carries the
+reason as `plan.missing` (`not_recognized`, `no_login`, `not_checked`,
+or the specific Codex plan-read reason). A check that established no login
+leaves the plan Unavailable.
 
 The catalog records no model: a route chooses the model, and a check never
 calls one. The page says so in one line instead of showing configured and
@@ -111,6 +205,49 @@ to link it", with the ID filled in under **Show identifiers**. When not every
 loop or route could be read, it says the answer is not known rather than
 none. The panel data carries this as the card's `routes` (`named`, `none`,
 `unknown`); `accounts list` does not read routes and leaves it out.
+
+When routes name the entry, the Routes row lists each of them, the loops that
+use each, and each route's own recorded usage reading; readings of different
+routes are never merged. It says once "assigned by you · identity not
+verified", and under a BB thread route "assigned by you · not verified for BB
+threads (account set per project)". A route that names the entry but whose
+check found a mismatch is still listed, says what its check says in place of
+"assigned by you", and its reading is not counted for the entry. The card's
+summary is from those readings, never merged: if any route's reading had a
+window used up that has not ended, the newest such, naming its route when the
+card has more than one ("opus-example: Five-hour allowance was out when read
+2 h ago · resets in 3 h"); otherwise "Not out when read 2 h ago" from the
+newest reading, or that no reading is recorded.
+Being out is information, not a warning.
+
+### Routes with unknown accounts
+
+Only catalog entries count as selected accounts in the Accounts page and
+sidebar. Routes that do not explicitly name a catalog entry appear in a
+separate **Routes with unknown accounts** section, with their configured
+context, loops and each route's own recorded usage reading. Configuration
+contexts are not additional accounts: several routes may use one selected
+account, and the page cannot tell without an explicit binding. Provider,
+model, group and inherited or matching directories do not establish an
+account identity or a distinct subscription. The page offers no inferred
+account match or per-context command to register another account.
+
+These rows come only from loop configurations and the catalog. Nothing on
+the computer is searched, no provider is called, and nothing is adopted.
+After checking which account a route uses, assign it explicitly with
+`account: <ID>` in its loop configuration. The bounded panel data retains
+`accountUses` (catalog cards first, then configuration contexts; route and
+loop keys only); these contexts are presentation groups, not account counts.
+
+Above the cards, **Add an account** gives the `accounts add` command to copy
+for three cases: another subscription of a provider you use (sign in with the
+provider's own tool in a new folder, then name that folder as an
+explicit_directory entry), a provider that manages its own login (Cursor, BB:
+externally_managed), and an API key (its own entry; the key is never taken).
+Values the page cannot know are placeholders (`ACCOUNT_LABEL`, `PROVIDER`,
+`FOLDER`), each explained in one line. It is open when there are no accounts,
+under three sentences on what an account, a route and a loop's order are, and
+closed otherwise. The page runs none of these commands.
 
 A check's successful command exit means its minimized observation was saved;
 it does not mean login passed. Inspect auth state and reason. Missing/corrupt
@@ -170,9 +307,10 @@ warning above):
 one explicit_directory entry per home, in the same way. Codex keeps its
 credentials under that home ([fallbacks](fallbacks.md)), so separate homes are
 separate logins. The check reports only whether credentials are present: exit
-zero means present and any other exit is ambiguous. Not verified: whether any
-Codex status output names the account, or tells a ChatGPT sign-in from an
-API-key sign-in. looptender does not claim either.
+zero means present and any other exit is ambiguous. The separate structured
+`account/read` distinguishes a ChatGPT plan from an
+API-key account without retaining identity. Neither read verifies which
+provider account the owner meant; real-account acceptance remains unrun.
 
 **An API key beside a subscription.** Give the key its own entry with its own
 label, for example "api-team". If you use the key through the provider CLI, sign
@@ -201,8 +339,17 @@ computer, which is BB's login only when they share it
 A route can state which catalog entry it uses, with an optional `account`
 field holding the entry's ID (the 32 hexadecimal characters `accounts add`
 prints). It goes on a loop's first route (`loop.account`), on a fallback in
-`fallbacks.yaml`, or on a route in the [standard list](routes.md) (also with
-`routes add --account ID`):
+`fallbacks.yaml`, or on a route in the [standard list](routes.md). Commands
+write it for you: `routes add --account ID` for the standard list, and
+`init --account ID` and `fallbacks add --account ID` for a loop's first route
+and its fallbacks (unreleased). The guided `init` and `fallbacks add` list the
+catalog's entries for the route's provider by name, and picking one by number
+uses its directory, suggests a group made from its name, and states it. A
+directory typed instead states nothing. Setup refuses an entry that `validate`
+would reject, and also one it cannot compare but that does not fit: an entry
+on the normal login for a route with its own directory, and, for a BB thread,
+an entry for neither BB nor the thread's provider. The refusal names the
+entries that fit.
 
     loop:
       adapter: claude
@@ -257,8 +404,16 @@ provider, how the account is selected (its directory, `inherited`,
 identities are, so no path is included. Two routes with the same `context`
 select the same account context as configured; that does not make them the
 same account, and different contexts are not said to be different accounts.
-The label and ID are shown as they are in the Accounts view. The panel page
-does not show these fields yet.
+The label and ID are shown as they are in the Accounts view. A loop's page
+shows a route that names a consistent entry as "on *Label* · assigned by you ·
+identity not verified" (for a BB thread route, "not verified for BB threads"),
+and a route that names none as "Not assigned to an account." with its account
+group. The Allowances strip on Routes combines headings only for consistent explicit
+catalog assignments. Each route retains its own dated probe reading and windows;
+a shared context never selects one route's windows for another. Other routes
+keep their configured group and route labels and say why no account label is
+used. Selected-context subscription quota on Accounts is separate evidence,
+never a substitute for route readings.
 
 ## Change a selection deliberately
 
@@ -279,10 +434,11 @@ selection mode/account directory, home/config locations and effective
 authentication-related environment prefixes and proxy/TLS inputs. Values are
 fingerprinted with a per-catalog keyed digest, never copied into storage.
 
-Two kinds of variable describe the session running the command, not the
+The following variables describe the execution running the command, not the
 account context, and are not bound:
 
 - The exact CODEX_TOOL_CALL_ID name identifies one agent tool invocation.
+  CODEX_SANDBOX describes the execution sandbox, not the selected login.
   Windows applies its existing case-insensitive name comparison; Unix excludes
   only that exact case. Its value still passes through to execution.
 - The caller-session list that supervised turns already drop (see
@@ -298,9 +454,35 @@ account context, and are not bound:
 
 All other bindings remain.
 
-**Entries recorded by an earlier build.** Earlier builds bound those session
+**Definition-2 bindings require review.** Fingerprint definition 3 excludes only
+the additional CODEX_SANDBOX marker. A valid tagged definition-2 catalog binding is never
+silently accepted or rewritten: review and explicitly update the same selection
+(even if its paths are unchanged), then refresh quota. Definition-2 quota cache
+evidence is not reused under a new definition-3 binding. Reads do not modify
+either file. In a panel with changes allowed, open Accounts and choose
+**Review selection for this panel…**. The review retains the exact provider,
+label, executable, account-directory selection and working directory; it binds
+a new revision to that panel's startup environment. Review the displayed paths
+and authentication mode: inherited authentication may differ from a terminal,
+and this action does not verify account identity. Confirmation clears prior
+login/plan observations and invalidates prior quota. It makes no provider call,
+changes no login/default or loop control, and does not refresh quota. Review
+**Refresh subscription quota…** separately afterward. The native menu directs
+you to Accounts through **Open Panel with Controls…**; it cannot revise a
+selection itself. Read-only panels offer guidance without a write action.
+
+The single-use review pins the current revision, startup caller, effective
+context and native path identities. Drift, a concurrent check/refresh, expiry or
+replay refuses publication; a lost reply is never retried automatically. This
+recovery supports selected Claude Code and Codex contexts; it makes no provider call. Claude retrieval afterward still requires its separately reviewed platform, native-image and isolation checks. The guard-tag family is retained so definition-2 readers also
+refuse new definition-3 bindings instead of treating them as pre-tag legacy.
+Authentication, provider, executable, directory, home/config,
+proxy/TLS and other environment checks remain; the actual execution environment
+and caller authority are unchanged.
+
+**Entries recorded before keyed tags.** Earlier builds bound those session
 variables too, and their digests cannot be recomputed without the old values.
-A digest now carries a keyed tag of the binding definition, so this build
+A digest carries a keyed guard tag, so this build
 recognizes an earlier one without a new stored field (older builds refuse
 unknown fields). The first check of such an entry by this build is not reported
 as a changed context: it runs, and records the current digest in place of the
@@ -380,3 +562,238 @@ and held-reader replacement is wired into the Windows storage/controls job:
 the whole internal/accounts package runs with race detection, followed by
 TestAccounts command fixtures. Local Windows cross-compilation is not native
 execution; native reproduction and acceptance remain pending CI.
+
+### Codex plan read verification
+
+The protocol follows [official app-server authentication documentation](https://learn.chatgpt.com/docs/app-server).
+The plan allowlist follows Codex CLI 0.163.0's generated `GetAccountResponse`
+`PlanType` enum, excluding `unknown`; future values stay unavailable until reviewed.
+No shared adapter/package boundary changes. Panel refresh remains snapshot-only.
+The updated reader accepts private catalog schemas 1 and 2. Schema 1 remains
+unchanged for legacy-compatible writes: no-op updates, Claude-only checks and
+observations with no plan omit absent `planObservedAt` and `planReason` fields.
+Reading a catalog never upgrades or rewrites it.
+
+A write that records either new field or a newly recognized plan tier promotes
+the entire catalog to schema 2. This includes a Codex `pro` timestamp even though
+old readers recognize the word `pro`, and a failed or no-plan Codex read that
+records only `planReason`. Schema 2 stays at version 2 if evidence is later
+cleared. Schema 1 containing new metadata or tiers, unsupported future schemas,
+and malformed catalogs are refused without rewriting them. The CLI/panel JSON
+projection retains its existing schema; this version change concerns private
+`accounts.json` storage only.
+
+All old strict readers reject the whole schema-2 catalog, not just Codex evidence.
+Mixed old/new readers are unsupported after promotion. Before the first production
+plan check, stop the old catalog readers (including running panels), preserve a
+private schema-1 metadata backup outside the checkout, upgrade every reader and
+writer, and restart readers with the updated binary. Keep acceptance checks in a
+private scratch catalog until that deployment is coordinated. No credentials
+need to be copied. A no-op update to a schema-1 Claude-only catalog does not
+require that migration.
+
+To roll back, stop the updated readers and writers, restore the matching private
+pre-upgrade schema-1 catalog backup, then restart the old binaries. Restoring it
+loses observations/catalog edits recorded after the backup. If no compatible
+backup exists, keep the new reader and review recovery; do not relabel a schema-2
+file or strip fields to make an old reader accept it. No production migration or
+rollback has been run for this change.
+
+After review, a person may explicitly check a selected catalog entry and print
+only its plan (substitute the catalog ID; this records an observation):
+
+```sh
+id=CONNECTION_ID
+looptender accounts check --id "$id" --json | jq -r --arg id "$id" '.accounts.cards[] | select(.id == $id) | (.plan.value // .plan.text)'
+```
+
+Coordinator acceptance of the earlier implementation read Plus through a private
+scratch metadata catalog with host access. The schema compatibility correction
+has fixture evidence only; production catalog/panel and live migration/rollback
+remain untested and unchanged.
+
+## Read selected-context subscription quota
+
+After selecting an existing Codex context, explicitly read its subscription
+windows without a model request:
+
+```sh
+looptender accounts usage --id ACCOUNT_ID --json
+```
+
+Use the same effective environment as the catalog selection. This command uses
+exactly its configured executable, working directory and account-directory
+selection. Inherited contexts must still match the retained environment
+fingerprint. A panel started with `--allow-changes` offers the same read after
+an inline review and confirmation on that Accounts card. Ordinary page refresh,
+`accounts list`, the read-only panel and route observations never trigger it.
+
+The [official Codex app-server protocol](https://learn.chatgpt.com/docs/app-server)
+exchange is `initialize`, `initialized`, then
+`account/rateLimits/read` with `excludeResetCreditDetails:true`. It does not
+start a login, explicitly refresh tokens, open credential files, call a model
+or call the separate token-usage endpoint. The official CLI may perform its
+own ordinary authentication/network work. The read has a five-second deadline,
+a 64 KiB stdout bound, discarded stderr, strict response correlation and owned
+process cleanup. A rejected or unsupported CLI returns unavailable evidence.
+
+The supported Codex response can expose several metered buckets. Up to eight
+are retained separately, with primary and secondary windows where present,
+including fractional percentages, duration and reset times. The legacy single
+bucket is used only when the bucket map is absent or null; an explicitly empty
+map has no supported quota evidence. The legacy bucket is never added a second
+time. Individual limits retain decimal used/limit values in provider
+units and their reported remaining percentage. Credits retain availability,
+unlimited status and a bounded decimal balance; the response supplies no
+currency, so no currency or percentage is invented. A nullable ordinary-usage
+permission remains unknown; percentages and reset times never establish access.
+No reserve-experiment capability or reset-credit consumption is requested.
+
+Unknown or malformed parts are visibly partial or unavailable; missing values
+are never zero. A reported zero is preserved. Raw provider display names,
+account IDs, email addresses, banners and plan/model aliases are discarded.
+Known Codex labels and generic additional-bucket labels keep independent rows
+without implying a model, subscription identity or quota pooling. Plan and
+login evidence remain independent. Changing credentials inside the same
+selected directory cannot be detected as an identity change by this mechanism.
+
+**Experimental Claude selected-context reads** use a separate, explicitly
+initiated native control exchange. The current acquisition allowlist admits only
+the inspected Claude Code 2.1.326 native artifact; wrappers, other platform
+artifacts and upgrades return unavailable before launch until independently
+verified. Admitted bytes are copied through the selected open handle into a fresh
+private directory, verified there and launched from that private image; replacing
+the selected path cannot substitute an unreviewed executable. Admission opens
+nonblocking without following a final symlink and verifies a regular file; a
+FIFO replacement cannot stall the read before its deadline. The image is
+removed only after the owned child exits. No wrapper is substituted and no login
+or default is changed.
+The process stays parked with `--await-claim`, safe mode, disabled hooks, no
+session persistence, empty tools and strict empty MCP configuration. It receives
+only `initialize`, a disabled-hook-policy check, then
+`get_usage` with `skip_behaviors:true`. It never receives `claim_session`, a user
+message, resume, hook response or model request. An unrecognized version,
+managed/unreadable hook policy, unexpected conversation/control request, malformed
+response or incorrect correlation refuses the read. Runtime preload injection
+also refuses. The pinned native UI invalidation notification is discarded without
+a response; other unexpected frames refuse. The selected environment and caller provenance are retained.
+The five-second deadline, 64 KiB output bound and owned-child cleanup apply.
+
+Claude's experimental reply conceals whether quota came from a provider request,
+a cache or seeded evidence, and strips provider observation time and some error
+provenance. Successful output therefore has source `claude:get_usage`,
+`retrievedAt` and freshness `provider_unknown`, **never `observedAt` or fresh**.
+A new retrieval does not establish new provider evidence. Five-hour, seven-day,
+seven-day OAuth-app, seven-day Opus and seven-day Sonnet scopes retain their own
+explicit percentages and reset times. Missing values are not zero; unsupported
+scopes/extra-usage units make a recognized reading partial. Session tokens,
+costs, subscription/identity data, behavior output and raw display names are
+discarded. Existing dated Claude route observations remain separate.
+No live authenticated read is established by the offline fixture evidence.
+
+Claude evidence uses a separate private `claude-subscription-quota.json`, schema
+1, bounded to the same 1 MiB and 64-selection limits. Its timestamps are named
+`retrievedAt`. It neither promotes the catalog nor rewrites the Codex cache;
+older binaries ignore that file. The additive shared summary includes
+`retrievedAt`/`provider_unknown`. Matching web and native readers show “Retrieved”
+and “Provider freshness unknown”, including after a successful read; failed
+refreshes retain the original retrieval timestamp. The panel advertises Claude
+retrieval only on Darwin arm64, where the inspected native image can run. This
+is a platform prerequisite, not admission of the selected executable: wrappers,
+unreviewed images, preload injection or unavailable isolation still refuse.
+Other platforms can show saved evidence but offer no Claude refresh action.
+There is no automatic refresh, login, account switch or model call. Do not claim
+installed-panel acceptance from a source-only change.
+
+**Antigravity selected-context reads** run the selected `agy` CLI with
+`--print /usage --mode plan --output-format json` in read-only plan mode, with
+empty stdin, discarded stderr, a 10-second deadline and a 64 KiB stdout bound.
+Only `inherited` selections are supported for `antigravity`; `explicit_directory`
+is rejected because no separate-account directory variable has been verified for
+`agy`. The parser requires `status: "SUCCESS"`, `num_turns: 0`,
+`command.name: "usage"`, explicit `remaining_fraction` values in `[0, 1]` and
+RFC3339 reset timestamps. Recognized buckets (`gemini-weekly`, `gemini-5h`,
+`3p-weekly`, `3p-5h`) keep their own percentages and reset times; unknown extra
+buckets mark the reading partial with an omitted count. Because the reply may be
+cached and carries no provider observation timestamp, successful output has
+source `agy:/usage`, `retrievedAt` and freshness `provider_unknown`, **never
+`observedAt` or fresh**. Antigravity evidence is stored separately in private
+`antigravity-subscription-quota.json` (schema 1) and never overwrites Codex or
+Claude caches. Panel selection recovery supports rebinding unchanged inherited
+Antigravity selections. No live `agy` CLI or authenticated read is established
+by the offline fixture evidence.
+
+The Accounts page shows compact named windows before expansion. Expanded rows
+show used and remaining values, independent reset timestamps, source, read age,
+partial evidence and failed refreshes. The native menu shows the same saved
+summary in account submenus, capped at six accounts/eight details per submenu
+with explicit omitted counts; the panel lists the remaining details. Neither
+page polling nor native menu polling contacts providers. Native output contains
+no catalog IDs, account-directory paths or provider account identities.
+
+The private `subscription-quota.json` cache remains bounded to 1 MiB and 64
+entries. A refresh writes quota-cache schema 2 for separate bucket/unit data;
+schema 1 remains readable without rewriting it on reads and is marked partial
+because it cannot establish additional buckets. Older quota readers reject
+schema 2 as unavailable. Back up this private cache before downgrading; no
+automatic migration repair or rollback rewrite is performed. Catalog schema is
+unchanged. Stored data includes opaque catalog ID/revision/context bindings,
+bounded meter keys and typed quota detail, successful read time and attempt
+failure evidence; it never stores executable/account paths or raw payloads.
+The native additive `panel list` contract is optional for older CLIs, strictly
+bounded and reads saved evidence only. This source change does not establish
+installed or live provider acceptance.
+
+Reads run outside the catalog writer lock. Checks and quota reads for one
+selection share a single-flight guard. Publication revalidates the ID, revision,
+effective context, canonical executable and directory snapshots under the
+catalog lock. A removed/replaced selection, changed executable or directory,
+older response, symlink, unsafe permissions or corrupt/future cache is refused
+without replacing evidence. External non-cooperating edits after validation
+remain outside the lock contract. Corrupt cache bytes are preserved; inspect
+and back them up privately before an operator removes the cache to start over.
+No automatic repair or provider retry occurs. After a lost reply, read the
+cached state before explicitly retrying.
+
+A successful reading retains its original timestamp. Codex evidence is marked
+stale after 30 minutes; Claude provider freshness remains unknown at every age; an ended reset is shown as an ended window and needs a fresh
+read. A later failed refresh has a separate time/reason and never makes old
+windows fresh. Future-dated or context-mismatched evidence is withheld. These
+are subscription-quota observations for the selected context, not turn token
+usage, route availability, or a promise of entitlement. They do not attach the
+selection to any route, repoint a thread, change a default, or influence
+supervision.
+
+Fictional RPC/cache/panel fixtures cover correlation, bounds, timeout, selected
+environment, privacy, failed-refresh retention, concurrency and review fences.
+Native installed-panel and cross-platform process acceptance remain separate;
+platform compilation alone is not native execution evidence.
+
+The public quota view serializes the shared summary once; raw typed bucket
+storage stays private to the cache and Go projection. Legacy window fields
+remain for compatibility. Both interfaces retain the summary's independent
+rows, source, dates, missing/partial state and failed-read context.
+
+The main web report advertises saved account availability, selected count and
+an opaque snapshot reference, without full account cards or duplicate quota
+summaries. Only the Accounts page reads `GET api/v1/saved-accounts?reference=…`
+under the same token/session, origin and read-method safeguards. That endpoint
+returns only the already-projected snapshot, never reads provider files, starts
+a registry read, queries a provider or writes anything. It keeps at most the
+latest snapshot for each of the two identifier views, for 30 seconds, with a
+1 MiB response cap. Superseded, expired or unknown references return a conflict;
+the page says the saved read failed and offers the existing Read now action.
+There is no additional polling timer or automatic provider refresh.
+
+A new main report invalidates delayed replies for earlier references; changing
+the identifier view also prevents applying a reply for the previous view.
+Loading, missing and failed companion reads stay explicit and do not block
+the overview or imply zero quota. Reports without a reference retain the prior
+inline Accounts rendering. Native continues to project directly from the same
+Go evidence, with no dependency on this browser endpoint and unchanged old-CLI
+fallback.
+
+The web hard response ceiling remains the existing 8 MiB. The combined widest
+registry/route-list plus 64 detailed quota fixture requires the existing main
+6 MiB regression threshold; all quota rows remain obtainable in the separate
+1 MiB response. Native remains bounded to 1 MiB.

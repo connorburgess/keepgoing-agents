@@ -11,10 +11,10 @@ import (
 )
 
 const (
-	antigravityACPFrameLimit      = 1 << 20
-	antigravityACPTotalLimit      = 4 << 20
-	antigravityACPFrameCount      = 4096
-	antigravityACPPermissionLimit = 64
+	antigravityACPFrameLimit       = 1 << 20
+	antigravityACPPermissionLimit  = 64
+	antigravityACPReadyUpdateLimit = 256
+	antigravityACPCancelFrameLimit = 1024
 )
 
 // AntigravityACPOutcome is protocol evidence only. It grants no permission,
@@ -34,11 +34,12 @@ type AntigravityACPOutcome struct {
 // nor filesystem/terminal execution capabilities. It is not safe for concurrent
 // use. Create a new gate for an explicitly authorized subsequent turn.
 type AntigravityACPGate struct {
-	phase         string
-	saved         string
-	out           AntigravityACPOutcome
-	bytes, frames int
-	permissions   map[string]bool
+	phase        string
+	saved        string
+	out          AntigravityACPOutcome
+	readyUpdates int
+	cancelFrames int
+	permissions  map[string]bool
 }
 
 // NewAntigravityACPGate accepts an exact opaque saved session ID, or empty for
@@ -139,11 +140,15 @@ func acpPromptFrame(session, text string) ([]byte, error) {
 // emits session/cancel before its cancelled reply. Subsequent pending requests
 // receive cancelled replies while the matching prompt response is drained.
 func (g *AntigravityACPGate) Receive(frame []byte) ([][]byte, error) {
-	if g.phase == "new" || g.phase == "failed" || g.phase == "done" || len(frame) > antigravityACPFrameLimit || !utf8.Valid(frame) || g.frames >= antigravityACPFrameCount || len(frame) > antigravityACPTotalLimit-g.bytes {
+	if g.phase == "new" || g.phase == "failed" || g.phase == "done" || len(frame) > antigravityACPFrameLimit || !utf8.Valid(frame) {
 		return nil, g.fail()
 	}
-	g.frames++
-	g.bytes += len(frame)
+	if g.phase == "cancelling" {
+		if g.cancelFrames >= antigravityACPCancelFrameLimit {
+			return nil, g.fail()
+		}
+		g.cancelFrames++
+	}
 	fields, err := cursorObject(frame)
 	if err != nil || !acpStringEquals(fields, "jsonrpc", "2.0") {
 		return nil, g.fail()
@@ -231,6 +236,12 @@ func (g *AntigravityACPGate) receiveMethod(fields map[string]json.RawMessage, id
 	case "session/update":
 		if hasID {
 			return nil, g.fail()
+		}
+		if g.phase == "ready" {
+			if g.readyUpdates >= antigravityACPReadyUpdateLimit {
+				return nil, g.fail()
+			}
+			g.readyUpdates++
 		}
 		update, err := cursorObject(params["update"])
 		if err != nil {

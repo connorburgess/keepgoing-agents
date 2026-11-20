@@ -36,21 +36,22 @@ type transferTarget struct {
 }
 
 type transferPreview struct {
-	SchemaVersion        int                  `json:"schemaVersion"`
-	Outcome              string               `json:"outcome"`
-	ApplySupported       bool                 `json:"applySupported"`
-	ReadAt               time.Time            `json:"readAt"`
-	Compatibility        string               `json:"compatibility"`
-	From                 transferTarget       `json:"from"`
-	To                   transferTarget       `json:"to"`
-	ConfiguredProvider   string               `json:"configuredProvider,omitempty"`
-	ConfiguredModel      string               `json:"configuredModel,omitempty"`
-	ConfiguredReasoning  string               `json:"configuredReasoning,omitempty"`
-	ConfiguredQuotaGroup string               `json:"configuredQuotaGroup,omitempty"`
-	Controls             *incident.Controls   `json:"controls,omitempty"`
-	Owner                string               `json:"owner,omitempty"`
-	Goal                 *control.GoalSummary `json:"goal,omitempty"`
-	Checks               []doctorCheck        `json:"checks"`
+	DestinationRoute     *config.BBTransferRoute `json:"destinationRoute,omitempty"`
+	SchemaVersion        int                     `json:"schemaVersion"`
+	Outcome              string                  `json:"outcome"`
+	ApplySupported       bool                    `json:"applySupported"`
+	ReadAt               time.Time               `json:"readAt"`
+	Compatibility        string                  `json:"compatibility"`
+	From                 transferTarget          `json:"from"`
+	To                   transferTarget          `json:"to"`
+	ConfiguredProvider   string                  `json:"configuredProvider,omitempty"`
+	ConfiguredModel      string                  `json:"configuredModel,omitempty"`
+	ConfiguredReasoning  string                  `json:"configuredReasoning,omitempty"`
+	ConfiguredQuotaGroup string                  `json:"configuredQuotaGroup,omitempty"`
+	Controls             *incident.Controls      `json:"controls,omitempty"`
+	Owner                string                  `json:"owner,omitempty"`
+	Goal                 *control.GoalSummary    `json:"goal,omitempty"`
+	Checks               []doctorCheck           `json:"checks"`
 	// Plan is present only when the preview was asked about a move across
 	// environments or with changed labels.
 	Plan *transferPlan `json:"plan,omitempty"`
@@ -80,6 +81,12 @@ type transferPlan struct {
 // The preview branch takes no locks and performs no provider commands, control
 // writes or environment changes. Apply/recover have their own guarded path.
 func transferCommand(e env, args []string, run doctorRun) int {
+	if len(args) > 0 && args[0] == "reconcile" {
+		return transferReconcileCommand(e, args, run, run)
+	}
+	if len(args) > 0 && args[0] == "supersede" {
+		return transferSupersede(e, args[1:])
+	}
 	if len(args) > 0 && (args[0] == "apply" || args[0] == "recover") {
 		return transferApply(e, args, run, nil)
 	}
@@ -87,11 +94,12 @@ func transferCommand(e env, args []string, run doctorRun) int {
 		return transferInventoryCommand(e, args, run, run)
 	}
 	if len(args) == 0 || args[0] != "preview" {
-		e.errf("usage: keepgoing transfer preview|inventory|apply|recover; see transfer preview --help, transfer inventory --help, transfer apply --help or transfer recover --help")
+		e.errf("usage: keepgoing transfer preview|inventory|apply|recover|supersede; see transfer <command> --help")
 		return exitUsage
 	}
 	fs := flag.NewFlagSet("transfer preview", flag.ContinueOnError)
 	fs.SetOutput(io.Discard)
+	allowProviderChange := fs.Bool("allow-provider-change", false, "explicitly change provider; clears account annotation, probe and timing settings")
 	path := fs.String("c", "", configFlagHelp("configuration path"))
 	thread := fs.String("thread", "", "existing destination BB thread ID")
 	asJSON := fs.Bool("json", false, "versioned advisory preview")
@@ -118,15 +126,32 @@ func transferCommand(e env, args []string, run doctorRun) int {
 		e.errf("transfer: provide a valid --thread and a timeout greater than zero and at most 30s; no positional arguments")
 		return exitUsage
 	}
-	for _, l := range []string{*newProvider, *newGroup, *newModel, *newReasoning} {
-		if l != "" && !transferLabel.MatchString(l) {
-			e.errf("transfer: --provider, --quota-group, --model and --reasoning take a plain label")
+	var providerFlags *transferProviderFlags
+	if *allowProviderChange {
+		providerFlags = &transferProviderFlags{
+			allow: true,
+			route: config.BBTransferRoute{
+				Provider:  *newProvider,
+				Group:     *newGroup,
+				Model:     *newModel,
+				Reasoning: *newReasoning,
+			},
+		}
+		if err := providerFlags.validate(fs, false); err != nil {
+			e.errf("transfer: %v", err)
 			return exitUsage
 		}
-	}
-	if (*newModel != "" && *noModel) || (*newReasoning != "" && *noReasoning) || (*acceptOutside && !*across) {
-		e.errf("transfer: --model and --no-model, or --reasoning and --no-reasoning, are exclusive; --accept-workspace-outside requires --across-environment")
-		return exitUsage
+	} else {
+		for _, l := range []string{*newProvider, *newGroup, *newModel, *newReasoning} {
+			if l != "" && !transferLabel.MatchString(l) {
+				e.errf("transfer: --provider, --quota-group, --model and --reasoning take a plain label")
+				return exitUsage
+			}
+		}
+		if (*newModel != "" && *noModel) || (*newReasoning != "" && *noReasoning) || (*acceptOutside && !*across) {
+			e.errf("transfer: --model and --no-model, or --reasoning and --no-reasoning, are exclusive; --accept-workspace-outside requires --across-environment")
+			return exitUsage
+		}
 	}
 	if !configDefault(e, "transfer", fs, path) {
 		return exitUsage
@@ -148,6 +173,18 @@ func transferCommand(e env, args []string, run doctorRun) int {
 			r.Compatibility = "blocked"
 		} else if status == "unavailable" && r.Compatibility != "blocked" {
 			r.Compatibility = "unavailable"
+		}
+	}
+	var route *config.BBTransferRoute
+	if providerFlags != nil {
+		var routeErr error
+		route, routeErr = providerFlags.plan(a.Provider)
+		if routeErr != nil {
+			add("provider", "error", routeErr.Error())
+		}
+		if route != nil {
+			r.DestinationRoute = route
+			add("provider_settings", "warning", "Explicit provider change replaces provider/model/reasoning/quota-group labels and clears account annotation, probe and timing settings. Account identity remains unverified.")
 		}
 	}
 	if *thread == a.BB.Thread {
@@ -187,12 +224,12 @@ func transferCommand(e env, args []string, run doctorRun) int {
 	if *newReasoning != "" || *noReasoning {
 		plan.Reasoning = change(a.BB.Reasoning, *newReasoning, true)
 	}
-	if *across || plan.Provider != nil || plan.QuotaGroup != nil || plan.Model != nil || plan.Reasoning != nil {
+	if !*allowProviderChange && (*across || plan.Provider != nil || plan.QuotaGroup != nil || plan.Model != nil || plan.Reasoning != nil) {
 		r.Plan = plan
 		// This CLI's apply does not perform these moves yet.
 		r.ApplySupported = false
 	}
-	if plan.Provider != nil {
+	if !*allowProviderChange && plan.Provider != nil {
 		if *newGroup == "" || (*newModel == "" && !*noModel) || (*newReasoning == "" && !*noReasoning) {
 			add("labels_required", "error", "A provider change needs explicit --quota-group, --model or --no-model, and --reasoning or --no-reasoning; no label is carried over or guessed.")
 		}
@@ -263,6 +300,12 @@ func transferCommand(e env, args []string, run doctorRun) int {
 				add("environment", "warning", "Destination differs in project, environment or working directory on the same host; assessed because --across-environment was given.")
 			}
 			switch {
+			case route != nil:
+				if from.Provider != a.Provider || to.Provider != route.Provider {
+					add("provider", "error", "A thread provider differs from the configured provider; automatic relabeling is not supported.")
+				} else {
+					add("provider", "ok", "Thread provider IDs match the source configuration and explicit destination plan.")
+				}
 			case from.Provider != a.Provider:
 				add("provider", "error", "The source thread's provider differs from the configured provider label; repair the configuration before planning a move.")
 			case to.Provider != afterProvider && *newProvider == "":
@@ -324,6 +367,9 @@ func transferCommand(e env, args []string, run doctorRun) int {
 			}
 		}
 		fmt.Fprintf(e.stdout, "Configured provider: %s; model: %s; reasoning: %s; quota group: %s\n", r.ConfiguredProvider, r.ConfiguredModel, r.ConfiguredReasoning, r.ConfiguredQuotaGroup)
+		if route := r.DestinationRoute; route != nil {
+			fmt.Fprintf(e.stdout, "Destination provider: %s; model: %q; reasoning: %q; quota group: %s\n", route.Provider, route.Model, route.Reasoning, route.Group)
+		}
 		if p := r.Plan; p != nil {
 			fmt.Fprintf(e.stdout, "Planned move: across-environment=%t accept-workspace-outside=%t (labels unverified)\n", p.AcrossEnvironment, p.AcceptWorkspaceOutside)
 			for _, c := range []struct {
@@ -358,19 +404,28 @@ func transferCommand(e env, args []string, run doctorRun) int {
 	return exitOK
 }
 
+// errRecordBusy is readTransferRecord's answer when the record could not be
+// looked at or opened, which on Windows includes a replacement that outlasted
+// snapshot's bounded wait. Its text is the same as every other failure's, so
+// what a person sees is unchanged; tests tell it apart.
+var errRecordBusy = errors.New("record unavailable")
+
 func readTransferRecord(dir, name string, dst any) error {
 	p := filepath.Join(dir, name)
 	info, err := snapshot.LstatRecord(p)
 	if errors.Is(err, os.ErrNotExist) {
 		return nil
 	}
-	if err != nil || !info.Mode().IsRegular() || info.Size() > 1<<20 {
+	if err != nil {
+		return errRecordBusy
+	}
+	if !info.Mode().IsRegular() || info.Size() > 1<<20 {
 		return errors.New("record unavailable")
 	}
 	// Never block a concurrent control or state save (Windows).
 	f, err := snapshot.OpenRecord(p)
 	if err != nil {
-		return errors.New("record unavailable")
+		return errRecordBusy
 	}
 	defer f.Close()
 	info, err = f.Stat()

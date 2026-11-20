@@ -183,7 +183,7 @@ func TestVersionsViewAgainstTheNewestBuild(t *testing.T) {
 			t.Errorf("%s: update %t", k, update[k])
 		}
 	}
-	if len(v.Rows) != len(want) || v.Behind != 7 || v.Summary != "7 places need a look, against v0.2.2" {
+	if len(v.Rows) != len(want) || v.Behind != 7 || v.Summary != "7 places need a look" {
 		t.Errorf("%d rows, behind %d, %q", len(v.Rows), v.Behind, v.Summary)
 	}
 	// A loop with nothing recorded is named once, not given a row.
@@ -244,7 +244,7 @@ func TestVersionsWithDevBuildsAndOldReports(t *testing.T) {
 	// Only the service on another file counts; the stale report and the
 	// newer menu count for nothing, and with no newer build known the service
 	// gets no advice.
-	if v.Behind != 1 || v.Summary != "1 place needs a look, against "+version {
+	if v.Behind != 1 || v.Summary != "1 place needs a look" {
 		t.Errorf("%d %q", v.Behind, v.Summary)
 	}
 	// A fresh report from a plain release, with dev builds here: a different
@@ -256,7 +256,7 @@ func TestVersionsWithDevBuildsAndOldReports(t *testing.T) {
 	// and the release is "the newest release here".
 	same := []dockLoop{{Key: "l1", Name: "example-docs", Build: dockBuildOf(version, version), Versions: dockLoopVersions{Daemon: version}}}
 	v = dockVersionsOf(same, fresh, nil, now)
-	if v.Newest != "v0.2.0" || v.Behind != 0 || v.Summary != "3 run a different build; which is newer is not known" {
+	if v.Newest != "v0.2.0" || v.Behind != 0 || v.Summary != "3 places on another build" {
 		t.Fatalf("%+v", v)
 	}
 	for _, r := range v.Rows {
@@ -339,30 +339,30 @@ func TestVersionsSummary(t *testing.T) {
 	}{
 		{"one dev build everywhere", "v0.3.0-dev.feed123", []func() dockLoop{
 			func() dockLoop { return loop("l1", "v0.3.0-dev.feed123", "v0.3.0-dev.feed123") }},
-			"Everything here runs this panel's build"},
+			"All on this build"},
 		{"one release everywhere", "v0.3.0", []func() dockLoop{
 			func() dockLoop { return loop("l1", "v0.3.0", "v0.3.0") }},
 			"All on v0.3.0"},
 		{"dev builds that cannot be ordered", "v0.3.0-dev.feed123", []func() dockLoop{
 			func() dockLoop { return loop("l1", "v0.3.0-dev.beef456", "v0.3.0-dev.cafe789") }},
-			"2 run a different build; which is newer is not known"},
+			"2 places on another build"},
 		{"one dev build against a release", "v0.3.0", []func() dockLoop{
 			func() dockLoop { return loop("l1", "v0.3.0-dev.beef456", "v0.3.0") }},
-			"1 runs a different build; which is newer is not known"},
+			"1 place on another build"},
 		{"an older release", "v0.3.0", []func() dockLoop{
 			func() dockLoop { return loop("l1", "v0.2.9", "v0.3.0") }},
-			"1 place needs a look, against v0.3.0"},
+			"1 place needs a look"},
 		{"older and unordered together", "v0.3.0", []func() dockLoop{
 			func() dockLoop { return loop("l1", "v0.2.9", "v0.2.8") },
 			func() dockLoop { return loop("l2", "v0.3.0-dev.beef456", "") }},
-			"2 places need a look, against v0.3.0. 1 runs a different build; which is newer is not known"},
+			"3 places need a look"},
 		{"a build with no version", "v0.3.0", []func() dockLoop{
 			func() dockLoop { return loop("l1", "dev", "v0.3.0") }},
-			"1 cannot be compared"},
+			"1 place cannot be compared"},
 		{"a check with nothing recorded", "v0.3.0", []func() dockLoop{
 			func() dockLoop { return loop("l1", "", "v0.3.0") }},
-			"1 cannot be compared"},
-		{"a panel with no version", "dev", nil, "1 cannot be compared"},
+			"1 place cannot be compared"},
+		{"a panel with no version", "dev", nil, "1 place cannot be compared"},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {

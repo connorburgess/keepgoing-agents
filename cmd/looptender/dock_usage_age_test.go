@@ -72,6 +72,9 @@ func TestDockMarksOldUsageReadingsApartFromEndedWindows(t *testing.T) {
 		t.Errorf("ended reading: %+v", u)
 	}
 	for _, a := range r.Allowances {
+		if a.Usage == nil {
+			continue
+		}
 		if a.Usage.Old != (a.Usage.AgeSeconds != nil && *a.Usage.AgeSeconds > int64(defaultStaleAfter/time.Second)) {
 			t.Errorf("allowance %q: %+v", a.Title, a.Usage)
 		}
@@ -152,19 +155,20 @@ func TestDockOldUsageNeedsPersonOnlyNearLimit(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			u := dockUsageTarget{Availability: tc.availab, AgeSeconds: age(tc.age), Windows: tc.windows}
 			route := dockRoute{Key: "route-example", Usage: u}
+			allowance := u
 			if tc.limit {
 				route.Attention = "limit"
 			}
 			r := dockReport{
 				Loops:      []dockLoop{{Chain: dockChain{Entries: []dockChainEntry{{Route: "route-example", Usage: u}}}}},
 				Routes:     []dockRoute{route},
-				Allowances: []dockAllowance{{Title: "example", Usage: u}},
+				Allowances: []dockAllowance{{Title: "example", Usage: &allowance}},
 			}
 			if tc.limit {
 				r.Allowances[0].Notes = []dockNote{{Tone: "limit"}}
 			}
 			dockMarkOldUsage(&r, defaultStaleAfter)
-			for where, got := range map[string]dockUsageTarget{"chain": r.Loops[0].Chain.Entries[0].Usage, "route": r.Routes[0].Usage, "allowance": r.Allowances[0].Usage} {
+			for where, got := range map[string]dockUsageTarget{"chain": r.Loops[0].Chain.Entries[0].Usage, "route": r.Routes[0].Usage, "allowance": *r.Allowances[0].Usage} {
 				if got.Old != tc.old || got.NeedsPerson != tc.needs || got.AgeNote != tc.ageNote {
 					t.Errorf("%s: old %v needsPerson %v note %q, want %v %v %q", where, got.Old, got.NeedsPerson, got.AgeNote, tc.old, tc.needs, tc.ageNote)
 				}

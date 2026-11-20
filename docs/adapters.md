@@ -46,6 +46,7 @@ To change the matrix, edit the table and run `KEEPGOING_UPDATE_ADAPTERS_DOC=1 go
 <!-- capability-matrix:begin -->
 | Behaviour | BB thread | Claude Code headless | Codex headless | Cursor headless | Antigravity | Generic process | Agent defined in configuration |
 | --- | --- | --- | --- | --- | --- | --- | --- |
+| [Explicit whole-objective completion guard](#explicit-whole-objective-completion-guard) | yes · fixture | n/a | n/a | n/a | missing · none | n/a | n/a |
 | [Observe state](#observe-state) | yes · live | yes · fixture | yes · fixture | yes · live | missing · none | yes · fixture | yes · fixture |
 | [Structured error classes](#structured-error-classes) | yes · live | yes · fixture | yes · live | missing · live | missing · none | yes · fixture | partial · fixture |
 | [Refusals continue, restrictions hold](#refusals-continue-restrictions-hold) | partial · fixture | yes · fixture | partial · fixture | missing · none | missing · none | yes · fixture | partial · fixture |
@@ -55,6 +56,7 @@ To change the matrix, edit the table and run `KEEPGOING_UPDATE_ADAPTERS_DOC=1 go
 | [Recover a failed turn: retry the turn](#recover-a-failed-turn-retry-the-turn) | yes · fixture | missing · none | missing · none | missing · none | missing · none | missing · none | missing · none |
 | [Connection loss and the network check](#connection-loss-and-the-network-check) | yes · fixture | yes · fixture | yes · fixture | yes · fixture | missing · none | yes · fixture | yes · fixture |
 | [Child-work awareness](#child-work-awareness) | yes · live | n/a | n/a | n/a | missing · none | partial · fixture | n/a |
+| [Explicit independent-work coordinator wake](#explicit-independent-work-coordinator-wake) | yes · fixture | n/a | n/a | n/a | missing · none | n/a | n/a |
 | [Child failure notice and report](#child-failure-notice-and-report) | yes · fixture | n/a | n/a | n/a | missing · none | n/a | n/a |
 | [Lane recovery: retry a failed child's turn](#lane-recovery-retry-a-failed-childs-turn) | yes · fixture | missing · none | missing · none | missing · none | missing · none | missing · none | missing · none |
 | [Handoff away from it](#handoff-away-from-it) | yes · live | yes · fixture | yes · fixture | missing · none | missing · none | yes · fixture | yes · fixture |
@@ -70,6 +72,18 @@ To change the matrix, edit the table and run `KEEPGOING_UPDATE_ADAPTERS_DOC=1 go
 | [Stop and owned cancellation](#stop-and-owned-cancellation) | yes · live | yes · fixture | yes · fixture | yes · live | missing · none | partial · fixture | partial · fixture |
 | [Stop the lanes too](#stop-the-lanes-too) | yes · fixture | n/a | n/a | n/a | missing · none | n/a | n/a |
 | [Permission prompts](#permission-prompts) | yes · live | missing · none | missing · none | missing · none | missing · fixture | yes · fixture | partial · fixture |
+
+### Explicit whole-objective completion guard
+
+Separately opt in to current goal/review-bound attestation and completed acknowledged direct-child obligations; never infer whole-objective acceptance from idle or missing workers.
+
+- **BB thread:** yes, evidence fixture. Unreleased command-layer guard only. Fresh bounded structured inventory/interaction checks, owner/target/source revalidation, reviewed historical completed absence and supervised hold-clear refusal. No new schema, automatic completion or installed/live claim. [`TestAssignmentCompletionJourneyAndHistoricalAbsence`](../cmd/looptender/assignment_completion_test.go) [`TestAssignmentCompletionPublicationRevalidation`](../cmd/looptender/assignment_completion_test.go) [assignments.md#whole-objective-completion-review-unreleased](assignments.md#whole-objective-completion-review-unreleased)
+- **Claude Code headless:** n/a. Requires a BB primary and explicit assignment lifecycle.
+- **Codex headless:** n/a. Requires a BB primary and explicit assignment lifecycle.
+- **Cursor headless:** n/a. Requires a BB primary and explicit assignment lifecycle.
+- **Antigravity:** missing, evidence none. No adapter is registered, so a loop cannot use it. [antigravity.md](antigravity.md)
+- **Generic process:** n/a. Requires a BB primary and explicit assignment lifecycle.
+- **Agent defined in configuration:** n/a. Requires a BB primary and explicit assignment lifecycle.
 
 ### Observe state
 
@@ -169,7 +183,7 @@ Tell an outage from a provider failure, wait it out without spending re-prompts 
 
 ### Child-work awareness
 
-Hold a parent that is not in error while conversations it started are still working, and say which. A parent in error is recovered regardless.
+Normally hold a parent that is not in error while conversations it started are still working, and say which. A parent in error is recovered regardless.
 
 - **BB thread:** yes, evidence live. Direct child threads are listed and verified on each check. [run-discovery.md#live-check-waiting-on](run-discovery.md#live-check-waiting-on) [`TestObserveActiveChildSuppressesParentUntilFinished`](../internal/adapter/bb/children_test.go)
 - **Claude Code headless:** n/a. A headless turn has no child conversations outside its own process. Subagents the CLI starts live and end inside the turn.
@@ -178,6 +192,18 @@ Hold a parent that is not in error while conversations it started are still work
 - **Antigravity:** missing, evidence none. No adapter is registered, so a loop cannot use it. [antigravity.md](antigravity.md)
 - **Generic process:** partial, evidence fixture. A background count in the status JSON holds the loop. No child identities are reported. [`TestObserveJSON`](../internal/adapter/process/process_test.go)
 - **Agent defined in configuration:** n/a. A definition cannot declare work that outlives a turn, so none is assumed.
+
+### Explicit independent-work coordinator wake
+
+Permit one existing coordinator wake alongside healthy busy direct children, only for explicitly declared independent assignments with current typed idle evidence.
+
+- **BB thread:** yes, evidence fixture. Unreleased separate assignment_coordination opt-in. Exact revision-bound readiness, complete current direct-child evidence and one bounded optional revalidation; existing holds, cadence and send allowances retain precedence. Durable pre-delivery attempt consumption prevents automatic replay; no child dispatch, self-resume, authenticated handoff or mandatory turn-end hook. No installed/live acceptance. [`TestAssignmentSchedulingFullJourney`](../cmd/looptender/assignment_scheduling_test.go) [`TestAssignmentObservationTimeCountsTowardGrantAge`](../internal/supervise/assignment_age_test.go) [assignments.md](assignments.md)
+- **Claude Code headless:** n/a. This BB direct-child assignment contract is not supported by this adapter.
+- **Codex headless:** n/a. This BB direct-child assignment contract is not supported by this adapter.
+- **Cursor headless:** n/a. This BB direct-child assignment contract is not supported by this adapter.
+- **Antigravity:** missing, evidence none. No adapter is registered, so a loop cannot use it. [antigravity.md](antigravity.md)
+- **Generic process:** n/a. This BB direct-child assignment contract is not supported by this adapter.
+- **Agent defined in configuration:** n/a. This BB direct-child assignment contract is not supported by this adapter.
 
 ### Child failure notice and report
 
@@ -518,3 +544,7 @@ Eight more products were checked from their vendors' documentation, and the gaps
 **Still unverified:** the Junie plugin's Marketplace page did not render; a search result claiming that the Codex desktop app and IDE "share active chats" was not found on any vendor page; whether Kiro's IDE can stay on a conversation handed to its CLI is not documented. For Cursor, VS Code's Agent Host and Zed, "unchanged since 2026-11-13" was checked against the current pages, not against a saved copy (VS Code's page is dated 2026-11-11).
 
 What this means for looptender: the dated review found no documented way to supervise a chat while it remains open in one of these IDEs. The currently supported headless adapters supervise sessions looptender starts through their supported command-line interfaces. For the three vendors whose reviewed pages documented hooks, a user-installed hook reporting turn ends to looptender is a design option, not something implemented or tested. A third option follows from the handover above: for Claude Code, a person could close an extension conversation and hand it to a looptender loop, which resumes sessions by identifier already. Neither v0.2.0 nor this source revision has a command to adopt a session it did not start; `looptender session adopt` is planned for a headless Claude Code loop. Kiro's and Devin Desktop's handovers are documented by those vendors and not supported by looptender.
+
+## Sessionpipe reporting boundary (unreleased)
+
+[Sessionpipe reporting](sessionpipe.md) is an OUT report format, not a registered supervision adapter or a capability-matrix column. `adapter: sessionpipe` is rejected. No Observe, Send, Stop, activation, retry, session ownership or remote control capability is exposed. IN needs typed event intake and an observe-only-loop decision; BACK is held by #233.

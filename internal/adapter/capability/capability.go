@@ -89,8 +89,8 @@ type Behaviour struct {
 // Adapters in column order.
 var Adapters = []Adapter{
 	{ID: "bb", Title: "BB thread", Registered: true, Activator: true, WakePoller: true, TurnRetrier: true, LaneRecoverer: true, LaneStopper: true, SessionEvidence: true, ContextReader: true,
-		Files: []string{"internal/adapter/bb/bb.go", "internal/adapter/bb/children.go", "internal/adapter/bb/cursor.go", "internal/adapter/bb/lanes.go", "internal/adapter/bb/wake.go"},
-		Inputs: []string{"ActiveChildIDs", "ActiveChildren", "AwaitingChildren", "AwaitingInput", "Background", "ChildOutcome", "ChildTitles", "ChildrenUnverified", "ErrorClass", "ErroredChildren", "Evidence",
+		Files: []string{"internal/adapter/bb/bb.go", "internal/adapter/bb/children.go", "internal/adapter/bb/assignment.go", "internal/adapter/bb/cursor.go", "internal/adapter/bb/lanes.go", "internal/adapter/bb/wake.go"},
+		Inputs: []string{"ActiveChildIDs", "ActiveChildren", "AwaitingChildren", "AwaitingInput", "Background", "ChildOutcome", "ChildTitles", "ChildrenUnverified", "DirectChildren", "ErrorClass", "ErroredChildren", "Evidence",
 			"ErrorTurn", "Gone", "HealthyChildren", "ModelFallback", "Queued", "ResetsAt", "RetryDeclined", "RetryExpired", "RetryKnown", "RetryUnverified", "Retrying", "State", "Turn", "TurnUnknown", "Turns"}},
 	{ID: "claude", Title: "Claude Code headless", Registered: true, SessionEvidence: true,
 		Files:  []string{"internal/adapter/runner/claude.go", "internal/adapter/runner/spec.go"},
@@ -116,7 +116,7 @@ var Adapters = []Adapter{
 
 // ObservationFields is every field of decide.Observation. A new field must be
 // added here, and to the Inputs of each adapter that sets it.
-var ObservationFields = []string{"ActiveChildIDs", "ActiveChildren", "AwaitingChildren", "AwaitingInput", "Background", "ChildOutcome", "ChildTitles", "ChildrenUnverified", "DeferredInteraction", "ErrorClass",
+var ObservationFields = []string{"ActiveChildIDs", "ActiveChildren", "AwaitingChildren", "AwaitingInput", "Background", "ChildOutcome", "ChildTitles", "ChildrenUnverified", "DeferredInteraction", "DirectChildren", "ErrorClass",
 	"ErrorTurn", "ErroredChildren", "Evidence", "Gone", "HealthyChildren", "ModelFallback", "Queued", "ResetsAt", "RetryDeclined", "RetryExpired", "RetryKnown", "RetryUnverified", "Retrying", "SessionLost", "State", "Turn", "TurnUnknown", "Turns"}
 
 func t(path, test string) Ref { return Ref{Path: path, Test: test} }
@@ -167,6 +167,13 @@ const (
 
 // Matrix is every behaviour in row order.
 var Matrix = []Behaviour{
+	{ID: "assignment_completion", Title: "Explicit whole-objective completion guard", What: "Separately opt in to current goal/review-bound attestation and completed acknowledged direct-child obligations; never infer whole-objective acceptance from idle or missing workers.", Cells: merge(map[string]Cell{
+		"bb":      {Yes, Fixture, "Unreleased command-layer guard only. Fresh bounded structured inventory/interaction checks, owner/target/source revalidation, reviewed historical completed absence and supervised hold-clear refusal. No new schema, automatic completion or installed/live claim.", []Ref{t("cmd/looptender/assignment_completion_test.go", "TestAssignmentCompletionJourneyAndHistoricalAbsence"), t("cmd/looptender/assignment_completion_test.go", "TestAssignmentCompletionPublicationRevalidation"), d("docs/assignments.md#whole-objective-completion-review-unreleased")}},
+		"claude":  {NA, None, "Requires a BB primary and explicit assignment lifecycle.", nil},
+		"codex":   {NA, None, "Requires a BB primary and explicit assignment lifecycle.", nil},
+		"cursor":  {NA, None, "Requires a BB primary and explicit assignment lifecycle.", nil},
+		"process": {NA, None, "Requires a BB primary and explicit assignment lifecycle.", nil},
+	})},
 	{ID: "observe", Title: "Observe state", What: "Report idle, active, error or unknown from structured status, never from transcript text.",
 		Cells: merge(map[string]Cell{
 			"bb":      {Yes, Live, "Thread status, log events and the interaction list.", []Ref{d(providers), t(bbTest, "TestObserveIdle")}},
@@ -226,11 +233,13 @@ var Matrix = []Behaviour{
 			"cursor":  {Yes, Fixture, fakeDecision, []Ref{t(networkTest, "TestOutageDoesNotSpendRepromptsOrProbes"), d(networkDoc)}},
 			"process": {Yes, Fixture, fakeDecision, []Ref{t(networkTest, "TestOutageDoesNotSpendRepromptsOrProbes"), d(networkDoc)}},
 		})},
-	{ID: "child_awareness", Title: "Child-work awareness", What: "Hold a parent that is not in error while conversations it started are still working, and say which. A parent in error is recovered regardless.",
+	{ID: "child_awareness", Title: "Child-work awareness", What: "Normally hold a parent that is not in error while conversations it started are still working, and say which. A parent in error is recovered regardless.",
 		Cells: merge(map[string]Cell{
 			"bb": {Yes, Live, "Direct child threads are listed and verified on each check.", []Ref{d(waitingLive), t("internal/adapter/bb/children_test.go", "TestObserveActiveChildSuppressesParentUntilFinished")}},
 		}, same(Cell{NA, None, "A headless turn has no child conversations outside its own process. Subagents the CLI starts live and end inside the turn.", nil}, headless...),
 			map[string]Cell{"process": {Partial, Fixture, "A background count in the status JSON holds the loop. No child identities are reported.", []Ref{t(processTest, "TestObserveJSON")}}})},
+	{ID: "assignment_coordination", Title: "Explicit independent-work coordinator wake", What: "Permit one existing coordinator wake alongside healthy busy direct children, only for explicitly declared independent assignments with current typed idle evidence.",
+		Cells: merge(map[string]Cell{"bb": {Yes, Fixture, "Unreleased separate assignment_coordination opt-in. Exact revision-bound readiness, complete current direct-child evidence and one bounded optional revalidation; existing holds, cadence and send allowances retain precedence. Durable pre-delivery attempt consumption prevents automatic replay; no child dispatch, self-resume, authenticated handoff or mandatory turn-end hook. No installed/live acceptance.", []Ref{t("cmd/looptender/assignment_scheduling_test.go", "TestAssignmentSchedulingFullJourney"), t("internal/supervise/assignment_age_test.go", "TestAssignmentObservationTimeCountsTowardGrantAge"), d("docs/assignments.md")}}}, same(Cell{NA, None, "This BB direct-child assignment contract is not supported by this adapter.", nil}, "claude", "codex", "cursor", "process", "custom"))},
 	{ID: "child_notice", Title: "Child failure notice and report", What: "Tell the parent conversation, and optionally the owner, when a child fails.",
 		Cells: merge(map[string]Cell{
 			"bb": {Yes, Fixture, "Running on one live loop; a notice has not been captured there.", []Ref{t("internal/adapter/bb/children_test.go", "TestChildWorkListsErroredChildren"), d("docs/operations.md")}},
@@ -352,30 +361,31 @@ const (
 // the note says which declaration the behaviour needs. Every fixture uses a
 // stand-in; no real agent has been run from a definition.
 var customCells = map[string]Cell{
-	"observe":          {Yes, Fixture, "The turn's process state, its exit code and the JSON fields the definition names. Output over the definition's limit is not read.", []Ref{t(definedTest, "TestDefinedAgentTurnLifecycle"), t(definedTest, "TestDefinedAgentOutputBound")}},
-	"error_classes":    {Partial, Fixture, "With structured_errors: the codes, HTTP status field and exit codes the definition maps. Everything else, and every failure without that declaration, is unknown.", []Ref{t(definedTest, "TestDefinedAgentErrorClassification"), t(definedReadTest, "TestDefinitionReadings")}},
-	"retry_expiry":     {NA, None, "A turn is one process that is running, finished or gone, as for the built-in headless agents.", nil},
-	"reprompt":         {Yes, Fixture, "Run end to end with a stand-in agent.", []Ref{t(definedScenario, "TestDefinedAgentJourney")}},
-	"session_resume":   {Partial, Fixture, "With exact_resume: the resume command with the saved session identifier, read from a declared field or file. A saved identifier that is no longer usable holds the loop for a person; no new conversation is started in its place until someone runs looptender session reset. Without exact_resume every turn starts a new session.", []Ref{t(definedTest, "TestDefinedAgentTurnLifecycle"), t(definedTest, "TestDefinedAgentLostSessionHoldsInsteadOfStartingAnother"), t(definedReadTest, "TestDefinitionSessionFile")}},
-	"turn_retry":       {Missing, None, "A re-prompt is always a new turn.", nil},
-	"network":          {Yes, Fixture, "As for the built-in headless agents. The turn that ran into the outage is spent; nothing else is sent and no hold is raised until the network returns. Run end to end with a stand-in agent.", []Ref{t(definedScenario, "TestDefinedAgentOutage"), d(networkDoc)}},
-	"child_awareness":  {NA, None, "A definition cannot declare work that outlives a turn, so none is assumed.", nil},
-	"child_notice":     {NA, None, "No child conversations.", nil},
-	"handoff_source":   {Yes, Fixture, fakeDecision, []Ref{t(superTest, "TestHandoffToFirstCandidatePassingExactProbe")}},
-	"handoff_target":   {Partial, Fixture, "With a probe in the definition, or a command probe. Guided setup does not create it; the candidate is written by hand.", []Ref{t("internal/config/custom_test.go", "TestCustomAgentDefinition"), d(definedDoc)}},
-	"switch_back":      {Yes, Fixture, fakeDecision, []Ref{t(superTest, "TestSwitchBackAfterThePrimaryResets")}},
-	"probes":           {Partial, Fixture, "With a probe in the definition: one small request with the prompt passed as a turn's is, judged by the finished and error rules.", []Ref{t("internal/probe/custom_test.go", "TestCustomProbe")}},
-	"context":          {Missing, None, "Unavailable: a definition declares no context window reading.", nil},
-	"turn_usage":       {Missing, None, "Unavailable: a definition declares no per-turn token counts.", nil},
-	"quota":            {Missing, None, "No usage reading is taken. A limit lookup, when defined, only says whether an unclassified failure is a usage limit and when it resets.", []Ref{t(definedTest, "TestDefinedAgentLimitLookup")}},
-	"new_conversation": {Yes, Fixture, "A candidate has no saved session, so the handoff brief starts one.", []Ref{t(definedTest, "TestDefinedAgentTurnLifecycle")}},
-	"prompt_context":   {Yes, Fixture, "Last in the prompt, passed as the definition declares, with no wake header. With exact_resume, the turn a `session reset` starts carries it again; without it every turn starts a new session, so every turn carries it. " + fakeDecision, []Ref{t("internal/supervise/promptcontext_test.go", "TestPromptContextAfterASessionReset"), d(contextDoc)}},
-	"run_graph":        {Partial, Fixture, "Runs and sends are recorded. The session identifier is the agent's own shape and is not shown.", []Ref{t(definedReadTest, "TestDefinitionBecomesASpecification")}},
-	"stop":             {Partial, Fixture, "With can_be_stopped: the same wrapper as the built-in headless agents. Without it a stop is refused and nothing is signalled.", []Ref{t(definedTest, "TestDefinedAgentStop")}},
-	"restricted":       {Partial, Fixture, "A definition may map its agent's own codes or exit codes to restricted or refused, and HTTP 403 in http_status_field is restricted; either in any field wins over a limit and over a matching finished rule, and restricted wins over refused. Validation refuses a definition that maps a code looptender itself reads as a refusal or restriction to a class a loop may fail over on. What the agent does not report in a declared field stays unknown or looks like a finished turn.", []Ref{t(definedReadTest, "TestDefinitionDeclaredRefusalsAndRestrictions"), t(definedReadTest, "TestDeclinedTurnIsNotFinished"), t("internal/config/custom_test.go", "TestCustomDefinitionCannotRelabelARefusalAsALimit")}},
-	"child_recovery":   {Missing, None, "A defined agent reports no child conversations to recover.", nil},
-	"stop_lanes":       {NA, None, "Not applicable: a defined agent reports no child conversations. The stop goes ahead and its report says lanes do not apply.", nil},
-	"permissions":      {Partial, Fixture, "With structured_waiting: a turn that ends on the declared waiting rule raises one awaiting-user hold. Nothing is approved or answered.", []Ref{t(definedTest, "TestDefinedAgentWaitingRaisesOneHold")}},
+	"assignment_completion": {NA, None, "Requires a BB primary and explicit assignment lifecycle.", nil},
+	"observe":               {Yes, Fixture, "The turn's process state, its exit code and the JSON fields the definition names. Output over the definition's limit is not read.", []Ref{t(definedTest, "TestDefinedAgentTurnLifecycle"), t(definedTest, "TestDefinedAgentOutputBound")}},
+	"error_classes":         {Partial, Fixture, "With structured_errors: the codes, HTTP status field and exit codes the definition maps. Everything else, and every failure without that declaration, is unknown.", []Ref{t(definedTest, "TestDefinedAgentErrorClassification"), t(definedReadTest, "TestDefinitionReadings")}},
+	"retry_expiry":          {NA, None, "A turn is one process that is running, finished or gone, as for the built-in headless agents.", nil},
+	"reprompt":              {Yes, Fixture, "Run end to end with a stand-in agent.", []Ref{t(definedScenario, "TestDefinedAgentJourney")}},
+	"session_resume":        {Partial, Fixture, "With exact_resume: the resume command with the saved session identifier, read from a declared field or file. A saved identifier that is no longer usable holds the loop for a person; no new conversation is started in its place until someone runs looptender session reset. Without exact_resume every turn starts a new session.", []Ref{t(definedTest, "TestDefinedAgentTurnLifecycle"), t(definedTest, "TestDefinedAgentLostSessionHoldsInsteadOfStartingAnother"), t(definedReadTest, "TestDefinitionSessionFile")}},
+	"turn_retry":            {Missing, None, "A re-prompt is always a new turn.", nil},
+	"network":               {Yes, Fixture, "As for the built-in headless agents. The turn that ran into the outage is spent; nothing else is sent and no hold is raised until the network returns. Run end to end with a stand-in agent.", []Ref{t(definedScenario, "TestDefinedAgentOutage"), d(networkDoc)}},
+	"child_awareness":       {NA, None, "A definition cannot declare work that outlives a turn, so none is assumed.", nil},
+	"child_notice":          {NA, None, "No child conversations.", nil},
+	"handoff_source":        {Yes, Fixture, fakeDecision, []Ref{t(superTest, "TestHandoffToFirstCandidatePassingExactProbe")}},
+	"handoff_target":        {Partial, Fixture, "With a probe in the definition, or a command probe. Guided setup does not create it; the candidate is written by hand.", []Ref{t("internal/config/custom_test.go", "TestCustomAgentDefinition"), d(definedDoc)}},
+	"switch_back":           {Yes, Fixture, fakeDecision, []Ref{t(superTest, "TestSwitchBackAfterThePrimaryResets")}},
+	"probes":                {Partial, Fixture, "With a probe in the definition: one small request with the prompt passed as a turn's is, judged by the finished and error rules.", []Ref{t("internal/probe/custom_test.go", "TestCustomProbe")}},
+	"context":               {Missing, None, "Unavailable: a definition declares no context window reading.", nil},
+	"turn_usage":            {Missing, None, "Unavailable: a definition declares no per-turn token counts.", nil},
+	"quota":                 {Missing, None, "No usage reading is taken. A limit lookup, when defined, only says whether an unclassified failure is a usage limit and when it resets.", []Ref{t(definedTest, "TestDefinedAgentLimitLookup")}},
+	"new_conversation":      {Yes, Fixture, "A candidate has no saved session, so the handoff brief starts one.", []Ref{t(definedTest, "TestDefinedAgentTurnLifecycle")}},
+	"prompt_context":        {Yes, Fixture, "Last in the prompt, passed as the definition declares, with no wake header. With exact_resume, the turn a `session reset` starts carries it again; without it every turn starts a new session, so every turn carries it. " + fakeDecision, []Ref{t("internal/supervise/promptcontext_test.go", "TestPromptContextAfterASessionReset"), d(contextDoc)}},
+	"run_graph":             {Partial, Fixture, "Runs and sends are recorded. The session identifier is the agent's own shape and is not shown.", []Ref{t(definedReadTest, "TestDefinitionBecomesASpecification")}},
+	"stop":                  {Partial, Fixture, "With can_be_stopped: the same wrapper as the built-in headless agents. Without it a stop is refused and nothing is signalled.", []Ref{t(definedTest, "TestDefinedAgentStop")}},
+	"restricted":            {Partial, Fixture, "A definition may map its agent's own codes or exit codes to restricted or refused, and HTTP 403 in http_status_field is restricted; either in any field wins over a limit and over a matching finished rule, and restricted wins over refused. Validation refuses a definition that maps a code looptender itself reads as a refusal or restriction to a class a loop may fail over on. What the agent does not report in a declared field stays unknown or looks like a finished turn.", []Ref{t(definedReadTest, "TestDefinitionDeclaredRefusalsAndRestrictions"), t(definedReadTest, "TestDeclinedTurnIsNotFinished"), t("internal/config/custom_test.go", "TestCustomDefinitionCannotRelabelARefusalAsALimit")}},
+	"child_recovery":        {Missing, None, "A defined agent reports no child conversations to recover.", nil},
+	"stop_lanes":            {NA, None, "Not applicable: a defined agent reports no child conversations. The stop goes ahead and its report says lanes do not apply.", nil},
+	"permissions":           {Partial, Fixture, "With structured_waiting: a turn that ends on the declared waiting rule raises one awaiting-user hold. Nothing is approved or answered.", []Ref{t(definedTest, "TestDefinedAgentWaitingRaisesOneHold")}},
 }
 
 func init() {
