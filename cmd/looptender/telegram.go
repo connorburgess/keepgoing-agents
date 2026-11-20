@@ -585,4 +585,3 @@ func telegramTopicsCommand(e env, args []string) int {
 	}
 	return exitOK
 }
-

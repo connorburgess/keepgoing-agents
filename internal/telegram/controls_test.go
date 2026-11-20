@@ -329,4 +329,3 @@ func TestResumeCallbackCodecAndReviewFormat(t *testing.T) {
 		t.Fatalf("Confirm resume callback mismatch: %+v (%v)", decoded, ok)
 	}
 }
-
