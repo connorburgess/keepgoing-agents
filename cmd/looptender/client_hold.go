@@ -10,6 +10,7 @@ import (
 	"os"
 	"reflect"
 	"slices"
+	"strings"
 	"time"
 
 	"github.com/looptender/looptender/internal/config"
@@ -180,7 +181,7 @@ func applyClientHoldWith(ctx context.Context, directory, id, operation, origin, 
 			if readTransferRecord(entry.StateDir, control.FileName, &checked) != nil || !reflect.DeepEqual(checked, *f) {
 				return fail("control_unavailable")
 			}
-			if expect != "" && controlDigest(checked) != expect {
+			if expect != "" && !expectDigestMatches(controlDigest(checked), expect) {
 				return fail("observation_changed")
 			}
 			// Like ordinary pause/stop, this never claims ownership, rejects another
@@ -251,4 +252,25 @@ func applyClientHoldWith(ctx context.Context, directory, id, operation, origin, 
 		return r, exitFailed
 	}
 	return r, exitOK
+}
+
+const controlExpectPrefixTag = "sha256prefix:"
+
+func expectDigestMatches(actual, expect string) bool {
+	if expect == "" {
+		return true
+	}
+	if prefix, ok := strings.CutPrefix(expect, controlExpectPrefixTag); ok {
+		if len(prefix) != 16 || len(actual) < 16 {
+			return false
+		}
+		for i := 0; i < len(prefix); i++ {
+			c := prefix[i]
+			if !((c >= '0' && c <= '9') || (c >= 'a' && c <= 'f')) {
+				return false
+			}
+		}
+		return strings.HasPrefix(actual, prefix)
+	}
+	return actual == expect
 }

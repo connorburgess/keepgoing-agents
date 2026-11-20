@@ -21,6 +21,7 @@ const telegramUsage = `Telegram remote channel (zero-infrastructure local pairin
   telegram setup       Pair a personal @BotFather bot via one-tap ?start= deep link
   telegram status      Show local Telegram pairing status (read-only; never prints tokens)
   telegram test        Send one redacted test alert to the paired chat (--dry-run previews)
+  telegram poll        Long-poll getUpdates for /status and Pause/Stop inline controls
   telegram disconnect  Remove local Telegram pairing and saved token file
 `
 
@@ -41,6 +42,8 @@ func telegramCommandWithInput(e env, args []string, stdin io.Reader) int {
 		return telegramStatusCommand(e, rest)
 	case "test":
 		return telegramTestCommand(e, rest)
+	case "poll":
+		return telegramPollCommand(e, rest)
 	case "disconnect":
 		return telegramDisconnectCommand(e, rest)
 	default:
