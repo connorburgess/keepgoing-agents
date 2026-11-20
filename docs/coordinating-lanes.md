@@ -40,6 +40,23 @@ How to choose, also a convention that looptender does not enforce:
 - Match the model to the work. Code and design-heavy work gets the strongest lane model. Docs, wording, mechanical edits and simple reviews get a mid model. Lookups and status checks get the smallest. Reviews of code changes stay on the strongest lane model or with the coordinator.
 - The coordinator steps in when a lane is stuck, has been wrong twice, or the task has turned out harder than its model. It does the work itself or re-runs the lane one level up, rather than letting it grind.
 
+### Antigravity and Gemini 4 model tiers
+
+As of November 2026, when running coordinators and lanes on Antigravity or the Gemini 4 API (also a convention looptender does not enforce; check live limits in the provider's console or status because plans and pricing change):
+
+- **Default baseline (coordinator and code/design-heavy lanes):** `gemini-4-neon` at `medium` (or **Orchestrator (Neon)** inside Antigravity, which pairs Neon planning with `gemini-4-hydrogen` edits/tests). Keep routine PRs, multi-file refactors and code reviews at `gemini-4-neon` `medium` to preserve the shared 5-hour/weekly compute pool.
+- **Escalation only (hardest architecture, root-cause debugging or stuck after two attempts):** `gemini-4-neon` at `high` (or `xhigh`), or `gemini-4-carbon` / **Orchestrator (Carbon)** on Google AI Ultra or paid API.
+- **Routine implementation, mechanical edits, docs, wording and simple reviews:** `gemini-4-hydrogen` at `medium` or `high`. Prefer `gemini-4-neon` at `medium` over pushing `gemini-4-hydrogen` to `xhigh`: Neon `medium` scores higher, finishes faster and costs less per task.
+- **Lookups, status checks, PR summaries and triage:** `gemini-3.5-flash-lite` (or `gemini-4-hydrogen` at `low`).
+- **`gemini-4-argon`:** Superseded by Neon for general coding and PR work; reserve for tasks that specifically need its lower hallucination rate.
+
+Quota habits for Antigravity loops and lanes:
+
+- Google AI Pro and Ultra meter Antigravity from a shared compute pool across Gemini models (5-hour refresh up to a weekly cap; partner Claude and GPT models draw from a separate pool). Heavier models, higher thinking levels (`xhigh` > `high` > `medium` > `low`) and long conversation histories drain the pool fastest.
+- Start a fresh lane per scoped PR or task rather than carrying long history across unrelated work.
+- Set thinking/effort explicitly in API calls: `gemini-4-neon` and `gemini-4-hydrogen` default to `high`, whereas `gemini-4-carbon` and `gemini-4-argon` default to `medium`.
+- Avoid the free Gemini API tier for private repositories (free-tier content may be used to improve provider products, and free projects have tight per-project rate caps).
+
 ## Keep nesting shallow
 
 Prefer two levels: a coordinator and its lanes. A lane coordinates lanes of its own only when the work needs it, and then it follows this page as their coordinator.
