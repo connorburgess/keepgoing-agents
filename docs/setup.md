@@ -163,3 +163,17 @@ To add a fallback to a loop that already exists, v0.2.0 provides the guided [`ke
 Generated fallbacks use redundancy `min_healthy: 1`, `span: group`. After you enable and run supervision, scheduled probes run at most every 12 hours per candidate, with a 24-hour health TTL and a default cap of two scheduled calls per candidate per UTC day. Active-group candidates are skipped. Exact handoff probes and manually requested probes are additional calls outside that cap. No calls occur during setup. Handoffs are allowed only for structured `rate_limit` errors and require an exact target probe. Switch-back stays off.
 
 The generated setup and account routing are covered by tests with fake provider discovery and temporary Git repositories. Real login verification, paid multi-account handoff, and a fresh install-to-completion walkthrough remain separate acceptance checks; setup success does not claim those passed.
+
+## Telegram remote alerts (unreleased)
+
+Unreleased source adds zero-infrastructure local pairing for a personal `@BotFather` bot over outbound HTTPS:
+
+```sh
+looptender telegram setup --token-stdin
+looptender telegram status
+looptender telegram test --dry-run
+looptender telegram disconnect
+```
+
+Pairing writes the bot token to a private `0600` `token.env` file and locks `pairing.json` strictly to the paired `allowed_user_id` and `allowed_chat_id` via a one-time `?start=pair_<nonce>` deep link. Default `alerts` mode sends redacted event summaries only (`loop.report.format: telegram`); `--mode chat` requires explicit `--accept-non-e2e` because Telegram Bot API traffic is not end-to-end encrypted. Current coverage uses offline loopback HTTP stand-ins only; terminal QR rendering, `doctor` diagnostics, background service wiring, `TG4`–`TG5` and live Telegram verification remain open. See [Telegram remote channel](telegram.md).
+
