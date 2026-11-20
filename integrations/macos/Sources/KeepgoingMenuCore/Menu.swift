@@ -35,6 +35,7 @@ public struct PanelLoop: Decodable, Equatable {
 }
 
 public struct PanelList: Decodable, Equatable {
+    public var accountQuotas: AccountQuotaList? = nil
     let schemaVersion: Int
     public let registry: String
     public let complete: Bool
@@ -100,6 +101,7 @@ extension Contract {
               result.loops.count <= 128, result.needsYou >= 0, result.unread >= 0, result.unread <= result.needsYou, result.omitted >= 0,
               Set(result.loops.map(\.key)).count == result.loops.count,
               // Checked on what will be shown: a name of control characters only is empty.
+              (result.accountQuotas == nil || validQuotas(result.accountQuotas!)),
               result.loops.allSatisfy({ validKey($0.key) && !text($0.name).isEmpty && !text($0.phrase).isEmpty }) else {
             throw ClientFailure.invalidResponse
         }
@@ -117,6 +119,10 @@ public enum MenuCommand: Equatable {
     case readStatus
     /// Runs `keepgoing panel`: the page opens on what needs a person.
     case openPanel
+    /// Opens this account in the panel; no sign-in or provider read.
+    case openAccount(id: String)
+    case connectAccount(id: String)
+    case openAccountWithChanges(id: String)
     /// Runs `keepgoing panel --loop <key>`.
     case openLoop(key: String)
     /// Runs `keepgoing panel --allow-changes`, after a confirmation.
@@ -286,6 +292,10 @@ public enum MenuBuilder {
                 badge = "?"
                 iconLabel = list.registry == "available" ? "looptender, not every loop was read" : "looptender, the list of loops can't be read"
             }
+            if let quota = list.accountQuotas {
+                rows.append(separator)
+                rows.append(contentsOf: quotaRows(quota))
+            }
             if !list.loops.isEmpty { rows.append(separator) }
             for loop in list.loops.prefix(maxLoops) {
                 let name = Contract.text(loop.name), short = shortened(name, to: maxName)
@@ -369,6 +379,8 @@ public enum MenuBuilder {
         case .readList: return ["panel", "list", "--json"]
         case .readStatus: return ["panel", "status", "--json"]
         case .openPanel: return ["panel"]
+        case .openAccountWithChanges(let id): return id.count == 32 && id.allSatisfy { "0123456789abcdef".contains($0) } ? ["panel", "--allow-changes", "--account", id] : nil
+        case .connectAccount(let id), .openAccount(let id): return id.count == 32 && id.allSatisfy { "0123456789abcdef".contains($0) } ? ["panel", "--account", id] : nil
         case .openLoop(let key): return Contract.validKey(key) ? ["panel", "--loop", key] : nil
         case .openPanelWithChanges: return ["panel", "--allow-changes"]
         case .stopPanel: return ["panel", "stop"]

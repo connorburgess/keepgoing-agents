@@ -83,7 +83,7 @@ var migrateLockWait = 3 * time.Second
 // looked at nor held while those directories move.
 var migrateLockNames = func() map[string]bool {
 	names := map[string]bool{}
-	for _, n := range []string{lock.Tick, lock.Daemon, lock.Control, lock.Service, "turn", panelOpenLock, panelServerLock, "routes", registry.LockName, "incident", "delivery", report.SessionpipeLock, "graph", clientsLock} {
+	for _, n := range []string{lock.Tick, lock.Daemon, lock.Control, lock.Service, "turn", panelOpenLock, panelServerLock, "routes", registry.LockName, "incident", "delivery", report.SessionpipeLock, "graph", clientsLock, "telegram", telegramPollLock} {
 		names[n+".lock"] = true
 	}
 	return names
@@ -447,6 +447,10 @@ func migrateLockMeaning(root, path string) string {
 		return "the panel is running; stop it with keepgoing panel stop"
 	case strings.HasPrefix(dir, "registry/"):
 		return "the loop registry is being changed"
+	case strings.HasPrefix(dir, "telegram/") && name == telegramPollLock+".lock":
+		return "the Telegram poller is running; stop it first"
+	case strings.HasPrefix(dir, "telegram/"):
+		return "Telegram pairing state is being changed"
 	case dir == "" && name == "routes.lock":
 		return "the standard route list is being changed"
 	case name == lock.Daemon+".lock":

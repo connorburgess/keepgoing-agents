@@ -21,7 +21,7 @@ may still contact a provider.
 Page refresh reads retained catalog and quota evidence only and executes no provider
 command. In a panel started with `--allow-changes`, an explicit reviewed
 **Refresh subscription quota** action contacts the selected Codex CLI without a
-model request. The read-only panel offers no such action. The `accounts` commands below do not start
+model request. Supported Darwin arm64 panels also offer **Retrieve usage** for the inspected native Claude image, with provider freshness always unknown. Same-selection recovery for either provider is a separate local revision review, never a provider read. The read-only panel offers no such action. The `accounts` commands below do not start
 a loop, enroll a route, sign in or copy credentials. Complete provider sign-in in
 the official provider tool first.
 
@@ -434,10 +434,11 @@ selection mode/account directory, home/config locations and effective
 authentication-related environment prefixes and proxy/TLS inputs. Values are
 fingerprinted with a per-catalog keyed digest, never copied into storage.
 
-Two kinds of variable describe the session running the command, not the
+The following variables describe the execution running the command, not the
 account context, and are not bound:
 
 - The exact CODEX_TOOL_CALL_ID name identifies one agent tool invocation.
+  CODEX_SANDBOX describes the execution sandbox, not the selected login.
   Windows applies its existing case-insensitive name comparison; Unix excludes
   only that exact case. Its value still passes through to execution.
 - The caller-session list that supervised turns already drop (see
@@ -453,9 +454,35 @@ account context, and are not bound:
 
 All other bindings remain.
 
-**Entries recorded by an earlier build.** Earlier builds bound those session
+**Definition-2 bindings require review.** Fingerprint definition 3 excludes only
+the additional CODEX_SANDBOX marker. A valid tagged definition-2 catalog binding is never
+silently accepted or rewritten: review and explicitly update the same selection
+(even if its paths are unchanged), then refresh quota. Definition-2 quota cache
+evidence is not reused under a new definition-3 binding. Reads do not modify
+either file. In a panel with changes allowed, open Accounts and choose
+**Review selection for this panel…**. The review retains the exact provider,
+label, executable, account-directory selection and working directory; it binds
+a new revision to that panel's startup environment. Review the displayed paths
+and authentication mode: inherited authentication may differ from a terminal,
+and this action does not verify account identity. Confirmation clears prior
+login/plan observations and invalidates prior quota. It makes no provider call,
+changes no login/default or loop control, and does not refresh quota. Review
+**Refresh subscription quota…** separately afterward. The native menu directs
+you to Accounts through **Open Panel with Controls…**; it cannot revise a
+selection itself. Read-only panels offer guidance without a write action.
+
+The single-use review pins the current revision, startup caller, effective
+context and native path identities. Drift, a concurrent check/refresh, expiry or
+replay refuses publication; a lost reply is never retried automatically. This
+recovery supports selected Claude Code and Codex contexts; it makes no provider call. Claude retrieval afterward still requires its separately reviewed platform, native-image and isolation checks. The guard-tag family is retained so definition-2 readers also
+refuse new definition-3 bindings instead of treating them as pre-tag legacy.
+Authentication, provider, executable, directory, home/config,
+proxy/TLS and other environment checks remain; the actual execution environment
+and caller authority are unchanged.
+
+**Entries recorded before keyed tags.** Earlier builds bound those session
 variables too, and their digests cannot be recomputed without the old values.
-A digest now carries a keyed tag of the binding definition, so this build
+A digest carries a keyed guard tag, so this build
 recognizes an earlier one without a new stored field (older builds refuse
 unknown fields). The first check of such an entry by this build is not reported
 as a changed context: it runs, and records the current digest in place of the
@@ -610,24 +637,112 @@ own ordinary authentication/network work. The read has a five-second deadline,
 a 64 KiB stdout bound, discarded stderr, strict response correlation and owned
 process cleanup. A rejected or unsupported CLI returns unavailable evidence.
 
-Only the documented Codex bucket's primary/secondary windows are retained:
-integer percent used (including a reported zero), optional duration in minutes
-and optional reset time. Other buckets are never joined. Missing windows,
-API-key contexts without subscription windows, unknown buckets/windows and
-malformed responses are unavailable, not an inferred zero. Credits, account
-IDs, email addresses, plan/model labels and raw payloads are discarded. Plan
-and login evidence remain independent; quota does not establish model access
-or a stable account identity. Changing credentials inside the same selected
-directory cannot be detected as an identity change by this mechanism.
+The supported Codex response can expose several metered buckets. Up to eight
+are retained separately, with primary and secondary windows where present,
+including fractional percentages, duration and reset times. The legacy single
+bucket is used only when the bucket map is absent or null; an explicitly empty
+map has no supported quota evidence. The legacy bucket is never added a second
+time. Individual limits retain decimal used/limit values in provider
+units and their reported remaining percentage. Credits retain availability,
+unlimited status and a bounded decimal balance; the response supplies no
+currency, so no currency or percentage is invented. A nullable ordinary-usage
+permission remains unknown; percentages and reset times never establish access.
+No reserve-experiment capability or reset-credit consumption is requested.
 
-The private `subscription-quota.json` cache is bounded to 1 MiB and 64 entries
-with strict schema 1 validation. It stores opaque catalog ID/revision/context
-bindings, allowlisted windows, successful read time and last attempt time/reason;
-it contains no executable/account paths or provider identifiers. It does not
-rewrite or promote `accounts.json`, and older catalog readers ignore it. All
-catalog schema-2 upgrade and rollback precautions above still apply to plan
-checks. Upgrade the panel/CLI separately to expose this action; deployment and
-installed-reader acceptance are not supplied by this source change.
+Unknown or malformed parts are visibly partial or unavailable; missing values
+are never zero. A reported zero is preserved. Raw provider display names,
+account IDs, email addresses, banners and plan/model aliases are discarded.
+Known Codex labels and generic additional-bucket labels keep independent rows
+without implying a model, subscription identity or quota pooling. Plan and
+login evidence remain independent. Changing credentials inside the same
+selected directory cannot be detected as an identity change by this mechanism.
+
+**Experimental Claude selected-context reads** use a separate, explicitly
+initiated native control exchange. The current acquisition allowlist admits only
+the inspected Claude Code 2.1.326 native artifact; wrappers, other platform
+artifacts and upgrades return unavailable before launch until independently
+verified. Admitted bytes are copied through the selected open handle into a fresh
+private directory, verified there and launched from that private image; replacing
+the selected path cannot substitute an unreviewed executable. Admission opens
+nonblocking without following a final symlink and verifies a regular file; a
+FIFO replacement cannot stall the read before its deadline. The image is
+removed only after the owned child exits. No wrapper is substituted and no login
+or default is changed.
+The process stays parked with `--await-claim`, safe mode, disabled hooks, no
+session persistence, empty tools and strict empty MCP configuration. It receives
+only `initialize`, a disabled-hook-policy check, then
+`get_usage` with `skip_behaviors:true`. It never receives `claim_session`, a user
+message, resume, hook response or model request. An unrecognized version,
+managed/unreadable hook policy, unexpected conversation/control request, malformed
+response or incorrect correlation refuses the read. Runtime preload injection
+also refuses. The pinned native UI invalidation notification is discarded without
+a response; other unexpected frames refuse. The selected environment and caller provenance are retained.
+The five-second deadline, 64 KiB output bound and owned-child cleanup apply.
+
+Claude's experimental reply conceals whether quota came from a provider request,
+a cache or seeded evidence, and strips provider observation time and some error
+provenance. Successful output therefore has source `claude:get_usage`,
+`retrievedAt` and freshness `provider_unknown`, **never `observedAt` or fresh**.
+A new retrieval does not establish new provider evidence. Five-hour, seven-day,
+seven-day OAuth-app, seven-day Opus and seven-day Sonnet scopes retain their own
+explicit percentages and reset times. Missing values are not zero; unsupported
+scopes/extra-usage units make a recognized reading partial. Session tokens,
+costs, subscription/identity data, behavior output and raw display names are
+discarded. Existing dated Claude route observations remain separate.
+No live authenticated read is established by the offline fixture evidence.
+
+Claude evidence uses a separate private `claude-subscription-quota.json`, schema
+1, bounded to the same 1 MiB and 64-selection limits. Its timestamps are named
+`retrievedAt`. It neither promotes the catalog nor rewrites the Codex cache;
+older binaries ignore that file. The additive shared summary includes
+`retrievedAt`/`provider_unknown`. Matching web and native readers show “Retrieved”
+and “Provider freshness unknown”, including after a successful read; failed
+refreshes retain the original retrieval timestamp. The panel advertises Claude
+retrieval only on Darwin arm64, where the inspected native image can run. This
+is a platform prerequisite, not admission of the selected executable: wrappers,
+unreviewed images, preload injection or unavailable isolation still refuse.
+Other platforms can show saved evidence but offer no Claude refresh action.
+There is no automatic refresh, login, account switch or model call. Do not claim
+installed-panel acceptance from a source-only change.
+
+**Antigravity selected-context reads** run the selected `agy` CLI with
+`--print /usage --mode plan --output-format json` in read-only plan mode, with
+empty stdin, discarded stderr, a 10-second deadline and a 64 KiB stdout bound.
+Only `inherited` selections are supported for `antigravity`; `explicit_directory`
+is rejected because no separate-account directory variable has been verified for
+`agy`. The parser requires `status: "SUCCESS"`, `num_turns: 0`,
+`command.name: "usage"`, explicit `remaining_fraction` values in `[0, 1]` and
+RFC3339 reset timestamps. Recognized buckets (`gemini-weekly`, `gemini-5h`,
+`3p-weekly`, `3p-5h`) keep their own percentages and reset times; unknown extra
+buckets mark the reading partial with an omitted count. Because the reply may be
+cached and carries no provider observation timestamp, successful output has
+source `agy:/usage`, `retrievedAt` and freshness `provider_unknown`, **never
+`observedAt` or fresh**. Antigravity evidence is stored separately in private
+`antigravity-subscription-quota.json` (schema 1) and never overwrites Codex or
+Claude caches. Panel selection recovery supports rebinding unchanged inherited
+Antigravity selections. No live `agy` CLI or authenticated read is established
+by the offline fixture evidence.
+
+The Accounts page shows compact named windows before expansion. Expanded rows
+show used and remaining values, independent reset timestamps, source, read age,
+partial evidence and failed refreshes. The native menu shows the same saved
+summary in account submenus, capped at six accounts/eight details per submenu
+with explicit omitted counts; the panel lists the remaining details. Neither
+page polling nor native menu polling contacts providers. Native output contains
+no catalog IDs, account-directory paths or provider account identities.
+
+The private `subscription-quota.json` cache remains bounded to 1 MiB and 64
+entries. A refresh writes quota-cache schema 2 for separate bucket/unit data;
+schema 1 remains readable without rewriting it on reads and is marked partial
+because it cannot establish additional buckets. Older quota readers reject
+schema 2 as unavailable. Back up this private cache before downgrading; no
+automatic migration repair or rollback rewrite is performed. Catalog schema is
+unchanged. Stored data includes opaque catalog ID/revision/context bindings,
+bounded meter keys and typed quota detail, successful read time and attempt
+failure evidence; it never stores executable/account paths or raw payloads.
+The native additive `panel list` contract is optional for older CLIs, strictly
+bounded and reads saved evidence only. This source change does not establish
+installed or live provider acceptance.
 
 Reads run outside the catalog writer lock. Checks and quota reads for one
 selection share a single-flight guard. Publication revalidates the ID, revision,
@@ -640,8 +755,8 @@ and back them up privately before an operator removes the cache to start over.
 No automatic repair or provider retry occurs. After a lost reply, read the
 cached state before explicitly retrying.
 
-A successful reading retains its original timestamp. After 30 minutes it is
-marked stale; an ended reset is shown as an ended window and needs a fresh
+A successful reading retains its original timestamp. Codex evidence is marked
+stale after 30 minutes; Claude provider freshness remains unknown at every age; an ended reset is shown as an ended window and needs a fresh
 read. A later failed refresh has a separate time/reason and never makes old
 windows fresh. Future-dated or context-mismatched evidence is withheld. These
 are subscription-quota observations for the selected context, not turn token
@@ -653,3 +768,97 @@ Fictional RPC/cache/panel fixtures cover correlation, bounds, timeout, selected
 environment, privacy, failed-refresh retention, concurrency and review fences.
 Native installed-panel and cross-platform process acceptance remain separate;
 platform compilation alone is not native execution evidence.
+
+The public quota view serializes the shared summary once; raw typed bucket
+storage stays private to the cache and Go projection. Legacy window fields
+remain for compatibility. Both interfaces retain the summary's independent
+rows, source, dates, missing/partial state and failed-read context.
+
+The main web report advertises saved account availability, selected count and
+an opaque snapshot reference, without full account cards or duplicate quota
+summaries. Only the Accounts page reads `GET api/v1/saved-accounts?reference=…`
+under the same token/session, origin and read-method safeguards. That endpoint
+returns only the already-projected snapshot, never reads provider files, starts
+a registry read, queries a provider or writes anything. It keeps at most the
+latest snapshot for each of the two identifier views, for 30 seconds, with a
+1 MiB response cap. Superseded, expired or unknown references return a conflict;
+the page says the saved read failed and offers the existing Read now action.
+There is no additional polling timer or automatic provider refresh.
+
+A new main report invalidates delayed replies for earlier references; changing
+the identifier view also prevents applying a reply for the previous view.
+Loading, missing and failed companion reads stay explicit and do not block
+the overview or imply zero quota. Reports without a reference retain the prior
+inline Accounts rendering. Native continues to project directly from the same
+Go evidence, with no dependency on this browser endpoint and unchanged old-CLI
+fallback.
+
+The web hard response ceiling remains the existing 8 MiB. The combined widest
+registry/route-list plus 64 detailed quota fixture requires the existing main
+6 MiB regression threshold; all quota rows remain obtainable in the separate
+1 MiB response. Native remains bounded to 1 MiB.
+
+
+## Connect an account in the panel (unreleased)
+
+The Accounts row offers **Connect Claude** or **Connect Codex** when quota is unavailable. This is an action, not a diagnosis: a missing quota reading can also mean an unsupported source or a failed request. A structured missing-login observation is shown separately as **Sign-in required**.
+
+Open the panel with controls enabled, choose Connect for the intended account, and review the change before starting sign-in. Finish authentication on the provider's page. Looptender does not ask for your password or copy credentials from another account. Each attempt creates a private, separate provider context. Only confirmed sign-in and an unchanged reviewed selection allow publication to that account's catalog entry. Its label, provider, executable and working directory are retained; routes and held loops are not changed. Retrieve quota separately after connection succeeds.
+
+For multiple accounts, choose **Connect another Claude account** or **Connect another Codex account**, enter a distinct label, and review the new connection. The existing selection supplies the CLI and working directory; successful sign-in adds a new entry rather than replacing that selection. Duplicate labels and the catalog limit are checked again before publication. Adding the first provider selection still uses the existing explicit catalog setup; the panel does not discover or import other credentials.
+
+If the reply is lost, **Check connection** checks the already reviewed attempt. It never repeats sign-in. **Cancel sign-in** cancels that attempt; an unknown outcome is not automatically retried. The panel can retain an unused private context after failure rather than risk deleting authentication files of uncertain state. Stopping the panel process stops its owned connection processes; closing a browser tab alone leaves the attempt running until cancellation or its deadline. Opening the native menu, reading status or refreshing the saved account list never starts sign-in.
+
+Codex connection requires a supported standalone native CLI on macOS or Linux. Claude connection is limited to the inspected macOS arm64 native Claude Code artifact and Claude subscription login; Console authentication is excluded. Unsupported binaries, wrappers, platform admission and conflicting authentication overrides refuse before sign-in. The provider may require a person to finish authentication; terminal-only fallback is not silently automated. Windows connection is not enabled. The native Connect row opens the selected account through the existing panel-controls confirmation. Source and fictional tests do not establish live provider acceptance.
+
+## Explicit provider sign-in (unreleased source)
+
+A changes-enabled panel can review **Connect Claude** or **Connect Codex** for
+an existing catalog selection. The person completes the provider's own browser
+sign-in. Navigation, page refresh and status polling never start sign-in. An
+unavailable quota reading does not establish that login is missing.
+
+Each attempt creates a new private configuration directory. It never signs in
+within an inherited context or overwrites credentials in an existing selected
+directory. Verified completion changes only the reviewed row to select the new
+directory; its ID, name, provider, executable and working directory stay fixed.
+**Connect another account** instead uses that row's executable and working
+directory as a template, reviews a new name, and appends a separate catalog ID
+on success. Names must be distinct without regard to case; the catalog's
+64-selection limit still applies. The template and unrelated rows are retained.
+Neither operation changes routes, defaults or any BB connection. Retrieve quota
+separately after sign-in; no model or quota request runs as part of Connect.
+
+Claude sign-in uses the inspected native Claude Code 2.1.326 image on Darwin
+arm64 and its subscription-only `auth login --claudeai` command. The provider
+opens the browser itself. Completion additionally requires its structured
+status to report a claude.ai login in exactly the new configuration directory.
+Console, third-party authentication and manual-code terminal fallback are not
+implemented by the panel. Codex sign-in supports standalone native executables
+on Darwin/Linux: its documented app-server browser flow must confirm a
+file-based credential store, matching login completion and a ChatGPT account.
+The new Codex context retains its own `cli_auth_credentials_store = "file"`
+setting. Script launchers, unsupported platforms, overridden authentication,
+unverified executables and unsupported provider protocols refuse. Explicit
+token/API-key/cloud authentication in the panel environment is refused, never
+silently removed or borrowed.
+
+Start requires a session-bound, single-use review. Its opaque attempt ID is
+allocated in the preview, so a lost start reply can be checked without repeating
+sign-in. Status/cancel inspect only the initiating session's owned local attempt.
+There is one attempt per selection at a time and at most 16 attempts per panel
+lifetime, with a ten-minute deadline. Server exit cancels its owned processes;
+restart does not resume or retry sign-in. Cancellation and timeout do not claim
+to undo a provider's credential write. Failed, cancelled or uncertain private
+contexts are retained without being selected or automatically reused. A person
+must inspect an unknown outcome before a new explicit review. No token,
+credential content, raw provider error or authorization URL is saved in catalog
+or diagnostic logs. Codex continuation links are transient, same-session data.
+
+Catalog publication locks/reloads the catalog and verifies the original
+revision, effective context, executable, working directory and original account
+directory identities plus the new directory's identity. Drift refuses
+publication even if the provider already finished. Existing quota evidence
+keeps its old revision and is never reassigned to the new login. This is a
+panel/CLI capability requiring a coordinated build upgrade, not a background
+supervisor login or an account identity assertion.

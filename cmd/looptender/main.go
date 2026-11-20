@@ -86,6 +86,9 @@ Control:
   await-user               Mark the loop as waiting for a person
   session reset            Forget a headless target's saved session, so its next turn starts
                            a new conversation on purpose (--target NAME; default the active one)
+  session clear-unconfirmed
+                           Clear an unconfirmed Antigravity turn record after a crash,
+                           preserving any saved session and holds (--target NAME)
   retarget <id|primary>    Point the loop at a fallback or back at the primary
                            (--discard-pending-thread: give up on an unsettled BB thread creation)
 
@@ -108,6 +111,8 @@ Fallbacks:
 Reporting:
   report test              Send a test webhook (--dry-run prints it instead)
   report resume            Clear a Sessionpipe report pause without sending or resuming a loop
+  telegram setup|status|test|poll|disconnect
+                           Pair and run a personal Telegram bot over outbound HTTPS
 
 Tools (no config needed):
   init                     Guide setup of a disabled loop outside the checkout
@@ -201,6 +206,8 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 		return panelCommand(e, rest)
 	case "__panel-server":
 		return panelServerCommand(e, rest)
+	case "telegram":
+		return telegramCommand(e, rest)
 	case "doctor":
 		return doctor(e, rest, doctorExec)
 	case "init":
@@ -407,6 +414,16 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 			return exitUsage
 		}
 		return sessionReset(e, cfg, *f.target, *f.note, *f.asJSON)
+	case "session clear-unconfirmed":
+		if *f.dryRun {
+			e.errf("session clear-unconfirmed does not support --dry-run; unconfirmed turn not cleared")
+			return exitUsage
+		}
+		if len(positional) != 0 {
+			e.errf("usage: looptender session clear-unconfirmed [--target NAME] [-c looptender.yaml]")
+			return exitUsage
+		}
+		return sessionClearUnconfirmed(e, cfg, *f.target, *f.note, *f.asJSON)
 	case "retarget":
 		if len(positional) != 1 {
 			e.errf("usage: keepgoing retarget <candidate-id|primary> [--discard-pending-thread] [-c looptender.yaml]")

@@ -262,7 +262,7 @@ func TestCatalogGenuineAbsenceDoesNotWrite(t *testing.T) {
 	}
 }
 
-func TestContextIgnoresOnlyToolCallIdentifier(t *testing.T) {
+func TestContextToolCallIdentifierExclusion(t *testing.T) {
 	_, e := fixture(t)
 	f := File{Salt: strings.Repeat("ab", 16)}
 	for _, windows := range []bool{false, true} {

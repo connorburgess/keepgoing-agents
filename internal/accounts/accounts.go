@@ -108,15 +108,18 @@ func Text(s string, max int) bool {
 	}
 	return true
 }
-func supported(p string) bool   { return p == "claude-code" || p == "codex" }
-func validToken(s string) bool  { b, e := hex.DecodeString(s); return e == nil && len(b) == 16 }
-func validDigest(s string) bool { b, e := hex.DecodeString(s); return e == nil && len(b) == 32 }
+func supported(p string) bool {
+	return p == "claude-code" || p == "codex" || p == "antigravity"
+}
+func explicitDirectorySupported(p string) bool { return p == "claude-code" || p == "codex" }
+func validToken(s string) bool                 { b, e := hex.DecodeString(s); return e == nil && len(b) == 16 }
+func validDigest(s string) bool                { b, e := hex.DecodeString(s); return e == nil && len(b) == 32 }
 func validEntry(e Entry) bool {
 	if !validToken(e.ID) || !validToken(e.Revision) || !validDigest(e.Context) || !Text(e.Label, 120) || e.UpdatedAt.IsZero() || len(e.UpdatedBy) > 160 {
 		return false
 	}
 	switch e.Provider {
-	case "claude-code", "codex", "cursor", "bb", "other":
+	case "claude-code", "codex", "antigravity", "cursor", "bb", "other":
 	default:
 		return false
 	}
@@ -125,7 +128,7 @@ func validEntry(e Entry) bool {
 	default:
 		return false
 	}
-	if e.Mode == "explicit_directory" && (!supported(e.Provider) || !filepath.IsAbs(e.Directory) || !Text(e.Directory, 4096)) {
+	if e.Mode == "explicit_directory" && (!explicitDirectorySupported(e.Provider) || !filepath.IsAbs(e.Directory) || !Text(e.Directory, 4096)) {
 		return false
 	}
 	if e.Mode != "explicit_directory" && e.Directory != "" {
@@ -213,9 +216,9 @@ func contextForOS(f File, e Entry, env []string, windows bool) string {
 			continue
 		}
 		k = environmentKey(k, windows)
-		// This identifier changes for each agent tool invocation, not the
-		// selected authentication context. Keep it in the executed environment.
-		if k == environmentKey("CODEX_TOOL_CALL_ID", windows) {
+		// Tool invocation identity and the execution sandbox marker do not
+		// select authentication. Keep both in the executed environment.
+		if k == environmentKey("CODEX_TOOL_CALL_ID", windows) || k == environmentKey("CODEX_SANDBOX", windows) {
 			continue
 		}
 		relevant := false
@@ -230,16 +233,22 @@ func contextForOS(f File, e Entry, env []string, windows bool) string {
 		for _, prefix := range []string{"ANTHROPIC_", "CLAUDE_", "CODEX_", "OPENAI_", "AWS_", "GOOGLE_", "AZURE_"} {
 			relevant = relevant || strings.HasPrefix(k, environmentKey(prefix, windows))
 		}
+		if e.Provider == "antigravity" {
+			for _, prefix := range []string{"AGY_", "ANTIGRAVITY_"} {
+				relevant = relevant || strings.HasPrefix(k, environmentKey(prefix, windows))
+			}
+		}
 		if relevant {
 			m[k] = v
 		}
 	}
 	if e.Mode == "explicit_directory" {
-		k := "CLAUDE_CONFIG_DIR"
-		if e.Provider == "codex" {
-			k = "CODEX_HOME"
+		switch e.Provider {
+		case "claude-code":
+			m[environmentKey("CLAUDE_CONFIG_DIR", windows)] = e.Directory
+		case "codex":
+			m[environmentKey("CODEX_HOME", windows)] = e.Directory
 		}
-		m[environmentKey(k, windows)] = e.Directory
 	}
 	keys := make([]string, 0, len(m))
 	for k := range m {
@@ -259,40 +268,55 @@ func contextForOS(f File, e Entry, env []string, windows bool) string {
 }
 
 // contextDefinition names the inputs Context covers. A digest is 24 bytes of
-// keyed fingerprint followed by an 8-byte keyed tag of this definition, so a
+// keyed fingerprint followed by an 8-byte keyed guard tag, so a
 // binding recorded by an earlier build, whose digest is a plain 32-byte HMAC
 // that also covered the caller's session variables, is recognizable without a
 // new stored field that earlier builds would refuse.
-const contextDefinition = "looptender accounts context 2"
+const contextDefinition = "looptender accounts context 3"
+
+// Retain the keyed tag family so definition-2 readers also recognize new
+// bindings as protected and refuse them rather than treating them as pre-tag.
+const contextTagDefinition = "looptender accounts context 2"
 
 func contextTag(key, sum []byte) []byte {
+	return contextTagForDefinition(key, sum, contextTagDefinition)
+}
+
+func contextTagForDefinition(key, sum []byte, definition string) []byte {
 	h := hmac.New(sha256.New, key)
-	_, _ = h.Write([]byte(contextDefinition + " tag\n"))
+	_, _ = h.Write([]byte(definition + " tag\n"))
 	_, _ = h.Write(sum)
 	return h.Sum(nil)[:8]
 }
 
-// currentDefinition reports whether digest was computed by Context as defined
-// in this build.
-func currentDefinition(f File, digest string) bool {
+// protectedDefinition recognizes the keyed guard family. Exact comparison
+// with Context distinguishes the current input definition from older ones.
+func protectedDefinition(f File, digest string) bool {
+	return taggedDefinition(f, digest, contextTagDefinition)
+}
+
+func taggedDefinition(f File, digest, definition string) bool {
 	b, err := hex.DecodeString(digest)
 	if err != nil || len(b) != 32 {
 		return false
 	}
 	key, _ := hex.DecodeString(f.Salt)
-	return hmac.Equal(b[24:], contextTag(key, b[:24]))
+	return hmac.Equal(b[24:], contextTagForDefinition(key, b[:24], definition))
 }
 
+// Definition-2 tagged bindings require an explicit selection update before
+// use: silently treating them as pre-tag legacy would discard their drift guard.
+//
 // Bound returns the context a check records for e under env, and whether e's
 // binding accepts it. A binding computed under the current definition must
-// match exactly. A binding recorded by an earlier build cannot be compared,
+// match exactly. A pre-tag binding recorded by an earlier build cannot be compared,
 // because its digest covered the session variables of whichever session added
 // the entry; it is accepted, and the check replaces it with the current
 // digest, so every later check compares exactly. The entry's provider,
 // executable, working directory and account directory are bound either way.
 func Bound(f File, e Entry, env []string) (string, bool) {
 	current := Context(f, e, env)
-	return current, current == e.Context || !currentDefinition(f, e.Context)
+	return current, current == e.Context || !protectedDefinition(f, e.Context)
 }
 func checkDir(dir string) error {
 	st, err := os.Lstat(dir)
@@ -715,9 +739,14 @@ func executionEnvironmentForOS(e Entry, env []string, windows bool) []string {
 	if e.Mode != "explicit_directory" {
 		return env
 	}
-	key := "CLAUDE_CONFIG_DIR"
-	if e.Provider == "codex" {
+	key := ""
+	switch e.Provider {
+	case "claude-code":
+		key = "CLAUDE_CONFIG_DIR"
+	case "codex":
 		key = "CODEX_HOME"
+	default:
+		return env
 	}
 	out := make([]string, 0, len(env)+1)
 	for _, pair := range env {

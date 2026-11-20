@@ -18,7 +18,7 @@ A manually created successor with separate loop state has no inferred relationsh
 ## Packages
 
 ```
-cmd/looptender               CLI: start, service, tick, daemon, status, context, timeline, goal, assignment, registry, client status/pause/stop/prepare-resume/resume/review/apply, dock, panel, transfer, control, fallbacks, report, adapter check, pr-backlog, ci-wait, net-retry
+cmd/looptender               CLI: start, service, tick, daemon, status, context, timeline, goal, assignment, registry, client status/pause/stop/prepare-resume/resume/review/apply, dock, panel, telegram, transfer, control, fallbacks, report, adapter check, pr-backlog, ci-wait, net-retry
 internal/config             a loop's configuration file (looptender.yaml, or keepgoing.yaml) and fallbacks.yaml: loading, defaults, validation
 internal/envvar             the environment variables' two names: LOOPTENDER_X, and the earlier KEEPGOING_X
 internal/userdir            the per-user directories and their name: looptender, or keepgoing where one already exists; the explicit move between them
@@ -38,7 +38,8 @@ internal/allowance          usage reading history per window instance and the pr
 internal/timing             usage-aware timing: the step decision (pure) and its input from state and health records
 internal/contextwindow      context-threshold reset: the decision (pure), previewed by status only; nothing acts on it
 internal/handoff            the brief a fallback receives
-internal/report             signed webhook reports and diagnostic delivery history
+internal/report             signed webhook and Telegram Bot API reports plus diagnostic delivery history
+internal/telegram           outbound-only Telegram Bot API client, one-time pairing primitives, atomic 0600 pairing/token state, redacted alert/status formatting, and compact Pause/Stop callback codec
 internal/incident           bounded typed tick/control/retarget history; diagnostic only
 internal/evidence           pure, allowlisted diagnostic source/code metadata
 internal/registry           explicit private local loop references; independent of loop controls
@@ -173,7 +174,7 @@ Runtime records live in `state_dir`, outside any repository. Managed service def
 | `deliveries.json`, `delivery.lock` | report diagnostic writer | bounded typed delivery evidence (64 records/128 KiB); separate short lock; never send/replay authority |
 | `daemon-endpoint.json` | daemon | private loopback endpoint and random verification key; removed on clean exit, stale records do not prove liveness |
 | `service-launchd.json`, `service-systemd.json` | service commands | private backend-specific plan/recovery record; no task text or credentials |
-| `tick.lock`, `daemon.lock`, `control.lock`, `service.lock` | the tool | advisory locks, released by the OS on exit . Every lock file the tool keeps in a loop's state directory or under the per-user directories (these, `turn.lock`, `graph.lock`, `incident.lock`, `delivery.lock`, `sessionpipe.lock`, the registry's, the route list's, the panel's two and the session claims) is listed by name in `migrateLockNames` in `cmd/looptender/migrate.go`; a new one must be added there, or `migrate` neither looks at it nor holds it while the directories move |
+| `tick.lock`, `daemon.lock`, `control.lock`, `service.lock` | the tool | advisory locks, released by the OS on exit . Every lock file the tool keeps in a loop's state directory or under the per-user directories (these, `turn.lock`, `graph.lock`, `incident.lock`, `delivery.lock`, `sessionpipe.lock`, the registry's, the route list's, the panel's two, Telegram's two (`telegram.lock`, `telegram-poll.lock`), and the session claims) is listed by name in `migrateLockNames` in `cmd/looptender/migrate.go`; a new one must be added there, or `migrate` neither looks at it nor holds it while the directories move |
 | `targets/<id>/` | the tool | headless turn files (`run.json` with private stop key, `turn.lock` held by the live turn wrapper, `turn.started` naming the turn whose wrapper took the lock, `turn.finishing` while a wrapper publishes its exit code, stop request/acknowledgement, prompt, stdout, stderr, exit code, session id) the BB log cursor (`bb-cursor.json`), and, from internal fixtures only, create-once ACP interaction-hold records (`acp-prompt-reserved.json`, `acp-needs-user.json`, `acp-hold-adopted.json`) |
 
 ## Ownership and control writes
@@ -359,7 +360,7 @@ Configuration validates optional ordered same-allowance steps after loading the 
 
 ## Selected account metadata
 
-The internal/accounts package stores one bounded private device-local catalog with revision-bound minimized observations. It imports existing private-file, lock and atomic-write primitives, never a provider adapter or transcript reader. The command layer owns fixed bounded status execution outside the writer lock and revalidates the selection before committing. The dock projection reads snapshots only. Selected-context subscription quota uses a separate bounded private cache, never catalog promotion or routing authority. The command layer performs an explicit bounded model-free RPC outside the catalog writer lock, then revalidates catalog revision, effective environment and executable/directory snapshots under that lock before atomic publication. Same-selection checks share a single-flight guard; unsuccessful refreshes retain the successful reading with its original time. Legacy-compatible writes retain private catalog schema 1; new plan metadata/tiers promote it to schema 2, which older strict readers refuse in full. Promotion is retained on later writes; reads do not migrate data. Catalog metadata and caller provenance grant no loop authority; route changes and panel startup authorization retain their existing boundaries. See [Accounts](accounts.md).
+The internal/accounts package stores one bounded private device-local catalog with revision-bound minimized observations. It imports existing private-file, lock and atomic-write primitives, never a provider adapter or transcript reader. The command layer owns fixed bounded status execution outside the writer lock and revalidates the selection before committing. The dock projection reads snapshots only. Selected-context subscription quota uses a separate bounded private cache, never catalog promotion or routing authority. The command layer performs an explicit bounded model-free RPC outside the catalog writer lock, then revalidates catalog revision, effective environment and executable/directory snapshots under that lock before atomic publication. Claude experimental quota uses its own strict private file with retrieval timestamps and fixed unknown provider freshness, leaving the Codex cache and catalog schemas unchanged. Native artifact admission and a parked control-only transport belong to the command layer; no provider session adapter is reused. Same-selection checks share a single-flight guard; unsuccessful refreshes retain the successful reading with its original time. Legacy-compatible writes retain private catalog schema 1; new plan metadata/tiers promote it to schema 2, which older strict readers refuse in full. Promotion is retained on later writes; reads do not migrate data. Catalog metadata and caller provenance grant no loop authority; route changes and panel startup authorization retain their existing boundaries. See [Accounts](accounts.md).
 
 ## Explicit migration review (unreleased)
 
@@ -435,3 +436,15 @@ infer acceptance from inventory. No new package, record schema, supervisor rule,
 host hook, dispatch or authorization source is introduced. Existing completion
 history/reporting projects only a successful explicit declaration. Reads of BB
 and control publication are not a distributed transaction.
+
+Explicit panel connection tasks also remain in the command layer. A session-bound
+review allocates the attempt identity before starting the provider's native login
+flow. Every attempt uses an exclusive new private directory and an immutable
+staged executable; the original selection is never a login write target. Completion
+verification belongs to that same bounded task, while status polling reads only
+its local state. Catalog publication takes the existing writer lock and checks
+reviewed identities again. Additive connections append a distinct selection;
+replacement connections retain the old directory and revise only the selected row.
+Neither path grants loop, route or BB provider authority. Cancellation never
+claims credential rollback; failed/uncertain directories remain private and are
+not automatically adopted. See [explicit connection limits](accounts.md#explicit-provider-sign-in-unreleased-source).

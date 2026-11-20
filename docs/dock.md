@@ -570,3 +570,50 @@ its controls confirmation, including combined route-editing and subscription
 quota capabilities. It refuses empty, control-containing or over-1024-byte
 disclosures instead of truncating authority text. Compact menu metadata keeps
 its separate 180-character limit.
+
+### Review an unchanged selection (unreleased)
+
+When a Claude Code or Codex selection needs context review, an expanded Accounts card offers
+**Review selection for this panel…** only when changes are allowed. It shows
+its existing label, provider, executable, working directory and authentication
+selection; these fields are fixed. Confirmation creates a revision bound to
+this panel's startup environment, retains startup caller provenance and clears
+prior login/plan observations. Earlier quota is invalidated. Authentication may
+differ from a terminal; identity is not verified. No provider call, login,
+default change, route or loop-control write is part of this action. Quota read
+remains a separate review afterward. The native menu points to Accounts via
+its existing **Open Panel with Controls…** entry.
+
+The additive `accountSelectionReview` served capability advertises this action.
+Session/origin-protected `api/v1/account-selections/ID/prepare` and `/confirm`
+accept only the fixed `review_selection` action. The bounded single-use ticket
+binds the exact catalog revision, startup context/caller and canonical native
+path identities. Confirm revalidates under the catalog writer lock and refuses
+concurrent checks, drift, expiry and replay. Read-only panels cannot route the
+write. Unknown replies never trigger an automatic replay or quota refresh.
+
+### Saved account quota summaries (unreleased)
+
+Accounts now shows compact named quota windows and an expanded saved-evidence
+summary shared with the native menu's additive `panel list.accountQuotas`
+projection. Codex buckets remain separate; windows show percent used and
+remaining, independent resets, source and read age. Credits and individual
+limits retain their own units, not invented currency or percentages. Unknown,
+partial, ended and failed-refresh states remain visible. Claude saved usage
+shows retrieval time and provider freshness unknown: the inspected experimental
+reply may be cached or seeded. It never becomes a fresh observation by being
+retrieved again. Dated route observations stay separate.
+Neither polling surface refreshes a provider. Explicit review can refresh Codex
+or retrieve Claude usage on Darwin arm64, subject to exact native-image and
+isolation admission. The additive server `accountQuotaProviders` allowlist names
+the enabled providers; when absent, the legacy `accountQuota` capability enables
+Codex only. Read-only panels and unsupported platforms offer no provider action. See [source, cache and capability limits](accounts.md#read-selected-context-subscription-quota).
+
+Saved account cards and quota detail use a bounded companion snapshot in
+unreleased source. The main read carries only account availability/count and a
+snapshot reference; Accounts loads the matching saved cards without a provider
+query or additional polling timer. Loading/failure stays explicit and does not
+block other pages. Earlier-context replies are discarded. The existing main
+8 MiB hard ceiling and 6 MiB maximal-fixture guard are unchanged; the companion
+and native projections each have a 1 MiB cap. See the
+[saved-account read contract](accounts.md#read-selected-context-subscription-quota).

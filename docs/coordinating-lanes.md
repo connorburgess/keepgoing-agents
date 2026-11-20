@@ -1,6 +1,6 @@
 # Coordinating lanes
 
-A convention for a [coordinator](glossary.md): a conversation that hands out lane work and reviews it, and is the parent of those lanes. It is written for agents and the people who set them up.
+A convention for a [coordinator](glossary.md): a conversation that hands out lane work and reviews it, and is the parent of those lanes. It is written for agents and the people who set them up. The usual shape is one coordinator per project: the session the person talks to, which hands work to lanes and is kept going by a loop while the person is away. Coordinators of different projects are peers and send each other requests, which can be declined and never carry approval.
 
 **looptender enforces none of this.** It does not read a ledger, check a report's length, record approvals, choose a lane's model or limit nesting. Each rule below is something a coordinator does by itself. What looptender does for lanes today is listed [at the end](#what-looptender-does-for-lanes-today).
 
@@ -39,6 +39,25 @@ How to choose, also a convention that looptender does not enforce:
 - A lane's model is never stronger than its coordinator's.
 - Match the model to the work. Code and design-heavy work gets the strongest lane model. Docs, wording, mechanical edits and simple reviews get a mid model. Lookups and status checks get the smallest. Reviews of code changes stay on the strongest lane model or with the coordinator.
 - The coordinator steps in when a lane is stuck, has been wrong twice, or the task has turned out harder than its model. It does the work itself or re-runs the lane one level up, rather than letting it grind.
+
+### Antigravity and Gemini 4 model tiers
+
+As of November 2026, when running coordinators and lanes on Antigravity or the Gemini 4 API (also a convention looptender does not enforce; check live limits in the provider's console or status because plans and pricing change):
+
+- **Multi-file feature PRs & refactors (daily driver):**
+  - **In Antigravity (Pro/Ultra):** Use **Orchestrator (Neon)** — it plans with `gemini-4-neon` and delegates file edits and test loops to the cheaper `gemini-4-hydrogen`, stretching the 5-hour/weekly compute pool while keeping frontier accuracy.
+  - **Over the API:** Plan and review with `gemini-4-neon` (`medium` or `high`), then hand execution to `gemini-4-hydrogen` (`high` or `medium`) via `previous_interaction_id`.
+  - **Do not push `gemini-4-hydrogen` to `xhigh`:** `gemini-4-neon` `medium` scores higher, runs nearly 2× faster, and costs less per task than `gemini-4-hydrogen` `xhigh`. Keep Hydrogen at `medium` or `high` for routine edits and test fixes.
+- **Hard debugging / system design (escalation):** Use `gemini-4-carbon` or `gemini-4-neon` at `high` / `xhigh` (Neon `high`/`xhigh` matches Carbon `high` on benchmarks in less than half the time).
+- **High-volume PR chores (summaries, release notes, lint/triage, lookups):** `gemini-3.5-flash-lite` (or `gemini-3.8-flash` where available).
+- **`gemini-4-argon`:** Superseded by Neon for general coding and PR work; reserve for tasks that specifically need its lower hallucination rate.
+
+Quota-saving habits for Antigravity loops and lanes:
+
+- Google AI Pro and Ultra meter Antigravity from a shared compute pool across Gemini models (5-hour refresh up to a weekly cap; partner Claude and GPT models draw from a separate pool). Heavier models, higher thinking levels (`xhigh` > `high` > `medium` > `low`), and long conversation histories drain the pool fastest.
+- Start a fresh thread/lane per PR or ticket rather than re-sending huge chat contexts across unrelated work.
+- Explicitly set `thinking_level` in API calls so model swaps do not silently spike output tokens (`gemini-4-neon` and `gemini-4-hydrogen` default to `high` when unset, whereas `gemini-4-carbon` and `gemini-4-argon` default to `medium`).
+- Avoid the free Gemini API tier for private or work repositories (free-tier content may be used to improve provider products, and free projects have tight per-project rate caps).
 
 ## Keep nesting shallow
 

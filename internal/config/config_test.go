@@ -379,3 +379,19 @@ func TestSessionpipeReportingRequiresExplicitBearer(t *testing.T) {
 		t.Fatalf("%v", err)
 	}
 }
+
+func TestTelegramReportingDefaultsAndValidation(t *testing.T) {
+	cfg, err := Parse([]byte(valid + "  report:\n    format: telegram\n"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if r := cfg.Loop.Report; r.Scheme != "telegram-bot" || r.SecretEnv != "LOOPTENDER_TELEGRAM_BOT_TOKEN" || r.URLEnv != "LOOPTENDER_TELEGRAM_API_URL" {
+		t.Fatalf("unexpected telegram defaults: %+v", r)
+	}
+	if _, err := Parse([]byte(valid + "  report:\n    format: telegram\n    scheme: bearer\n")); err == nil || !strings.Contains(err.Error(), "requires telegram-bot") {
+		t.Fatalf("expected scheme mismatch error, got %v", err)
+	}
+	if _, err := Parse([]byte(valid + "  report:\n    format: standard\n    scheme: telegram-bot\n")); err == nil || !strings.Contains(err.Error(), "requires telegram format") {
+		t.Fatalf("expected format mismatch error, got %v", err)
+	}
+}
