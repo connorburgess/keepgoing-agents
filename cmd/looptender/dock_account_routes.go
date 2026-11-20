@@ -258,6 +258,8 @@ func dockAccountAddCommand(f dockAccountFacts, identifiers bool) string {
 	switch {
 	case f.selection == "bb_thread":
 		return s + " --provider bb --selection externally_managed"
+	case f.provider == "antigravity":
+		return s + " --provider antigravity --selection inherited"
 	case f.provider != "claude-code" && f.provider != "codex":
 		p := f.provider
 		if p != "cursor" {
@@ -285,6 +287,8 @@ func dockAccountTitle(provider string) string {
 		provider = "Codex"
 	case "cursor":
 		provider = "Cursor"
+	case "antigravity":
+		provider = "Antigravity"
 	}
 	return strings.TrimSpace(provider + " routes (account unknown)")
 }

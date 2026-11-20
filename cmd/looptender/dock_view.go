@@ -1792,6 +1792,8 @@ func dockTool(adapter string) string {
 		return "Codex CLI"
 	case "cursor":
 		return "Cursor"
+	case "antigravity":
+		return "Antigravity"
 	case "process":
 		return "Custom command"
 	case "":
