@@ -661,3 +661,10 @@ without inventing delivery reconciliation; exact stale review inputs and damaged
 version-2 history refuse without rewriting bytes. Completed restarts make no
 ordinary provider queries or sends and preserve the grant/history. Pause and stop
 survive successful completion. These fixtures do not establish live acceptance.
+
+## Telegram remote channel (unreleased)
+
+`internal/telegram/*_test.go`, `internal/report/telegram_test.go`, `internal/config/config_test.go` and `cmd/looptender/telegram_test.go` exercise the `TG1`–`TG2` foundation against fictional loopback HTTP stand-ins. Coverage includes HTTPS/loopback URL validation, redirect refusal (`http.ErrUseLastResponse`), 1 MiB response caps, token-free error redaction, one-time `?start=pair_<nonce>` pairing locked to `allowed_user_id` and `allowed_chat_id`, rejection of bot senders and non-private chats, atomic `0600` `pairing.json` and `token.env` storage, redacted plain-text alert formatting, explicit `--accept-non-e2e` gating for `--mode chat`, outbound `loop.report.format: telegram` (`scheme: telegram-bot`) single-attempt delivery with `deliveries.json` recording, and `looptender telegram setup|status|test|disconnect`.
+
+No live Telegram Bot API call, real `@BotFather` bot, mobile client receipt, terminal QR rendering, `doctor` integration or daemon polling (`TG3`–`TG5`) is established by these fixtures. See [Telegram remote channel](telegram.md) and [integration evidence](integrations.md).
+

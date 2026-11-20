@@ -641,6 +641,7 @@ The URL and secret come from `LOOPTENDER_WEBHOOK_URL` and `LOOPTENDER_WEBHOOK_SE
 - **`scheme: bearer`** sends the secret as a bearer token instead.
 - **`format: standard`** is the default. It sends `{"type": "keepgoing.<event>", "timestamp": ..., "data": {...}}`.
 - **`format: text`** sends `{"source", "sent_at", "text"}` for receivers that expect a plain message.
+- **`format: telegram`** *(unreleased; offline HTTP stand-ins only)* defaults to `scheme: telegram-bot` and delivers redacted plain-text alerts to a personal bot paired with `looptender telegram setup`, using a single attempt without following redirects and recording delivery evidence in `deliveries.json`. See [Telegram remote channel](telegram.md).
 
 A failed delivery is retried once on a network error or a 5xx response. A report that cannot be delivered is a warning on the tick, never a failure. Check delivery with:
 
