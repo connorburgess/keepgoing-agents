@@ -1,1 +1,0 @@
-- Distinguish temporarily unavailable transfer records from invalid content and require successful concurrent reads in the Windows replacement fixture.

@@ -1,1 +1,0 @@
-- Isolate command fixtures from agent programs installed on PATH and fail Unix command tests that reach an unstubbed agent CLI.

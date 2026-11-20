@@ -2,7 +2,7 @@
 
 looptender should answer “what is running, where is its conversation, and which run is blocking it?” through durable local references. Users should be able to follow those references immediately in CLI/JSON output, without reconstructing a scheduled run from timestamps, Git history or directory searches. The optional menu and BB plugin should consume the same contract.
 
-This is a data and navigation model in progress. Three parts exist in source and are in v0.2.0: the [identity and run-boundary contract](#identity-and-run-boundary-contract-d1-internal), the [persisted reference graph](#persisted-reference-graph-d2) that records it in each loop's state directory, and the read-only [`keepgoing runs` command](#cli-navigation-d3) that shows it. It also shows [what a loop is waiting on](#what-a-loop-is-waiting-on-d4-partial): child conversations and the owning conversation. There is no provider-link resolver, lock-holder lookup or GUI navigation. The [D1–D6 roadmap criteria](roadmap.md#priority-run-and-conversation-discoverability-planned) track delivery; D1 and D3 are checked, D2 and D4 are partial, and D5–D6 are planned. D3 has one [live check](#live-check) on a BB target; the rest of its evidence is from fixtures. The plan creates no scheduler, agent orchestrator, new dashboard, graph database or server.
+This is a data and navigation model in progress. Three parts exist in source and are in v0.2.0: the [identity and run-boundary contract](#identity-and-run-boundary-contract-d1-internal), the [persisted reference graph](#persisted-reference-graph-d2) that records it in each loop's state directory, and the read-only [`keepgoing runs` command](#cli-navigation-d3) that shows it. It also shows [what a loop is waiting on](#what-a-loop-is-waiting-on-d4-partial): lanes and the owning conversation. There is no provider-link resolver, lock-holder lookup or GUI navigation. The [D1–D6 roadmap criteria](roadmap.md#priority-run-and-conversation-discoverability-planned) track delivery; D1 and D3 are checked, D2 and D4 are partial, and D5–D6 are planned. D3 has one [live check](#live-check) on a BB target; the rest of its evidence is from fixtures. The plan creates no scheduler, agent orchestrator, new dashboard, graph database or server.
 
 ## Routine, run and chat are different nodes
 
@@ -95,7 +95,7 @@ A registry reference maps to a durable loop through its entry's runtime director
 | Run → routine invocation (trigger) | `tick`, `enable` or `resume` carries `--routine` while a run is already open | `external` |
 | Registry reference | `registry add` finds an existing graph | `registry_add` |
 | Registry reference | A registered client control operation succeeds; this also upgrades a reference first recorded by an add | `registered_control` |
-| Waiting record | A check observes a BB target: the verified listing of its direct child threads, by key, replacing the previous one. Cleared when the run closes. | `child_listing` |
+| Waiting record | A check observes a BB target: the verified listing of its direct lanes, by key, replacing the previous one. Cleared when the run closes. | `child_listing` |
 | Unrecorded note | A check's target has a chat/session identifier outside the recordable characters, such as one containing `/` or a space | none; kept once per run and target |
 
 Run boundaries are derived from saved control state, read inside the graph lock, so a writer never applies control state older than the graph it updates. If the write after a control command fails, the next check records the same boundary with the `control_state` source. This recovers the state, not every event: if a completion and the resume after it both lose their graph writes before any check runs, control looks unchanged and neither boundary is recorded, so that work stays in the earlier run. An attempt left as `intent` means the process stopped, or the graph write failed, between recording the intent and recording the return. It is unconfirmed, not proof that anything was or was not sent. A session link carries the configured target alias it was recorded for. It is history: neither a session link nor the graph says which target is active now. Target moves (handoff, switch-back and manual retarget) are recorded once, in the incident journal read by [`keepgoing timeline`](diagnostics.md#offline-incident-timeline); the graph does not duplicate them. A process-adapter target has no recorded session identity. An identifier the contract cannot store is not altered to fit: the run gets an unrecorded note naming the target alias, the check warns once (`target "<alias>": its chat/session identifier cannot be recorded…`), and later checks stay quiet. The rejected identifier is not stored. Dry runs record nothing.
@@ -148,8 +148,8 @@ The paths D2 requires resolve from recorded IDs: loop → current run → chat/s
 ### Storage and failure behavior
 
 - **Private and atomic.** `graph.json` is written with mode 0600 through the control writer's temporary-file replacement, which on Windows replaces a file that a reader still has open. The temporary file is flushed to disk before it replaces the record, so a power loss leaves either the old record or the new one, not a truncated file. The directory entry is not flushed, so the newest write can still be lost. A separate `graph.lock` serializes writers; it is independent of the tick and control locks.
-- **One write per observing check.** A check that observes a BB target rewrites the record once, to stamp the child listing with that check's time. Other checks write only when something changed.
-- **Bounded.** At most 32 runs, 128 attempts, 256 links, 8 trigger links per run, 200 children in the waiting record, 16 registry references, 16 unrecorded notes and 256 KiB. The oldest closed run is dropped first, together with its attempts and links. Within one long run the oldest attempts and links go.
+- **One write per observing check.** A check that observes a BB target rewrites the record once, to stamp the lane listing with that check's time. Other checks write only when something changed.
+- **Bounded.** At most 32 runs, 128 attempts, 256 links, 8 trigger links per run, 200 lanes in the waiting record, 16 registry references, 16 unrecorded notes and 256 KiB. The oldest closed run is dropped first, together with its attempts and links. Within one long run the oldest attempts and links go.
 - **Versioned.** `schemaVersion` is 3. Version 2 adds the waiting record; version 3 adds `contextBytes` on an attempt, the length of the [supervision context](operations.md#supervision-context-in-sends) the send carried. An older file is read as it is and upgraded by its next write; one that holds a field its version does not have is corrupt. A build that only knows an older version reports a newer file as unsupported and leaves it alone. Unknown fields are rejected.
 - **Never in the way.** A graph that cannot be read or written does not fail a check, change its decision, block a send or fail a control command. The check adds one warning, `run reference record unavailable; discovery evidence is incomplete`, to its output and its `runs.jsonl` event. Control commands stay silent. A corrupt record keeps warning on every check until the file is removed by hand, because it is never reset automatically.
 - **No private text.** The record holds IDs, target aliases, action names and times. It holds no prompt, goal text, note, path, URL or error text.
@@ -182,7 +182,7 @@ Use exactly one selector; the default is `-c looptender.yaml`, or `keepgoing.yam
 
 A registry selector checks the binding first, as registered status does: the registered configuration must still load and still name the same loop and runtime directory. If it does not, the entry shows `binding: unavailable`, nothing is read from the registered directory, and the command exits 1. A lookup through such an entry answers `unavailable`.
 
-Add `--json` for the versioned report, `--limit N` (1–256, default 10) and `--stale-after D` (default 30m) for how old the last check's child listing may be. The limit bounds earlier runs, each run's chat/session references and goal revisions, a reference's links, a chat's sends, the children a loop is waiting on and registered loops. Omitted counts are always printed.
+Add `--json` for the versioned report, `--limit N` (1–256, default 10) and `--stale-after D` (default 30m) for how old the last check's lane listing may be. The limit bounds earlier runs, each run's chat/session references and goal revisions, a reference's links, a chat's sends, the lanes a loop is waiting on and registered loops. Omitted counts are always printed.
 
 ### Following a reference
 
@@ -249,32 +249,32 @@ Exit codes: 0 for an answer, including a missing graph, a hold or a reference th
 
 ### What a loop is waiting on (D4, partial)
 
-`keepgoing runs` answers "which conversation is this loop waiting on, and is it working, stuck or failed" from structured records: the child listing a check verified, the reason that same check recorded, and the ownership claim. It reads no PID and matches no names. Showing a blocker contacts nobody and grants no control: following it only reads more records.
+`keepgoing runs` answers "which conversation is this loop waiting on, and is it working, stuck or failed" from structured records: the lane listing a check verified, the reason that same check recorded, and the ownership claim. It reads no PID and matches no names. Showing a blocker contacts nobody and grants no control: following it only reads more records.
 
-**Child conversations.** Each check that observes a BB target lists the target's direct child threads and verifies each one, as it always has. The graph now keeps that picture for the open run:
+**Lanes.** Each check that observes a BB target lists the target's direct lanes and verifies each one, as it always has. The graph now keeps that picture for the open run:
 
 | Status | Meaning | Can hold the run |
 | --- | --- | --- |
-| `active` | The child is working | Yes. The check does not prompt the parent for its task; it can still send the one notice that other children are in error. |
-| `awaiting_input` | The child is stuck on a person | Yes. The check puts the loop on an awaiting-user hold. |
-| `error` | The child failed | No. It is listed because the check reported it. |
+| `active` | The lane is working | Yes. The check does not prompt the parent for its task; it can still send the one notice that other lanes are in error. |
+| `awaiting_input` | The lane is stuck on a person | Yes. The check puts the loop on an awaiting-user hold. |
+| `error` | The lane failed | No. It is listed because the check reported it. |
 
-A child is said to have **held the run** only when its status can hold a parent *and* the last check recorded child work or child input as its reason. The answer is one of six:
+A lane is said to have **held the run** only when its status can hold a parent *and* the last check recorded lane work or lane input as its reason. The answer is one of six:
 
 | Answer | Meaning |
 | --- | --- |
-| `blocked` | The last check verified every child and recorded child work (`child_busy`) or child input (`child_input`) as its reason. |
-| `held` | The loop is on an awaiting-user hold that began when a check found a child stuck on a person. Held checks do not observe, so this is the last verified listing, shown with its age. The children have not been verified since. |
-| `before_hold` | The loop is held or paused for another reason, such as a command, and held or paused checks do not observe. This is the last complete listing from the same run, from a check before the hold, shown with its age; `lastCheckCause` says whether it is `paused` or `awaiting_user`. It is not current, and no child is said to hold the run. |
-| `listed` | The last check verified every child, but recorded another reason, such as a stop request. The children are shown and none is said to hold the run. |
-| `none` | The last check verified every child and none could hold the run. |
-| `unknown` | The evidence does not support an answer. No child is listed. |
+| `blocked` | The last check verified every lane and recorded lane work (`child_busy`) or lane input (`child_input`) as its reason. |
+| `held` | The loop is on an awaiting-user hold that began when a check found a lane stuck on a person. Held checks do not observe, so this is the last verified listing, shown with its age. The lanes have not been verified since. |
+| `before_hold` | The loop is held or paused for another reason, such as a command, and held or paused checks do not observe. This is the last complete listing from the same run, from a check before the hold, shown with its age; `lastCheckCause` says whether it is `paused` or `awaiting_user`. It is not current, and no lane is said to hold the run. |
+| `listed` | The last check verified every lane, but recorded another reason, such as a stop request. The lanes are shown and none is said to hold the run. |
+| `none` | The last check verified every lane and none could hold the run. |
+| `unknown` | The evidence does not support an answer. No lane is listed. |
 
 Reasons for `unknown`:
 
 | Reason | When |
 | --- | --- |
-| `child_listing_incomplete` | The check could not verify every child, or its observation failed. Children it did verify are not listed either: a partial list would read as the answer. |
+| `child_listing_incomplete` | The check could not verify every lane, or its observation failed. Lanes it did verify are not listed either: a partial list would read as the answer. |
 | `not_refreshed_by_the_last_check` | The last recorded check is not the one that wrote the record, and no `held` or `before_hold` answer applies: the loop is disabled or finished, the hold or pause has been lifted since, the listing before it was incomplete, the target changed, or the graph write failed. |
 | `last_check_older_than_stale_after` | The listing is from the last check, but that check is older than `--stale-after` (default 30 minutes, as for `status`). Checks may have stopped. Set it above your scheduler interval. |
 | `no_child_evidence_recorded` | No check has recorded a listing for this run: a headless or process target, or no check since the run opened. |
@@ -283,12 +283,12 @@ Reasons for `unknown`:
 
 Every answer that has a listing shows the time of the check it came from and its age, and marks it `stale` past `--stale-after`. `lastCheckCause` is the last check's reason in a fixed vocabulary; the reason text itself is not printed.
 
-A child is shown by key, `child:<key>`, a short hash of its thread ID. A child's thread ID is never written to the graph and never printed in the parent's view: the checks that already keep errored children do the same in `state.json`. `--id child:<key>` and a run's `blocked_by` links follow the same answer as the loop view: when the answer is `unknown` the child reference answers `unavailable` and the run shows no child link, and when it is `listed`, `none` or `before_hold` the links are shown as `child`, not `blocked_by`.
+A lane is shown by key, `child:<key>`, a short hash of its thread ID. A lane's thread ID is never written to the graph and never printed in the parent's view: the checks that already keep errored lanes do the same in `state.json`. `--id child:<key>` and a run's `blocked_by` links follow the same answer as the loop view: when the answer is `unknown` the child reference answers `unavailable` and the run shows no child link, and when it is `listed`, `none` or `before_hold` the links are shown as `child`, not `blocked_by`.
 
-**The blocking loop.** A child conversation is often supervised itself. When a registry is consulted, each child is matched against the registered loops whose configuration binding validates and whose configured BB thread has that key:
+**The blocking loop.** A lane is often supervised itself. When a registry is consulted, each lane is matched against the registered loops whose configuration binding validates and whose configured BB thread has that key:
 
-- **Exactly one match:** the report names that loop's registry reference, its name, and its open run when that run recorded the same conversation. If it has no such run, the loop is named and the run is `unavailable`. The child's conversation is not printed here. Follow it with `keepgoing runs --registry-id <reference>`, where that loop's own chat reference is shown.
-- **No match:** `not_registered`. The child is still shown by key.
+- **Exactly one match:** the report names that loop's registry reference, its name, and its open run when that run recorded the same conversation. If it has no such run, the loop is named and the run is `unavailable`. The lane's conversation is not printed here. Follow it with `keepgoing runs --registry-id <reference>`, where that loop's own chat reference is shown.
+- **No match:** `not_registered`. The lane is still shown by key.
 - **More than one match:** `ambiguous`. None is picked.
 
 A loop that merely shares a name is never a match, and a loop is never its own blocker. A registry is consulted with `--registry-id` or `--all`, or when `--directory` is passed with `-c` or `--state-dir`; otherwise the answer is `registry_not_consulted`. A registry that cannot be read is an error, not "nothing registered".
@@ -297,20 +297,20 @@ A loop that merely shares a name is never a match, and a loop is never its own b
 
 - With `-c` or `--state-dir` the owner is shown as `session:bb/<thread>`, to any caller, including one that is not the owner. With a registry selector it is shown as `owner:<key>`, because registered status withholds the owning thread.
 - `blocksCaller` is true when the command ran from a different conversation (`BB_THREAD_ID`). The caller's identity is compared and never printed. Reading as a non-owner claims nothing.
-- If the owner is itself a registered loop, that loop and its run are named by the same rule as for a child.
+- If the owner is itself a registered loop, that loop and its run are named by the same rule as for a lane.
 - An invalid claim or a pending transfer is `unknown`. No claim is `not_recorded`.
 
-**Which thread IDs are printed.** One rule covers the target, the owner and children: a thread ID is printed in a loop's view only when it is part of that loop's own records *and* an existing view of the same loop, reached the same way, already prints it.
+**Which thread IDs are printed.** One rule covers the target, the owner and lanes: a thread ID is printed in a loop's view only when it is part of that loop's own records *and* an existing view of the same loop, reached the same way, already prints it.
 
 | Conversation | With `-c` or `--state-dir` | With a registry selector | Why |
 | --- | --- | --- | --- |
 | The loop's own target | Printed | Printed | `status` and registered status both print it. |
 | The loop's owner | Printed | Key only | The claim is this loop's own control record. `status` prints it, and the refusal a non-owner receives names the owning thread, because a refused caller needs to know which conversation to ask. Registered status withholds it. |
-| A child | Key only | Key only | It is another conversation's identity, held only as a hash, and no existing view of this loop prints it. |
+| A lane | Key only | Key only | It is another conversation's identity, held only as a hash, and no existing view of this loop prints it. |
 
-So the owner line shown to a non-owner is consistent with withholding children: the caller already receives that thread ID from the command that refused it, while nothing gives it a child's.
+So the owner line shown to a non-owner is consistent with withholding lanes: the caller already receives that thread ID from the command that refused it, while nothing gives it a lane's.
 
-**Not covered.** Who holds `tick.lock` or `daemon.lock` when a check is skipped is not identified: `lock` is always `unavailable`. That needs a holder record that does not exist yet. A child of a child is not followed from here; follow it from the child's own loop.
+**Not covered.** Who holds `tick.lock` or `daemon.lock` when a check is skipped is not identified: `lock` is always `unavailable`. That needs a holder record that does not exist yet. A lane's own lanes are not followed from here; follow them from the lane's own loop.
 
 ### Live check: waiting on
 
@@ -318,19 +318,19 @@ One live check has been run, on 2026-11-13, by the project coordinator on a real
 
 What it showed:
 
-- **Upgrade.** The first scheduled check on the new build upgraded the existing graph and recorded the child listing. The check itself was unchanged: action none, reason child work running, exit 0.
-- **The blocker.** `keepgoing runs -c <config>`, twelve seconds after that check, reported `waiting on: blocked`, with the check's time and age and the last check recorded as `child_busy`. It showed one child, by key, as active and as having held the run at that check.
-- **It matched the provider.** At that moment the supervised conversation had six child threads: one working and five idle. The view listed the one working child and none of the idle ones, which matched BB's own thread list.
-- **No registry.** The child's loop was reported as unavailable because no registry was consulted, as designed.
+- **Upgrade.** The first scheduled check on the new build upgraded the existing graph and recorded the lane listing. The check itself was unchanged: action none, reason child work running, exit 0.
+- **The blocker.** `keepgoing runs -c <config>`, twelve seconds after that check, reported `waiting on: blocked`, with the check's time and age and the last check recorded as `child_busy`. It showed one lane, by key, as active and as having held the run at that check.
+- **It matched the provider.** At that moment the supervised conversation had six lanes: one working and five idle. The view listed the one working lane and none of the idle ones, which matched BB's own thread list.
+- **No registry.** The lane's loop was reported as unavailable because no registry was consulted, as designed.
 - **Owner.** The owner was shown as a chat reference with its generation, and the view said the calling conversation was not the owner and its control commands would be refused. That was true: the caller was a different conversation from the recorded owner.
 - **Lock holder.** Unavailable (`lock_holder_not_identified`).
-- **Following and JSON.** `--id child:<key>` answered `found` and linked `blocks` to the run. `--json` returned schema 2 with `stale` false, and contained two thread IDs in total, the supervised chat and the owner, and none for the child.
+- **Following and JSON.** `--id child:<key>` answered `found` and linked `blocks` to the run. `--json` returned schema 2 with `stale` false, and contained two thread IDs in total, the supervised chat and the owner, and none for the lane.
 
 What it did not cover, and so rests on fixtures only:
 
-- **A failed or stuck child** in this view. Later the same day a child did fail during an outage and `status` reported one child in error, but `runs` was not captured at that moment.
+- **A failed or stuck lane** in this view. Later the same day a lane did fail during an outage and `status` reported one lane in error, but `runs` was not captured at that moment.
 - **An incomplete listing** and **a stale listing**.
-- **A child that is itself a registered supervised loop**, and any registry view.
+- **A lane that is itself a registered supervised loop**, and any registry view.
 - **Windows and Linux.**
 
 ### Live check
@@ -380,7 +380,7 @@ Restart must retain the appropriate run reference while recording a new process/
 | Last automatic prompt provenance | The latest returned send's target, goal revision and outcome | Pre-send intent, complete attempt history or confirmed provider delivery |
 | Incident journal and `runs.jsonl` | Structured diagnostic observations and events | A durable run-episode ID merely because the file is called `runs.jsonl` |
 | Native menu preview | A view of registered status, with pause, stop and resume after a confirmation | Current-run/chat traversal or open-thread support |
-| `keepgoing runs` (v0.2.0) | Recorded runs, sends and chat/session references by exact ID; the child conversations and owner a loop is waiting on | Live session state, an openable link, who holds a lock, or which chat a send reached when its alias named several |
+| `keepgoing runs` (v0.2.0) | Recorded runs, sends and chat/session references by exact ID; the lanes and owner a loop is waiting on | Live session state, an openable link, who holds a lock, or which chat a send reached when its alias named several |
 
 D4–D6 must preserve these evidence boundaries. Local registration remains explicit; graph records live outside repositories. Separate identifiers and safe display labels from private task text, paths, credentials and URLs containing sensitive components. Private display is opt-in, and graph relationships or provider links must not silently extend webhook/report payloads or introduce central analytics. A future client uses the same versioned resolver; it must not infer more certainty than CLI output provides.
 

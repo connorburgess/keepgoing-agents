@@ -161,12 +161,21 @@ func newAGYSuperviseWorld(t *testing.T, withFallback bool) *agySuperviseWorld {
 			t.Fatal(err)
 		}
 	}
-	return &agySuperviseWorld{
+	a := &agySuperviseWorld{
 		world:      w,
 		fixtureDir: fixtureDir,
 		targetDir:  filepath.Join(w.dir, "targets", "primary"),
 		workDir:    workDir,
 	}
+	// Stop and settle the owned worker before either TempDir is removed,
+	// including when a test assertion aborts after starting a turn.
+	t.Cleanup(func() {
+		if err := a.newRunner(t).Stop(context.Background()); err != nil {
+			t.Errorf("stop fixture worker: %v", err)
+		}
+		a.waitNotRunning(t)
+	})
+	return a
 }
 
 func (a *agySuperviseWorld) setMode(t *testing.T, mode string) {
@@ -357,6 +366,12 @@ func TestAntigravityRunnerSuperviseUnknownErrorNeverFailsOver(t *testing.T) {
 	}
 	if res2.Action == string(decide.Handoff) || res2.Target != "primary" {
 		t.Fatalf("unknown error must never trigger failover: res=%+v", res2)
+	}
+	// The second tick can start a re-prompt on primary. Observe that turn's
+	// completion too; returning here used to race TempDir cleanup with its
+	// ACP record publication.
+	if obs := w.waitNotRunning(t); obs.ErrorClass != decide.ErrUnknown {
+		t.Fatalf("after retry: expected unknown error class, got %+v", obs)
 	}
 	if fb := w.adapters["fallback"]; fb != nil && len(fb.sent) != 0 {
 		t.Fatalf("fallback received %d sends on unknown error", len(fb.sent))

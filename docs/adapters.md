@@ -471,7 +471,7 @@ What the kit does not check:
 - `writes-stay-inside` watches the project, the home directory and the temporary directory. A write to some other absolute path is not seen.
 - `state-unwritable` and the file-mode part of `send-once` do not run on Windows or as root.
 - A send that times out is not exercised.
-- The four declarations about what an agent does for itself (retries, provider failover, scheduling, child work) are not yet compared with behaviour.
+- The four declarations about what an agent does for itself (retries, provider failover, scheduling, lane work) are not yet compared with behaviour.
 
 ### Checking your own wrapper
 

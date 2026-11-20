@@ -63,7 +63,7 @@ func TestDockFailedLaneIsWorthKnowing(t *testing.T) {
 	js := dockUIText(t, "dock.js")
 	for _, want := range []string{
 		`if (l.lanesFailed) status.appendChild(tag("needs", l.lanesFailed));`,
-		`if (wl && wl.lanesFailed && tone === "good") tone = "warn";`,
+		`if (l.lanesFailed && tone === "good") tone = "warn";`,
 		`pills.appendChild(tag("needs", l.lanesFailed));`,
 	} {
 		if !strings.Contains(js, want) {
