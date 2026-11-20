@@ -681,6 +681,8 @@ func dockControlPhrase(r incident.Record) string {
 	by := " by a command"
 	if c := r.ControlChange; c != nil && strings.HasPrefix(c.Operation, "panel_") {
 		by = " from the panel"
+	} else if c != nil && strings.HasPrefix(c.Operation, "telegram_") {
+		by = " from Telegram"
 	}
 	return strings.ToUpper(s[:1]) + s[1:] + by
 }

@@ -1,8 +1,8 @@
-# Antigravity integration foundation
+# Antigravity integration
 
-**Internal, v0.2.0, offline fixtures only.** looptender has no registered Antigravity adapter or guided-setup choice. This foundation adds a headless prompt encoder/lifecycle parser, an internal ACP permission gate and stream exchange, a saved interaction hold, and a [detached runner](#detached-runner) that joins them. The runner is not reachable from configuration, the adapter factory or setup, so no production code path starts an agent, reads credentials, attaches to an IDE chat, or changes permissions.
+**Primary-only standalone adapter (unreleased source).** `adapter: antigravity` runs `agy acp --stdio` through the detached ACP runner (`runner.Antigravity`) with checkpointed prompt reservations, exact `session/resume`, owned process-tree stops, and durable `DeferredInteraction` holds on permission requests. Guided setup, fallbacks, switch-back, timing probes, and IDE-chat attachment remain unavailable.
 
-**Supported-version evidence: none; Antigravity is not installed where this was built.** No `agy` executable, ACP server command, flag, version or platform has been examined or run. Every test uses a stand-in executable with fictional data.
+**Live CLI evidence (`agy 1.5.13`, macOS arm64):** `agy --version`, `agy acp --stdio` `initialize` (`sessionCapabilities.resume: {}`), a two-turn scratch-dir `session/new` → `session/resume` check (`stopReason: "end_turn"`, exit `0`), and `agy --print /usage --mode plan --output-format json` were verified on macOS arm64. Installed end-to-end `looptender tick` walkthroughs remain open; see [Installed testing and debugging](#installed-testing-and-debugging).
 
 For coordinator and lane model choices and quota habits on Antigravity and Gemini 4, see [Coordinating lanes — Antigravity and Gemini 4 model tiers](coordinating-lanes.md#antigravity-and-gemini-4-model-tiers).
 
@@ -97,26 +97,91 @@ The runner is implemented up to the A2 boundary. The runner-hardening gaps (per-
 3. **Nothing verified against a real CLI.** The ACP command and flags, whether the agent advertises exact resume, what it does when stdin closes, and its exit status afterwards are all assumptions of the stand-in. The runner treats a nonzero or unknown exit after a returned turn as an unknown error, which may be wrong in either direction for the real agent.
 4. **No CLI command yet exposes `ClearUnconfirmed`.** The runner method exists and is fixture-tested; exposing an operator recovery command waits for adapter registration.
 
+## Live CLI verification (`agy 1.5.13`, macOS arm64)
+
+Verified against an installed `agy 1.5.13` binary on macOS arm64 (2026-11-19):
+
+- **`agy --version`** returns `1.5.13`.
+- **`agy acp --stdio`** starts the ACP v1 stdio server (`Antigravity ACP Server 1.5.13`). Its `initialize` response returns `protocolVersion: 1` and advertises `agentCapabilities.sessionCapabilities.resume: {}`, matching `AntigravityACPGate`. Closing stdin exits cleanly with code `0`.
+- **Two-turn exact resume (scratch temp dir):** `session/new` returned a 36-byte conversation ID and `session/prompt` returned `stopReason: "end_turn"` with exit `0`; a fresh `agy acp --stdio` process calling `session/resume` with that exact ID returned `stopReason: "end_turn"` (with cached read tokens confirming conversation continuity) and exit `0`.
+- **Model-free `/usage`:** `agy --print /usage --mode plan --output-format json` returned `status: "SUCCESS"`, `num_turns: 0`, `command.name: "usage"`, buckets `gemini-weekly`, `gemini-5h`, `3p-weekly`, `3p-5h`, and exit `0`, matching the parser in `cmd/looptender/accounts_antigravity_quota.go`.
+
+## Configuration (primary-only standalone loop)
+
+`adapter: antigravity` is registered as a primary-only standalone loop adapter (`fallbacks`, `switch_back`, and `timing` are rejected). `looptender` runs `agy acp --stdio` with optional `--sandbox`, `--agent`, and `--add-dir` flags, and **never** passes `--dangerously-skip-permissions`:
+
+```yaml
+version: 1
+loop:
+  name: example-antigravity
+  state_dir: state
+  adapter: antigravity
+  antigravity:
+    cli: agy           # optional; defaults to "agy"
+    workdir: ./project # required
+    sandbox: true      # optional; passes --sandbox
+    agent: ""          # optional; passes --agent <name>
+    add_dir: []        # optional; repeatable --add-dir (max 16)
+    env: {}            # optional extra environment variables
+  prompt: Complete the fictional example task.
+```
+
+## Installed testing and debugging
+
+After building and installing `looptender` from `main` (for example `go install github.com/looptender/looptender/cmd/looptender@main`, making sure `$(go env GOPATH)/bin` is first on `PATH` or invoking `$(go env GOPATH)/bin/looptender`):
+
+1. **Create a standalone loop with guided setup (or write `loop.yaml`):**
+   ```bash
+   looptender init --agent antigravity --project /path/to/project --directory /path/to/loop-dir
+   ```
+   Or create `loop.yaml` directly as shown above.
+2. **Verify CLI and loop diagnostics:**
+   ```bash
+   looptender doctor -c /path/to/loop.yaml
+   ```
+   Confirm `agy --version` resolves cleanly and review the capability/account notes.
+3. **Verify model-free `/usage` account quota:**
+   ```bash
+   looptender accounts add --label "Example Antigravity" --provider antigravity --selection inherited
+   looptender accounts usage --id <ID> --json
+   ```
+   Confirm `state: "reported"`, `source: "agy:/usage"`, `freshness: "provider_unknown"`, and the four Gemini / Claude-GPT windows.
+4. **Scratch-directory two-turn, hold, and stop walkthrough:**
+   - Create a temporary scratch directory and `loop.yaml` with `adapter: antigravity` and `antigravity.workdir` pointing to the scratch directory.
+   - Enable the loop (`looptender enable -c loop.yaml`), run `looptender tick -c loop.yaml` for turn 1, wait for the worker to exit, and run `looptender tick -c loop.yaml` for turn 2; confirm `acp-session.json` holds the exact conversation ID and turn 2 resumes it.
+   - Test a turn that requires a tool permission: confirm the loop enters `AwaitingUser` hold (`DeferredInteractionReason`) and does not send again until `looptender resume -c loop.yaml`.
+   - Test `looptender stop -c loop.yaml -immediately` during an active turn and confirm the `agy acp --stdio` process group exits cleanly.
+   - **Live installed walkthrough (2026-11-20, `agy 1.5.13`, macOS arm64):** verified `looptender accounts add`/`usage` (all 4 buckets reported), `looptender doctor -c`, `looptender enable -c`, turn 1 `wake` → `active` (no duplicate send) → `idle` with `0600` `acp-session.json` and zero stderr, and turn 2 `wake` resuming the saved session. Live permission-hold and owned-stop walkthroughs remain open.
+5. **Debugging turn state on disk** (under `<state_dir>/targets/primary/`):
+   - `acp-turn.json` — current turn identity.
+   - `acp-session.json` — exact opaque conversation ID written once on the first prompt reservation.
+   - `acp-turns/<turn>/` — per-turn records (current and immediately preceding turn are retained; older turn directories are pruned automatically):
+     - `acp-pending.json` — stop key recorded before worker spawn.
+     - `acp-started.json` / `acp-not-started.json` / `acp-cleared.json` — worker confirmation/recovery records.
+     - `acp-prompt-reserved.json` — durable prompt reservation written before the prompt frame leaves the worker.
+     - `acp-needs-user.json` / `acp-hold-adopted.json` — saved permission-request hold and supervisor adoption.
+     - `acp-outcome.json` — boolean transport outcome (`returned`, `needsUser`, `failed`; never prompt or response text).
+   - `stderr` — bounded 64 KiB capture from `agy acp --stdio` for manual inspection (never parsed by `looptender`).
+   - If a crash left a turn unconfirmed (`acp-pending.json` without `acp-started.json` or `acp-not-started.json`), the loop fails closed with `errAntigravityUnconfirmed` until cleared with `looptender session clear-unconfirmed -c loop.yaml`.
+
 ## Remaining acceptance gates
 
-- Verify the installed CLI version/platform and its structured permission behavior. No installed `agy` executable or live provider was exercised for this foundation.
-- Register the runner (YAML, factory, schema, status, doctor) once the permission contract above is resolved. Offline supervisor ticks and the shared adapter conformance suite now run against the real `runner.Antigravity` type with a stand-in ACP agent.
-- Establish typed authentication, quota/reset and exact account/model probe evidence before claiming those capabilities. Unknown errors must remain unknown. No stderr or model-response matching may fill a missing interface.
-- Add capability-aware setup and diagnostics only after the runtime contract is implemented. Inherited login is not evidence of separate-account isolation.
-- Run an authorized scratch-project two-turn/resume/stop walkthrough, including permission failure and holds. Do not manufacture a quota limit or change existing logins/timers. Existing graphical-chat attachment remains a separate investigation.
+- Complete the remaining installed scratch-project checks (live tool permission hold + `looptender resume`, and live `looptender stop -immediately`) and test on Linux and Windows.
+- Resolve chat-only questions without ACP elicitation (currently indistinguishable from a returned `end_turn`) and permission rules that allow/deny without emitting a request.
+- Establish typed authentication, exact account/model probe evidence, and separate-account isolation before enabling fallbacks or switch-back. Existing graphical IDE-chat attachment remains a separate investigation.
 
 ## Verification
 
-`go test -race ./internal/adapter/runner -run '^TestAntigravity'` exercises fictional streams and stdin envelopes: non-ASCII/control-character round trips, encoded-size bounds, exact identity, partial output, every documented terminal state, conflicting exits, malformed/duplicate output, and typed-looking model/tool text that must not influence classification. These tests do not execute Antigravity or prove provider/platform compatibility.
+`go test -race ./internal/adapter/runner -run '^TestAntigravity'` exercises fictional streams and stdin envelopes: non-ASCII/control-character round trips, encoded-size bounds, exact identity, partial output, every documented terminal state, conflicting exits, malformed/duplicate output, and typed-looking model/tool text that must not influence classification.
 
-`go test -race ./internal/adapter/runner -run '^TestAntigravityACP'` covers fictional handshake/new/resume exchanges, string/numeric request correlation, cancellation and sticky input evidence, stop reasons, malformed/duplicate/wrong-session evidence, Unicode identities, long streaming turns alongside per-frame/permission/pre-prompt/cancel-drain bounds, and model-text isolation. It executes no ACP subprocess and verifies no live provider, persisted hold or restart behavior.
+`go test -race ./internal/adapter/runner -run '^TestAntigravityACP'` covers fictional handshake/new/resume exchanges, string/numeric request correlation, cancellation and sticky input evidence, stop reasons, malformed/duplicate/wrong-session evidence, Unicode identities, long streaming turns alongside per-frame/permission/pre-prompt/cancel-drain bounds, and model-text isolation.
 
-`go test -race ./internal/adapter/runner -run '^TestAntigravityACPExchange|^TestAntigravityACPFrameReader'` additionally exercises fragmented streams, a two-way in-memory pipe peer, prompt/hold checkpoint ordering and failures, short writes without replay, EOF/truncation, local-input preflight, long streaming turns and per-frame/cancel-drain limits. These are injected transport/peer fixtures, not an Antigravity subprocess or restart/durability proof.
+`go test -race ./internal/adapter/runner -run '^TestAntigravityACPExchange|^TestAntigravityACPFrameReader'` additionally exercises fragmented streams, a two-way in-memory pipe peer, prompt/hold checkpoint ordering and failures, short writes without replay, EOF/truncation, local-input preflight, long streaming turns and per-frame/cancel-drain limits.
 
-`go test -race ./internal/adapter/runner -run '^TestAntigravityACPHold'`, `go test -race ./internal/decide -run '^TestDeferredInteraction'` and `go test -race ./internal/supervise -run '^TestDeferredInteraction'` cover the saved hold. A fictional permission exchange must find the records on disk before its prompt and cancellation frames; reconstructed readers and exchanges then verify refusal of a second prompt, another turn or session, unchanged file contents after every refusal, bounded Unicode identities, malformed input in each of the three files, inconsistent files against every checkpoint kind, and turn-bound adoption. Eight concurrent reservations admit exactly one prompt, evidence racing another identity's reservation is refused, and evidence and adoption are saved while every existing record is held open by a reader. Supervisor fixtures rebuild the adapter on every tick and cover dry runs, the saved control hold and report, repeated restarts without observation or sends, explicit resume, a simulated failure between hold and adoption, an unsaved hold, stop/pause precedence and holds owned by other rules. The adapter in those ticks is a stand-in; no ACP subprocess, owned process lifecycle, process kill, question handoff or live provider is exercised.
+`go test -race ./internal/adapter/runner -run '^TestAntigravityACPHold'`, `go test -race ./internal/decide -run '^TestDeferredInteraction'` and `go test -race ./internal/supervise -run '^TestDeferredInteraction'` cover the saved hold, concurrent reservations, adoption, and restart resilience.
 
-`go test -race ./internal/adapter/runner -run '^TestAntigravityRunner'` runs the detached runner against a stand-in ACP agent, which is the test binary itself: two turns with exact resume of a non-UUID conversation identity after rebuilding the adapter; the reservation and the hold observed on disk by the stand-in before the prompt and the cancellation reach it; a permission request held across rebuilt adapters, refused sends, adoption and a second held turn; a permission request that ignores cancellation bounded by `CancelTimeout` so the deferred hold surfaces promptly; refusal, prose instead of frames, an agent that dies mid-prompt, a failing exit and an agent that cannot start, all unknown; bounded setup, exit, cancel-drain and stdin write limits (including a 256 KiB prompt against an agent that stops reading stdin); descendant process termination on worker timeout; stderr capped at 64 KiB; pruning of older `acp-turns/` directories beyond the current and preceding turn; an owned stop with the saved process ID forged to the test process and the agent confirmed gone; a worker killed by its own agent right after the prompt, leaving a reservation without an outcome; a turn recorded without a confirmed worker stopped and recovered via `ClearUnconfirmed` while preserving its saved conversation; a worker overtaken by a later turn; fourteen kinds of unreadable or disagreeing records; and prompts refused before a worker exists. These run on macOS, Linux and Windows CI. They execute no Antigravity CLI.
+`go test -race ./internal/adapter/runner -run '^TestAntigravityRunner'` runs the detached runner against a stand-in ACP agent across two-turn exact resume, permission holds, `CancelTimeout`, `WriteTimeout`, descendant process-group/job termination, 64 KiB stderr cap, `acp-turns/` pruning, `ClearUnconfirmed` recovery, and malformed record rejection on macOS, Linux, and Windows CI.
 
-`go test -race ./internal/supervise -run '^TestAntigravityRunnerSupervise'` and `go test -race ./internal/adapter/conformance -run '^TestAntigravityRunnerKeepsTheContract'` run full supervisor ticks and the shared adapter conformance suite directly against the unregistered `runner.Antigravity` type with a stand-in ACP agent: two-turn exact resume across rebuilt adapters, permission-request hold/adoption/resume, unknown error non-failover, owned stop, and all applicable adapter conformance contracts (with zero known gaps, including `bounded-output`). They execute no live Antigravity CLI.
+`go test -race ./internal/supervise -run '^TestAntigravityRunnerSupervise'` and `go test -race ./internal/adapter/conformance -run '^TestAntigravityRunnerKeepsTheContract'` run full supervisor ticks and the shared adapter conformance suite directly against `runner.Antigravity` with a stand-in ACP agent: two-turn exact resume across rebuilt adapters, permission-request hold/adoption/resume, unknown error non-failover, owned stop, and all applicable adapter conformance contracts (with zero known gaps, including `bounded-output`).
 
-The README's current availability table remains accurate: no built-in Antigravity adapter or IDE-chat attachment is available. The integration plan and this document identify the narrower implementation; the full roadmap item remains open.
+`go test -race ./internal/config -run '^TestAntigravity'` and `go test -race ./internal/adapter/factory -run '^TestFactoryBuildsAntigravityRunner'` verify YAML defaults, path resolution, primary-only constraints, JSON schema definitions, and factory wiring.

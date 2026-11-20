@@ -58,3 +58,29 @@ func TestPanelOriginIsAnOperationValueOlderReadersNormalise(t *testing.T) {
 		t.Errorf("%v %q", err, j.Records[len(j.Records)-1].ControlChange.Operation)
 	}
 }
+
+func TestTelegramOriginIsAnOperationValueOlderReadersNormalise(t *testing.T) {
+	dir := t.TempDir()
+	on, paused := &Controls{Enabled: true}, &Controls{Enabled: true, Paused: true}
+	for _, op := range []string{"telegram_pause", "telegram_stop"} {
+		if err := Append(dir, Record{Kind: "control", CheckStartedAt: time.Now().UTC(), ControlBefore: on, ControlAfter: paused, ControlChange: &ControlChange{Operation: op, SaveObservedAt: time.Now().UTC()}}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	j, err := Load(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for i, want := range []string{"telegram_pause", "telegram_stop"} {
+		if got := j.Records[i].ControlChange.Operation; got != want {
+			t.Errorf("record %d: got %q, want %q", i, got, want)
+		}
+	}
+	// Non-allowlisted Telegram operations still normalize to "unavailable".
+	if err := Append(dir, Record{Kind: "control", CheckStartedAt: time.Now().UTC(), ControlBefore: on, ControlAfter: on, ControlChange: &ControlChange{Operation: "telegram_enable", SaveObservedAt: time.Now().UTC()}}); err != nil {
+		t.Fatal(err)
+	}
+	if j, err = Load(dir); err != nil || j.Records[len(j.Records)-1].ControlChange.Operation != "unavailable" {
+		t.Errorf("telegram_enable: err=%v got=%q", err, j.Records[len(j.Records)-1].ControlChange.Operation)
+	}
+}

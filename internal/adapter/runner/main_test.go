@@ -49,7 +49,7 @@ func TestMain(m *testing.M) {
 		if marker != "" {
 			_ = os.WriteFile(marker+".ready", nil, 0o600)
 		}
-		time.Sleep(1500 * time.Millisecond)
+		time.Sleep(3000 * time.Millisecond)
 		if marker != "" {
 			_ = os.WriteFile(marker+".survived", nil, 0o600)
 		}

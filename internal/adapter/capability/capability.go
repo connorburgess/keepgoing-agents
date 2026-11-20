@@ -101,9 +101,10 @@ var Adapters = []Adapter{
 	{ID: "cursor", Title: "Cursor headless", Registered: true, SessionEvidence: true,
 		Files:  []string{"internal/adapter/runner/cursor.go"},
 		Inputs: []string{"ErrorClass", "Evidence", "State"}},
-	{ID: "antigravity", Title: "Antigravity", Registered: false,
+	{ID: "antigravity", Title: "Antigravity ACP", Registered: true,
 		Files: []string{"internal/adapter/runner/antigravity_protocol.go", "internal/adapter/runner/antigravity_acp_protocol.go", "internal/adapter/runner/antigravity_acp_exchange.go", "internal/adapter/runner/antigravity_acp_hold.go",
-			"internal/adapter/runner/antigravity_runner.go", "internal/adapter/runner/antigravity_worker.go"}},
+			"internal/adapter/runner/antigravity_runner.go", "internal/adapter/runner/antigravity_worker.go"},
+		Inputs: []string{"AwaitingInput", "Background", "DeferredInteraction", "ErrorClass", "Evidence", "State", "Turn"}},
 	{ID: "process", Title: "Generic process", Registered: true,
 		Files:  []string{"internal/adapter/process/process.go"},
 		Inputs: []string{"AwaitingInput", "Background", "ErrorClass", "Evidence", "Gone", "Queued", "State"}},
@@ -123,7 +124,7 @@ func t(path, test string) Ref { return Ref{Path: path, Test: test} }
 func d(path string) Ref       { return Ref{Path: path} }
 
 var (
-	notRegistered = Cell{Status: Missing, Evidence: None, Note: "No adapter is registered, so a loop cannot use it.", Refs: []Ref{d("docs/antigravity.md")}}
+	notRegistered = Cell{Status: Missing, Evidence: None, Note: "Not supported by the primary-only Antigravity ACP adapter.", Refs: []Ref{d("docs/antigravity.md")}}
 	headless      = []string{"claude", "codex", "cursor"}
 )
 
@@ -346,7 +347,7 @@ var Matrix = []Behaviour{
 			"codex":   {Missing, None, "The sandbox setting is passed to the CLI. No typed permission state is read.", []Ref{d("docs/configuration.md")}},
 			"cursor":  {Missing, None, "No force or approval flag is added, and print mode has no typed permission-wait signal. A rejection has not been observed live.", []Ref{d("docs/cursor.md")}},
 			"process": {Yes, Fixture, "awaitingInput in the status JSON.", []Ref{t(processTest, "TestObserveAwaitingInput")}},
-		}, map[string]Cell{"antigravity": {Missing, Fixture, "An internal ACP gate cancels permission requests and saves a hold, and an unregistered runner reports that hold once its worker has exited, with stand-in fixtures only. No adapter is registered.", []Ref{d("docs/antigravity.md")}}})},
+		}, map[string]Cell{"antigravity": {Yes, Fixture, "ACP gate cancels permission requests and saves a durable DeferredInteraction hold, reported once its worker exits (stand-in fixtures). Chat-only questions without ACP elicitation and silent permission rules remain open.", []Ref{d("docs/antigravity.md")}}})},
 }
 
 const (

@@ -23,6 +23,26 @@ func New(a config.Agent, stateDir, target string) (adapter.Adapter, error) {
 		return process.New(*a.Process), nil
 	case "cursor":
 		return runner.NewCursor(*a.Cursor, dir), nil
+	case "antigravity":
+		cli := a.Antigravity.CLI
+		if cli == "" {
+			cli = "agy"
+		}
+		cmd := []string{cli, "acp", "--stdio"}
+		if a.Antigravity.Sandbox {
+			cmd = append(cmd, "--sandbox")
+		}
+		if a.Antigravity.Agent != "" {
+			cmd = append(cmd, "--agent", a.Antigravity.Agent)
+		}
+		for _, addDir := range a.Antigravity.AddDirs {
+			cmd = append(cmd, "--add-dir", addDir)
+		}
+		return runner.NewAntigravity(runner.AntigravityConfig{
+			Command: cmd,
+			Workdir: a.Antigravity.Workdir,
+			Env:     a.Antigravity.Env,
+		}, dir), nil
 	}
 	// Agents on the runner contract come from its registry.
 	if h, ok := runner.New(a, dir); ok {

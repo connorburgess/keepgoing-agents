@@ -58,6 +58,7 @@ type Webhook struct {
 	secret   string
 	client   *http.Client
 	now      func() time.Time
+	tg       *telegramSender
 }
 
 // MaxBody caps a report's size.
@@ -97,6 +98,9 @@ func New(cfg config.Report) (*Webhook, error) {
 		}
 		return ""
 	}
+	if cfg.Format == "telegram" {
+		return newTelegramWebhook(cfg, get)
+	}
 	w := &Webhook{cfg: cfg, url: get(cfg.URLEnv), secret: get(cfg.SecretEnv), client: &http.Client{Timeout: cfg.Timeout.Duration}, now: time.Now}
 	if w.url == "" || w.secret == "" {
 		return nil, fmt.Errorf("report: %s and %s must be set in the environment or the secret file", cfg.URLEnv, cfg.SecretEnv)
@@ -132,6 +136,9 @@ func key(secret string) ([]byte, error) {
 func (w *Webhook) Body(e Event) ([]byte, error) {
 	if e.At.IsZero() {
 		e.At = w.now()
+	}
+	if w.tg != nil {
+		return w.tg.body(e, w.now())
 	}
 	if w.cfg.Format == "sessionpipe" {
 		return pipeBody(e, pipeState{Version: 1, ID: "00000000000000000000000000000000", Next: 1}, w.now())
@@ -185,6 +192,9 @@ func (w *Webhook) Report(ctx context.Context, e Event) error {
 func (w *Webhook) report(ctx context.Context, e Event, observe func(Delivery)) error {
 	if !w.cfg.ReportsEvent(e.Type) {
 		return nil
+	}
+	if w.tg != nil {
+		return w.tg.report(ctx, e, w.now, observe)
 	}
 	if w.cfg.Format == "sessionpipe" {
 		return w.reportPipe(ctx, e, observe)
