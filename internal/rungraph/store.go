@@ -11,8 +11,9 @@ import (
 	"path/filepath"
 	"time"
 
-	"github.com/connorburgess/keepgoing-agents/internal/control"
-	"github.com/connorburgess/keepgoing-agents/internal/lock"
+	"github.com/looptender/looptender/internal/control"
+	"github.com/looptender/looptender/internal/lock"
+	"github.com/looptender/looptender/internal/snapshot"
 )
 
 // Availability says what a read found. Only Available has usable records.
@@ -43,7 +44,7 @@ func NewID(prefix string) (string, error) {
 // record: anything but Available returns an empty graph.
 func Load(dir string) (Graph, Availability) {
 	path := filepath.Join(dir, FileName)
-	info, err := os.Lstat(path)
+	info, err := snapshot.LstatRecord(path)
 	if errors.Is(err, os.ErrNotExist) {
 		return Graph{}, Missing
 	}
@@ -162,5 +163,5 @@ func updateGraph(dir string, now time.Time, create bool, fn func(*Graph) (bool, 
 
 // GateOf reduces a saved control record to what a run boundary needs.
 func GateOf(f control.File) Gate {
-	return Gate{Enabled: f.Enabled, Paused: f.Paused, Stop: f.Stop, AwaitingUser: f.AwaitingUser, Completed: f.Completed, PendingTransfer: f.PendingTransfer != nil}
+	return Gate{Enabled: f.Gate().Enabled, Paused: f.Paused, Stop: f.Stop, AwaitingUser: f.AwaitingUser, Completed: f.Completed, PendingTransfer: f.PendingTransfer != nil}
 }

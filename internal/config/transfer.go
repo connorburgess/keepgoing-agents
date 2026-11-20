@@ -33,8 +33,121 @@ func (e *BBTransferEdit) AfterDigest() string {
 // PrepareBBTransfer changes only the literal primary BB thread scalar. Aliases,
 // merged mappings, multiple documents and non-regular config files are refused.
 func (c *Config) PrepareBBTransfer(thread string) (*BBTransferEdit, error) {
+	return c.PrepareBBProviderTransfer(thread, nil)
+}
+
+// BBTransferRoute contains only operator-supplied destination labels. Empty
+// model/reasoning clear the old labels; no account identity is inferred.
+type BBTransferRoute struct {
+	Provider  string `json:"provider"`
+	Group     string `json:"quotaGroup"`
+	Model     string `json:"model"`
+	Reasoning string `json:"reasoning"`
+}
+
+// PrepareBBProviderTransfer additionally replaces provider-specific labels and
+// removes account, probe and timing settings when the provider changes.
+func (c *Config) PrepareBBProviderTransfer(thread string, route *BBTransferRoute) (*BBTransferEdit, error) {
 	bad := errors.New("configuration cannot be safely rewritten for transfer")
-	if c.source.path == "" || c.Loop.Adapter != "bb" || c.Loop.BB == nil || c.Loop.HasRouteList() || c.source.size > 1<<20 || c.CheckSources() != nil {
+	if c.Loop.Adapter != "bb" || c.Loop.BB == nil || c.Loop.HasRouteList() {
+		return nil, bad
+	}
+	doc, err := c.sourceDoc()
+	if err != nil {
+		return nil, bad
+	}
+	n := field(field(field(doc.Content[0], "loop"), "bb"), "thread")
+	if n == nil || n.Kind != yaml.ScalarNode || n.Tag != "!!str" || n.Value != c.Loop.BB.Thread {
+		return nil, bad
+	}
+	n.Value = thread
+	if route != nil {
+		if route.Provider == "" || route.Provider == c.Loop.Provider || route.Group == "" {
+			return nil, bad
+		}
+		loop := field(doc.Content[0], "loop")
+		bb := field(loop, "bb")
+		set := func(parent *yaml.Node, key, value string) {
+			n := field(parent, key)
+			if n == nil {
+				n = &yaml.Node{}
+				parent.Content = append(parent.Content, &yaml.Node{Kind: yaml.ScalarNode, Tag: "!!str", Value: key}, n)
+			}
+			n.Kind, n.Tag, n.Value = yaml.ScalarNode, "!!str", value
+			n.Content = nil
+		}
+		remove := func(parent *yaml.Node, key string) {
+			for i := 0; i+1 < len(parent.Content); i += 2 {
+				if parent.Content[i].Value == key {
+					parent.Content = append(parent.Content[:i], parent.Content[i+2:]...)
+					return
+				}
+			}
+		}
+		set(loop, "provider", route.Provider)
+		set(loop, "group", route.Group)
+		set(bb, "model", route.Model)
+		set(bb, "reasoning", route.Reasoning)
+		for _, key := range []string{"account", "probe", "timing"} {
+			remove(loop, key)
+		}
+	}
+	after, err := yaml.Marshal(doc)
+	if err != nil || len(after) > 1<<20 {
+		return nil, bad
+	}
+	return &BBTransferEdit{source: c.source, after: after}, nil
+}
+
+// Commit atomically replaces the configuration after rechecking its source.
+// This does not promise power-loss durability or fence uncooperative writers.
+func (e *BBTransferEdit) Commit() error {
+	bad := errors.New("configuration replacement failed; transfer remains pending")
+	info, err := os.Lstat(e.source.path)
+	if err != nil || !info.Mode().IsRegular() || !e.source.matches() {
+		return bad
+	}
+	f, err := os.CreateTemp(filepath.Dir(e.source.path), ".transfer-*")
+	if err != nil {
+		return bad
+	}
+	name := f.Name()
+	defer os.Remove(name)
+	if _, err = f.Write(e.after); err == nil {
+		err = f.Chmod(0600)
+	}
+	if err == nil {
+		err = f.Sync()
+	}
+	closeErr := f.Close()
+	if err != nil || closeErr != nil || !e.source.matches() {
+		return bad
+	}
+	if os.Rename(name, e.source.path) != nil {
+		return bad
+	}
+	return nil
+}
+
+// field is the value of key in mapping n, or nil.
+func field(n *yaml.Node, key string) *yaml.Node {
+	if n == nil || n.Kind != yaml.MappingNode {
+		return nil
+	}
+	for i := 0; i+1 < len(n.Content); i += 2 {
+		if n.Content[i].Value == key {
+			return n.Content[i+1]
+		}
+	}
+	return nil
+}
+
+// sourceDoc rereads the loaded configuration file and parses it as one plain
+// YAML document. It fails when the file changed since loading, is not regular,
+// is over 1 MiB, or uses anchors, aliases or merges anywhere.
+func (c *Config) sourceDoc() (*yaml.Node, error) {
+	bad := errors.New("configuration source unavailable")
+	if c.source.path == "" || c.source.size > 1<<20 || c.CheckSources() != nil {
 		return nil, bad
 	}
 	info, err := os.Lstat(c.source.path)
@@ -72,55 +185,16 @@ func (c *Config) PrepareBBTransfer(thread string) (*BBTransferEdit, error) {
 	if !plain(&doc) {
 		return nil, bad
 	}
-	field := func(n *yaml.Node, key string) *yaml.Node {
-		if n == nil || n.Kind != yaml.MappingNode {
-			return nil
-		}
-		for i := 0; i+1 < len(n.Content); i += 2 {
-			if n.Content[i].Value == key {
-				return n.Content[i+1]
-			}
-		}
-		return nil
-	}
-	n := field(field(field(doc.Content[0], "loop"), "bb"), "thread")
-	if n == nil || n.Kind != yaml.ScalarNode || n.Tag != "!!str" || n.Value != c.Loop.BB.Thread {
-		return nil, bad
-	}
-	n.Value = thread
-	after, err := yaml.Marshal(&doc)
-	if err != nil || len(after) > 1<<20 {
-		return nil, bad
-	}
-	return &BBTransferEdit{source: c.source, after: after}, nil
+	return &doc, nil
 }
 
-// Commit atomically replaces the configuration after rechecking its source.
-// This does not promise power-loss durability or fence uncooperative writers.
-func (e *BBTransferEdit) Commit() error {
-	bad := errors.New("configuration replacement failed; transfer remains pending")
-	info, err := os.Lstat(e.source.path)
-	if err != nil || !info.Mode().IsRegular() || !e.source.matches() {
-		return bad
-	}
-	f, err := os.CreateTemp(filepath.Dir(e.source.path), ".transfer-*")
+// WritesProbe reports whether the configuration file itself has a loop.probe
+// section, as opposed to the probe kind derived from the provider label. A
+// provider change would leave a written probe naming the old provider.
+func (c *Config) WritesProbe() (bool, error) {
+	doc, err := c.sourceDoc()
 	if err != nil {
-		return bad
+		return false, err
 	}
-	name := f.Name()
-	defer os.Remove(name)
-	if _, err = f.Write(e.after); err == nil {
-		err = f.Chmod(0600)
-	}
-	if err == nil {
-		err = f.Sync()
-	}
-	closeErr := f.Close()
-	if err != nil || closeErr != nil || !e.source.matches() {
-		return bad
-	}
-	if os.Rename(name, e.source.path) != nil {
-		return bad
-	}
-	return nil
+	return field(field(doc.Content[0], "loop"), "probe") != nil, nil
 }

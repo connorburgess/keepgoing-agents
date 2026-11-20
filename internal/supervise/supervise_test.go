@@ -8,14 +8,14 @@ import (
 	"testing"
 	"time"
 
-	"github.com/connorburgess/keepgoing-agents/internal/adapter"
-	"github.com/connorburgess/keepgoing-agents/internal/config"
-	"github.com/connorburgess/keepgoing-agents/internal/control"
-	"github.com/connorburgess/keepgoing-agents/internal/decide"
-	"github.com/connorburgess/keepgoing-agents/internal/health"
-	"github.com/connorburgess/keepgoing-agents/internal/probe"
-	"github.com/connorburgess/keepgoing-agents/internal/report"
-	"github.com/connorburgess/keepgoing-agents/internal/state"
+	"github.com/looptender/looptender/internal/adapter"
+	"github.com/looptender/looptender/internal/config"
+	"github.com/looptender/looptender/internal/control"
+	"github.com/looptender/looptender/internal/decide"
+	"github.com/looptender/looptender/internal/health"
+	"github.com/looptender/looptender/internal/probe"
+	"github.com/looptender/looptender/internal/report"
+	"github.com/looptender/looptender/internal/state"
 )
 
 type fakeAdapter struct {
@@ -30,12 +30,22 @@ type fakeAdapter struct {
 	activated   int
 	activateErr error
 	onSend      func() // runs after a send is recorded by the fake
+	onObserve   func() // runs when the fake is observed
+	onActivate  func() // runs before the fake's model is changed
 	observed    int
+	// convKey and convKnown are what ConversationKey reports; the zero
+	// value is an adapter that cannot say.
+	convKey   string
+	convKnown bool
 }
 
-func (f *fakeAdapter) Name() string { return "fake" }
+func (f *fakeAdapter) Name() string                    { return "fake" }
+func (f *fakeAdapter) ConversationKey() (string, bool) { return f.convKey, f.convKnown }
 func (f *fakeAdapter) Observe(context.Context) (decide.Observation, error) {
 	f.observed++
+	if f.onObserve != nil {
+		f.onObserve()
+	}
 	return f.obs, f.obsErr
 }
 func (f *fakeAdapter) Send(_ context.Context, p string, m adapter.Mode) error {
@@ -54,6 +64,9 @@ func (f *fakeAdapter) Stop(context.Context) error {
 	return nil
 }
 func (f *fakeAdapter) Activate(context.Context) error {
+	if f.onActivate != nil {
+		f.onActivate()
+	}
 	if f.activateErr != nil {
 		return f.activateErr
 	}
@@ -67,8 +80,12 @@ type world struct {
 	sessions string // this world's session claims
 	adapters map[string]*fakeAdapter
 	probeOK  map[string]bool // exact and scheduled outcome per candidate
-	probes   []string
-	reports  []report.Event
+	offline  bool            // the connectivity check finds the network down
+	// probeClass overrides the error class a failed probe of a candidate
+	// reports; rate_limit when unset.
+	probeClass map[string]string
+	probes     []string
+	reports    []report.Event
 }
 
 func (w *world) Report(_ context.Context, e report.Event) error {
@@ -95,10 +112,23 @@ func (w *world) opts(now time.Time) Options {
 			if w.probeOK[c.ID] {
 				return probe.Result{OK: true}
 			}
+			if class, ok := w.probeClass[c.ID]; ok {
+				return probe.Result{ErrorClass: class}
+			}
 			return probe.Result{ErrorClass: "rate_limit"}
 		},
 		Reporter: w,
+		Online:   w.onlineCheck(),
 	}
+}
+
+// onlineCheck is the connectivity check: none (the loop's own settings)
+// unless the world is offline.
+func (w *world) onlineCheck() func(context.Context) bool {
+	if !w.offline {
+		return nil
+	}
+	return func(context.Context) bool { return false }
 }
 
 func (w *world) reportTypes() string {

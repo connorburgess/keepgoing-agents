@@ -1,0 +1,48 @@
+goos: darwin
+goarch: arm64
+pkg: github.com/looptender/looptender/internal/registry
+cpu: Apple M5 Pro
+BenchmarkRegistryLoad/registrations=1         	     100	     15222 ns/op	       380.0 input-bytes/op	    3165 B/op	      22 allocs/op
+BenchmarkRegistryLoad/registrations=1         	     100	     14844 ns/op	       380.0 input-bytes/op	    3165 B/op	      22 allocs/op
+BenchmarkRegistryLoad/registrations=1         	     100	     14142 ns/op	       380.0 input-bytes/op	    3165 B/op	      22 allocs/op
+BenchmarkRegistryLoad/registrations=10        	     100	     29952 ns/op	      3541 input-bytes/op	   22347 B/op	      66 allocs/op
+BenchmarkRegistryLoad/registrations=10        	     100	     28281 ns/op	      3521 input-bytes/op	   22347 B/op	      66 allocs/op
+BenchmarkRegistryLoad/registrations=10        	     100	     29286 ns/op	      3541 input-bytes/op	   22347 B/op	      66 allocs/op
+BenchmarkRegistryLoad/registrations=100       	     100	    169513 ns/op	     35331 input-bytes/op	  281187 B/op	     387 allocs/op
+BenchmarkRegistryLoad/registrations=100       	     100	    170167 ns/op	     35331 input-bytes/op	  281187 B/op	     387 allocs/op
+BenchmarkRegistryLoad/registrations=100       	     100	    168421 ns/op	     35331 input-bytes/op	  281187 B/op	     387 allocs/op
+BenchmarkRegistryLoad/registrations=128       	     100	    212566 ns/op	     45215 input-bytes/op	  319244 B/op	     514 allocs/op
+BenchmarkRegistryLoad/registrations=128       	     100	    215041 ns/op	     45215 input-bytes/op	  319244 B/op	     514 allocs/op
+BenchmarkRegistryLoad/registrations=128       	     100	    213805 ns/op	     45215 input-bytes/op	  319244 B/op	     514 allocs/op
+PASS
+ok  	github.com/looptender/looptender/internal/registry	0.345s
+goos: darwin
+goarch: arm64
+pkg: github.com/looptender/looptender/cmd/looptender
+cpu: Apple M5 Pro
+BenchmarkDockProjection/mixed=false/registrations=1         	     100	      6386 ns/op	      2309 output-bytes/op	    5921 B/op	      33 allocs/op
+BenchmarkDockProjection/mixed=false/registrations=1         	     100	      6226 ns/op	      2309 output-bytes/op	    5921 B/op	      33 allocs/op
+BenchmarkDockProjection/mixed=false/registrations=1         	     100	      5768 ns/op	      2309 output-bytes/op	    5921 B/op	      33 allocs/op
+BenchmarkDockProjection/mixed=false/registrations=10        	     100	     61234 ns/op	     17271 output-bytes/op	   70602 B/op	     229 allocs/op
+BenchmarkDockProjection/mixed=false/registrations=10        	     100	     57601 ns/op	     17271 output-bytes/op	   70602 B/op	     229 allocs/op
+BenchmarkDockProjection/mixed=false/registrations=10        	     100	     52425 ns/op	     17271 output-bytes/op	   70602 B/op	     229 allocs/op
+BenchmarkDockProjection/mixed=false/registrations=100       	     100	    470868 ns/op	    166854 output-bytes/op	  636019 B/op	    2122 allocs/op
+BenchmarkDockProjection/mixed=false/registrations=100       	     100	    450058 ns/op	    166854 output-bytes/op	  636019 B/op	    2122 allocs/op
+BenchmarkDockProjection/mixed=false/registrations=100       	     100	    453772 ns/op	    166854 output-bytes/op	  636019 B/op	    2122 allocs/op
+BenchmarkDockProjection/mixed=false/registrations=128       	     100	    596915 ns/op	    213390 output-bytes/op	  706230 B/op	    2710 allocs/op
+BenchmarkDockProjection/mixed=false/registrations=128       	     100	    591332 ns/op	    213390 output-bytes/op	  706230 B/op	    2710 allocs/op
+BenchmarkDockProjection/mixed=false/registrations=128       	     100	    573918 ns/op	    213390 output-bytes/op	  706230 B/op	    2710 allocs/op
+BenchmarkDockProjection/mixed=true/registrations=1          	     100	      4711 ns/op	      2309 output-bytes/op	    5962 B/op	      33 allocs/op
+BenchmarkDockProjection/mixed=true/registrations=1          	     100	      4567 ns/op	      2309 output-bytes/op	    5921 B/op	      33 allocs/op
+BenchmarkDockProjection/mixed=true/registrations=1          	     100	      4488 ns/op	      2309 output-bytes/op	    5921 B/op	      33 allocs/op
+BenchmarkDockProjection/mixed=true/registrations=10         	     100	     57491 ns/op	     18067 output-bytes/op	   72154 B/op	     230 allocs/op
+BenchmarkDockProjection/mixed=true/registrations=10         	     100	     57103 ns/op	     18067 output-bytes/op	   72154 B/op	     230 allocs/op
+BenchmarkDockProjection/mixed=true/registrations=10         	     100	     57424 ns/op	     18067 output-bytes/op	   72154 B/op	     230 allocs/op
+BenchmarkDockProjection/mixed=true/registrations=100        	     100	    674645 ns/op	    175873 output-bytes/op	  666158 B/op	    1986 allocs/op
+BenchmarkDockProjection/mixed=true/registrations=100        	     100	    702073 ns/op	    175873 output-bytes/op	  666161 B/op	    1986 allocs/op
+BenchmarkDockProjection/mixed=true/registrations=100        	     100	    662375 ns/op	    175873 output-bytes/op	  666158 B/op	    1986 allocs/op
+BenchmarkDockProjection/mixed=true/registrations=128        	     100	    973630 ns/op	    224922 output-bytes/op	  736428 B/op	    2532 allocs/op
+BenchmarkDockProjection/mixed=true/registrations=128        	     100	    991939 ns/op	    224922 output-bytes/op	  736425 B/op	    2532 allocs/op
+BenchmarkDockProjection/mixed=true/registrations=128        	     100	    892623 ns/op	    224922 output-bytes/op	  736425 B/op	    2532 allocs/op
+PASS
+ok  	github.com/looptender/looptender/cmd/looptender	1.174s

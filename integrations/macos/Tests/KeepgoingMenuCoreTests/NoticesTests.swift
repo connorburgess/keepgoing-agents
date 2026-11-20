@@ -20,7 +20,7 @@ final class NoticesTests: XCTestCase {
         let gap = "2030-01-01T09:00:00Z"
         let first = rule.next(read([loop(1, "example-api", overdueSince: gap), loop(2, "example-docs")]), format: format)
         XCTAssertEqual(first, [OverdueNotice(identifier: "keepgoing.overdue.l000000000001.1893488400", title: "Checks have stopped: example-api",
-                                             body: "No check has run since 2030-01-01T09:00:00Z. The computer may have slept, or the scheduler that runs this loop may have stopped. Open the keepgoing panel to see what to do.")])
+                                             body: "No check has run since 2030-01-01T09:00:00Z. The computer may have slept, or the scheduler that runs this loop may have stopped. Open the looptender panel to see what to do.")])
         // The next reads of the same gap, and a failed read, tell nothing.
         XCTAssertEqual(rule.next(read([loop(1, "example-api", overdueSince: gap), loop(2, "example-docs")]), format: format), [])
         XCTAssertEqual(rule.next(.unavailable, format: format), [])
@@ -45,7 +45,7 @@ final class NoticesTests: XCTestCase {
         let told = rule.next(read(loops), format: format)
         XCTAssertEqual(told.count, 1)
         XCTAssertEqual(told.first?.title, "Checks have stopped for 5 loops")
-        XCTAssertEqual(told.first?.body, "example-1, example-2 and 3 more have had no check for longer than usual. The computer may have slept, or their schedulers may have stopped. Open the keepgoing panel to see what to do.")
+        XCTAssertEqual(told.first?.body, "example-1, example-2 and 3 more have had no check for longer than usual. The computer may have slept, or their schedulers may have stopped. Open the looptender panel to see what to do.")
         XCTAssertEqual(rule.next(read(loops), format: format), [])
     }
 

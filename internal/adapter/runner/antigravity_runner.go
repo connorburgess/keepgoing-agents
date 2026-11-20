@@ -11,9 +11,9 @@ import (
 	"strings"
 	"time"
 
-	"github.com/connorburgess/keepgoing-agents/internal/adapter"
-	"github.com/connorburgess/keepgoing-agents/internal/decide"
-	"github.com/connorburgess/keepgoing-agents/internal/evidence"
+	"github.com/looptender/looptender/internal/adapter"
+	"github.com/looptender/looptender/internal/decide"
+	"github.com/looptender/looptender/internal/evidence"
 )
 
 // AntigravityConfig is what the runner needs to start one ACP turn. Command is
@@ -26,9 +26,13 @@ type AntigravityConfig struct {
 	Env     map[string]string
 	// HandshakeTimeout bounds initialization and session setup inside the
 	// detached worker; ExitTimeout bounds the wait for the agent process to
-	// exit after its turn. Zero selects the defaults.
+	// exit after its turn; CancelTimeout bounds draining after a permission
+	// cancellation; WriteTimeout bounds each stdin frame write. Zero selects
+	// the defaults.
 	HandshakeTimeout time.Duration
 	ExitTimeout      time.Duration
+	CancelTimeout    time.Duration
+	WriteTimeout     time.Duration
 }
 
 // Antigravity is a detached, primary-only runner for one ACP conversation.
@@ -58,16 +62,22 @@ const (
 	antigravityTurnName    = "acp-turn.json"
 	antigravitySessionName = "acp-session.json"
 	antigravityOutcomeName = "acp-outcome.json"
+	// Pending holds the stop key written before spawn so an unconfirmed worker
+	// can still be stopped and cleared without signalling a saved PID.
+	antigravityPendingName = "acp-pending.json"
 	// Published by Send once the worker it started is recorded, with that
 	// worker's stop key; or instead, when no process could be created.
 	antigravityStartedName    = "acp-started.json"
 	antigravityNotStartedName = "acp-not-started.json"
+	antigravityClearedName    = "acp-cleared.json"
 	antigravityTurnsDir       = "acp-turns"
 	// The worker stores no protocol output. A stdout file here is not ours.
 	antigravityStdoutLimit = 1024
 
 	antigravityDefaultHandshake = 2 * time.Minute
 	antigravityDefaultExit      = 10 * time.Second
+	antigravityDefaultCancel    = 10 * time.Second
+	antigravityDefaultWrite     = 10 * time.Second
 	antigravityMaxLimit         = 10 * time.Minute
 )
 
@@ -237,32 +247,55 @@ func (d Dir) saveAntigravityOutcome(out antigravityOutcome) error {
 	return err
 }
 
-// antigravityStart reads how the current turn's start ended: confirmed with
-// the worker's stop key, known not to have created a process, or neither.
-func (d Dir) antigravityStart(turn string) (key string, started, notStarted bool, err error) {
-	fields, err := d.readAntigravityObject(antigravityStartedName, 3)
+// antigravityStart reads how the current turn's start ended: pending stop key
+// recorded before spawn, confirmed with the worker's stop key, known not to
+// have created a process, explicitly cleared after verifying no worker is
+// running, or none of the terminal states.
+func (d Dir) antigravityStart(turn string) (key, pendingKey string, started, notStarted, cleared bool, err error) {
+	fields, err := d.readAntigravityObject(antigravityPendingName, 3)
 	if err != nil {
-		return "", false, false, err
+		return "", "", false, false, false, err
 	}
 	if fields != nil {
 		var recorded string
-		if !acpString(fields, "turn", &recorded) || recorded != turn || !acpString(fields, "stopKey", &key) || !validStopID(key) {
-			return "", false, false, errAntigravityRecords
+		if !acpString(fields, "turn", &recorded) || recorded != turn || !acpString(fields, "stopKey", &pendingKey) || !validStopID(pendingKey) {
+			return "", "", false, false, false, errAntigravityRecords
+		}
+	}
+	fields, err = d.readAntigravityObject(antigravityStartedName, 3)
+	if err != nil {
+		return "", "", false, false, false, err
+	}
+	if fields != nil {
+		var recorded string
+		if !acpString(fields, "turn", &recorded) || recorded != turn || !acpString(fields, "stopKey", &key) || !validStopID(key) || (pendingKey != "" && key != pendingKey) {
+			return "", "", false, false, false, errAntigravityRecords
 		}
 		started = true
 	}
 	fields, err = d.readAntigravityObject(antigravityNotStartedName, 2)
 	if err != nil {
-		return "", false, false, err
+		return "", "", false, false, false, err
 	}
 	if fields != nil {
 		var recorded string
 		if !acpString(fields, "turn", &recorded) || recorded != turn || started {
-			return "", false, false, errAntigravityRecords
+			return "", "", false, false, false, errAntigravityRecords
 		}
 		notStarted = true
 	}
-	return key, started, notStarted, nil
+	fields, err = d.readAntigravityObject(antigravityClearedName, 2)
+	if err != nil {
+		return "", "", false, false, false, err
+	}
+	if fields != nil {
+		var recorded string
+		if !acpString(fields, "turn", &recorded) || recorded != turn || started || notStarted {
+			return "", "", false, false, false, errAntigravityRecords
+		}
+		cleared = true
+	}
+	return key, pendingKey, started, notStarted, cleared, nil
 }
 
 // antigravityView is everything saved about the latest turn, already checked
@@ -271,14 +304,17 @@ type antigravityView struct {
 	// noWorker means the current turn is known never to have had a process;
 	// st then describes an earlier turn and is not this turn's status.
 	noWorker bool
-	st       Status
-	turn     string
-	turnDir  Dir
-	hasTurn  bool
-	hold     AntigravityACPHold
-	hasHold  bool
-	out      antigravityOutcome
-	hasOut   bool
+	// cleared means an unconfirmed turn was explicitly stopped/verified dead
+	// and cleared so a later send can roll over without discarding saved holds.
+	cleared bool
+	st      Status
+	turn    string
+	turnDir Dir
+	hasTurn bool
+	hold    AntigravityACPHold
+	hasHold bool
+	out     antigravityOutcome
+	hasOut  bool
 }
 
 // view reads the saved records and refuses any disagreement between them, so
@@ -305,13 +341,18 @@ func (a *Antigravity) view() (antigravityView, error) {
 	v.turnDir = a.dir.antigravityTurnDir(v.turn)
 	// The run record must be this turn's. Without Send's confirmation it could
 	// be an earlier turn's, or missing, while this turn's worker is alive.
-	key, started, notStarted, err := v.turnDir.antigravityStart(v.turn)
+	key, _, started, notStarted, cleared, err := v.turnDir.antigravityStart(v.turn)
 	if err != nil {
 		return v, err
 	}
 	switch {
 	case notStarted:
 		v.noWorker = true
+	case cleared:
+		if v.st.Phase == Running {
+			return v, errAntigravityUnconfirmed
+		}
+		v.cleared = true
 	case !started:
 		return v, errAntigravityUnconfirmed
 	case v.st.Phase == NeverRun || v.st.Record.StopKey != key:
@@ -367,6 +408,15 @@ func (a *Antigravity) Observe(ctx context.Context) (decide.Observation, error) {
 		}
 		return failed, nil
 	}
+	if v.cleared {
+		detail.Source = "antigravity_acp"
+		detail = evidence.Clean(detail)
+		failed.Evidence = detail
+		if v.hasHold && v.hold.Deferred() {
+			failed.DeferredInteraction = true
+		}
+		return failed, nil
+	}
 	switch v.st.Phase {
 	case NeverRun: // no turn has ever been recorded
 		return decide.Observation{State: decide.Idle, ErrorClass: decide.ErrNone, Evidence: detail}, nil
@@ -390,14 +440,41 @@ func (a *Antigravity) Observe(ctx context.Context) (decide.Observation, error) {
 	return failed, nil
 }
 
-func (a *Antigravity) limits() (time.Duration, time.Duration) {
+func (a *Antigravity) limits() (handshake, exit, cancel, write time.Duration) {
 	clamp := func(d, def time.Duration) time.Duration {
 		if d <= 0 {
 			return def
 		}
 		return min(d, antigravityMaxLimit)
 	}
-	return clamp(a.cfg.HandshakeTimeout, antigravityDefaultHandshake), clamp(a.cfg.ExitTimeout, antigravityDefaultExit)
+	return clamp(a.cfg.HandshakeTimeout, antigravityDefaultHandshake),
+		clamp(a.cfg.ExitTimeout, antigravityDefaultExit),
+		clamp(a.cfg.CancelTimeout, antigravityDefaultCancel),
+		clamp(a.cfg.WriteTimeout, antigravityDefaultWrite)
+}
+
+// pruneAntigravityTurns removes older per-turn directories under acp-turns/,
+// keeping at most the current turn and the immediately preceding turn so
+// directory count stays bounded without touching the just-superseded record.
+func (d Dir) pruneAntigravityTurns(keep ...string) {
+	retained := map[string]bool{}
+	for _, k := range keep {
+		if k != "" {
+			retained[k] = true
+		}
+	}
+	turnsRoot := filepath.Join(string(d), antigravityTurnsDir)
+	entries, err := os.ReadDir(turnsRoot)
+	if err != nil {
+		return
+	}
+	for _, entry := range entries {
+		name := entry.Name()
+		if retained[name] || !validStopID(name) {
+			continue
+		}
+		_ = os.RemoveAll(filepath.Join(turnsRoot, name))
+	}
 }
 
 // Send starts one worker for one prompt. The prompt reaches the agent only as
@@ -420,7 +497,7 @@ func (a *Antigravity) Send(ctx context.Context, prompt string, mode adapter.Mode
 	if v.noWorker && (v.hasHold || v.hasOut) {
 		return errAntigravityRecords
 	}
-	if !v.noWorker && v.st.Phase == Running {
+	if !v.noWorker && !v.cleared && v.st.Phase == Running {
 		return adapter.ErrUnsupported{Op: fmt.Sprintf("sending to a running Antigravity turn (%s mode)", mode)}
 	}
 	if v.hasHold && v.hold.Deferred() {
@@ -449,23 +526,45 @@ func (a *Antigravity) Send(ctx context.Context, prompt string, mode adapter.Mode
 	if err != nil {
 		return err
 	}
-	if err := os.MkdirAll(string(a.dir.antigravityTurnDir(turn)), 0o700); err != nil {
+	stopKey, err := randomStopID()
+	if err != nil {
 		return err
 	}
-	if err := a.dir.saveAntigravityTurn(turn); err != nil {
-		return errors.New("antigravity: could not record the new turn")
-	}
-	handshake, exit := a.limits()
-	spec, _ := json.Marshal(antigravityTurnSpec{Turn: turn, HandshakeMs: handshake.Milliseconds(), ExitMs: exit.Milliseconds()})
 	turnDir := a.dir.antigravityTurnDir(turn)
-	record := func(name string, v any) error {
-		b, _ := json.Marshal(v)
+	if err := os.MkdirAll(string(turnDir), 0o700); err != nil {
+		return err
+	}
+	record := func(name string, val any) error {
+		b, _ := json.Marshal(val)
 		if created, err := turnDir.publishAntigravityOnce(name, b); err != nil || !created {
 			return errAntigravityUnconfirmed
 		}
 		return nil
 	}
-	key, err := a.dir.start(a.cfg.Command, workdir, prompt, envList(a.cfg.Env), string(spec))
+	// Record the stop key before recording the turn or spawning the worker, so
+	// an interrupted start can still be stopped and cleared through its owned
+	// channel.
+	if err := record(antigravityPendingName, struct {
+		Version int    `json:"version"`
+		Turn    string `json:"turn"`
+		StopKey string `json:"stopKey"`
+	}{1, turn, stopKey}); err != nil {
+		_ = os.RemoveAll(string(turnDir))
+		return errors.New("antigravity: could not record the new turn")
+	}
+	if err := a.dir.saveAntigravityTurn(turn); err != nil {
+		_ = os.RemoveAll(string(turnDir))
+		return errors.New("antigravity: could not record the new turn")
+	}
+	handshake, exit, cancel, write := a.limits()
+	spec, _ := json.Marshal(antigravityTurnSpec{
+		Turn:        turn,
+		HandshakeMs: handshake.Milliseconds(),
+		ExitMs:      exit.Milliseconds(),
+		CancelMs:    cancel.Milliseconds(),
+		WriteMs:     write.Milliseconds(),
+	})
+	key, err := a.dir.startWithKey(a.cfg.Command, workdir, prompt, envList(a.cfg.Env), string(spec), stopKey)
 	if err != nil {
 		var none notSpawned
 		if errors.As(err, &none) {
@@ -474,19 +573,25 @@ func (a *Antigravity) Send(ctx context.Context, prompt string, mode adapter.Mode
 				Version int    `json:"version"`
 				Turn    string `json:"turn"`
 			}{1, turn})
+			a.dir.pruneAntigravityTurns(turn, v.turn)
 		}
 		return err
 	}
 	// Confirm which worker belongs to this turn. Until this record exists the
 	// turn is unconfirmed and everything fails closed.
-	return record(antigravityStartedName, struct {
+	err = record(antigravityStartedName, struct {
 		Version int    `json:"version"`
 		Turn    string `json:"turn"`
 		StopKey string `json:"stopKey"`
 	}{1, turn, key})
+	if err == nil {
+		a.dir.pruneAntigravityTurns(turn, v.turn)
+	}
+	return err
 }
 
-// Stop asks the live worker to end its own turn through the owned channel.
+// Stop asks the live worker to end its own turn through the owned channel,
+// including an unconfirmed worker whose stop key was recorded before spawn.
 // A saved process ID is never signalled.
 func (a *Antigravity) Stop(ctx context.Context) error {
 	if err := ctx.Err(); err != nil {
@@ -496,7 +601,88 @@ func (a *Antigravity) Stop(ctx context.Context) error {
 	if err != nil || st.Phase != Running {
 		return err
 	}
+	if turn, ok, terr := a.dir.antigravityTurn(); terr == nil && ok {
+		_, pendingKey, started, notStarted, cleared, serr := a.dir.antigravityTurnDir(turn).antigravityStart(turn)
+		if serr == nil && !started && !notStarted && !cleared && pendingKey != "" && st.Record.StopKey == pendingKey {
+			return a.dir.requestStop(pendingKey)
+		}
+	}
 	return a.dir.requestStop(st.Record.StopKey)
+}
+
+// ClearUnconfirmed stops any still-running unconfirmed worker through its
+// owned stop channel, waits for it to exit, preserves any recorded session or
+// unadopted hold, and records that the unconfirmed turn has been cleared so a
+// later send may roll over.
+func (a *Antigravity) ClearUnconfirmed(ctx context.Context) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	turn, ok, err := a.dir.antigravityTurn()
+	if err != nil || !ok {
+		return errAntigravityRecords
+	}
+	turnDir := a.dir.antigravityTurnDir(turn)
+	_, pendingKey, started, notStarted, cleared, err := turnDir.antigravityStart(turn)
+	if err != nil {
+		return err
+	}
+	if started || notStarted || cleared {
+		return nil
+	}
+	st, err := a.dir.statusWithOutputLimit(antigravityStdoutLimit)
+	if err != nil {
+		return errAntigravityRecords
+	}
+	if st.Phase == Running {
+		stopKey := st.Record.StopKey
+		if pendingKey != "" && stopKey == pendingKey {
+			stopKey = pendingKey
+		}
+		if !validStopID(stopKey) {
+			return errAntigravityUnconfirmed
+		}
+		if err := a.dir.requestStop(stopKey); err != nil {
+			return err
+		}
+		deadline := time.Now().Add(3 * time.Second)
+		for {
+			if err := ctx.Err(); err != nil {
+				return err
+			}
+			st, err = a.dir.statusWithOutputLimit(antigravityStdoutLimit)
+			if err != nil {
+				return errAntigravityRecords
+			}
+			if st.Phase != Running {
+				break
+			}
+			if time.Now().After(deadline) {
+				return errAntigravityUnconfirmed
+			}
+			time.Sleep(20 * time.Millisecond)
+		}
+	}
+	hold, hasHold, err := turnDir.AntigravityACPHold()
+	if err != nil {
+		return errAntigravityRecords
+	}
+	if hasHold {
+		if hold.Turn != turn {
+			return errAntigravityRecords
+		}
+		if err := a.dir.rememberAntigravitySession(hold.SessionID); err != nil {
+			return err
+		}
+	}
+	b, _ := json.Marshal(struct {
+		Version int    `json:"version"`
+		Turn    string `json:"turn"`
+	}{1, turn})
+	if created, err := turnDir.publishAntigravityOnce(antigravityClearedName, b); err != nil || !created {
+		return errAntigravityRecords
+	}
+	return nil
 }
 
 // AdoptInteraction implements adapter.InteractionAdopter for the current turn.

@@ -1,0 +1,481 @@
+// Command keepgoing keeps long-running coding-agent loops going.
+package main
+
+import (
+	"context"
+	"flag"
+	"fmt"
+	"io"
+	"os"
+	"os/signal"
+	"strings"
+	"syscall"
+	"time"
+
+	"github.com/looptender/looptender/internal/adapter/runner"
+	"github.com/looptender/looptender/internal/config"
+	"github.com/looptender/looptender/internal/report"
+	rd "github.com/looptender/looptender/internal/rundiscovery"
+)
+
+// version is set at release time with -ldflags "-X main.version=...".
+var version = "dev"
+
+// Exit codes. 75 means "skipped, try later", matching EX_TEMPFAIL.
+const (
+	exitOK      = 0
+	exitFailed  = 1
+	exitUsage   = 2
+	exitSkipped = 75
+)
+
+const usage = `keepgoing keeps a coding-agent loop going.
+
+Usage:
+  keepgoing <command> [flags]
+
+Supervision (read -c FILE; default ./looptender.yaml, or ./keepgoing.yaml when only that is there):
+  tick                     Run one pass and exit (cron, launchd, CI, BB automations)
+  start                    Validate, enable, and run (--foreground or --background)
+  service install|remove|status  Manage a macOS/Linux user service
+  daemon                   Run passes on an interval; control changes act within seconds
+  status                   Show control, active target, window, and fallback health
+  context                  Show what a supervised session may know about its loop: owner, holds,
+                           bounds used and remaining, lane policy, session commands and retained
+                           authority (text or --json); read-only, no provider or daemon queries.
+                           --here finds the loop whose active target is the calling session
+                           (BB_THREAD_ID, else the working directory) instead of reading -c
+                           Opt-in timing preview only, not acted on; multi-step previews need
+                           the loop's own fallbacks file (standard routes exclude its allowance)
+  validate                 Check the configuration file and its fallbacks file
+  doctor                   Diagnose setup and recent checks without model calls
+  runs                     Show recorded runs, sends and chat/session references offline; follow one with --id (text or --json)
+  adapter check            Check one process status observation; no resume/stop or loop-state writes by this command
+  timeline                 Explain retained incident history offline; filter with --kind, --target, --since, --until (text or --json)
+
+Transfer planning:
+  transfer preview         Inspect a proposed BB move without changing it
+  transfer reconcile       Record an explicit private migration review checklist
+  transfer inventory       List a loop's target, lanes and progress worktrees, read-only
+  transfer apply|recover   Move a BB primary with an explicit recovery hold
+  transfer supersede       Permanently hold an obsolete BB loop after a manual move
+
+Local client discovery:
+  client status            Read a registered loop snapshot without controlling it
+  client pause|stop        Save a restrictive hold for a registered loop
+  client prepare-resume    Prepare a short-lived snapshot/ticket for review
+  client resume            Clear holds using an unchanged prepared ticket
+  accounts list|add|update|check|usage  Select private account contexts; explicit status only, no model calls
+  registry add|list|remove|reconcile  Register private loop references; never start supervision
+  migrate                  Say what moving the per-user directories from keepgoing/ to looptender/ would do;
+                           --apply moves them and leaves a link, --undo --apply moves them back
+  dock                     Serve the read-only keepgoing panel for every registered loop on 127.0.0.1
+  panel                    Open the keepgoing panel in your browser, starting it when needed; also status, stop, list
+
+Goal metadata:
+  assignment inventory|review|handoff|acknowledge|ready|reconcile-wake|show  Explicit BB assignment evidence (opt-in; no dispatch)
+  goal create|revise|show   Record private, revisioned goal metadata
+
+Control:
+  enable | disable         Turn supervision on or off (nothing is sent while off)
+                           enable, resume and tick take --routine source/routine[/invocation]
+                           to record which scheduler entry and trigger called them
+  pause | resume           Pause; resume also clears stop, awaiting-user, and completion
+  stop                     Stop the running session on the next pass, then send nothing
+  complete                 Mark the task finished; hold until resume
+  await-user               Mark the loop as waiting for a person
+  session reset            Forget a headless target's saved session, so its next turn starts
+                           a new conversation on purpose (--target NAME; default the active one)
+  session clear-unconfirmed
+                           Clear an unconfirmed Antigravity turn record after a crash,
+                           preserving any saved session and holds (--target NAME)
+  retarget <id|primary>    Point the loop at a fallback or back at the primary
+                           (--discard-pending-thread: give up on an unsettled BB thread creation)
+
+Fallbacks:
+  fallbacks add            Guide adding a provider, account or model; preview, then confirm
+  fallbacks handoff on|off Turn automatic handoff for rate limits on or off
+  fallbacks remove ID      Take a fallback out of the loop; preview, then confirm
+  fallbacks move ID --to N Change a fallback's place in the handoff order
+  fallbacks check          Probe candidates now (--dry-run previews; --id ID, --exact)
+  fallbacks list           Show recorded health and the redundancy picture
+                           Every fallbacks command takes --loop NAME in place of -c
+  routes list              Show the standard route list and each registered loop's routes
+  routes add|move|remove|off|on
+                           Change the standard route list (a person only), or with
+                           --loop NAME a loop's own list; preview, then confirm
+  routes check             Validate the standard list; --loop NAME [ID] probes that loop's routes
+  routes follow-standard | own
+                           Make a loop follow the standard list, or keep a copy of it as its own
+
+Reporting:
+  report test              Send a test webhook (--dry-run prints it instead)
+  telegram setup|status|test|poll|disconnect
+                           Pair and run a personal Telegram bot over outbound HTTPS
+
+Tools (no config needed):
+  init                     Guide setup of a disabled loop outside the checkout
+  pr-backlog               Check configured GitHub PR WIP policy (read-only)
+  ci-wait                  Wait for every CI workflow on a PR head or exact commit
+  net-retry -- cmd...      Rerun a network command only while the network is down
+  version                  Print the version
+
+Exit codes: 0 ok, 1 failed, 2 usage or config error, 75 skipped (lock held or yielded).
+`
+
+func main() {
+	// Headless turns run through a copy of this binary on every platform;
+	// this returns immediately for ordinary CLI invocations.
+	runner.MaybeRunTurn()
+	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	code := run(ctx, os.Args[1:], os.Stdout, os.Stderr)
+	cancel()
+	os.Exit(code)
+}
+
+type env struct {
+	ctx    context.Context
+	stdout io.Writer
+	stderr io.Writer
+}
+
+// routineKey carries the scheduler identity from --routine on the command's
+// context. It is recorded in the run graph only.
+type routineKey struct{}
+
+// routineIgnoredKey marks a tick whose --routine value could not be recorded.
+type routineIgnoredKey struct{}
+
+func suppliedRoutine(ctx context.Context) rd.RoutineRef {
+	r, _ := ctx.Value(routineKey{}).(rd.RoutineRef)
+	return r
+}
+
+func (e env) errf(format string, a ...any) { fmt.Fprintf(e.stderr, format+"\n", a...) }
+
+func run(ctx context.Context, args []string, stdout, stderr io.Writer) int {
+	e := env{ctx: ctx, stdout: stdout, stderr: stderr}
+	if len(args) == 0 || args[0] == "-h" || args[0] == "--help" || args[0] == "help" {
+		fmt.Fprint(stderr, usage)
+		return exitUsage
+	}
+	cmd, rest := args[0], args[1:]
+	switch cmd {
+	case "client":
+		return clientCommand(e, rest)
+	case "registry":
+		return registryCommand(e, rest)
+	case "migrate":
+		return migrateCommand(e, rest)
+	case "accounts":
+		return accountsCommand(e, rest, accountExec)
+	case "routes":
+		return routesCommand(e, rest)
+	case "transfer":
+		if len(rest) > 0 && rest[0] == "reconcile" {
+			return transferReconcileCommand(e, rest, doctorExec, doctorExecLimit(inventoryListLimit))
+		}
+		if len(rest) > 0 && rest[0] == "inventory" {
+			// A lane listing is about 1.5 KB per lane, so 200 lanes need
+			// more than doctor's 64 KiB.
+			return transferInventoryCommand(e, rest, doctorExec, doctorExecLimit(inventoryListLimit))
+		}
+		return transferCommand(e, rest, doctorExec)
+	case "assignment":
+		return assignmentCommand(e, rest, doctorExecLimit(inventoryListLimit))
+	case "goal":
+		return goalCommand(e, rest)
+	case "service":
+		return serviceCommand(e, rest, localServiceHost())
+	case "__service-daemon":
+		return serviceDaemon(e, rest)
+	case "start":
+		return startCommand(e, rest, nil)
+	case "__start-background":
+		return startChild(e, rest)
+	case "timeline":
+		return timelineCommand(e, rest)
+	case "runs":
+		return runsCommand(e, rest)
+	case "adapter":
+		return adapterCommand(e, rest)
+	case "dock":
+		return dockCommand(e, rest)
+	case "panel":
+		return panelCommand(e, rest)
+	case "__panel-server":
+		return panelServerCommand(e, rest)
+	case "telegram":
+		return telegramCommand(e, rest)
+	case "doctor":
+		return doctor(e, rest, doctorExec)
+	case "init":
+		return initLoop(e, rest)
+	case "version":
+		fmt.Fprintln(stdout, version)
+		return exitOK
+	case "pr-backlog":
+		return prBacklogCommand(e, rest, nil)
+	case "ci-wait":
+		return ciWait(e, rest)
+	case "net-retry":
+		return netRetry(e, rest)
+	case "fallbacks", "report", "session":
+		if len(rest) == 0 {
+			e.errf("%s needs a subcommand; see keepgoing help", cmd)
+			return exitUsage
+		}
+		if cmd == "fallbacks" {
+			args, code, ok := fallbacksByLoop(e, rest[0], rest[1:])
+			if !ok {
+				return code
+			}
+			switch rest[0] {
+			case "add":
+				return fallbacksAddCommand(e, args)
+			case "handoff", "remove", "move":
+				return fallbacksManageCommand(e, rest[0], args)
+			}
+			rest = append([]string{rest[0]}, args...)
+		}
+		cmd, rest = cmd+" "+rest[0], rest[1:]
+	}
+	positional, rest := splitPositional(rest)
+	fs := flag.NewFlagSet(cmd, flag.ContinueOnError)
+	fs.SetOutput(stderr)
+	f := cliFlags{
+		cfgPath:     fs.String("c", "", configFlagHelp("path to the config file")),
+		asJSON:      fs.Bool("json", false, "print machine-readable JSON"),
+		dryRun:      fs.Bool("dry-run", false, "tick/daemon: record decisions only; fallbacks check/report test: preview only"),
+		now:         fs.String("now", "", "RFC 3339 time to use instead of the clock"),
+		reviewFile:  fs.String("review-file", "", "complete: bounded private whole-objective and assignment review JSON"),
+		note:        fs.String("note", "", "a short note stored in control.json"),
+		id:          fs.String("id", "", "fallbacks check: only this candidate"),
+		exact:       fs.Bool("exact", false, "fallbacks check: probe the target model, not the cheap one"),
+		discard:     fs.Bool("discard-pending-thread", false, "retarget: give up on a BB thread creation whose outcome is unknown, after checking BB for the thread yourself"),
+		takeOver:    fs.Bool("take-over", false, "enable/daemon: explicitly transfer loop ownership; validate: preview transfer eligibility"),
+		keepStop:    fs.Bool("keep-stop", false, "resume: clear the other holds and settle a brief hold, but keep a requested stop"),
+		routine:     fs.String("routine", "", "enable/resume/tick: scheduler identity to record with the run, as source/routine[/invocation]"),
+		staleAfter:  fs.Duration("stale-after", defaultStaleAfter, "status: age at which recorded history is stale"),
+		client:      fs.String("client", "", "status: the calling program's NAME@VERSION (bb-plugin, macos-menu), recorded for the panel's Versions view"),
+		allowShare:  fs.Bool("allow-second-loop", false, "enable: turn this loop on even though another enabled loop supervises the same session"),
+		lanes:       fs.Bool("lanes", false, "stop: also stop the lanes, the conversations the supervised one started and theirs"),
+		immediately: fs.Bool("immediately", false, "stop: carry the stop out in this command instead of leaving it to the next check"),
+		dropQueued:  fs.Bool("drop-queued", false, "stop --lanes: also delete the messages queued in lanes that have not started or are idle; their text is not kept"),
+		target:      fs.String("target", "", "session reset: the target whose saved session is forgotten (default: the active target)"),
+		here:        fs.Bool("here", false, "context: show the loop whose active target is the calling session (BB_THREAD_ID, else the working directory) instead of reading -c"),
+	}
+	if err := fs.Parse(rest); err != nil {
+		return exitUsage
+	}
+	positional = append(positional, fs.Args()...)
+	if *f.reviewFile != "" && cmd != "complete" {
+		e.errf("--review-file is only supported by complete")
+		return exitUsage
+	}
+	if *f.takeOver && cmd != "enable" && cmd != "daemon" && cmd != "validate" {
+		e.errf("--take-over is only supported by enable, daemon, and validate")
+		return exitUsage
+	}
+	if (*f.lanes || *f.immediately || *f.dropQueued) && cmd != "stop" {
+		e.errf("--lanes, --immediately and --drop-queued are only supported by stop")
+		return exitUsage
+	}
+	if *f.dropQueued && !*f.lanes {
+		e.errf("--drop-queued is only supported with --lanes")
+		return exitUsage
+	}
+	if *f.client != "" && cmd != "status" {
+		e.errf("--client is only supported by status, client status and panel list")
+		return exitUsage
+	}
+	if *f.keepStop && cmd != "resume" {
+		e.errf("--keep-stop is only supported by resume")
+		return exitUsage
+	}
+	if *f.allowShare && cmd != "enable" {
+		e.errf("--allow-second-loop is only supported by enable, start and init")
+		return exitUsage
+	}
+	if *f.discard && cmd != "retarget" {
+		e.errf("--discard-pending-thread is only supported by retarget")
+		return exitUsage
+	}
+	if *f.here && cmd != "context" {
+		e.errf("--here is only supported by context")
+		return exitUsage
+	}
+	if *f.here {
+		// The caller, not a configuration, says which loop: -c is not read.
+		if len(positional) != 0 || *f.cfgPath != "" {
+			e.errf("usage: keepgoing context --here [--json]")
+			return exitUsage
+		}
+		now := time.Now()
+		if *f.now != "" {
+			var err error
+			if now, err = time.Parse(time.RFC3339, *f.now); err != nil {
+				e.errf("-now: %v", err)
+				return exitUsage
+			}
+		}
+		return contextHereCmd(e, now, *f.asJSON)
+	}
+	if *f.target != "" && cmd != "session reset" {
+		e.errf("--target is only supported by session reset")
+		return exitUsage
+	}
+	if *f.takeOver && *f.dryRun && cmd == "daemon" {
+		e.errf("daemon --take-over cannot be combined with --dry-run; use validate --take-over to preview")
+		return exitUsage
+	}
+	routineSet := false
+	fs.Visit(func(fl *flag.Flag) { routineSet = routineSet || fl.Name == "routine" })
+	if routineSet {
+		// Never echo the value: it is supplied by another program.
+		if cmd != "enable" && cmd != "resume" && cmd != "tick" {
+			e.errf("--routine is only supported by enable, resume, and tick")
+			return exitUsage
+		}
+		r, err := rd.ParseRoutine(*f.routine)
+		switch {
+		case err == nil:
+			e.ctx = context.WithValue(e.ctx, routineKey{}, r)
+		case cmd == "tick":
+			// The identity is diagnostic only. A scheduled check must still
+			// run when its scheduler sends a value keepgoing cannot record.
+			e.ctx = context.WithValue(e.ctx, routineIgnoredKey{}, true)
+		default:
+			e.errf("--routine takes source/routine or source/routine/invocation; each part is 1-128 letters, digits and . _ : @ -, starting with a letter or digit")
+			return exitUsage
+		}
+	}
+	if !configDefault(e, "config", fs, f.cfgPath) {
+		return exitUsage
+	}
+	cfg, err := config.Load(*f.cfgPath)
+	if err != nil {
+		e.errf("config: %v", err)
+		return exitUsage
+	}
+	now := time.Now()
+	if *f.now != "" {
+		if now, err = time.Parse(time.RFC3339, *f.now); err != nil {
+			e.errf("-now: %v", err)
+			return exitUsage
+		}
+	}
+	switch cmd {
+	case "validate":
+		return validate(e, cfg, *f.cfgPath, *f.takeOver)
+	case "tick":
+		return tickOnce(e, cfg, now, *f.dryRun, *f.now != "")
+	case "daemon":
+		return daemon(e, cfg, *f.cfgPath, *f.dryRun, *f.takeOver)
+	case "status":
+		if *f.staleAfter <= 0 {
+			e.errf("status: stale-after must be positive")
+			return exitUsage
+		}
+		code := status(e, cfg, now, *f.asJSON, *f.staleAfter)
+		noteClient(*f.client, "")
+		return code
+	case "context":
+		if len(positional) != 0 {
+			e.errf("usage: keepgoing context [-c looptender.yaml | --here] [--json]")
+			return exitUsage
+		}
+		return contextCmd(e, cfg, *f.cfgPath, now, *f.asJSON)
+	case "enable":
+		// A second loop on a session another enabled loop supervises would
+		// prompt it too: refused unless asked for.
+		if !checkSecondLoop(e, cfg, "enable", *f.allowShare) {
+			return exitFailed
+		}
+		code := controlCmd(e, cfg, cmd, *f.note, *f.takeOver)
+		if code == exitOK {
+			noteSupervisor(cfg)
+		}
+		return code
+	case "stop":
+		return stopCmd(e, cfg, *f.note, *f.lanes, *f.dropQueued, *f.immediately)
+	case "complete":
+		return completionCommand(e, cfg, *f.note, *f.reviewFile)
+	case "disable", "pause", "resume", "await-user":
+		return controlCmd(e, cfg, cmd, *f.note, *f.takeOver, *f.keepStop)
+	case "session reset":
+		if *f.dryRun {
+			e.errf("session reset does not support --dry-run; no session reset")
+			return exitUsage
+		}
+		if len(positional) != 0 {
+			e.errf("usage: looptender session reset [--target NAME] [-c looptender.yaml]")
+			return exitUsage
+		}
+		return sessionReset(e, cfg, *f.target, *f.note, *f.asJSON)
+	case "session clear-unconfirmed":
+		if *f.dryRun {
+			e.errf("session clear-unconfirmed does not support --dry-run; unconfirmed turn not cleared")
+			return exitUsage
+		}
+		if len(positional) != 0 {
+			e.errf("usage: looptender session clear-unconfirmed [--target NAME] [-c looptender.yaml]")
+			return exitUsage
+		}
+		return sessionClearUnconfirmed(e, cfg, *f.target, *f.note, *f.asJSON)
+	case "retarget":
+		if len(positional) != 1 {
+			e.errf("usage: keepgoing retarget <candidate-id|primary> [--discard-pending-thread] [-c looptender.yaml]")
+			return exitUsage
+		}
+		return retarget(e, cfg, positional[0], *f.note, *f.discard)
+	case "fallbacks check":
+		if len(positional) != 0 {
+			e.errf("fallbacks check: use --id to select a candidate; positional arguments are not accepted")
+			return exitUsage
+		}
+		return fallbacksCheck(e, cfg, now, *f.id, *f.exact, *f.asJSON, *f.dryRun)
+	case "fallbacks list":
+		return fallbacksList(e, cfg, now, *f.asJSON)
+	case "report test":
+		return reportTest(e, cfg, *f.dryRun)
+	}
+	e.errf("unknown command %q\n\n%s", cmd, usage)
+	return exitUsage
+}
+
+type cliFlags struct {
+	staleAfter                      *time.Duration
+	cfgPath, now, note, id, routine *string
+	reviewFile                      *string
+	client                          *string
+	target                          *string
+	here                            *bool
+	asJSON, dryRun, exact, takeOver *bool
+	discard, allowShare, keepStop   *bool
+	lanes, immediately, dropQueued  *bool
+}
+
+// splitPositional lets a positional argument come before the flags, as in
+// `keepgoing retarget codex-main -c loop.yaml`.
+func splitPositional(args []string) ([]string, []string) {
+	var pos []string
+	for len(args) > 0 && !strings.HasPrefix(args[0], "-") {
+		pos = append(pos, args[0])
+		args = args[1:]
+	}
+	return pos, args
+}
+
+// reporter builds the configured webhook reporter. A misconfigured report
+// is a warning, never a reason to skip supervision.
+func reporter(e env, cfg *config.Config) report.Reporter {
+	if cfg.Loop.Report == nil {
+		return report.Nop{}
+	}
+	w, err := report.NewRecorded(*cfg.Loop.Report, cfg.Loop.StateDir)
+	if err != nil {
+		e.errf("warning: reports disabled: %v", err)
+	}
+	return w
+}

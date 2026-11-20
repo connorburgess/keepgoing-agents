@@ -11,10 +11,10 @@ import (
 	"strings"
 	"time"
 
-	"github.com/connorburgess/keepgoing-agents/internal/adapter"
-	"github.com/connorburgess/keepgoing-agents/internal/decide"
-	"github.com/connorburgess/keepgoing-agents/internal/evidence"
-	"github.com/connorburgess/keepgoing-agents/internal/snapshot"
+	"github.com/looptender/looptender/internal/adapter"
+	"github.com/looptender/looptender/internal/decide"
+	"github.com/looptender/looptender/internal/evidence"
+	"github.com/looptender/looptender/internal/snapshot"
 )
 
 // bb returns log events oldest first and pages forward with --after-seq, so
@@ -25,6 +25,16 @@ import (
 const pageSize = 500
 
 // Cursor is the persisted scan position and summary for one thread.
+// fallbackReason decodes BB's provider/modelFallback reason, a closed enum
+// ("refusal" or "provider"), and keeps only whether it is "refusal". No text
+// of the field is kept.
+type fallbackReason bool
+
+func (r *fallbackReason) UnmarshalJSON(b []byte) error {
+	*r = string(b) == `"refusal"`
+	return nil
+}
+
 type Cursor struct {
 	RetrySchema    int    `json:"retrySchema,omitempty"`
 	ProviderThread string `json:"providerThread,omitempty"`
@@ -38,6 +48,12 @@ type Cursor struct {
 	Thread          string `json:"thread"`
 	LastSeq         int64  `json:"lastSeq"`
 	TurnSeq         int64  `json:"turnSeq,omitempty"` // latest turn start
+	// TurnRequests counts client/turn/requested events that are not a
+	// retry of an earlier request, and TurnStarts counts turn/started
+	// events, since the scan began. Only the type and the retry field are
+	// read. They are the idle spacing rule's turn facts.
+	TurnRequests int64 `json:"turnRequests,omitempty"`
+	TurnStarts   int64 `json:"turnStarts,omitempty"`
 	// TurnStartedMs is BB's own createdAt of the latest turn/started event, in
 	// epoch milliseconds, unbounded. It is compared only with other BB times.
 	TurnStartedMs int64             `json:"turnStartedMs,omitempty"`
@@ -61,7 +77,11 @@ type Cursor struct {
 	// cannot be trusted for this turn: an item without an ID or type, an item
 	// type not recognised, or more open items than are kept. A turn with an
 	// open or uncertain tool item is waiting on a tool, not on the model.
-	TurnStartSeq   int64           `json:"turnStartSeq,omitempty"`
+	TurnStartSeq int64 `json:"turnStartSeq,omitempty"`
+	// FallbackSeq is the sequence of the latest provider/modelFallback event
+	// whose reason is refusal: the provider answered with another model after
+	// the requested one declined. Only the sequence is kept.
+	FallbackSeq    int64           `json:"fallbackSeq,omitempty"`
 	OpenTools      map[string]bool `json:"openTools,omitempty"`
 	ToolsUncertain bool            `json:"toolsUncertain,omitempty"`
 }
@@ -223,9 +243,13 @@ func (c *Cursor) apply(e event, seenAt time.Time) {
 	case e.Type == "client/turn/requested":
 		// Input can be queued behind a reconnecting turn; it is not recovery.
 		c.TurnSeq = e.Seq
+		if !retriedRequest(e) {
+			c.TurnRequests++
+		}
 	case e.Type == "turn/started":
 		// A new turn makes earlier errors stale.
 		c.TurnSeq, c.Error = e.Seq, nil
+		c.TurnStarts++
 		c.TurnStartSeq, c.OpenTools, c.ToolsUncertain = e.Seq, nil, false
 		c.TurnStartedMs = 0
 		if at := e.time(); !at.IsZero() {
@@ -253,7 +277,7 @@ func (c *Cursor) apply(e event, seenAt time.Time) {
 			if c.ProviderThread == "" {
 				c.ProviderThread = c.ref(d.ProviderThread)
 			}
-			c.Error = &errorSignal{Evidence: evidence.Clean(evidence.Detail{Source: "bb_provider_error", Category: d.Info.Category, Code: d.Info.ProviderCode, HTTPStatus: d.Info.HTTPStatus}), Seq: e.Seq, Class: firstKnown(d.Info.Category, httpCode(d.Info.HTTPStatus), d.Info.ProviderCode), WillRetry: d.WillRetry != nil && *d.WillRetry, RetryKnown: d.WillRetry != nil, At: when}
+			c.setError(&errorSignal{Evidence: evidence.Clean(evidence.Detail{Source: "bb_provider_error", Category: d.Info.Category, Code: d.Info.ProviderCode, HTTPStatus: d.Info.HTTPStatus}), Seq: e.Seq, Class: firstKnown(d.Info.Category, httpCode(d.Info.HTTPStatus), d.Info.ProviderCode), WillRetry: d.WillRetry != nil && *d.WillRetry, RetryKnown: d.WillRetry != nil, At: when})
 		}
 	case e.Type == "item/agentMessage/delta" || e.Type == "item/started" || e.Type == "turn/completed":
 		// Consume event metadata only. A new item the model produced is the
@@ -299,7 +323,15 @@ func (c *Cursor) apply(e event, seenAt time.Time) {
 			if e.Type != "system/error" {
 				source = "bb_failure_event"
 			}
-			c.Error = &errorSignal{Evidence: evidence.Clean(evidence.Detail{Source: source, Code: d.Code}), Seq: e.Seq, Class: adapter.ClassifyCode(d.Code), At: when}
+			c.setError(&errorSignal{Evidence: evidence.Clean(evidence.Detail{Source: source, Code: d.Code}), Seq: e.Seq, Class: adapter.ClassifyCode(d.Code), At: when})
+		}
+	case e.Type == "provider/modelFallback":
+		var d struct {
+			ProviderThread string         `json:"providerThreadId"`
+			Refusal        fallbackReason `json:"reason"`
+		}
+		if json.Unmarshal(e.Data, &d) == nil && bool(d.Refusal) && (d.ProviderThread == "" || c.ProviderThread == "" || c.ref(d.ProviderThread) == c.ProviderThread) {
+			c.FallbackSeq = e.Seq
 		}
 	case e.Type == "provider/rateLimits/updated":
 		c.Blocked, c.ResetsAt = rateLimits(e.Data)
@@ -336,7 +368,7 @@ func (a *Adapter) loadCursor() Cursor {
 	}
 	var c Cursor
 	if p := a.cursorPath(); p != "" {
-		if b, err := snapshot.ReadFile(p); err == nil && json.Unmarshal(b, &c) == nil && c.Thread == a.cfg.Thread {
+		if b, err := snapshot.ReadRecord(p); err == nil && json.Unmarshal(b, &c) == nil && c.Thread == a.cfg.Thread {
 			return c
 		}
 	}
@@ -364,15 +396,35 @@ func (a *Adapter) saveCursor(c Cursor) bool {
 	return true
 }
 
+// setError records a later error of the current turn. A refusal or a
+// restriction stays for the rest of the turn: a later error event, such as a
+// rate limit the provider reports after declining, does not replace it, so a
+// declined turn cannot be read as a limit and handed off. A restriction also
+// outranks a refusal. A new turn clears it, and so does the model
+// answering again in this turn (see the recovery events above).
+func (c *Cursor) setError(sig *errorSignal) {
+	if c.Error != nil && adapter.Prefer(c.Error.Class, sig.Class) == c.Error.Class && decide.Declined(c.Error.Class) && c.Error.Class != sig.Class {
+		return
+	}
+	c.Error = sig
+}
+
+// summarySchema versions how a summary is derived from the log. 2: a
+// forbidden or declined provider error is its own class, so a summary that
+// cached such an error as auth is derived again.
+const summarySchema = 2
+
 // scan reads every event after the cursor and returns the updated summary.
 // ok is false when the log could not be read; the summary is then stale.
 func (a *Adapter) scan(ctx context.Context) (Cursor, bool) {
 	c := a.loadCursor()
-	if c.RetrySchema != 1 {
+	if c.RetrySchema != summarySchema {
 		// Rebuild old summaries once: they may have consumed recovery events or
-		// cleared errors on queued input. PollWake retains the old LastSeq as
-		// its delivery watermark, so this scan cannot replay old child notices.
-		c = Cursor{Thread: a.cfg.Thread, RetrySchema: 1}
+		// cleared errors on queued input, and they keep the error class as it
+		// was derived when the event was read. PollWake retains the old
+		// LastSeq as its delivery watermark, so this scan cannot replay old
+		// child notices.
+		c = Cursor{Thread: a.cfg.Thread, RetrySchema: summarySchema}
 	}
 	seenAt := a.now().UTC()
 	if c.LastSeq > 0 && c.LastEventAt.IsZero() {
@@ -409,4 +461,13 @@ func (a *Adapter) scan(ctx context.Context) (Cursor, bool) {
 		}
 	}
 	return c, false // An incomplete scan must not authorize an early check.
+}
+
+// retriedRequest reports whether a turn request is a provider's retry of an
+// earlier one, from its structured retryOfRequestId field only.
+func retriedRequest(e event) bool {
+	var d struct {
+		RetryOf string `json:"retryOfRequestId"`
+	}
+	return json.Unmarshal(e.Data, &d) == nil && d.RetryOf != ""
 }

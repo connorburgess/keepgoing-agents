@@ -70,6 +70,27 @@ func TestParseRejects(t *testing.T) {
 	}
 }
 
+// A refusal or a restriction is a class an adapter may report, and one a loop
+// can never fail over on: the configuration says why instead of treating it
+// as a misspelled class.
+func TestDeclinedClassesAreReportableButNeverFailoverClasses(t *testing.T) {
+	for _, class := range []string{"restricted", "refused"} {
+		_, err := Parse([]byte(valid + "  errors:\n    failover_on: [rate_limit, " + class + "]\n"))
+		if err == nil || !strings.Contains(err.Error(), "is not a limit and never causes a handoff") {
+			t.Errorf("failover_on %s: %v", class, err)
+		}
+		reported := strings.Replace(strings.Replace(valid, "adapter: bb", "adapter: process", 1),
+			"  bb:\n    thread: thr_example123\n",
+			"  process:\n    status_command: [st]\n    resume_command: [re]\n    exit_codes: {78: "+class+"}\n", 1)
+		if _, err := Parse([]byte(reported)); err != nil {
+			t.Errorf("exit_codes mapped to %s: %v", class, err)
+		}
+		if !ValidErrorClass(class) {
+			t.Errorf("%s is not a reportable class", class)
+		}
+	}
+}
+
 func TestDurationParsing(t *testing.T) {
 	src := valid + "  progress:\n    stall_after: 45m\n    min_wake_interval: 2h\n"
 	cfg, err := Parse([]byte(src))
@@ -337,5 +358,40 @@ func TestReportVariableNameDefaults(t *testing.T) {
 	}
 	if r := cfg.Loop.Report; r.URLEnv != "KEEPGOING_WEBHOOK_URL" || r.SecretEnv != "KG_SECRET" {
 		t.Fatalf("configured: %q %q", r.URLEnv, r.SecretEnv)
+	}
+}
+
+func TestPromptGoalOnChangeNeedsPromptGoal(t *testing.T) {
+	if _, err := Parse([]byte(valid + "  prompt_goal_on_change: true\n")); err == nil || !strings.Contains(err.Error(), "prompt_goal_on_change needs loop.prompt_goal") {
+		t.Fatalf("without prompt_goal: %v", err)
+	}
+	cfg, err := Parse([]byte(valid + "  prompt_goal: true\n  prompt_goal_on_change: true\n"))
+	if err != nil || !cfg.Loop.PromptGoal || !cfg.Loop.PromptGoalOnChange {
+		t.Fatalf("with prompt_goal: %+v %v", cfg, err)
+	}
+}
+
+func TestSessionpipeReportingRequiresExplicitBearer(t *testing.T) {
+	if _, err := Parse([]byte(valid + "  report:\n    format: sessionpipe\n    scheme: bearer\n")); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := Parse([]byte(valid + "  report:\n    format: sessionpipe\n")); err == nil || !strings.Contains(err.Error(), "requires bearer") {
+		t.Fatalf("%v", err)
+	}
+}
+
+func TestTelegramReportingDefaultsAndValidation(t *testing.T) {
+	cfg, err := Parse([]byte(valid + "  report:\n    format: telegram\n"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if r := cfg.Loop.Report; r.Scheme != "telegram-bot" || r.SecretEnv != "LOOPTENDER_TELEGRAM_BOT_TOKEN" || r.URLEnv != "LOOPTENDER_TELEGRAM_API_URL" {
+		t.Fatalf("unexpected telegram defaults: %+v", r)
+	}
+	if _, err := Parse([]byte(valid + "  report:\n    format: telegram\n    scheme: bearer\n")); err == nil || !strings.Contains(err.Error(), "requires telegram-bot") {
+		t.Fatalf("expected scheme mismatch error, got %v", err)
+	}
+	if _, err := Parse([]byte(valid + "  report:\n    format: standard\n    scheme: telegram-bot\n")); err == nil || !strings.Contains(err.Error(), "requires telegram format") {
+		t.Fatalf("expected format mismatch error, got %v", err)
 	}
 }

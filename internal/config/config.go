@@ -1,10 +1,13 @@
-// Package config loads and validates keepgoing.yaml and fallbacks.yaml.
+// Package config loads and validates a loop's configuration file
+// (looptender.yaml, or keepgoing.yaml from before the rename) and
+// fallbacks.yaml.
 package config
 
 import (
 	"bytes"
 	"errors"
 	"fmt"
+	"math"
 	"net/url"
 	"os"
 	"path/filepath"
@@ -14,7 +17,7 @@ import (
 
 	"gopkg.in/yaml.v3"
 
-	"github.com/connorburgess/keepgoing-agents/internal/envvar"
+	"github.com/looptender/looptender/internal/envvar"
 )
 
 // Duration is a time.Duration that unmarshals from strings such as "30m".
@@ -37,7 +40,7 @@ func (d *Duration) UnmarshalYAML(n *yaml.Node) error {
 // MarshalYAML writes the duration back as a string.
 func (d Duration) MarshalYAML() (any, error) { return d.String(), nil }
 
-// Config is the top-level keepgoing.yaml document.
+// Config is the top-level document of a loop's configuration file.
 type Config struct {
 	Version int  `yaml:"version"`
 	Loop    Loop `yaml:"loop"`
@@ -45,26 +48,47 @@ type Config struct {
 	// FallbackSet is loaded from Loop.Fallbacks by Load; nil when unset.
 	FallbackSet *Fallbacks `yaml:"-"`
 	// RouteList says where the loop's other routes came from. Load derives it.
-	RouteList    RouteStatus `yaml:"-"`
-	routesSource sourceSnapshot
-	source       sourceSnapshot
+	RouteList RouteStatus `yaml:"-"`
+	// TimingStepsUnavailable describes externally followed routes that cannot
+	// currently support the configured preview; explicit timing syntax still validates.
+	TimingStepsUnavailable string `yaml:"-"`
+	routesSource           sourceSnapshot
+	source                 sourceSnapshot
+	readAt                 time.Time // successful configuration load, private runtime metadata
 }
 
 // Loop describes one supervised agent loop.
 type Loop struct {
-	Name     string `yaml:"name"`
-	StateDir string `yaml:"state_dir"`
-	Agent    `yaml:",inline"`
+	// AssignmentLifecycle enables explicit coordinator assignment reconciliation and await-user checks.
+	AssignmentLifecycle    bool                    `yaml:"assignment_lifecycle,omitempty"`
+	AssignmentCompletion   bool                    `yaml:"assignment_completion,omitempty"`
+	AssignmentCoordination *AssignmentCoordination `yaml:"assignment_coordination,omitempty"`
+	Name                   string                  `yaml:"name"`
+	StateDir               string                  `yaml:"state_dir"`
+	Agent                  `yaml:",inline"`
 
-	Prompt      string `yaml:"prompt,omitempty"`
-	PromptFile  string `yaml:"prompt_file,omitempty"`
-	PromptGoal  bool   `yaml:"prompt_goal,omitempty"`
-	HandoffFile string `yaml:"handoff_file,omitempty"`
+	Prompt     string `yaml:"prompt,omitempty"`
+	PromptFile string `yaml:"prompt_file,omitempty"`
+	PromptGoal bool   `yaml:"prompt_goal,omitempty"`
+	// PromptGoalOnChange sends the goal in full only when it may be new to
+	// the conversation, and otherwise one line naming its ID and revision.
+	// It requires PromptGoal.
+	PromptGoalOnChange bool `yaml:"prompt_goal_on_change,omitempty"`
+	// PRBacklog is opt-in GitHub evidence on ordinary wakes, never a decision gate.
+	PRBacklog *PRBacklog `yaml:"pr_backlog,omitempty"`
+	// PromptContext appends the loop's supervision context (see
+	// internal/loopcontext) to wakes, re-prompts and handoff briefs, when it
+	// is new to the conversation or has changed. Off by default.
+	PromptContext bool   `yaml:"prompt_context,omitempty"`
+	HandoffFile   string `yaml:"handoff_file,omitempty"`
 
-	Progress  Progress   `yaml:"progress"`
-	Window    *Window    `yaml:"window,omitempty"`
-	Errors    ErrorRules `yaml:"errors"`
-	Fallbacks string     `yaml:"fallbacks,omitempty"`
+	Progress Progress   `yaml:"progress"`
+	Window   *Window    `yaml:"window,omitempty"`
+	Errors   ErrorRules `yaml:"errors"`
+	// Refusal sets when a streak of refused turns asks a person instead of
+	// continuing.
+	Refusal   RefusalRules `yaml:"refusal,omitempty"`
+	Fallbacks string       `yaml:"fallbacks,omitempty"`
 	// Routes is "standard" for a loop that follows the person's standard
 	// route list. It excludes Fallbacks, which is a list of the loop's own.
 	Routes string `yaml:"routes,omitempty"`
@@ -89,9 +113,12 @@ type Loop struct {
 	// Probe says how to confirm the primary works; used by switch-back.
 	Probe Probe `yaml:"probe"`
 	// Timing is usage-aware timing for the loop's first route. Off by
-	// default. Until the step decision exists (roadmap U4) it only collects
-	// usage readings of the first route's allowance; it never changes routes.
+	// default. It collects usage readings of the first route's allowance and,
+	// with steps, moves the loop between them at turn boundaries.
 	Timing *Timing `yaml:"timing,omitempty"`
+	// ContextWindow is the context-threshold reset, previewed only. Off
+	// unless reset_at is set.
+	ContextWindow *ContextWindow `yaml:"context_window,omitempty"`
 }
 
 // Timing collects usage readings of the first route's allowance by probing
@@ -107,10 +134,85 @@ type Timing struct {
 	NearReset Duration `yaml:"near_reset,omitempty"`
 	// ProbeEvery is the interval between timing probes of the first route.
 	ProbeEvery Duration `yaml:"probe_every,omitempty"`
+	// Steps are the routes on the first route's allowance timing may move
+	// between, cheapest to strongest, by ID: primary and fallbacks in the
+	// first route's group. The order is the person's; keepgoing never ranks
+	// models or effort levels. Without steps timing only collects readings.
+	Steps []string `yaml:"steps,omitempty"`
+	// Ceiling is the strongest step timing may use; the last step by default.
+	Ceiling string `yaml:"ceiling,omitempty"`
+	// UnusedAtLeast is the unused share near a reset that makes timing step
+	// up, and DownAt the projected use at reset that makes it step down.
+	UnusedAtLeast float64 `yaml:"unused_at_least,omitempty"`
+	DownAt        float64 `yaml:"down_at,omitempty"`
+	// MinOnStep is the least time between timing moves, except the return
+	// at a reset.
+	MinOnStep Duration `yaml:"min_on_step,omitempty"`
 }
 
 // TimingOn reports whether usage-aware timing is turned on for the loop.
 func (l Loop) TimingOn() bool { return l.Timing != nil && l.Timing.Enabled }
+
+// StepIndex is the position of a route among the steps, or -1.
+func (t Timing) StepIndex(id string) int {
+	for i, s := range t.Steps {
+		if s == id {
+			return i
+		}
+	}
+	return -1
+}
+
+// checkTimingSteps checks each step other than primary against the loaded
+// fallbacks: it must be a fallback on the first route's allowance (its
+// group), switched on. Timing never moves a loop to another allowance.
+func (c *Config) checkTimingSteps() error {
+	l := c.Loop
+	if !l.TimingOn() {
+		return nil
+	}
+	var errs []string
+	reasoning := false
+	for _, id := range l.Timing.Steps {
+		if id == "primary" {
+			continue
+		}
+		var cand *Candidate
+		if c.FallbackSet != nil {
+			if f, ok := c.FallbackSet.Find(id); ok {
+				cand = &f
+			}
+		}
+		switch {
+		case cand == nil:
+			errs = append(errs, fmt.Sprintf("loop.timing.steps: %q is not a fallback in %s", id, l.timingRouteSource()))
+		case cand.Group != l.Group:
+			errs = append(errs, fmt.Sprintf("loop.timing.steps: %q is on account group %q, not the first route's %q; timing only moves between routes on one allowance", id, cand.Group, l.Group))
+		case cand.Disabled:
+			errs = append(errs, fmt.Sprintf("loop.timing.steps: %q is switched off in %s", id, l.timingRouteSource()))
+		case l.BB != nil && (cand.Adapter != "bb" || cand.BB == nil || cand.BB.NewThread || cand.BB.Thread != l.BB.Thread):
+			errs = append(errs, fmt.Sprintf("loop.timing.steps: %q is not on the loop's own BB thread; a step must never start a new conversation", id))
+		case l.BB != nil && cand.BB.Model == "" && cand.BB.Reasoning == "":
+			errs = append(errs, fmt.Sprintf("loop.timing.steps: %q sets neither bb.model nor bb.reasoning, so stepping to it would change nothing", id))
+		default:
+			reasoning = reasoning || cand.BB != nil && cand.BB.Reasoning != ""
+		}
+	}
+	if reasoning && l.BB != nil && l.BB.Reasoning == "" {
+		errs = append(errs, "loop.timing.steps: a step sets bb.reasoning, so loop.bb.reasoning is needed too, so that returning to primary can set it back")
+	}
+	if len(errs) > 0 {
+		return fmt.Errorf("%s", strings.Join(errs, "; "))
+	}
+	return nil
+}
+
+func (l Loop) timingRouteSource() string {
+	if l.FollowsStandard() {
+		return "the resolved standard route list"
+	}
+	return l.Fallbacks
+}
 
 // Limits bound future supervisor work, not the lifetime of an agent turn.
 type Limits struct {
@@ -177,6 +279,32 @@ type Progress struct {
 	// default; 0 turns that fact's flag off. The flag only informs a person.
 	FlagAfterSends  *FlagCount `yaml:"flag_after_sends,omitempty"`
 	FlagAfterErrors *FlagCount `yaml:"flag_after_errors,omitempty"`
+	// IdleSpacing spaces idle wakes after which no structured fact changed.
+	// Nil, the default, is off: an idle session is woken at every check.
+	IdleSpacing *IdleSpacing `yaml:"idle_spacing,omitempty"`
+}
+
+// IdleSpacing is loop.progress.idle_spacing. After one idle wake that
+// changed nothing the next waits First; each further one doubles the wait,
+// up to Max. Unset fields take the defaults below.
+type IdleSpacing struct {
+	First Duration `yaml:"first,omitempty"`
+	Max   Duration `yaml:"max,omitempty"`
+}
+
+// Defaults and bounds of loop.progress.idle_spacing.
+const (
+	DefaultIdleSpacingFirst = 10 * time.Minute
+	DefaultIdleSpacingMax   = 2 * time.Hour
+	maxIdleSpacing          = 24 * time.Hour
+)
+
+// IdleSpacingWaits returns the first wait and the cap; both zero when off.
+func (p Progress) IdleSpacingWaits() (first, max time.Duration) {
+	if p.IdleSpacing == nil {
+		return 0, 0
+	}
+	return p.IdleSpacing.First.Duration, p.IdleSpacing.Max.Duration
 }
 
 // FlagCount is a whole number of events. YAML would otherwise read 2.5 as 2
@@ -246,7 +374,7 @@ type Report struct {
 	SecretFile string   `yaml:"secret_file,omitempty"`
 	Source     string   `yaml:"source,omitempty"`
 	Scheme     string   `yaml:"scheme,omitempty"` // standard-webhooks or bearer
-	Format     string   `yaml:"format,omitempty"` // standard or text
+	Format     string   `yaml:"format,omitempty"` // standard, text or sessionpipe
 	Events     []string `yaml:"events,omitempty"`
 	Timeout    Duration `yaml:"timeout,omitempty"`
 }
@@ -351,15 +479,18 @@ const (
 	DefaultSwitchBackRetry   = 30 * time.Minute
 	DefaultTimingNearReset   = 6 * time.Hour
 	DefaultTimingProbeEvery  = 12 * time.Hour
+	DefaultTimingMinOnStep   = 2 * time.Hour
+	DefaultTimingUnused      = 0.25
+	DefaultTimingDownAt      = 0.95
 )
 
 // ReportEvents lists the events a report may subscribe to.
-var ReportEvents = []string{"wake", "nudge", "reprompt", "handoff", "degraded", "recovered", "await_user", "complete", "stop", "error", "probe_failed", "switch_back", "network_wait", "limit_wait", "child_error", "child_recovery", "check_gap", "hung_turn", "test"}
+var ReportEvents = []string{"wake", "nudge", "reprompt", "handoff", "degraded", "recovered", "await_user", "complete", "stop", "error", "probe_failed", "switch_back", "network_wait", "limit_wait", "child_error", "child_recovery", "check_gap", "hung_turn", "refusal_streak", "timing", "test"}
 
 // DefaultReportEvents are sent when report.events is empty. limit_wait and
 // child_error are among them because, like await_user, they say a person may
 // be needed; an explicit list must name them (or all) to receive them.
-var DefaultReportEvents = []string{"handoff", "switch_back", "degraded", "recovered", "await_user", "limit_wait", "network_wait", "child_error", "child_recovery", "complete", "stop", "error"}
+var DefaultReportEvents = []string{"handoff", "switch_back", "timing", "degraded", "recovered", "await_user", "limit_wait", "network_wait", "child_error", "child_recovery", "refusal_streak", "complete", "stop", "error"}
 
 var (
 	nameRE = regexp.MustCompile(`^[a-z0-9][a-z0-9-]{0,63}$`)
@@ -384,6 +515,7 @@ func Load(path string) (*Config, error) {
 		return nil, fmt.Errorf("%s: %w", path, err)
 	}
 	cfg.source = snapshot(path, raw)
+	cfg.readAt = time.Now().UTC()
 	base := filepath.Dir(path)
 	l := &cfg.Loop
 	l.StateDir = resolve(base, l.StateDir)
@@ -420,6 +552,13 @@ func Load(path string) (*Config, error) {
 		}
 	} else if l.FollowsStandard() {
 		cfg.loadStandardRoutes()
+	}
+	if err := cfg.checkTimingSteps(); err != nil {
+		if !l.FollowsStandard() {
+			return nil, fmt.Errorf("%s: %w", path, err)
+		}
+		cfg.TimingStepsUnavailable = err.Error()
+		cfg.RouteList.Warnings = append(cfg.RouteList.Warnings, "timing preview unavailable: "+err.Error())
 	}
 	return cfg, nil
 }
@@ -499,6 +638,10 @@ func (c *Config) applyDefaults() {
 	if l.Progress.MaxNudges == 0 {
 		l.Progress.MaxNudges = DefaultMaxNudges
 	}
+	if s := l.Progress.IdleSpacing; s != nil {
+		setDur(&s.First, DefaultIdleSpacingFirst)
+		setDur(&s.Max, max(DefaultIdleSpacingMax, s.First.Duration))
+	}
 	if l.Errors.MaxReprompts == 0 {
 		l.Errors.MaxReprompts = DefaultMaxReprompts
 	}
@@ -513,9 +656,19 @@ func (c *Config) applyDefaults() {
 	}
 	setDur(&l.SwitchBack.MinAfter, DefaultSwitchBackAfter)
 	setDur(&l.SwitchBack.RetryEvery, DefaultSwitchBackRetry)
-	if l.Timing != nil {
-		setDur(&l.Timing.NearReset, DefaultTimingNearReset)
-		setDur(&l.Timing.ProbeEvery, DefaultTimingProbeEvery)
+	if t := l.Timing; t != nil {
+		setDur(&t.NearReset, DefaultTimingNearReset)
+		setDur(&t.ProbeEvery, DefaultTimingProbeEvery)
+		setDur(&t.MinOnStep, DefaultTimingMinOnStep)
+		if t.UnusedAtLeast == 0 {
+			t.UnusedAtLeast = DefaultTimingUnused
+		}
+		if t.DownAt == 0 {
+			t.DownAt = DefaultTimingDownAt
+		}
+		if t.Ceiling == "" && len(t.Steps) > 0 {
+			t.Ceiling = t.Steps[len(t.Steps)-1]
+		}
 	}
 	if l.Probe.Kind == "" {
 		switch l.Provider {
@@ -525,25 +678,43 @@ func (c *Config) applyDefaults() {
 			l.Probe.Kind = "codex"
 		}
 	}
+	if l.AssignmentCoordination != nil && l.AssignmentCoordination.MaxEvidenceAge.Duration == 0 {
+		l.AssignmentCoordination.MaxEvidenceAge.Duration = 30 * time.Minute
+	}
+	if l.PRBacklog != nil {
+		l.PRBacklog.defaults()
+	}
 	setDur(&l.Daemon.Interval, DefaultDaemonInterval)
 	l.tickTimeoutDefaulted = l.TickTimeout.Duration == 0
 	setDur(&l.TickTimeout, DefaultTickTimeout)
 	setDur(&l.Daemon.ControlPoll, DefaultControlPoll)
 	if r := l.Report; r != nil {
-		if r.URLEnv == "" {
-			r.URLEnv = envvar.WebhookURL.Name() // report also reads the earlier name
+		if r.Format == "" {
+			r.Format = "standard"
 		}
-		if r.SecretEnv == "" {
-			r.SecretEnv = envvar.WebhookSecret.Name()
+		if r.Format == "telegram" {
+			if r.URLEnv == "" {
+				r.URLEnv = "LOOPTENDER_TELEGRAM_API_URL"
+			}
+			if r.SecretEnv == "" {
+				r.SecretEnv = "LOOPTENDER_TELEGRAM_BOT_TOKEN"
+			}
+			if r.Scheme == "" {
+				r.Scheme = "telegram-bot"
+			}
+		} else {
+			if r.URLEnv == "" {
+				r.URLEnv = envvar.WebhookURL.Name() // report also reads the earlier name
+			}
+			if r.SecretEnv == "" {
+				r.SecretEnv = envvar.WebhookSecret.Name()
+			}
+			if r.Scheme == "" {
+				r.Scheme = "standard-webhooks"
+			}
 		}
 		if r.Source == "" {
 			r.Source = l.Name
-		}
-		if r.Scheme == "" {
-			r.Scheme = "standard-webhooks"
-		}
-		if r.Format == "" {
-			r.Format = "standard"
 		}
 		if len(r.Events) == 0 {
 			r.Events = DefaultReportEvents
@@ -603,11 +774,41 @@ func (c *Config) Validate() error {
 		}
 	}
 	errs = append(errs, l.Agent.validate("loop.")...)
+	if l.TimingOn() && len(l.Timing.Steps) > 0 {
+		// A step changes the model and effort of the loop's own conversation.
+		// It must never start a new one, so only BB loops can have steps for
+		// now: headless and Codex loops keep one session per route.
+		if l.Adapter != "bb" || l.BB == nil {
+			add("loop.timing.steps needs a loop on a BB thread for now: a step must never start a new conversation, and headless and Codex loops keep a separate session per route")
+		} else if len(l.Timing.Steps) > 1 && l.BB.Model == "" {
+			add("loop.timing.steps needs loop.bb.model, so that returning to primary can set the thread's model back")
+		}
+	}
+
 	if l.Prompt == "" && l.PromptFile == "" {
 		add("one of loop.prompt or loop.prompt_file is required")
 	}
 	if l.Prompt != "" && l.PromptFile != "" {
 		add("set only one of loop.prompt and loop.prompt_file")
+	}
+	if l.AssignmentCompletion && (!l.AssignmentLifecycle || l.Adapter != "bb" || l.BB == nil) {
+		add("loop.assignment_completion requires assignment_lifecycle and a BB primary")
+	}
+	if l.AssignmentLifecycle && (l.Adapter != "bb" || l.BB == nil) {
+		add("loop.assignment_lifecycle requires a BB primary")
+	}
+	if p := l.AssignmentCoordination; p != nil {
+		if !l.AssignmentLifecycle || l.Adapter != "bb" || l.BB == nil || p.MaxEvidenceAge.Duration < time.Minute || p.MaxEvidenceAge.Duration > 24*time.Hour {
+			add("loop.assignment_coordination requires assignment_lifecycle, a BB primary, and max_evidence_age between 1m and 24h")
+		}
+	}
+	if l.PRBacklog != nil {
+		if err := l.PRBacklog.Policy().Validate(); err != nil {
+			add("loop.pr_backlog: %v", err)
+		}
+	}
+	if l.PromptGoalOnChange && !l.PromptGoal {
+		add("loop.prompt_goal_on_change needs loop.prompt_goal: true")
 	}
 	if l.Progress.StallAfter.Duration < time.Minute {
 		add("loop.progress.stall_after must be at least 1m")
@@ -618,6 +819,14 @@ func (c *Config) Validate() error {
 	if l.Progress.MaxNudges < 1 {
 		add("loop.progress.max_nudges must be at least 1")
 	}
+	if s := l.Progress.IdleSpacing; s != nil {
+		if s.First.Duration < time.Minute {
+			add("loop.progress.idle_spacing.first must be at least 1m")
+		}
+		if s.Max.Duration < s.First.Duration || s.Max.Duration > maxIdleSpacing {
+			add("loop.progress.idle_spacing.max must be at least idle_spacing.first and at most 24h")
+		}
+	}
 	for _, f := range []struct {
 		name string
 		v    *FlagCount
@@ -626,6 +835,9 @@ func (c *Config) Validate() error {
 			add("loop.progress.%s must be from 0 (off) to %d", f.name, maxFlagAfter)
 		}
 	}
+	if a := l.Refusal.AskAfter; a != nil && (*a < 0 || *a > 1000) {
+		add("loop.refusal.ask_after must be 0 (never ask) to 1000")
+	}
 	if l.Errors.MaxReprompts < 1 {
 		add("loop.errors.max_reprompts must be at least 1")
 	}
@@ -633,7 +845,9 @@ func (c *Config) Validate() error {
 		add("loop.errors.report_wait_after must not be negative")
 	}
 	for _, class := range l.Errors.FailoverOn {
-		if !ValidErrorClass(class) || class == "none" || class == "unknown" {
+		if DeclinedClass(class) {
+			add("loop.errors.failover_on: %q is not allowed: a provider refusal or restriction is not a limit and never causes a handoff", class)
+		} else if !ValidErrorClass(class) || class == "none" || class == "unknown" {
 			add("loop.errors.failover_on: %q is not allowed (use rate_limit, auth, overloaded, or network)", class)
 		}
 	}
@@ -665,11 +879,20 @@ func (c *Config) Validate() error {
 		}
 	}
 	if r := l.Report; r != nil {
-		if r.Scheme != "standard-webhooks" && r.Scheme != "bearer" {
-			add("loop.report.scheme must be standard-webhooks or bearer")
+		if r.Scheme != "standard-webhooks" && r.Scheme != "bearer" && r.Scheme != "telegram-bot" {
+			add("loop.report.scheme must be standard-webhooks, bearer or telegram-bot")
 		}
-		if r.Format != "standard" && r.Format != "text" {
-			add("loop.report.format must be standard or text")
+		if r.Format != "standard" && r.Format != "text" && r.Format != "sessionpipe" && r.Format != "telegram" {
+			add("loop.report.format must be standard, text, sessionpipe or telegram")
+		}
+		if r.Format == "sessionpipe" && r.Scheme != "bearer" {
+			add("loop.report: sessionpipe format requires bearer scheme")
+		}
+		if r.Format == "telegram" && r.Scheme != "telegram-bot" {
+			add("loop.report: telegram format requires telegram-bot scheme")
+		}
+		if r.Scheme == "telegram-bot" && r.Format != "telegram" {
+			add("loop.report: telegram-bot scheme requires telegram format")
 		}
 		for _, e := range r.Events {
 			if e != "all" && !contains(ReportEvents, e) {
@@ -700,6 +923,9 @@ func (c *Config) Validate() error {
 	if l.Adapter == "cursor" && (l.HasRouteList() || l.SwitchBack.Enabled) {
 		add("Cursor currently supports standalone primary loops only; fallbacks and switch-back are unverified")
 	}
+	if l.Adapter == "antigravity" && (l.HasRouteList() || l.SwitchBack.Enabled) {
+		add("Antigravity currently supports standalone primary loops only; fallbacks and switch-back are unverified")
+	}
 	if l.SwitchBack.Enabled {
 		switch l.Probe.Kind {
 		case "claude", "codex":
@@ -720,6 +946,9 @@ func (c *Config) Validate() error {
 		tm := l.Timing
 		if l.Adapter == "cursor" {
 			add("loop.timing is not supported for Cursor loops")
+		}
+		if l.Adapter == "antigravity" {
+			add("loop.timing is not supported for Antigravity loops")
 		}
 		switch l.Probe.Kind {
 		case "claude", "codex":
@@ -753,7 +982,36 @@ func (c *Config) Validate() error {
 		if d := tm.ProbeEvery.Duration; d < time.Hour {
 			add("loop.timing.probe_every must be at least 1h")
 		}
+		if v := tm.UnusedAtLeast; math.IsNaN(v) || math.IsInf(v, 0) || v <= 0 || v >= 1 {
+			add("loop.timing.unused_at_least must be above 0 and below 1")
+		}
+		if v := tm.DownAt; math.IsNaN(v) || math.IsInf(v, 0) || v <= 0 || v > 1 {
+			add("loop.timing.down_at must be above 0 and at most 1")
+		}
+		if d := tm.MinOnStep.Duration; d < time.Minute || d > 7*24*time.Hour {
+			add("loop.timing.min_on_step must be between 1m and 168h")
+		}
+		if len(tm.Steps) > 0 {
+			seen := map[string]bool{}
+			for _, id := range tm.Steps {
+				if seen[id] {
+					add("loop.timing.steps: %q is listed twice", id)
+				}
+				seen[id] = true
+			}
+			if !seen["primary"] {
+				add("loop.timing.steps must include primary, the loop's first route")
+			}
+			if !seen[tm.Ceiling] {
+				add("loop.timing.ceiling %q is not one of loop.timing.steps", tm.Ceiling)
+			} else if tm.StepIndex(tm.Ceiling) < tm.StepIndex("primary") {
+				add("loop.timing.ceiling %q is below primary", tm.Ceiling)
+			}
+		} else if tm.Ceiling != "" {
+			add("loop.timing.ceiling needs loop.timing.steps")
+		}
 	}
+	errs = append(errs, l.contextWindowErrors()...)
 	switch l.Network.Check {
 	case "on", "off":
 	default:
@@ -783,7 +1041,31 @@ func (c *Config) Validate() error {
 }
 
 // ErrorClasses lists the structured error classes an adapter may report.
-var ErrorClasses = []string{"none", "rate_limit", "auth", "overloaded", "network", "unknown"}
+var ErrorClasses = []string{"none", "rate_limit", "auth", "restricted", "refused", "overloaded", "network", "unknown"}
+
+// DeclinedCode says which structured codes keepgoing itself reads as a
+// provider denying permission ("restricted") or a model or provider declining
+// the turn ("refused"), and "" for every other code. It is the one list both
+// the classifier and the validation of agent definitions use, so a
+// definition cannot relabel such a code as a limit.
+//
+// "policy" is BB's typed category for a provider's policy block, and the two
+// Codex identifiers are what BB's Codex provider maps to it.
+// "oauth_org_not_allowed" is Claude Code's code for an organisation that may
+// not use the login.
+func DeclinedCode(code string) string {
+	switch strings.ToLower(strings.TrimSpace(code)) {
+	case "403", "restricted", "permission_denied", "permission_error", "forbidden", "oauth_org_not_allowed":
+		return "restricted"
+	case "refused", "refusal", "policy", "cyberpolicy", "misalignmentpolicyviolation":
+		return "refused"
+	}
+	return ""
+}
+
+// DeclinedClass reports whether a class is a restriction or a refusal: a
+// decision against the request, which never causes a handoff.
+func DeclinedClass(class string) bool { return class == "restricted" || class == "refused" }
 
 // ValidErrorClass reports whether s is a known error class.
 func ValidErrorClass(s string) bool { return contains(ErrorClasses, s) }
@@ -865,4 +1147,24 @@ func resolve(base, p string) string {
 		return filepath.Clean(p)
 	}
 	return filepath.Join(base, p)
+}
+
+// DefaultRefusalAskAfter is how many consecutive refused turns, with no turn
+// recovered by a continue in between, make a loop ask a person how to go on.
+const DefaultRefusalAskAfter = 10
+
+// RefusalRules configures the answer to refused turns. A refused turn gets a
+// plain continue in the same session, spaced by the streak; after AskAfter
+// refusals in a row the loop stops continuing and asks a person.
+type RefusalRules struct {
+	// AskAfter: nil means DefaultRefusalAskAfter, 0 means never ask.
+	AskAfter *int `yaml:"ask_after,omitempty"`
+}
+
+// AskAfterCount is the threshold in force: 0 means never ask.
+func (r RefusalRules) AskAfterCount() int {
+	if r.AskAfter == nil {
+		return DefaultRefusalAskAfter
+	}
+	return *r.AskAfter
 }

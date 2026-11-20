@@ -58,5 +58,16 @@ Use the project's own words in new docs, command output, interface text, commits
 - Stop and pause win over every other rule on the next check.
 - The decision engine stays a pure function with table tests. Side effects live in adapters and the command layer.
 - Read [docs/architecture.md](docs/architecture.md) before changing package boundaries. Update README.md in the same change when behavior, setup, or limitations make it inaccurate.
+- Coordinators and lanes follow [docs/coordinating-lanes.md](docs/coordinating-lanes.md), including its [Antigravity and Gemini 4 model tier guidance](docs/coordinating-lanes.md#antigravity-and-gemini-4-model-tiers).
 - Before checking off a roadmap item or merging a capability/release change, apply the [capability and documentation review](docs/testing.md#capability-and-documentation-review). Record reviewed docs, command/release evidence and remaining gaps in the PR; if no doc change is needed, explain why. Review again when the implementation or release scope changes. A documentation edit does not close unverified acceptance criteria.
 - For process lifecycle, OS integration or installer changes, apply the [lifecycle and platform review checks](docs/testing.md#lifecycle-and-platform-review). Distinguish platform compilation, native fixture execution and live acceptance; record unrun checks explicitly.
+
+## Panel frontend guidance
+
+For HTML, CSS and client-side JavaScript in cmd/looptender/dockui, use
+Impeccable for design and the project-local
+[Modern Web Guidance skill](.agents/skills/modern-web-guidance/SKILL.md) for
+browser-platform choices. Prefer Baseline Widely available features; newer
+features need progressive enhancement and a tested fallback. Follow the pinned
+local tooling and its privacy constraints. These frontend rules do not change
+Go supervision or native app behavior.

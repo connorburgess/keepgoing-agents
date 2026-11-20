@@ -11,9 +11,9 @@ import (
 	"slices"
 	"time"
 
-	"github.com/connorburgess/keepgoing-agents/internal/config"
-	"github.com/connorburgess/keepgoing-agents/internal/lock"
-	"github.com/connorburgess/keepgoing-agents/internal/snapshot"
+	"github.com/looptender/looptender/internal/config"
+	"github.com/looptender/looptender/internal/lock"
+	"github.com/looptender/looptender/internal/snapshot"
 )
 
 const DeliveryFile = "deliveries.json"
@@ -62,14 +62,14 @@ func eventName(s string) string {
 // Missing history means no recorded evidence, not successful delivery.
 func LoadDeliveries(dir string) (DeliveryHistory, error) {
 	path := filepath.Join(dir, DeliveryFile)
-	info, err := os.Lstat(path)
+	info, err := snapshot.LstatRecord(path)
 	if errors.Is(err, os.ErrNotExist) {
 		return DeliveryHistory{SchemaVersion: 1, NextSequence: 1, Records: []Delivery{}}, nil
 	}
 	if err != nil || !info.Mode().IsRegular() || info.Size() > MaxDeliveryBytes {
 		return DeliveryHistory{}, ErrDeliveryHistory
 	}
-	f, err := snapshot.Open(path)
+	f, err := snapshot.OpenRecord(path)
 	if err != nil {
 		return DeliveryHistory{}, ErrDeliveryHistory
 	}
@@ -97,7 +97,7 @@ func validDelivery(d Delivery) bool {
 		return false
 	}
 	switch d.Outcome {
-	case "prepared", "setup_failed", "body_failed", "sign_failed", "request_failed", "attempt_started", "transport_failed", "http_rejected", "http_accepted", "not_sent":
+	case "prepared", "setup_failed", "body_failed", "sign_failed", "request_failed", "attempt_started", "transport_failed", "http_rejected", "http_accepted", "protocol_failed", "not_sent":
 	default:
 		return false
 	}
@@ -116,6 +116,10 @@ func validDelivery(d Delivery) bool {
 			}
 		case "http_accepted":
 			if a.FinishedAt.IsZero() || a.HTTPStatus < 200 || a.HTTPStatus >= 300 {
+				return false
+			}
+		case "protocol_failed":
+			if a.FinishedAt.IsZero() || a.HTTPStatus < 100 || a.HTTPStatus > 599 {
 				return false
 			}
 		case "http_rejected":
@@ -205,6 +209,9 @@ type recorded struct {
 // then record setup_failed with no request. The error is for immediate diagnostics.
 func NewRecorded(cfg config.Report, dir string) (Reporter, error) {
 	w, err := New(cfg)
+	if w != nil {
+		w.stateDir = dir
+	}
 	return recorded{webhook: w, cfg: cfg, dir: dir}, err
 }
 
@@ -233,6 +240,10 @@ func (r recorded) Report(ctx context.Context, e Event) error {
 	}
 	// Diagnostic failure must never suppress the original request, trigger another
 	// attempt, or alter a hold. Callers report the error after the existing action.
+	if r.cfg.Format == "sessionpipe" && sendErr == nil && historyErr != nil {
+		// An accepted POST must not be replayed because its diagnostics failed.
+		return errors.Join(historyErr, ErrNoRetry)
+	}
 	return errors.Join(sendErr, historyErr)
 }
 

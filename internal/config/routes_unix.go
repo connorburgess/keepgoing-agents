@@ -7,8 +7,11 @@ import (
 	"syscall"
 )
 
-// openNonblock keeps opening a FIFO or device from blocking.
-const openNonblock = syscall.O_NONBLOCK
+// openRoutesFile opens the list for reading without blocking, so a FIFO or
+// device at the path cannot hang a check.
+func openRoutesFile(path string) (*os.File, error) {
+	return os.OpenFile(path, os.O_RDONLY|syscall.O_NONBLOCK, 0)
+}
 
 func ownedByUser(info os.FileInfo) bool {
 	st, ok := info.Sys().(*syscall.Stat_t)

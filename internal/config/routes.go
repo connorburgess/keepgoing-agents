@@ -11,7 +11,8 @@ import (
 
 	"gopkg.in/yaml.v3"
 
-	"github.com/connorburgess/keepgoing-agents/internal/envvar"
+	"github.com/looptender/looptender/internal/envvar"
+	"github.com/looptender/looptender/internal/userdir"
 )
 
 // RoutesStandard is the only value of loop.routes: the loop follows the
@@ -59,7 +60,8 @@ type Route struct {
 	Provider string `yaml:"provider"` // claude-code or codex
 	Model    string `yaml:"model"`
 	Effort   string `yaml:"effort,omitempty"`
-	Group    string `yaml:"group"` // the usage limit this route draws on
+	Group    string `yaml:"group"`             // the usage limit this route draws on
+	Account  string `yaml:"account,omitempty"` // accounts catalog ID a person states; see Agent.Account
 	Enter    string `yaml:"enter"`
 	// PermissionMode applies to a conversation started for a
 	// new_conversation route.
@@ -100,6 +102,10 @@ type RouteStatus struct {
 	Skipped []RouteSkip
 	// Warnings are conditions that do not stop supervision.
 	Warnings []string
+	// Digest identifies the contents of a standard list that was read, so a
+	// loop can note in its timeline that the list changed. It is empty when
+	// the list was not read, and is never shown.
+	Digest string
 }
 
 // StandardRoutesUnreadable is the fixed text for a following loop whose list
@@ -119,7 +125,9 @@ func (l Loop) AllowsNewConversation() bool { return contains(l.RoutesAllow, Ente
 
 // StandardRoutesPath is where the standard list lives: the path in
 // LOOPTENDER_ROUTES_FILE (or its earlier name, KEEPGOING_ROUTES_FILE) when
-// set, otherwise keepgoing/routes.yaml in the user configuration directory.
+// set, otherwise routes.yaml in the tool's directory under the user
+// configuration directory (looptender/, or keepgoing/ on a computer that
+// already has one; see userdir).
 // The two names set to different files are refused: loops that each honoured
 // one would follow different lists.
 func StandardRoutesPath() (string, error) {
@@ -137,12 +145,16 @@ func StandardRoutesPath() (string, error) {
 		}
 		return p, nil
 	}
-	base, err := os.UserConfigDir()
-	if err != nil || !filepath.IsAbs(base) {
+	p, err = userdir.Config(RoutesFileName)
+	if err != nil {
 		return "", errors.New("user configuration directory is unavailable")
 	}
-	return filepath.Join(base, "keepgoing", RoutesFileName), nil
+	return p, nil
 }
+
+// InsideCheckout reports whether path is inside a Git checkout, by the rule
+// KEEPGOING_ROUTES_FILE is held to.
+func InsideCheckout(path string) bool { return insideCheckout(path) }
 
 // insideCheckout reports whether path or one of its parents holds a .git
 // entry. A parent that cannot be inspected counts as a checkout.
@@ -228,7 +240,7 @@ func readPrivateFile(path string) ([]byte, error) {
 	if err := checkRoutesFile(target); err != nil {
 		return nil, err
 	}
-	f, err := os.OpenFile(path, os.O_RDONLY|openNonblock, 0)
+	f, err := openRoutesFile(path)
 	if err != nil {
 		return nil, routesRefusal(RoutesUnreadableFile, "standard route list could not be opened")
 	}
@@ -263,6 +275,21 @@ func checkRoutesFile(info os.FileInfo) error {
 	}
 	return nil
 }
+
+// OwnedByUser reports whether this user owns the file or directory; on
+// Windows, where access is governed by ACLs, it is always true.
+func OwnedByUser(info os.FileInfo) bool { return ownedByUser(info) }
+
+// PrivateFile reports whether info is a regular file this user owns that no
+// one else may read or write: the rule for the standard list and the files
+// kept beside it.
+func PrivateFile(info os.FileInfo) bool {
+	return info.Mode().IsRegular() && ownedByUser(info) && privateMode(info)
+}
+
+// ReadRoutesFile reads a standard list's bytes with the same checks as
+// LoadRoutes, for an editor that must change exactly what was read.
+func ReadRoutesFile(path string) ([]byte, error) { return readPrivateFile(path) }
 
 // ParseRoutes decodes and validates standard route list YAML.
 func ParseRoutes(raw []byte) (*Routes, error) {
@@ -338,6 +365,9 @@ func (r *Routes) Validate() error {
 		}
 		if strings.TrimSpace(rt.Group) == "" || routeText(rt.Group) {
 			add("%sgroup is required: the usage limit this route draws on", where)
+		}
+		if rt.Account != "" && !ValidAccountID(rt.Account) {
+			add("%saccount must be an accounts catalog ID: the 32 lowercase hexadecimal characters accounts add prints", where)
 		}
 		switch rt.Enter {
 		case EnterSameConversation, EnterNewConversation, EnterHeadless:
@@ -441,7 +471,7 @@ func resolveRoute(l Loop, rt Route, red Redundancy, probe ProbePolicy) (Candidat
 		return Candidate{}, "draws on the same usage limit as this loop's first route"
 	}
 	c := Candidate{ID: rt.ID}
-	c.Agent = Agent{Provider: rt.Provider, Group: rt.Group}
+	c.Agent = Agent{Provider: rt.Provider, Group: rt.Group, Account: rt.Account}
 	c.Probe = Probe{Model: rt.Probe.Model}
 	if rt.Probe.AccountDir != "" {
 		c.Probe.Env = map[string]string{accountEnv(rt.Provider): rt.Probe.AccountDir}
@@ -532,7 +562,7 @@ func resolveRoute(l Loop, rt Route, red Redundancy, probe ProbePolicy) (Candidat
 // candidate and the loop: what the record of a route a loop is on holds. It
 // carries no environment or executable of the loop's own.
 func RouteOf(l Loop, c Candidate) (Route, bool) {
-	rt := Route{ID: c.ID, Provider: c.Provider, Group: c.Group, Probe: RouteProbe{Model: c.Probe.Model}}
+	rt := Route{ID: c.ID, Provider: c.Provider, Group: c.Group, Account: c.Account, Probe: RouteProbe{Model: c.Probe.Model}}
 	if len(c.Probe.Env) > 1 {
 		return Route{}, false
 	}
@@ -618,6 +648,7 @@ func (c *Config) loadStandardRoutes() {
 		return
 	}
 	c.routesSource = r.source
+	c.RouteList.Digest = fmt.Sprintf("%x", r.source.sum)
 	fb, skipped := r.Resolve(c.Loop)
 	c.RouteList.Skipped = skipped
 	if fb == nil {

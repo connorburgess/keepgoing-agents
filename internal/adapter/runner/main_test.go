@@ -15,9 +15,12 @@ import (
 func TestMain(m *testing.M) {
 	// Faults for a process started as a turn wrapper. The agent it starts does
 	// not get the wrapper's variables, so these never apply to the agent.
-	// A binary from another build does not know the question a start asks.
+	// Probe faults include an older wrapper contract and an unknown question.
 	if os.Getenv(envTurnProbe) != "" {
 		switch os.Getenv("KEEPGOING_TEST_WRAPPER") {
+		case "protocol-2": // old completion contract, valid probe response
+			os.Stdout.WriteString("keepgoing-turn-wrapper 2\n")
+			os.Exit(0)
 		case "other-build":
 			os.Stdout.WriteString("usage: keepgoing <command>\n")
 			os.Exit(2)
@@ -41,6 +44,16 @@ func TestMain(m *testing.M) {
 	switch os.Getenv("KEEPGOING_TEST_HELPER") {
 	case "antigravity-acp":
 		antigravityStandIn()
+	case "antigravity-sleeper":
+		marker := os.Getenv("KEEPGOING_AGY_CHILD_MARKER")
+		if marker != "" {
+			_ = os.WriteFile(marker+".ready", nil, 0o600)
+		}
+		time.Sleep(3000 * time.Millisecond)
+		if marker != "" {
+			_ = os.WriteFile(marker+".survived", nil, 0o600)
+		}
+		os.Exit(0)
 	case "cursor-crash":
 		// The fixture exits on release or its own deadline even if the wrapper
 		// dies. No surviving child writes to a later turn's stdout file.

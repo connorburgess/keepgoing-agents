@@ -1,8 +1,10 @@
-# Antigravity integration foundation
+# Antigravity integration
 
-**Internal, v0.2.0, offline fixtures only.** Keepgoing has no registered Antigravity adapter or guided-setup choice. This foundation adds a headless prompt encoder/lifecycle parser, an internal ACP permission gate and stream exchange, a saved interaction hold, and a [detached runner](#detached-runner) that joins them. The runner is not reachable from configuration, the adapter factory or setup, so no production code path starts an agent, reads credentials, attaches to an IDE chat, or changes permissions.
+**Primary-only standalone adapter (unreleased source).** `adapter: antigravity` runs `agy acp --stdio` through the detached ACP runner (`runner.Antigravity`) with checkpointed prompt reservations, exact `session/resume`, owned process-tree stops, and durable `DeferredInteraction` holds on permission requests. Guided setup, fallbacks, switch-back, timing probes, and IDE-chat attachment remain unavailable.
 
-**Supported-version evidence: none; Antigravity is not installed where this was built.** No `agy` executable, ACP server command, flag, version or platform has been examined or run. Every test uses a stand-in executable with fictional data.
+**Live CLI evidence (`agy 1.5.13`, macOS arm64):** `agy --version`, `agy acp --stdio` `initialize` (`sessionCapabilities.resume: {}`), a two-turn scratch-dir `session/new` → `session/resume` check (`stopReason: "end_turn"`, exit `0`), and `agy --print /usage --mode plan --output-format json` were verified on macOS arm64. Installed end-to-end `looptender tick` walkthroughs remain open; see [Installed testing and debugging](#installed-testing-and-debugging).
+
+For coordinator and lane model choices and quota habits on Antigravity and Gemini 4, see [Coordinating lanes — Antigravity and Gemini 4 model tiers](coordinating-lanes.md#antigravity-and-gemini-4-model-tiers).
 
 ## Protocol contract
 
@@ -26,27 +28,27 @@ Only transport fields affect the outcome. Response text, error prose, tool outpu
 
 ## Permissions remain a delivery gate
 
-The [headless permission contract](https://antigravity.google/docs/cli/headless/#permissions-in-headless-mode) allows a run to return successfully after a tool action is denied because approval is unavailable. It describes notices on stderr. Keepgoing does not parse those notices. A successful result therefore proves neither that all requested tools ran nor that the task finished.
+The [headless permission contract](https://antigravity.google/docs/cli/headless/#permissions-in-headless-mode) allows a run to return successfully after a tool action is denied because approval is unavailable. It describes notices on stderr. looptender does not parse those notices. A successful result therefore proves neither that all requested tools ran nor that the task finished.
 
-This foundation grants no permissions and makes no sandbox guarantee. A future adapter must establish structured permission evidence or a supported interaction bridge before ordinary unattended setup is exposed. The official [ACP guide](https://antigravity.google/docs/ide/extensions/acp) documents permission requests, cancellation, steering and saved-session operations, making it a candidate for further investigation. That interface does not establish keepgoing ownership or safe attachment to another already-running IDE conversation.
+This foundation grants no permissions and makes no sandbox guarantee. A future adapter must establish structured permission evidence or a supported interaction bridge before ordinary unattended setup is exposed. The official [ACP guide](https://antigravity.google/docs/ide/extensions/acp) documents permission requests, cancellation, steering and saved-session operations, making it a candidate for further investigation. That interface does not establish looptender ownership or safe attachment to another already-running IDE conversation.
 
 ## Internal ACP permission gate
 
 The official [provider ACP guide](https://antigravity.google/docs/ide/extensions/acp) identifies a structured interaction path: permission requests pause a turn, cancellation abandons them, and sessions can be resumed. Existing permission rules still apply without prompting. Clients without form support receive questions in chat. These facts make ACP a candidate; they do not establish an unattended adapter or clearance of every requested action.
 
-`AntigravityACPGate` is a pure in-memory protocol component. It starts no process and reads no credentials or runtime files. It encodes one [ACP v1 initialization](https://agentclientprotocol.com/protocol/v1/initialization), declaring keepgoing's identity and no optional client capabilities. It requires the agent's [exact-resume capability](https://agentclientprotocol.com/protocol/v1/session-setup) before either fresh creation or resume. Saved opaque IDs are preserved exactly; a failed resume never becomes a fresh session. Session setup must return before one prompt is encoded. No second prompt can be encoded on that gate.
+`AntigravityACPGate` is a pure in-memory protocol component. It starts no process and reads no credentials or runtime files. It encodes one [ACP v1 initialization](https://agentclientprotocol.com/protocol/v1/initialization), declaring looptender's identity and no optional client capabilities. It requires the agent's [exact-resume capability](https://agentclientprotocol.com/protocol/v1/session-setup) before either fresh creation or resume. Saved opaque IDs are preserved exactly; a failed resume never becomes a fresh session. Session setup must return before one prompt is encoded. No second prompt can be encoded on that gate.
 
 A correlated [permission request](https://agentclientprotocol.com/protocol/v1/tool-calls) latches `NeedsUser`, emits `session/cancel` once, and answers each pending permission request with a cancelled outcome. It never selects an allow or deny option. Ordinary pending tool updates and message content do not count as requests. The latch survives subsequent completion, cancellation, malformed evidence or disconnection. The gate itself keeps this evidence in memory only; the [saved interaction hold](#saved-interaction-hold) is what carries it across a restart.
 
 Only a matching prompt response with `end_turn` and no latched interaction marks a returned turn. Other documented [stop reasons](https://agentclientprotocol.com/protocol/v1/prompt-turn) do not grant return eligibility; unknown reasons fail closed. Neither return nor process success establishes task completion. Unsupported client requests, wrong sessions, duplicate/ambiguous control fields and unmatched responses fail closed without a failover classification. Message, tool and error prose never determine an outcome.
 
-Incoming and encoded frames are capped at 1 MiB, incoming connection evidence at 4 MiB/4096 frames, and permission requests at 64. IDs have a 256-byte bound and reject control characters and lossy Unicode escapes. Permission options are bounded and validated, but never selected. The gate consumes complete frames; the internal exchange below bounds framing before calling it. Other transports must apply the same read bounds. It is not a general ACP client and does not accept arbitrary extensions or replay streams.
+Incoming and encoded frames are capped at 1 MiB, permission requests at 64, pre-prompt updates at 256 and post-cancel drain frames at 1024; ordinary streaming updates during an active turn are bounded per message rather than across the whole turn. IDs have a 256-byte bound and reject control characters and lossy Unicode escapes. Permission options are bounded and validated, but never selected. The gate consumes complete frames; the internal exchange below bounds framing before calling it. Other transports must apply the same read bounds. It is not a general ACP client and does not accept arbitrary extensions or replay streams.
 
-Unattended operation remains unavailable. The [detached runner](#detached-runner) connects the exchange to private stdin/stdout with bounded setup, draining and termination, send/session reconciliation and turn rollover on top of the saved hold, and stays unregistered for the reasons that follow. Structured [elicitation](https://agentclientprotocol.com/protocol/v1/elicitation) needs a real user handoff; the gate advertises none. Modes where questions fall back to chat must refuse unattended setup until a typed alternative exists. No transcript parser, automatic permission grant or invented event can fill that gap.
+Unattended operation remains unavailable. The [detached runner](#detached-runner) connects the exchange to private stdin/stdout with bounded setup, write, cancel-drain and exit limits, send/session reconciliation and turn rollover on top of the saved hold, and stays unregistered for the reasons that follow. Structured [elicitation](https://agentclientprotocol.com/protocol/v1/elicitation) needs a real user handoff; the gate advertises none. Modes where questions fall back to chat must refuse unattended setup until a typed alternative exists. No transcript parser, automatic permission grant or invented event can fill that gap.
 
 ## Internal stream exchange
 
-`ExchangeAntigravityACP` accepts an injected reader/writer and drives a single handshake, session setup and prompt. Its [ACP v1 framing](https://agentclientprotocol.com/protocol/v1/transports) requires UTF-8 JSON messages ending in LF; stderr is never protocol input. Fragmented reads are assembled within the gate's size/count limits, using a fixed-size read buffer. An incomplete frame, EOF before the prompt result, malformed evidence or a short/failed write fails closed. Writes are never replayed, including when a prefix might already have reached the peer. Local session/cwd/prompt validation occurs before initialization; new-session prompt preflight reserves the maximum bounded session-ID encoding overhead.
+`ExchangeAntigravityACP` accepts an injected reader/writer and drives a single handshake, session setup and prompt. Its [ACP v1 framing](https://agentclientprotocol.com/protocol/v1/transports) requires UTF-8 JSON messages ending in LF; stderr is never protocol input. Fragmented reads are assembled within the gate's per-frame limit, using a fixed-size read buffer. An incomplete frame, EOF before the prompt result, malformed evidence or a short/failed write fails closed. Writes are never replayed, including when a prefix might already have reached the peer. Local session/cwd/prompt validation occurs before initialization; new-session prompt preflight reserves the maximum bounded session-ID encoding overhead.
 
 A required checkpoint callback runs before the prompt and before each batch of permission cancellation/reply frames. The first record contains exact session identity and a pending prompt attempt, not proof of delivery. Subsequent records assert human-input evidence without clearing earlier reservations or holds. The caller must bind records to its target/turn and return only after durable persistence; callback failure prevents subsequent writes. The exchange stores nothing itself; the saved interaction hold below is the one implementation of this callback, and the unregistered [detached runner](#detached-runner) is its only caller.
 
@@ -70,58 +72,116 @@ Only fixtures reach this path: a real stream exchange writing the real records, 
 
 `runner.Antigravity` is a primary-only adapter type for one ACP conversation. It is deliberately **unregistered**: it has no YAML form, the adapter factory cannot build it, and guided setup does not offer it. Its ACP command is supplied by the caller with no default, because no real command line has been verified. It has no probe, usage-limit, reset-time or fallback role.
 
-Each send starts one detached worker through the same wrapper the other runners use, and returns without waiting. The worker starts the agent with private pipes for stdin and stdout, drives one `ExchangeAntigravityACP`, and exits:
+Each send starts one detached worker through the same wrapper the other runners use, and returns without waiting. The worker starts the agent in its own process group (Unix) or nested job object (Windows) with private pipes for stdin, stdout and stderr, drives one `ExchangeAntigravityACP`, and exits:
 
-- **Private structured stdin.** The prompt is written to the private prompt file, then framed as one ACP message on the agent's stdin. It is never an argument. The protocol stream is not stored; the agent's stderr goes to a file that nothing reads.
-- **One turn per send, each in its own directory.** Send records a random turn identity in `acp-turn.json` and creates `acp-turns/<turn>/`. The saved hold records live there, so they stay create-once while later turns roll over to new directories. The worker refuses to run for any turn but the one recorded last, and checks again before it writes its prompt and before it writes the target's shared exit record, so a worker overtaken by a later turn does neither.
-- **Confirmed worker.** After starting the worker, Send publishes `acp-started.json` with that worker's stop key, or `acp-not-started.json` when no process could be created. The run record must carry the confirmed key. A turn with neither record is unconfirmed, for example because the supervisor died between starting the worker and recording it: a worker may be alive that nothing identifies, so the observation is unknown and every send is refused until a person inspects the target directory. No command clears that state yet.
+- **Private structured stdin and bounded stderr.** The prompt is written to the private prompt file, then framed as one ACP message on the agent's stdin. It is never an argument. The protocol stream is not stored; the agent's stderr is copied into a file capped at 64 KiB that nothing reads.
+- **One turn per send, with bounded turn retention.** Send records a random turn identity in `acp-turn.json` and creates `acp-turns/<turn>/`. The saved hold records live there, so they stay create-once while later turns roll over to new directories; once a new turn is recorded, older turn directories beyond the current and immediately preceding turn are removed. The worker refuses to run for any turn but the one recorded last, and checks again before it writes its prompt and before it writes the target's shared exit record, so a worker overtaken by a later turn does neither.
+- **Confirmed worker and unconfirmed recovery.** Before spawning the worker, Send records the turn's per-turn stop key in `acp-pending.json`; after spawning, it publishes `acp-started.json` with that key, or `acp-not-started.json` when no process could be created. The run record must carry the confirmed key. A turn with neither confirmation record is unconfirmed, so observation is unknown and every send is refused until cleared. `Stop` can still stop a live unconfirmed worker through its recorded stop key, and `ClearUnconfirmed` stops any running unconfirmed worker, waits for exit, preserves any saved session or unadopted hold, and writes create-once `acp-cleared.json` so a later send can roll over.
 - **Checkpointed prompt attempt.** The hold checkpoint publishes `acp-prompt-reserved.json` before the prompt frame is written and `acp-needs-user.json` before any permission cancellation. After the exchange the worker publishes `acp-outcome.json` (turn, conversation and three booleans: returned, needs a person, failed) and then the agent's exit status.
 - **Exact conversation resume.** The conversation identity is opaque and kept byte for byte in `acp-session.json`, written once from the first reservation. Every later turn resumes it; a turn that names another conversation is refused, and a saved conversation never falls back to a new one. If no prompt was ever reserved, nothing left the worker, and the next send may start a new conversation.
 - **No duplicate sends.** A running turn refuses a send. An earlier turn whose worker is gone is rolled over, never replayed: a reservation without an outcome means delivery is unknown, the observation is an unknown error, and a later send is a new prompt in the same conversation.
-- **Owned stop.** Stop writes a request for the live worker's per-turn key; the worker ends its own process group or job. A saved process ID is never signalled.
-- **Saved hold.** After the worker has exited, unadopted human-input evidence is reported as `DeferredInteraction`, and a send is refused until the supervisor adopts it. A cancelled turn still running is reported as running. After adoption the turn is an ordinary unknown failure.
+- **Owned stop.** Stop writes a request for the live worker's per-turn key; the worker ends both the agent's process group or nested job and its own group or job. A saved process ID is never signalled.
+- **Saved hold.** After the worker has exited, unadopted human-input evidence is reported as `DeferredInteraction`, and a send is refused until the supervisor adopts it. A cancelled turn still running is reported as running until it drains or hits `CancelTimeout`. After adoption the turn is an ordinary unknown failure.
 - **Fail closed.** Unreadable or disagreeing records (another turn, another conversation, a return without a reservation, a stray protocol output file) make the observation unknown with a fixed error and refuse sends.
 
 An observation is idle only when the worker recorded exit 0, the reservation exists without human-input evidence, and the outcome says the turn returned. Everything else that is not running is an error of class `unknown`: other stop reasons, protocol failures, a killed or failed agent, a missing outcome. No structured field in this path classifies a failure, so none is classified; stderr and message text are never read.
 
-Time limits: observing, sending and stopping inside a check do bounded file work and return; stop waits at most three seconds for the worker's acknowledgement, as for the other runners, and each honours a cancelled check. Inside the worker, session setup is limited to two minutes and the agent's exit after its turn to ten seconds (both configurable up to ten minutes); past either, the worker kills the agent it started and records an unknown exit. A turn has no time limit, but it is not unbounded: the exchange ends after 4096 protocol frames or 4 MiB of protocol data, counted over the whole connection, which here is one turn. Every streamed update counts. A long turn that streams its progress is therefore cut off mid-work, the agent is ended, and the turn is reported as an unknown error. These are the gate's bounds, unchanged; whether they should apply per message instead is open and listed below.
+Time limits: observing, sending and stopping inside a check do bounded file work and return; stop waits at most three seconds for the worker's acknowledgement, as for the other runners, and each honours a cancelled check. Inside the worker, four limits are enforced by terminating the agent's entire process group (Unix) or nested job object (Windows) and closing the pipes: session setup (`HandshakeTimeout`, default two minutes), individual stdin frame writes (`WriteTimeout`, default ten seconds, preventing pipe-buffer deadlock on large prompts), draining after a permission cancellation (`CancelTimeout`, default ten seconds, so a saved hold is surfaced promptly), and agent exit after the turn (`ExitTimeout`, default ten seconds); all four are configurable up to ten minutes. Active streaming turns are bounded per frame (1 MiB) and by permission-request count (64), not by a whole-turn frame or byte total.
 
 ### What blocks registration
 
-The runner is implemented up to the A2 boundary. It is not registered because an unattended loop on it would not be safe yet:
+The runner is implemented up to the A2 boundary. The runner-hardening gaps (per-message turn bounds, cancel-drain timeout, process-group/job termination on worker timeouts, unconfirmed worker recovery via `ClearUnconfirmed`, turn-directory pruning, bounded stderr and stdin write deadlines) are closed in fixture-tested source, while `runner.Antigravity` stays unregistered because an unattended loop on it would not be safe yet:
 
 1. **Questions asked in chat.** The gate advertises no elicitation, so an agent that needs an answer may ask in its message text and end the turn normally. That is indistinguishable from a returned turn, and a loop would wake it again instead of holding for a person. No typed evidence for this exists, and message text is never read.
 2. **Permission rules that apply without a request.** Existing rules can allow or deny a tool with no permission request. The absence of a request therefore proves nothing about what ran, and only a request can raise the hold.
 3. **Nothing verified against a real CLI.** The ACP command and flags, whether the agent advertises exact resume, what it does when stdin closes, and its exit status afterwards are all assumptions of the stand-in. The runner treats a nonzero or unknown exit after a returned turn as an unknown error, which may be wrong in either direction for the real agent.
+4. **No CLI command yet exposes `ClearUnconfirmed`.** The runner method exists and is fixture-tested; exposing an operator recovery command waits for adapter registration.
 
-### Known gaps to close before registration
+## Live CLI verification (`agy 1.5.13`, macOS arm64)
 
-- **Turn bounds.** The 4096-frame and 4 MiB limits apply to a whole turn, so ordinary long streaming turns fail. The likely fix is to bound each message and the number of permission requests, not the turn's total.
-- **A cancelled permission turn has no drain bound.** It is reported as running until the worker exits, which hides the saved hold for as long as the agent takes to answer the cancellation.
-- **The worker's time limits end only the agent process**, not its process group or job. Descendants can survive, and the agent can run on after a limit while a new send is allowed. Stop does end the whole group or job.
-- **An unconfirmed worker cannot be stopped or cleared by command**, because no record holds its stop key.
-- **Per-turn directories are never removed**, so `acp-turns/` grows by one directory per send.
-- **The agent's stderr is stored without a size limit** for the length of the turn.
-- **A prompt larger than the pipe buffer blocks forever** if the agent is not reading, since the write has no deadline.
+Verified against an installed `agy 1.5.13` binary on macOS arm64 (2026-11-19):
+
+- **`agy --version`** returns `1.5.13`.
+- **`agy acp --stdio`** starts the ACP v1 stdio server (`Antigravity ACP Server 1.5.13`). Its `initialize` response returns `protocolVersion: 1` and advertises `agentCapabilities.sessionCapabilities.resume: {}`, matching `AntigravityACPGate`. Closing stdin exits cleanly with code `0`.
+- **Two-turn exact resume (scratch temp dir):** `session/new` returned a 36-byte conversation ID and `session/prompt` returned `stopReason: "end_turn"` with exit `0`; a fresh `agy acp --stdio` process calling `session/resume` with that exact ID returned `stopReason: "end_turn"` (with cached read tokens confirming conversation continuity) and exit `0`.
+- **Model-free `/usage`:** `agy --print /usage --mode plan --output-format json` returned `status: "SUCCESS"`, `num_turns: 0`, `command.name: "usage"`, buckets `gemini-weekly`, `gemini-5h`, `3p-weekly`, `3p-5h`, and exit `0`, matching the parser in `cmd/looptender/accounts_antigravity_quota.go`.
+
+## Configuration (primary-only standalone loop)
+
+`adapter: antigravity` is registered as a primary-only standalone loop adapter (`fallbacks`, `switch_back`, and `timing` are rejected). `looptender` runs `agy acp --stdio` with optional `--sandbox`, `--agent`, and `--add-dir` flags, and **never** passes `--dangerously-skip-permissions`:
+
+```yaml
+version: 1
+loop:
+  name: example-antigravity
+  state_dir: state
+  adapter: antigravity
+  antigravity:
+    cli: agy           # optional; defaults to "agy"
+    workdir: ./project # required
+    sandbox: true      # optional; passes --sandbox
+    agent: ""          # optional; passes --agent <name>
+    add_dir: []        # optional; repeatable --add-dir (max 16)
+    env: {}            # optional extra environment variables
+  prompt: Complete the fictional example task.
+```
+
+## Installed testing and debugging
+
+After building and installing `looptender` from `main` (for example `go install github.com/looptender/looptender/cmd/looptender@main`, making sure `$(go env GOPATH)/bin` is first on `PATH` or invoking `$(go env GOPATH)/bin/looptender`):
+
+1. **Create a standalone loop with guided setup (or write `loop.yaml`):**
+   ```bash
+   looptender init --agent antigravity --project /path/to/project --directory /path/to/loop-dir
+   ```
+   Or create `loop.yaml` directly as shown above.
+2. **Verify CLI and loop diagnostics:**
+   ```bash
+   looptender doctor -c /path/to/loop.yaml
+   ```
+   Confirm `agy --version` resolves cleanly and review the capability/account notes.
+3. **Verify model-free `/usage` account quota:**
+   ```bash
+   looptender accounts add --label "Example Antigravity" --provider antigravity --selection inherited
+   looptender accounts usage --id <ID> --json
+   ```
+   Confirm `state: "reported"`, `source: "agy:/usage"`, `freshness: "provider_unknown"`, and the four Gemini / Claude-GPT windows.
+4. **Scratch-directory two-turn, hold, and stop walkthrough:**
+   - Create a temporary scratch directory and `loop.yaml` with `adapter: antigravity` and `antigravity.workdir` pointing to the scratch directory.
+   - Enable the loop (`looptender enable -c loop.yaml`), run `looptender tick -c loop.yaml` for turn 1, wait for the worker to exit, and run `looptender tick -c loop.yaml` for turn 2; confirm `acp-session.json` holds the exact conversation ID and turn 2 resumes it.
+   - Test a turn that requires a tool permission: confirm the loop enters `AwaitingUser` hold (`DeferredInteractionReason`) and does not send again until `looptender resume -c loop.yaml`.
+   - Test `looptender stop -c loop.yaml -immediately` during an active turn and confirm the `agy acp --stdio` process group exits cleanly.
+   - **Live installed walkthrough (2026-11-20, `agy 1.5.13`, macOS arm64):** verified `looptender accounts add`/`usage` (all 4 buckets reported), `looptender doctor -c`, `looptender enable -c`, turn 1 `wake` → `active` (no duplicate send) → `idle` with `0600` `acp-session.json` and zero stderr, and turn 2 `wake` resuming the saved session. Live permission-hold and owned-stop walkthroughs remain open.
+5. **Debugging turn state on disk** (under `<state_dir>/targets/primary/`):
+   - `acp-turn.json` — current turn identity.
+   - `acp-session.json` — exact opaque conversation ID written once on the first prompt reservation.
+   - `acp-turns/<turn>/` — per-turn records (current and immediately preceding turn are retained; older turn directories are pruned automatically):
+     - `acp-pending.json` — stop key recorded before worker spawn.
+     - `acp-started.json` / `acp-not-started.json` / `acp-cleared.json` — worker confirmation/recovery records.
+     - `acp-prompt-reserved.json` — durable prompt reservation written before the prompt frame leaves the worker.
+     - `acp-needs-user.json` / `acp-hold-adopted.json` — saved permission-request hold and supervisor adoption.
+     - `acp-outcome.json` — boolean transport outcome (`returned`, `needsUser`, `failed`; never prompt or response text).
+   - `stderr` — bounded 64 KiB capture from `agy acp --stdio` for manual inspection (never parsed by `looptender`).
+   - If a crash left a turn unconfirmed (`acp-pending.json` without `acp-started.json` or `acp-not-started.json`), the loop fails closed with `errAntigravityUnconfirmed` until cleared with `looptender session clear-unconfirmed -c loop.yaml`.
 
 ## Remaining acceptance gates
 
-- Verify the installed CLI version/platform and its structured permission behavior. No installed `agy` executable or live provider was exercised for this foundation.
-- Register the runner (YAML, factory, schema, status, doctor) once the permission contract above is resolved. Supervisor checks have not been run against the real runner type; the hold path was exercised through a stand-in adapter.
-- Establish typed authentication, quota/reset and exact account/model probe evidence before claiming those capabilities. Unknown errors must remain unknown. No stderr or model-response matching may fill a missing interface.
-- Add capability-aware setup and diagnostics only after the runtime contract is implemented. Inherited login is not evidence of separate-account isolation.
-- Run an authorized scratch-project two-turn/resume/stop walkthrough, including permission failure and holds. Do not manufacture a quota limit or change existing logins/timers. Existing graphical-chat attachment remains a separate investigation.
+- Complete the remaining installed scratch-project checks (live tool permission hold + `looptender resume`, and live `looptender stop -immediately`) and test on Linux and Windows.
+- Resolve chat-only questions without ACP elicitation (currently indistinguishable from a returned `end_turn`) and permission rules that allow/deny without emitting a request.
+- Establish typed authentication, exact account/model probe evidence, and separate-account isolation before enabling fallbacks or switch-back. Existing graphical IDE-chat attachment remains a separate investigation.
 
 ## Verification
 
-`go test -race ./internal/adapter/runner -run '^TestAntigravity'` exercises fictional streams and stdin envelopes: non-ASCII/control-character round trips, encoded-size bounds, exact identity, partial output, every documented terminal state, conflicting exits, malformed/duplicate output, and typed-looking model/tool text that must not influence classification. These tests do not execute Antigravity or prove provider/platform compatibility.
+`go test -race ./internal/adapter/runner -run '^TestAntigravity'` exercises fictional streams and stdin envelopes: non-ASCII/control-character round trips, encoded-size bounds, exact identity, partial output, every documented terminal state, conflicting exits, malformed/duplicate output, and typed-looking model/tool text that must not influence classification.
 
-`go test -race ./internal/adapter/runner -run '^TestAntigravityACP'` covers fictional handshake/new/resume exchanges, string/numeric request correlation, cancellation and sticky input evidence, stop reasons, malformed/duplicate/wrong-session evidence, Unicode identities, frame/connection/request bounds and model-text isolation. It executes no ACP subprocess and verifies no live provider, persisted hold or restart behavior.
+`go test -race ./internal/adapter/runner -run '^TestAntigravityACP'` covers fictional handshake/new/resume exchanges, string/numeric request correlation, cancellation and sticky input evidence, stop reasons, malformed/duplicate/wrong-session evidence, Unicode identities, long streaming turns alongside per-frame/permission/pre-prompt/cancel-drain bounds, and model-text isolation.
 
-`go test -race ./internal/adapter/runner -run '^TestAntigravityACPExchange|^TestAntigravityACPFrameReader'` additionally exercises fragmented streams, a two-way in-memory pipe peer, prompt/hold checkpoint ordering and failures, short writes without replay, EOF/truncation, local-input preflight and connection limits. These are injected transport/peer fixtures, not an Antigravity subprocess or restart/durability proof.
+`go test -race ./internal/adapter/runner -run '^TestAntigravityACPExchange|^TestAntigravityACPFrameReader'` additionally exercises fragmented streams, a two-way in-memory pipe peer, prompt/hold checkpoint ordering and failures, short writes without replay, EOF/truncation, local-input preflight, long streaming turns and per-frame/cancel-drain limits.
 
-`go test -race ./internal/adapter/runner -run '^TestAntigravityACPHold'`, `go test -race ./internal/decide -run '^TestDeferredInteraction'` and `go test -race ./internal/supervise -run '^TestDeferredInteraction'` cover the saved hold. A fictional permission exchange must find the records on disk before its prompt and cancellation frames; reconstructed readers and exchanges then verify refusal of a second prompt, another turn or session, unchanged file contents after every refusal, bounded Unicode identities, malformed input in each of the three files, inconsistent files against every checkpoint kind, and turn-bound adoption. Eight concurrent reservations admit exactly one prompt, evidence racing another identity's reservation is refused, and evidence and adoption are saved while every existing record is held open by a reader. Supervisor fixtures rebuild the adapter on every tick and cover dry runs, the saved control hold and report, repeated restarts without observation or sends, explicit resume, a simulated failure between hold and adoption, an unsaved hold, stop/pause precedence and holds owned by other rules. The adapter in those ticks is a stand-in; no ACP subprocess, owned process lifecycle, process kill, question handoff or live provider is exercised.
+`go test -race ./internal/adapter/runner -run '^TestAntigravityACPHold'`, `go test -race ./internal/decide -run '^TestDeferredInteraction'` and `go test -race ./internal/supervise -run '^TestDeferredInteraction'` cover the saved hold, concurrent reservations, adoption, and restart resilience.
 
-`go test -race ./internal/adapter/runner -run '^TestAntigravityRunner'` runs the detached runner against a stand-in ACP agent, which is the test binary itself: two turns with exact resume of a non-UUID conversation identity after rebuilding the adapter; the reservation and the hold observed on disk by the stand-in before the prompt and the cancellation reach it; a permission request held across rebuilt adapters, refused sends, adoption and a second held turn; refusal, prose instead of frames, an agent that dies mid-prompt, a failing exit and an agent that cannot start, all unknown; bounded setup and exit; an owned stop with the saved process ID forged to the test process and the agent confirmed gone; a worker killed by its own agent right after the prompt, leaving a reservation without an outcome; a turn recorded without a confirmed worker; a worker overtaken by a later turn; fourteen kinds of unreadable or disagreeing records; and prompts refused before a worker exists. These run on macOS, Linux and Windows CI. They execute no Antigravity CLI and no supervisor check.
+`go test -race ./internal/adapter/runner -run '^TestAntigravityRunner'` runs the detached runner against a stand-in ACP agent across two-turn exact resume, permission holds, `CancelTimeout`, `WriteTimeout`, descendant process-group/job termination, 64 KiB stderr cap, `acp-turns/` pruning, `ClearUnconfirmed` recovery, and malformed record rejection on macOS, Linux, and Windows CI.
 
-The README's current availability table remains accurate: no built-in Antigravity adapter or IDE-chat attachment is available. The integration plan and this document identify the narrower implementation; the full roadmap item remains open.
+`go test -race ./internal/supervise -run '^TestAntigravityRunnerSupervise'` and `go test -race ./internal/adapter/conformance -run '^TestAntigravityRunnerKeepsTheContract'` run full supervisor ticks and the shared adapter conformance suite directly against `runner.Antigravity` with a stand-in ACP agent: two-turn exact resume across rebuilt adapters, permission-request hold/adoption/resume, unknown error non-failover, owned stop, and all applicable adapter conformance contracts (with zero known gaps, including `bounded-output`).
+
+`go test -race ./internal/config -run '^TestAntigravity'` and `go test -race ./internal/adapter/factory -run '^TestFactoryBuildsAntigravityRunner'` verify YAML defaults, path resolution, primary-only constraints, JSON schema definitions, and factory wiring.

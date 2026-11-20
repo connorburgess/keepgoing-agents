@@ -50,10 +50,8 @@ func RunOnce(path string, env []string, args ...string) error {
 // non-zero exit is an error too, not retried: the program ran, and failed.
 func runOnce(path string, env []string, mustSucceed bool, args ...string) error {
 	var last error
-	for launch := 1; launch <= maxLaunches; launch++ {
-		cmd := exec.Command(path, args...)
-		cmd.Env = env
-		last = cmd.Run()
+	for n := 1; n <= maxLaunches; n++ {
+		last = launch(path, env, args)
 		var exit *exec.ExitError
 		switch {
 		case last == nil:
@@ -67,6 +65,14 @@ func runOnce(path string, env []string, mustSucceed bool, args ...string) error 
 		}
 	}
 	return &RefusedError{Path: path, Launches: maxLaunches, Err: last}
+}
+
+// launch starts the program once and waits for it. Tests of the retry rule
+// replace it, so they do not depend on how the host treats a real process.
+var launch = func(path string, env, args []string) error {
+	cmd := exec.Command(path, args...)
+	cmd.Env = env
+	return cmd.Run()
 }
 
 // buildTimeout bounds one go build. A build that hangs fails the test binary

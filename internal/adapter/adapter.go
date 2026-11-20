@@ -10,7 +10,8 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/connorburgess/keepgoing-agents/internal/decide"
+	"github.com/looptender/looptender/internal/config"
+	"github.com/looptender/looptender/internal/decide"
 )
 
 // Mode says how a prompt should be delivered.
@@ -33,6 +34,14 @@ type Adapter interface {
 	// Stop halts the running session. Adapters that cannot stop return
 	// ErrUnsupported.
 	Stop(ctx context.Context) error
+}
+
+// ConversationKeyer reports which conversation the next send goes to, so
+// a goal copy can be tied to it. known is false when the adapter cannot say;
+// an empty key with known true means the next turn starts a new
+// conversation. The key is an identity, never conversation content.
+type ConversationKeyer interface {
+	ConversationKey() (key string, known bool)
 }
 
 // WakePoller consumes structured notifications that can justify an early idle
@@ -92,6 +101,55 @@ type LaneRecoverer interface {
 	// ForgetLanes removes everything the adapter keeps about lanes. It is
 	// called when lane recovery is switched off.
 	ForgetLanes()
+}
+
+// SignalExitReporter exposes a cumulative count of Unix signal exits outside
+// adapter timeout/cancellation. The signal's source and cause are unknown.
+// Callers take a before/after difference to scope the count to their work.
+type SignalExitReporter interface {
+	SignalExits() int
+}
+
+// ContextReader is implemented by adapters whose provider reports how much
+// of the model's context window the supervised conversation uses. The reading
+// is diagnostic only: it is recorded and shown, and is never an input to a
+// decision, a send, an allowance or a hold. It reads only the supervised
+// conversation, never a lane, and never message text. An error means the
+// reading is unavailable; a caller does not retry it or warn about it.
+type ContextReader interface {
+	ReadContext(ctx context.Context) (ContextReading, error)
+}
+
+// ContextReading is one context-size reading. UsedTokens and WindowTokens are
+// as the provider reported them; Estimated says the provider marked them as
+// an estimate.
+type ContextReading struct {
+	UsedTokens   int64
+	WindowTokens int64
+	Estimated    bool
+}
+
+// TurnUsageReader is implemented by adapters whose agent reports, in a
+// structured form, how many tokens its latest finished turn used. The reading
+// is diagnostic only: it is recorded and shown, and is never an input to a
+// decision, a send, an allowance or a hold. ok is false when the agent
+// reported none, the turn is not finished, or its output was not read; a
+// figure the agent did not report is absent, never estimated.
+type TurnUsageReader interface {
+	LatestTurnUsage() (u TurnUsage, ok bool)
+}
+
+// TurnUsage is the token counts of one finished turn, as its agent reported
+// them. ID is an opaque identity of the turn, the same for every read of
+// the same turn, so a turn is counted once however many checks read it. A
+// nil count was not reported.
+type TurnUsage struct {
+	ID              string
+	Input           *int64
+	CachedInput     *int64
+	CacheWriteInput *int64
+	Output          *int64
+	ReasoningOutput *int64
 }
 
 // CLIPather is implemented by adapters that run a provider executable: the
@@ -188,11 +246,15 @@ func ClassifyCode(code string) decide.ErrorClass {
 	if c == "" {
 		return decide.ErrUnknown
 	}
+	// One list, shared with the validation of agent definitions.
+	if declined := config.DeclinedCode(c); declined != "" {
+		return decide.ErrorClass(declined)
+	}
 	if n, err := strconv.Atoi(c); err == nil {
 		switch n {
 		case 429:
 			return decide.ErrRateLimit
-		case 401, 403:
+		case 401:
 			return decide.ErrAuth
 		case 503, 529:
 			return decide.ErrOverloaded
@@ -202,7 +264,7 @@ func ClassifyCode(code string) decide.ErrorClass {
 	switch c {
 	case "rate_limit", "rate-limit", "rate_limited", "ratelimit", "rate_limit_event", "rate_limit_error", "usage_limit", "usage_limit_reached", "quota_exceeded", "insufficient_quota", "too_many_requests", "subscription_window_blocked":
 		return decide.ErrRateLimit
-	case "auth", "unauthorized", "unauthenticated", "authentication", "authentication_error", "authentication_failed", "permission_denied", "forbidden", "invalid_api_key", "oauth_token_expired":
+	case "auth", "unauthorized", "unauthenticated", "authentication", "authentication_error", "authentication_failed", "invalid_api_key", "oauth_token_expired":
 		return decide.ErrAuth
 	case "overloaded", "overloaded_error", "service_unavailable", "capacity", "server_overloaded":
 		return decide.ErrOverloaded
@@ -210,6 +272,42 @@ func ClassifyCode(code string) decide.ErrorClass {
 		return decide.ErrNetwork
 	}
 	return decide.ErrUnknown
+}
+
+// Classify classifies an error that carries several structured fields. A
+// refusal or a restriction in any field wins over every other class: a
+// provider that reports "unauthorized" together with HTTP 403, or a policy
+// block together with a rate-limit code, has declined the request, and that
+// must never read as a login or a limit a loop may fail over on. Otherwise
+// the first field that maps to a known class decides.
+func Classify(codes ...string) decide.ErrorClass {
+	classes := make([]decide.ErrorClass, len(codes))
+	for i, c := range codes {
+		classes[i] = ClassifyCode(c)
+	}
+	return Prefer(classes...)
+}
+
+// Prefer chooses among the classes several fields of one error gave, by the
+// same rule: a restriction wins, then a refusal, then the first known class.
+// A restriction is an account-level denial and holds at once; a refusal is
+// continued, so a denial that also carries a policy signal must not be.
+func Prefer(classes ...decide.ErrorClass) decide.ErrorClass {
+	first, refused := decide.ErrUnknown, false
+	for _, cl := range classes {
+		switch {
+		case cl == decide.ErrRestricted:
+			return cl
+		case cl == decide.ErrRefused:
+			refused = true
+		case first == decide.ErrUnknown && cl != "" && cl != decide.ErrNone:
+			first = cl
+		}
+	}
+	if refused {
+		return decide.ErrRefused
+	}
+	return first
 }
 
 // ParseState maps a provider's status string onto the engine's states.

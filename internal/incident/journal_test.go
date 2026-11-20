@@ -11,8 +11,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/connorburgess/keepgoing-agents/internal/decide"
-	"github.com/connorburgess/keepgoing-agents/internal/lock"
+	"github.com/looptender/looptender/internal/decide"
+	"github.com/looptender/looptender/internal/lock"
 )
 
 func sample() Record {

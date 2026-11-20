@@ -12,9 +12,9 @@ import (
 	"sort"
 	"strconv"
 
-	"github.com/connorburgess/keepgoing-agents/internal/adapter"
-	"github.com/connorburgess/keepgoing-agents/internal/decide"
-	"github.com/connorburgess/keepgoing-agents/internal/snapshot"
+	"github.com/looptender/looptender/internal/adapter"
+	"github.com/looptender/looptender/internal/decide"
+	"github.com/looptender/looptender/internal/snapshot"
 )
 
 // A lane is a direct child thread of the supervised thread. This file is
@@ -78,7 +78,7 @@ func (a *Adapter) loadLanes() map[string]laneSummary {
 	}
 	lanes := map[string]laneSummary{}
 	if p := a.lanesPath(); p != "" {
-		if b, err := snapshot.ReadFile(p); err == nil {
+		if b, err := snapshot.ReadRecord(p); err == nil {
 			var stored lanesFile
 			if json.Unmarshal(b, &stored) == nil && stored.Lanes != nil {
 				if key, err := hex.DecodeString(stored.Key); err == nil && len(key) == laneKeyBytes {
@@ -134,7 +134,7 @@ func (a *Adapter) saveLanes(lanes map[string]laneSummary) bool {
 func (a *Adapter) ForgetLanes() {
 	a.lanes, a.laneKey = nil, nil
 	if p := a.lanesPath(); p != "" {
-		os.Remove(p)
+		snapshot.Remove(p)
 		os.Remove(p + ".tmp")
 	}
 }
@@ -147,9 +147,16 @@ func (a *Adapter) scanLane(ctx context.Context, id string) (Cursor, bool) {
 	key := a.laneHash(id)
 	sum := lanes[key]
 	c := sum.Cursor
+	if c.RetrySchema != summarySchema {
+		// A summary derived by an earlier build keeps the error class as that
+		// build read it: a refusal or restriction may be cached as unknown
+		// or auth, and would be retried. Read the lane's log again from the
+		// start, as the supervised thread's own summary is.
+		c = Cursor{}
+	}
 	// The summary holds no thread ID, hashes the provider reference, and
 	// keeps no interaction IDs.
-	c.Thread, c.HashRefs, c.RetrySchema = "", true, 1
+	c.Thread, c.HashRefs, c.RetrySchema = "", true, summarySchema
 	c.hashRef = a.laneHash
 	seenAt := a.now().UTC()
 	for pages := 0; pages < lanePages; pages++ {

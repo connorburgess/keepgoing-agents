@@ -15,11 +15,14 @@ import (
 	"runtime"
 	"strings"
 
-	"github.com/connorburgess/keepgoing-agents/internal/lock"
-	"github.com/connorburgess/keepgoing-agents/internal/snapshot"
+	"github.com/looptender/looptender/internal/lock"
+	"github.com/looptender/looptender/internal/snapshot"
 )
 
 const FileName = "registry.json"
+
+// LockName is the registry's lock. It is listed in migrateLockNames
+// (cmd/looptender/migrate.go); so must any new lock file here.
 const LockName = "registry"
 const MaxEntries = 128
 const maxBytes = 1 << 20
@@ -52,7 +55,7 @@ func CheckDirectory(dir string) error {
 	return nil
 }
 func privateFile(path string) error {
-	info, err := os.Lstat(path)
+	info, err := snapshot.LstatRecord(path)
 	if errors.Is(err, os.ErrNotExist) {
 		return nil
 	}
@@ -76,10 +79,14 @@ func Load(dir string) (File, error) {
 		return File{}, ErrInvalid
 	}
 	path := filepath.Join(dir, FileName)
-	if privateFile(path) != nil {
+	info, err := snapshot.LstatRecord(path)
+	if errors.Is(err, os.ErrNotExist) {
+		return empty, nil
+	}
+	if err != nil || !info.Mode().IsRegular() || (runtime.GOOS != "windows" && info.Mode().Perm()&0077 != 0) {
 		return File{}, ErrInvalid
 	}
-	f, err := snapshot.Open(path)
+	f, err := snapshot.OpenRecord(path)
 	if errors.Is(err, os.ErrNotExist) {
 		return empty, nil
 	}
@@ -165,12 +172,30 @@ func update(dir string, fn func(*File) (bool, error)) error {
 // Add returns the existing ID for an identical registration. A changed binding
 // or another config for the same runtime directory requires explicit removal.
 func Add(dir, loop, configPath, stateDir string) (Entry, error) {
+	return AddChecked(dir, loop, configPath, stateDir, nil)
+}
+
+// AddChecked revalidates a caller's local binding under the registry lock,
+// including idempotent repeats. check must not wait, query providers or change
+// loop controls. A lost reply is repaired by repeating the same reference.
+func AddChecked(dir, loop, configPath, stateDir string, check func() error) (Entry, error) {
 	entry := Entry{ID: "loop_00000000000000000000000000000000", Loop: loop, ConfigPath: configPath, StateDir: stateDir}
 	if !validEntry(entry) {
 		return Entry{}, errors.New("invalid loop reference")
 	}
 	err := update(dir, func(f *File) (bool, error) {
+		if check != nil {
+			if err := check(); err != nil {
+				return false, err
+			}
+		}
 		for _, current := range f.Entries {
+			// The same files under another spelling, as through the link a
+			// renamed directory leaves, are the same registration.
+			if current.ConfigPath != configPath && sameFile(current.ConfigPath, configPath) && sameFile(current.StateDir, stateDir) && current.Loop == loop {
+				entry = current
+				return false, nil
+			}
 			if current.ConfigPath == configPath {
 				if current.Loop != loop || current.StateDir != stateDir {
 					return false, errors.New("registered config binding changed; inspect and remove its old ID before registering again")
@@ -246,4 +271,61 @@ func WithEntry(dir, id string, fn func(Entry) error) error {
 		}
 		return false, fn(e)
 	})
+}
+
+// Rebase rewrites the paths of every reference with rewrite, which returns
+// a path unchanged when it is not to move, and returns how many references
+// changed. It is for a directory that has been renamed as a whole. It is
+// safe to repeat: a second run finds nothing left to rewrite. A registry that
+// does not exist is left absent. With dryRun it only counts.
+func Rebase(dir string, rewrite func(string) string, dryRun bool) (int, error) {
+	if _, err := snapshot.LstatRecord(filepath.Join(dir, FileName)); errors.Is(err, os.ErrNotExist) {
+		return 0, nil
+	} else if err != nil {
+		return 0, ErrInvalid
+	}
+	plan := func(f *File) (int, error) {
+		changed := 0
+		paths, states := map[string]bool{}, map[string]bool{}
+		for i, e := range f.Entries {
+			moved := e
+			moved.ConfigPath, moved.StateDir = rewrite(e.ConfigPath), rewrite(e.StateDir)
+			if !validEntry(moved) || paths[moved.ConfigPath] || states[moved.StateDir] {
+				return 0, errors.New("the references cannot be rewritten without two of them naming one place; nothing was changed")
+			}
+			paths[moved.ConfigPath], states[moved.StateDir] = true, true
+			if moved != e {
+				f.Entries[i] = moved
+				changed++
+			}
+		}
+		return changed, nil
+	}
+	if dryRun {
+		f, err := Load(dir)
+		if err != nil {
+			return 0, err
+		}
+		return plan(&f)
+	}
+	changed := 0
+	err := update(dir, func(f *File) (bool, error) {
+		var err error
+		changed, err = plan(f)
+		return changed > 0, err
+	})
+	if err != nil {
+		return 0, err
+	}
+	return changed, nil
+}
+
+// sameFile reports whether two paths lead to one existing file.
+func sameFile(a, b string) bool {
+	ia, err := os.Stat(a)
+	if err != nil {
+		return false
+	}
+	ib, err := os.Stat(b)
+	return err == nil && os.SameFile(ia, ib)
 }

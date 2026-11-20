@@ -11,9 +11,9 @@ import (
 	"path/filepath"
 	"time"
 
-	"github.com/connorburgess/keepgoing-agents/internal/decide"
-	"github.com/connorburgess/keepgoing-agents/internal/lock"
-	"github.com/connorburgess/keepgoing-agents/internal/snapshot"
+	"github.com/looptender/looptender/internal/decide"
+	"github.com/looptender/looptender/internal/lock"
+	"github.com/looptender/looptender/internal/snapshot"
 )
 
 // FileName of the control file inside the state directory.
@@ -21,6 +21,10 @@ const FileName = "control.json"
 
 // File is the on-disk control record.
 type File struct {
+	// SupersededBy is an explicit declaration that another existing BB thread
+	// continues the work in a separate loop. It grants that thread no authority.
+	// Any nonempty value permanently fences this loop, including malformed ones.
+	SupersededBy    string             `json:"supersededBy,omitempty"`
 	PendingTransfer *PendingBBTransfer `json:"pendingTransfer,omitempty"`
 	BBTarget        string             `json:"bbTarget,omitempty"`
 	Ownership       *Ownership         `json:"ownership,omitempty"`
@@ -55,7 +59,10 @@ type File struct {
 	// task was declared complete, with its note. Completion ends the hold,
 	// but what a person was being asked is kept until a resume.
 	OpenQuestion *OpenQuestion `json:"openQuestion,omitempty"`
-	UpdatedAt    time.Time     `json:"updatedAt"`
+	// Question is the one open question the loop holds for until a person
+	// answers it. See question.go.
+	Question  *Question `json:"question,omitempty"`
+	UpdatedAt time.Time `json:"updatedAt"`
 }
 
 // Brief is a brief to another conversation: Action is handoff or
@@ -99,7 +106,7 @@ func Load(stateDir string) (File, error) {
 // opened file remains the old snapshot after replacement; in-place external
 // writes are not isolated. Missing files return an error (unlike Load).
 func OpenSnapshot(stateDir string) (*os.File, error) {
-	return snapshot.Open(filepath.Join(stateDir, FileName))
+	return snapshot.OpenRecord(filepath.Join(stateDir, FileName))
 }
 
 // Save writes the control file atomically.
@@ -127,12 +134,14 @@ func saveAt(stateDir string, f File, now time.Time) error {
 
 // Gate converts the file into the decision engine's view of it.
 func (f File) Gate() decide.Control {
-	return decide.Control{Enabled: f.Enabled, Paused: f.Paused, Stop: f.Stop, AwaitingUser: f.AwaitingUser, Completed: f.Completed}
+	return decide.Control{Enabled: f.Enabled && f.SupersededBy == "", Paused: f.Paused, Stop: f.Stop, AwaitingUser: f.AwaitingUser, Completed: f.Completed}
 }
 
 // Summary is a one-line human description.
 func (f File) Summary() string {
 	switch {
+	case f.SupersededBy != "":
+		return "superseded"
 	case !f.Enabled:
 		return "disabled"
 	case f.Stop:
@@ -162,10 +171,14 @@ func UpdateChecked(stateDir string, fn func(*File) error) (File, error) {
 		return File{}, err
 	}
 	defer l.Release()
-	if err := CheckControlPath(stateDir); err != nil {
+	missing, err := checkControlPath(stateDir)
+	if err != nil {
 		return File{}, err
 	}
-	f, err := Load(stateDir)
+	var f File
+	if !missing {
+		f, err = Load(stateDir)
+	}
 	if err != nil {
 		return f, err
 	}
@@ -178,17 +191,22 @@ func UpdateChecked(stateDir string, fn func(*File) error) (File, error) {
 // CheckControlPath refuses file aliases whose lock would belong to a different
 // state directory. A symlink to the state directory itself shares its locks.
 func CheckControlPath(stateDir string) error {
-	info, err := os.Lstat(filepath.Join(stateDir, FileName))
+	_, err := checkControlPath(stateDir)
+	return err
+}
+
+func checkControlPath(stateDir string) (bool, error) {
+	info, err := snapshot.LstatRecord(filepath.Join(stateDir, FileName))
 	if errors.Is(err, os.ErrNotExist) {
-		return nil
+		return true, nil
 	}
 	if err != nil {
-		return err
+		return false, err
 	}
 	if info.Mode()&os.ModeSymlink != 0 {
-		return errors.New("control.json must not be a symlink; use the original state directory")
+		return false, errors.New("control.json must not be a symlink; use the original state directory")
 	}
-	return nil
+	return false, nil
 }
 
 // writeAtomic syncs before publishing, as the send ledger does: a hold must not

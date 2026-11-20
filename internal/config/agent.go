@@ -10,14 +10,16 @@ import (
 // Agent describes how to reach one agent session. The primary loop and
 // every fallback candidate use the same shape.
 type Agent struct {
-	Adapter  string   `yaml:"adapter"`
-	Provider string   `yaml:"provider,omitempty"` // claude-code, codex, or any label
-	Group    string   `yaml:"group,omitempty"`    // account or quota pool; defaults to provider
-	BB       *BB      `yaml:"bb,omitempty"`
-	Process  *Process `yaml:"process,omitempty"`
-	Claude   *Claude  `yaml:"claude,omitempty"`
-	Codex    *Codex   `yaml:"codex,omitempty"`
-	Cursor   *Cursor  `yaml:"cursor,omitempty"`
+	Adapter     string       `yaml:"adapter"`
+	Provider    string       `yaml:"provider,omitempty"` // claude-code, codex, or any label
+	Group       string       `yaml:"group,omitempty"`    // account or quota pool; defaults to provider
+	Account     string       `yaml:"account,omitempty"`  // accounts catalog ID a person states this route uses; never derived
+	BB          *BB          `yaml:"bb,omitempty"`
+	Process     *Process     `yaml:"process,omitempty"`
+	Claude      *Claude      `yaml:"claude,omitempty"`
+	Codex       *Codex       `yaml:"codex,omitempty"`
+	Cursor      *Cursor      `yaml:"cursor,omitempty"`
+	Antigravity *Antigravity `yaml:"antigravity,omitempty"`
 	// Custom is an agent defined in configuration.
 	Custom *Custom `yaml:"custom,omitempty"`
 }
@@ -156,12 +158,27 @@ type Cursor struct {
 // or from configuration.
 var CursorVersionPattern = regexp.MustCompile(`^[0-9]{4}\.[0-9]{2}\.[0-9]{2}-[0-9a-f]{7,40}$`)
 
+// Antigravity configures a primary-only Antigravity ACP stdio session
+// (`agy acp --stdio`). Permissions remain those configured by the user in
+// Antigravity; no approval-bypass flags are ever added.
+type Antigravity struct {
+	CLI     string            `yaml:"cli,omitempty"`
+	Workdir string            `yaml:"workdir"`
+	Agent   string            `yaml:"agent,omitempty"`
+	Sandbox bool              `yaml:"sandbox,omitempty"`
+	AddDirs []string          `yaml:"add_dir,omitempty"`
+	Env     map[string]string `yaml:"env,omitempty"`
+}
+
 // Adapters lists the supported adapter names.
-var Adapters = []string{"bb", "process", "claude", "codex", "cursor", CustomAdapter}
+var Adapters = []string{"bb", "process", "claude", "codex", "cursor", "antigravity", CustomAdapter}
 
 func (a *Agent) applyDefaults() {
 	if a.Cursor != nil && a.Cursor.CLI == "" {
 		a.Cursor.CLI = "agent"
+	}
+	if a.Antigravity != nil && a.Antigravity.CLI == "" {
+		a.Antigravity.CLI = "agy"
 	}
 	if a.Provider == "" {
 		switch a.Adapter {
@@ -171,6 +188,8 @@ func (a *Agent) applyDefaults() {
 			a.Provider = "codex"
 		case "cursor":
 			a.Provider = "cursor"
+		case "antigravity":
+			a.Provider = "antigravity"
 		case CustomAdapter:
 			if a.Custom != nil {
 				a.Provider = a.Custom.Name
@@ -197,13 +216,19 @@ func (a *Agent) applyDefaults() {
 	}
 }
 
+var accountIDRE = regexp.MustCompile(`^[0-9a-f]{32}$`)
+
+// ValidAccountID reports whether s has the form of an accounts catalog ID.
+// It says nothing about whether the catalog holds that entry.
+func ValidAccountID(s string) bool { return accountIDRE.MatchString(s) }
+
 // validate reports problems with field names prefixed by where.
 func (a Agent) validate(where string) []error {
 	var errs []error
 	add := func(format string, args ...any) {
 		errs = append(errs, fmt.Errorf(where+format, args...))
 	}
-	set := map[string]bool{"bb": a.BB != nil, "process": a.Process != nil, "claude": a.Claude != nil, "codex": a.Codex != nil, "cursor": a.Cursor != nil, CustomAdapter: a.Custom != nil}
+	set := map[string]bool{"bb": a.BB != nil, "process": a.Process != nil, "claude": a.Claude != nil, "codex": a.Codex != nil, "cursor": a.Cursor != nil, "antigravity": a.Antigravity != nil, CustomAdapter: a.Custom != nil}
 	known := false
 	for _, n := range Adapters {
 		if a.Adapter == n {
@@ -213,6 +238,9 @@ func (a Agent) validate(where string) []error {
 	if !known {
 		add("adapter must be one of %s", strings.Join(Adapters, ", "))
 		return errs
+	}
+	if a.Account != "" && !ValidAccountID(a.Account) {
+		add("account must be an accounts catalog ID: the 32 lowercase hexadecimal characters accounts add prints")
 	}
 	if !set[a.Adapter] {
 		add("%s is required for the %s adapter", a.Adapter, a.Adapter)
@@ -272,6 +300,19 @@ func (a Agent) validate(where string) []error {
 				break
 			}
 		}
+	case a.Adapter == "antigravity" && a.Antigravity != nil:
+		if a.Antigravity.Workdir == "" {
+			add("antigravity.workdir is required")
+		}
+		if len(a.Antigravity.AddDirs) > 16 {
+			add("antigravity.add_dir: at most 16 directories")
+		}
+		for _, d := range a.Antigravity.AddDirs {
+			if strings.TrimSpace(d) == "" {
+				add("antigravity.add_dir: entries must be non-empty")
+				break
+			}
+		}
 	case a.Adapter == "claude" && a.Claude != nil:
 		if a.Claude.Workdir == "" {
 			add("claude.workdir is required")
@@ -313,6 +354,8 @@ func (a Agent) Describe() string {
 		s += " " + a.BB.Thread
 	case a.Cursor != nil:
 		s += " " + a.Cursor.Workdir
+	case a.Antigravity != nil:
+		s += " " + a.Antigravity.Workdir
 	case a.Claude != nil:
 		s += " " + a.Claude.Workdir
 	case a.Codex != nil:
@@ -333,6 +376,13 @@ func (a *Agent) resolvePaths(base string) {
 	if a.Cursor != nil {
 		a.Cursor.Workdir = resolve(base, a.Cursor.Workdir)
 		a.Cursor.CLI = resolveExec(base, a.Cursor.CLI)
+	}
+	if a.Antigravity != nil {
+		a.Antigravity.Workdir = resolve(base, a.Antigravity.Workdir)
+		a.Antigravity.CLI = resolveExec(base, a.Antigravity.CLI)
+		for i, d := range a.Antigravity.AddDirs {
+			a.Antigravity.AddDirs[i] = resolve(base, d)
+		}
 	}
 	if a.BB != nil {
 		a.BB.CLI = resolveExec(base, a.BB.CLI)

@@ -1,12 +1,12 @@
 # Run and conversation discovery (planned)
 
-Keepgoing should answer “what is running, where is its conversation, and which run is blocking it?” through durable local references. Users should be able to follow those references immediately in CLI/JSON output, without reconstructing a scheduled run from timestamps, Git history or directory searches. The optional menu and BB plugin should consume the same contract.
+looptender should answer “what is running, where is its conversation, and which run is blocking it?” through durable local references. Users should be able to follow those references immediately in CLI/JSON output, without reconstructing a scheduled run from timestamps, Git history or directory searches. The optional menu and BB plugin should consume the same contract.
 
 This is a data and navigation model in progress. Three parts exist in source and are in v0.2.0: the [identity and run-boundary contract](#identity-and-run-boundary-contract-d1-internal), the [persisted reference graph](#persisted-reference-graph-d2) that records it in each loop's state directory, and the read-only [`keepgoing runs` command](#cli-navigation-d3) that shows it. It also shows [what a loop is waiting on](#what-a-loop-is-waiting-on-d4-partial): child conversations and the owning conversation. There is no provider-link resolver, lock-holder lookup or GUI navigation. The [D1–D6 roadmap criteria](roadmap.md#priority-run-and-conversation-discoverability-planned) track delivery; D1 and D3 are checked, D2 and D4 are partial, and D5–D6 are planned. D3 has one [live check](#live-check) on a BB target; the rest of its evidence is from fixtures. The plan creates no scheduler, agent orchestrator, new dashboard, graph database or server.
 
 ## Routine, run and chat are different nodes
 
-A routine is a useful top-level view when an external scheduler supplies its identity. A keepgoing loop can exist without a routine. Each execution run links to the loop and goal revision it belongs to, and to its provider chats/sessions. A run may use several conversations; successive runs may resume the same conversation. These are recorded relationships, not BB parent/child ownership and not permission to create or re-parent threads.
+A routine is a useful top-level view when an external scheduler supplies its identity. A looptender loop can exist without a routine. Each execution run links to the loop and goal revision it belongs to, and to its provider chats/sessions. A run may use several conversations; successive runs may resume the same conversation. These are recorded relationships, not BB parent/child ownership and not permission to create or re-parent threads.
 
 The hierarchy is a convenient default view of a graph: routine → runs → chats. Shared chats and blocked-by edges prevent a strict tree from expressing every valid relationship. A missing external routine or provider chat ID remains unavailable, rather than being invented from a timestamp or process ID.
 
@@ -90,7 +90,7 @@ A registry reference maps to a durable loop through its entry's runtime director
 | Send attempt, `intent` | Before every automatic adapter send | `adapter_call` |
 | Attempt outcome `adapter_returned` or `adapter_error` | After that adapter call returns | `adapter_call` |
 | Run → goal revision | A check finds a valid `goal.json` while the run is open | `goal_record` |
-| Run → chat/session | A check's target is a BB thread (its configured thread ID, or the thread keepgoing created for a handoff to a `bb.new_thread` candidate) or a headless Claude, Codex or Cursor runner with a saved UUID-shaped resume ID | `configured_target`, `created_thread` or `runner_session_file` |
+| Run → chat/session | A check's target is a BB thread (its configured thread ID, or the thread looptender created for a handoff to a `bb.new_thread` candidate) or a headless Claude, Codex or Cursor runner with a saved UUID-shaped resume ID | `configured_target`, `created_thread` or `runner_session_file` |
 | Run's opening invocation | An accepted `enable` or `resume` that opens a run carries `--routine` | the run's own source |
 | Run → routine invocation (trigger) | `tick`, `enable` or `resume` carries `--routine` while a run is already open | `external` |
 | Registry reference | `registry add` finds an existing graph | `registry_add` |
@@ -102,7 +102,7 @@ Run boundaries are derived from saved control state, read inside the graph lock,
 
 ### Supplying a scheduler identity
 
-A scheduler that calls keepgoing can say which entry and which trigger it is:
+A scheduler that calls looptender can say which entry and which trigger it is:
 
 ```sh
 keepgoing tick   -c loop.yaml --routine example-scheduler/nightly/2026-11-13
@@ -150,7 +150,7 @@ The paths D2 requires resolve from recorded IDs: loop → current run → chat/s
 - **Private and atomic.** `graph.json` is written with mode 0600 through the control writer's temporary-file replacement, which on Windows replaces a file that a reader still has open. The temporary file is flushed to disk before it replaces the record, so a power loss leaves either the old record or the new one, not a truncated file. The directory entry is not flushed, so the newest write can still be lost. A separate `graph.lock` serializes writers; it is independent of the tick and control locks.
 - **One write per observing check.** A check that observes a BB target rewrites the record once, to stamp the child listing with that check's time. Other checks write only when something changed.
 - **Bounded.** At most 32 runs, 128 attempts, 256 links, 8 trigger links per run, 200 children in the waiting record, 16 registry references, 16 unrecorded notes and 256 KiB. The oldest closed run is dropped first, together with its attempts and links. Within one long run the oldest attempts and links go.
-- **Versioned.** `schemaVersion` is 2, which adds the waiting record. A version 1 file is read as it is and upgraded by its next write. A build that only knows version 1 reports a version 2 file as unsupported and leaves it alone. Unknown fields are rejected.
+- **Versioned.** `schemaVersion` is 3. Version 2 adds the waiting record; version 3 adds `contextBytes` on an attempt, the length of the [supervision context](operations.md#supervision-context-in-sends) the send carried. An older file is read as it is and upgraded by its next write; one that holds a field its version does not have is corrupt. A build that only knows an older version reports a newer file as unsupported and leaves it alone. Unknown fields are rejected.
 - **Never in the way.** A graph that cannot be read or written does not fail a check, change its decision, block a send or fail a control command. The check adds one warning, `run reference record unavailable; discovery evidence is incomplete`, to its output and its `runs.jsonl` event. Control commands stay silent. A corrupt record keeps warning on every check until the file is removed by hand, because it is never reset automatically.
 - **No private text.** The record holds IDs, target aliases, action names and times. It holds no prompt, goal text, note, path, URL or error text.
 
@@ -178,7 +178,7 @@ keepgoing runs --registry-id loop_0123456789abcdef0123456789abcdef
 keepgoing runs --all                              # every registered loop with its current run
 ```
 
-Use exactly one selector; the default is `-c keepgoing.yaml`. `--directory` names a private registry directory for `--registry-id` and `--all`. Two registered loops can share a name: their registry references keep them apart, and each shows only its own records. With a registry selector the report also says whether the graph has recorded that reference (`recorded`) or not (`not_recorded`); see [where identity lives](#where-identity-lives).
+Use exactly one selector; the default is `-c looptender.yaml`, or `keepgoing.yaml` when only that is in the working directory ([configuration](configuration.md)). `--directory` names a private registry directory for `--registry-id` and `--all`. Two registered loops can share a name: their registry references keep them apart, and each shows only its own records. With a registry selector the report also says whether the graph has recorded that reference (`recorded`) or not (`not_recorded`); see [where identity lives](#where-identity-lives).
 
 A registry selector checks the binding first, as registered status does: the registered configuration must still load and still name the same loop and runtime directory. If it does not, the entry shows `binding: unavailable`, nothing is read from the registered directory, and the command exits 1. A lookup through such an entry answers `unavailable`.
 
@@ -259,12 +259,13 @@ Exit codes: 0 for an answer, including a missing graph, a hold or a reference th
 | `awaiting_input` | The child is stuck on a person | Yes. The check puts the loop on an awaiting-user hold. |
 | `error` | The child failed | No. It is listed because the check reported it. |
 
-A child is said to have **held the run** only when its status can hold a parent *and* the last check recorded child work or child input as its reason. The answer is one of five:
+A child is said to have **held the run** only when its status can hold a parent *and* the last check recorded child work or child input as its reason. The answer is one of six:
 
 | Answer | Meaning |
 | --- | --- |
 | `blocked` | The last check verified every child and recorded child work (`child_busy`) or child input (`child_input`) as its reason. |
 | `held` | The loop is on an awaiting-user hold that began when a check found a child stuck on a person. Held checks do not observe, so this is the last verified listing, shown with its age. The children have not been verified since. |
+| `before_hold` | The loop is held or paused for another reason, such as a command, and held or paused checks do not observe. This is the last complete listing from the same run, from a check before the hold, shown with its age; `lastCheckCause` says whether it is `paused` or `awaiting_user`. It is not current, and no child is said to hold the run. |
 | `listed` | The last check verified every child, but recorded another reason, such as a stop request. The children are shown and none is said to hold the run. |
 | `none` | The last check verified every child and none could hold the run. |
 | `unknown` | The evidence does not support an answer. No child is listed. |
@@ -274,7 +275,7 @@ Reasons for `unknown`:
 | Reason | When |
 | --- | --- |
 | `child_listing_incomplete` | The check could not verify every child, or its observation failed. Children it did verify are not listed either: a partial list would read as the answer. |
-| `not_refreshed_by_the_last_check` | The last recorded check is not the one that wrote the record: the loop was held for another reason, the target changed, or the graph write failed. |
+| `not_refreshed_by_the_last_check` | The last recorded check is not the one that wrote the record, and no `held` or `before_hold` answer applies: the loop is disabled or finished, the hold or pause has been lifted since, the listing before it was incomplete, the target changed, or the graph write failed. |
 | `last_check_older_than_stale_after` | The listing is from the last check, but that check is older than `--stale-after` (default 30 minutes, as for `status`). Checks may have stopped. Set it above your scheduler interval. |
 | `no_child_evidence_recorded` | No check has recorded a listing for this run: a headless or process target, or no check since the run opened. |
 | `last_check_not_recorded` | There is no `state.json` or it records no check. |
@@ -282,7 +283,7 @@ Reasons for `unknown`:
 
 Every answer that has a listing shows the time of the check it came from and its age, and marks it `stale` past `--stale-after`. `lastCheckCause` is the last check's reason in a fixed vocabulary; the reason text itself is not printed.
 
-A child is shown by key, `child:<key>`, a short hash of its thread ID. A child's thread ID is never written to the graph and never printed in the parent's view: the checks that already keep errored children do the same in `state.json`. `--id child:<key>` and a run's `blocked_by` links follow the same answer as the loop view: when the answer is `unknown` the child reference answers `unavailable` and the run shows no child link, and when it is `listed` or `none` the links are shown as `child`, not `blocked_by`.
+A child is shown by key, `child:<key>`, a short hash of its thread ID. A child's thread ID is never written to the graph and never printed in the parent's view: the checks that already keep errored children do the same in `state.json`. `--id child:<key>` and a run's `blocked_by` links follow the same answer as the loop view: when the answer is `unknown` the child reference answers `unavailable` and the run shows no child link, and when it is `listed`, `none` or `before_hold` the links are shown as `child`, not `blocked_by`.
 
 **The blocking loop.** A child conversation is often supervised itself. When a registry is consulted, each child is matched against the registered loops whose configuration binding validates and whose configured BB thread has that key:
 

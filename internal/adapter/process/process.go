@@ -13,11 +13,11 @@ import (
 	"os/exec"
 	"strings"
 
-	"github.com/connorburgess/keepgoing-agents/internal/adapter"
-	"github.com/connorburgess/keepgoing-agents/internal/config"
-	"github.com/connorburgess/keepgoing-agents/internal/decide"
-	"github.com/connorburgess/keepgoing-agents/internal/envvar"
-	"github.com/connorburgess/keepgoing-agents/internal/evidence"
+	"github.com/looptender/looptender/internal/adapter"
+	"github.com/looptender/looptender/internal/config"
+	"github.com/looptender/looptender/internal/decide"
+	"github.com/looptender/looptender/internal/envvar"
+	"github.com/looptender/looptender/internal/evidence"
 )
 
 // Adapter runs the configured commands.
@@ -118,7 +118,10 @@ func (a *Adapter) run(ctx context.Context, argv []string, stdin string, extra ma
 	ctx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 	cmd := exec.CommandContext(ctx, argv[0], argv[1:]...)
-	cmd.Env = os.Environ()
+	// Not the session the supervisor was started from: the session these
+	// commands drive is not that BB thread or its agent session. The loop's
+	// own env entries are added after, so they win.
+	cmd.Env = envvar.WithoutSupervisorSession(os.Environ())
 	for k, v := range a.cfg.Env {
 		cmd.Env = append(cmd.Env, k+"="+v)
 	}

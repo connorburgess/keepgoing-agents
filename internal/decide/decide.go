@@ -10,7 +10,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/connorburgess/keepgoing-agents/internal/evidence"
+	"github.com/looptender/looptender/internal/evidence"
 )
 
 // State is the supervised session's coarse status.
@@ -32,9 +32,16 @@ type ErrorClass string
 
 // Error classes.
 const (
-	ErrNone       ErrorClass = "none"
-	ErrRateLimit  ErrorClass = "rate_limit"
-	ErrAuth       ErrorClass = "auth"
+	ErrNone      ErrorClass = "none"
+	ErrRateLimit ErrorClass = "rate_limit"
+	ErrAuth      ErrorClass = "auth"
+	// ErrRestricted is a provider denying permission for the request or the
+	// account: forbidden, permission denied, an organisation not allowed.
+	// ErrRefused is the model or the provider declining the turn itself: a
+	// refusal, a policy block. Neither is a limit. Both hold for a person
+	// and can never cause a move to another route.
+	ErrRestricted ErrorClass = "restricted"
+	ErrRefused    ErrorClass = "refused"
 	ErrOverloaded ErrorClass = "overloaded"
 	ErrNetwork    ErrorClass = "network"
 	ErrUnknown    ErrorClass = "unknown"
@@ -43,7 +50,29 @@ const (
 // Observation is what an adapter saw.
 type Observation struct {
 	// Evidence is diagnostic metadata and never changes Decide policy.
-	Evidence   evidence.Detail
+	Evidence evidence.Detail
+	// ModelFallback is the position, in the session's own log, of the latest
+	// record that the provider fell back to another model after a refusal; 0
+	// when there is none. It is diagnostic: the supervisor notes a new one in
+	// the timeline, and it never changes Decide policy.
+	ModelFallback int64
+	// ChildOutcome is the position, in the session's own log, of the latest
+	// child outcome notice its provider delivered; 0 when there is none or
+	// the adapter has no such notices. Decide never reads it: the supervisor
+	// compares it between checks as one of the idle spacing rule's facts.
+	ChildOutcome int64
+	// Turns counts the turn requests and turn starts in the session's own
+	// log, from typed events only; nil when the adapter cannot count them.
+	// Decide never reads it: the supervisor compares it between checks as
+	// one of the idle spacing rule's facts, so that input looptender did not
+	// send (a person's message, another agent's message, a notice) starts
+	// the spacing over, and an idle wake counts as having changed nothing
+	// only once the turn it started has ended.
+	Turns *TurnCounts
+	// ErrorTurn names the turn an error ended, when the adapter can tell; a
+	// new turn has a new name. It counts a refused turn once however many
+	// checks see it, and never changes any other rule.
+	ErrorTurn  string
 	State      State
 	ErrorClass ErrorClass
 	// Turn is what the adapter knows of the running turn, from structured
@@ -55,6 +84,10 @@ type Observation struct {
 	Queued      int  // messages already waiting for the session
 	Background  int  // background workers still running
 	Gone        bool // target deleted or archived
+	// SessionLost means the session the loop was continuing can no longer
+	// be named (its saved identifier is unusable), so continuing would mean
+	// starting a new conversation that nobody chose.
+	SessionLost bool
 	// Retrying means the provider itself has scheduled a retry of the
 	// failed turn, so the supervisor should leave it alone.
 	Retrying bool
@@ -86,9 +119,11 @@ type Observation struct {
 	DeferredInteraction bool
 	// ActiveChildren is verified direct child work. ChildrenUnverified means
 	// discovery could not establish the complete picture. Neither permits a
-	// wake, nudge or switch-back of a parent that is not in error. Neither
+	// wake, nudge or switch-back of a parent that is not in error without
+	// explicit AssignmentReady at the ordinary idle-wake stage. Neither
 	// holds back the error rules for a parent that is: see Decide. Control
 	// holds and stop retain precedence.
+	DirectChildren     *DirectChildren
 	ActiveChildren     int
 	ChildrenUnverified bool
 	// AwaitingChildren contains verified child IDs with pending human input.
@@ -101,6 +136,9 @@ type Observation struct {
 	// ActiveChildIDs names the children counted in ActiveChildren, for the
 	// run graph only. It is diagnostic and never changes Decide policy.
 	ActiveChildIDs []string
+	// ChildTitles are the titles BB reported for verified direct children, by
+	// ID. They are for display only: no decision reads them.
+	ChildTitles map[string]string
 	// HealthyChildren contains verified direct child IDs with a known status
 	// other than error. Decide never reads it; the owner report uses it to
 	// tell a child that recovered from one an incomplete listing did not show.
@@ -118,6 +156,7 @@ type Control struct {
 
 // Input is everything Decide needs.
 type Input struct {
+	AssignmentReady   int // exact current typed readiness, evaluated by the supervisor
 	Obs               Observation
 	Control           Control
 	InWindow          bool
@@ -141,6 +180,19 @@ type Input struct {
 	// the primary's limit has had time to reset. The tick still confirms the
 	// primary with an exact probe before moving.
 	SwitchBackReady bool
+	// DeclineAcknowledged: the loop was held because this session's turn was
+	// restricted, and a person has since resumed it.
+	DeclineAcknowledged bool
+	// RefusalStreak counts consecutive refused turns of this session,
+	// including the current one; above 0, a refusal on this route is
+	// unrecovered and nothing moves the work. SinceRefusal is the time since
+	// the current refusal was first seen or a continue for it was last
+	// attempted, whichever is later.
+	RefusalStreak int
+	SinceRefusal  time.Duration
+	// RefusalAskAfter is the streak at which a person is asked instead; 0
+	// never asks.
+	RefusalAskAfter int
 
 	// UnannouncedErroredChildren counts errored children the session has not
 	// been told about. Children it was told about that are still in error do
@@ -177,6 +229,70 @@ type Input struct {
 	// HandoffDeferred: a handoff is due and a fallback is listed healthy, but
 	// this check ran out of time to confirm one. Nothing is spent on that.
 	HandoffDeferred bool
+
+	// IdleSpacing spaces idle wakes that changed nothing; off unless
+	// loop.progress.idle_spacing is set. See IdleSpacing.
+	IdleSpacing IdleSpacing
+}
+
+// IdleSpacing is the opt-in rule that spaces idle wakes after which no
+// structured fact changed. The command layer compares the facts; Decide only
+// sees the count, so nothing here reads text or infers "nothing to do".
+type IdleSpacing struct {
+	// First is the wait after one idle wake that changed nothing; each further
+	// one doubles it, up to Max. Max zero turns the rule off.
+	First, Max time.Duration
+	// Unchanged counts consecutive idle wakes, up to and including the last
+	// one, after which none of the listed facts changed. Zero when one
+	// changed, or when no idle wake is on record.
+	Unchanged int
+	// SinceIdleWake is the time since the last idle wake. Negative (the
+	// clock was set back) counts as the wait having passed.
+	SinceIdleWake time.Duration
+}
+
+// TurnCounts counts events in a session's own log since it began. Requests
+// are turn requests from any sender, a provider's retry of an earlier request
+// excluded; Starts are turns that started. Neither is ever read from message
+// text.
+type TurnCounts struct {
+	Requests int64
+	Starts   int64
+}
+
+// IdleWait names why an idle wake is waiting. It is a fixed code: callers
+// read it, never the Reason text.
+type IdleWait string
+
+// IdleUnchanged: the previous idle wakes changed none of the structured facts
+// the rule watches, so the next one waits IdleSpacingWait after the last.
+const IdleUnchanged IdleWait = "idle_unchanged"
+
+// IdleSpacedReason is recorded on a check that spaced an idle wake.
+const IdleSpacedReason = "idle; previous idle wakes changed nothing looptender can see; next idle wake spaced"
+
+// IdleSpacingWait is how long after the last idle wake the next one waits when
+// n idle wakes in a row changed nothing: first for one, doubled for each
+// further one, never more than max. Zero when n is 0 or the rule is off.
+func IdleSpacingWait(first, max time.Duration, n int) time.Duration {
+	if n <= 0 || max <= 0 || first <= 0 {
+		return 0
+	}
+	w := min(first, max)
+	for i := 1; i < n && w < max; i++ {
+		w = min(mulSat(w, 2), max)
+	}
+	return w
+}
+
+// idleSpaced reports whether an idle wake waits under IdleSpacing. A wake
+// that carries a child-error notice is never spaced: the notice is a change.
+// A negative time since the last idle wake means the clock was set back; the
+// wait counts as passed, so a clock change can never delay a wake.
+func idleSpaced(in Input) bool {
+	s := in.IdleSpacing
+	wait := IdleSpacingWait(s.First, s.Max, s.Unchanged)
+	return wait > 0 && s.SinceIdleWake >= 0 && s.SinceIdleWake < wait && !childErrorNoticeDue(in)
 }
 
 // Failover is the supervisor's view of whether a handoff is possible.
@@ -217,6 +333,9 @@ const (
 	WaitResetSoon        LimitWait = "limit_wait"              // the reset is within wait_if_reset_within
 	WaitNoFallback       LimitWait = "limit_no_fallback"       // failover is eligible but no fallback is confirmed
 	WaitFailoverDisabled LimitWait = "limit_failover_disabled" // the error class is not configured to fail over
+	// WaitRefusalUnrecovered: a refusal on this route has not been followed
+	// by a turn that ended without one, so nothing may move the work.
+	WaitRefusalUnrecovered LimitWait = "limit_refusal_unrecovered"
 )
 
 // TurnActivity is what an adapter knows of an active session's current
@@ -240,6 +359,7 @@ type Decision struct {
 	// caller never matches on Reason text. The parent is idle on purpose while
 	// other children run: it gets the notice alone, not the task prompt.
 	ChildErrorWake bool
+	AssignmentWake bool
 	// DeferredInteraction is set only when the deferred-interaction rule itself
 	// produced an AwaitUser, so a caller never matches on Reason text.
 	DeferredInteraction bool
@@ -254,7 +374,15 @@ type Decision struct {
 	// because the turn may be hung (Input.HungTurn). It is recorded exactly
 	// as a nudge is, and not sent.
 	HeldNudge bool
+	// IdleWake is set only on the ordinary wake of an idle session, the one
+	// IdleSpacing spaces. IdleWait is set only when that wake was spaced.
+	IdleWake bool
+	IdleWait IdleWait
 }
+
+// SessionLostReason is fixed text. It names the way out: a person decides to
+// start a new conversation, with a command, or restores the identifier.
+const SessionLostReason = "the saved session cannot be used, so looptender cannot tell which conversation to continue and will not start a new one by itself; run looptender session reset to start a new conversation on purpose, then resume"
 
 // DeferredInteractionReason is fixed text; it carries no provider content.
 const DeferredInteractionReason = "agent interaction was cancelled and needs a person; nothing was approved"
@@ -317,6 +445,9 @@ func Decide(in Input) Decision {
 	if o.Gone {
 		return Decision{Action: AwaitUser, Reason: "target gone (archived, deleted, or not found)"}
 	}
+	if o.SessionLost {
+		return Decision{Action: AwaitUser, Reason: SessionLostReason}
+	}
 	if len(o.AwaitingChildren) > 0 {
 		return Decision{Action: AwaitUser, Reason: "children waiting on a person (pending interaction): " + strings.Join(o.AwaitingChildren, ", ")}
 	}
@@ -339,7 +470,9 @@ func Decide(in Input) Decision {
 			if childErrorWake(in) {
 				return Decision{Action: Wake, Reason: ChildErrorWakeReason, ChildErrorWake: true}
 			}
-			return none("child work running")
+			if in.AssignmentReady <= 0 || o.State != Idle || o.ChildrenUnverified {
+				return none("child work running")
+			}
 		}
 		if o.ChildrenUnverified {
 			return none("child status unverified")
@@ -372,10 +505,21 @@ func Decide(in Input) Decision {
 			return none(NetworkDownReason)
 		}
 		// Only between turns: never pull the loop from a fallback mid-turn.
-		if in.SwitchBackReady {
+		if in.SwitchBackReady && o.ActiveChildren == 0 {
 			return Decision{Action: SwitchBack, Reason: "primary's limit has reset"}
 		}
-		return Decision{Action: Wake, Reason: "idle"}
+		// Spacing only: every hold, gate and wait above still comes first, and
+		// a switch-back or a child-error notice is never spaced.
+		if idleSpaced(in) {
+			return Decision{Action: None, Reason: IdleSpacedReason, IdleWait: IdleUnchanged}
+		}
+		if o.ActiveChildren > 0 {
+			if in.SinceWake < in.MinWakeInterval {
+				return none("assignment wake spacing")
+			}
+			return Decision{Action: Wake, Reason: "independent assignments need coordinator", IdleWake: true, AssignmentWake: true}
+		}
+		return Decision{Action: Wake, Reason: "idle", IdleWake: true}
 	case Active:
 		// A turn that went silent before a network outage and stayed silent
 		// after it may be hung. Nothing is sent into it: a nudge would only
@@ -506,6 +650,40 @@ func addSat(a, b time.Duration) time.Duration {
 	return a + b
 }
 
+// Declined reports whether an error class is a provider's or a model's
+// decision about the request, as opposed to a limit or a fault.
+func Declined(c ErrorClass) bool { return c == ErrRestricted || c == ErrRefused }
+
+// The fixed reasons for a session whose error is such a decision. They never
+// carry provider text.
+const (
+	RestrictedReason = "provider denied permission for this request or account; not a limit, so no handoff"
+	// RefusedContinueReason is the plain continue sent to a refused turn.
+	RefusedContinueReason = "the model or provider declined this turn; continuing in the same session"
+	// RefusalWaitReason is a check that waits before that continue.
+	RefusalWaitReason = "the model or provider declined this turn; waiting before continuing"
+	// RefusalAskReason is the hold a long streak of refusals raises.
+	RefusalAskReason = "refusal streak: how should this loop proceed?"
+	// DeclineAcknowledgedReason is the one re-prompt a person asks for by
+	// resuming a loop held for either reason.
+	DeclineAcknowledgedReason = "resumed by a person after a restriction; one re-prompt"
+)
+
+// RefusalSpacing is how long a refused turn waits before its continue: 1m
+// for the first refusal of a streak, 2m for the second, 5m for the third,
+// then 10m. There is no cap on the number of continues.
+func RefusalSpacing(streak int) time.Duration {
+	switch {
+	case streak <= 1:
+		return time.Minute
+	case streak == 2:
+		return 2 * time.Minute
+	case streak == 3:
+		return 5 * time.Minute
+	}
+	return 10 * time.Minute
+}
+
 // decideError bounds recovery from an errored session. A handoff happens
 // only for an error class the loop is configured to fail over on, and only
 // when a confirmed fallback is available. Unknown errors never hand off.
@@ -519,6 +697,44 @@ func decideError(in Input) Decision {
 	// and a hold raised because of it would outlast the outage.
 	if in.NetworkDown {
 		return none(NetworkDownReason)
+	}
+	// Ahead of the handoff rule. A refusal is often a false flag that a plain
+	// continue in the same session clears (the owner's decision), so it is
+	// answered with one, spaced by the streak and with no per-episode cap.
+	// It never moves: no handoff, no other model, no other route. Loop-wide
+	// limits and every control still come first.
+	if o.ErrorClass == ErrRefused {
+		// After AskAfter refusals in a row with none recovered, a person
+		// decides how the loop goes on; until then it holds.
+		if in.RefusalAskAfter > 0 && in.RefusalStreak >= in.RefusalAskAfter {
+			return Decision{Action: AwaitUser, Reason: RefusalAskReason}
+		}
+		if wait := RefusalSpacing(in.RefusalStreak); in.SinceRefusal < wait {
+			return none(RefusalWaitReason)
+		}
+		return Decision{Action: Reprompt, Reason: RefusedContinueReason}
+	}
+	// A restriction is the provider denying permission for the request or
+	// the account: prompting again cannot change that, and moving would be a
+	// way around it. It holds for a person, whose resume asks for exactly
+	// one more try, outside the re-prompt cap and its backoff.
+	if o.ErrorClass == ErrRestricted {
+		if in.DeclineAcknowledged {
+			return Decision{Action: Reprompt, Reason: DeclineAcknowledgedReason}
+		}
+		return Decision{Action: AwaitUser, Reason: RestrictedReason}
+	}
+	// While a refusal on this route is unrecovered (the owner's decision),
+	// nothing moves the work for any reason: a later limit or other error
+	// would otherwise hand the declined work to another account. A limit
+	// with a reported reset is waited out; anything else gets the ordinary
+	// in-place rules. Once a turn on this route ends without a refusal, the
+	// streak ends and the normal rules return.
+	if in.RefusalStreak > 0 {
+		if f.ResetIn > 0 && o.ErrorClass != ErrUnknown && o.ErrorClass != ErrNone && o.ErrorClass != "" {
+			return limitWait(WaitRefusalUnrecovered, "limit resets in "+f.ResetIn.Round(time.Minute).String()+"; no handoff while a refusal on this route is unrecovered")
+		}
+		f.Eligible = false
 	}
 	if f.Eligible && o.ErrorClass != ErrUnknown && o.ErrorClass != ErrNone && o.ErrorClass != "" {
 		if f.ResetIn > 0 && f.ResetIn <= f.WaitIfResetWithin {
@@ -602,8 +818,8 @@ const (
 // RecoverBy chooses the method for a re-prompt decision. A turn retry is used
 // only for a session in error whose class a retry can plausibly fix: network,
 // overloaded or unknown. A rate limit is not cured by running the same turn
-// again and an auth error needs a person, so those keep the existing prompt
-// path (auth is held before it gets here). Anything that is not a re-prompt
+// again and an auth error or a restriction needs a person, so those keep the
+// existing prompt path (both are held before they get here). Anything that is not a re-prompt
 // of an errored session on a provider that can retry is a prompt.
 func RecoverBy(d Decision, obs Observation, canRetryTurn bool) Recovery {
 	if d.Action != Reprompt || !canRetryTurn || obs.State != Error {

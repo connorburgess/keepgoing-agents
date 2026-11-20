@@ -406,22 +406,34 @@ func TestAntigravityACPExchangeBidirectionalPipe(t *testing.T) {
 }
 
 func TestAntigravityACPExchangeConnectionLimits(t *testing.T) {
-	for _, kind := range []string{"bytes", "frames"} {
-		t.Run(kind, func(t *testing.T) {
-			content := "x"
-			count := antigravityACPFrameCount + 1
-			if kind == "bytes" {
-				content = strings.Repeat("x", antigravityACPFrameLimit/2)
-				count = 10
-			}
-			frame := fmt.Sprintf(`{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":%q,"update":{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":%q}}}}`, acpFixtureSession, content) + "\n"
-			input := acpExchangeStream(false) + strings.Repeat(frame, count)
-			r := &acpCountReader{r: strings.NewReader(input)}
-			w := &acpExchangeWriter{}
-			out, err := ExchangeAntigravityACP(context.Background(), r, w, "", t.TempDir(), "fictional task", func(context.Context, AntigravityACPCheckpoint) error { return nil })
-			if err == nil || !out.Failed || len(w.frames) != 3 || r.n > antigravityACPTotalLimit+4096 {
-				t.Fatalf("limit: %+v %v reads=%d writes=%d", out, err, r.n, len(w.frames))
-			}
-		})
-	}
+	t.Run("long streaming turn succeeds", func(t *testing.T) {
+		small := fmt.Sprintf(`{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":%q,"update":{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":"x"}}}}`, acpFixtureSession) + "\n"
+		big := fmt.Sprintf(`{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":%q,"update":{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":%q}}}}`, acpFixtureSession, strings.Repeat("x", antigravityACPFrameLimit/2)) + "\n"
+		input := acpExchangeStream(false) + strings.Repeat(small, 5000) + strings.Repeat(big, 10) + acpResult("end_turn") + "\n"
+		r := &acpCountReader{r: strings.NewReader(input)}
+		w := &acpExchangeWriter{}
+		out, err := ExchangeAntigravityACP(context.Background(), r, w, "", t.TempDir(), "fictional task", func(context.Context, AntigravityACPCheckpoint) error { return nil })
+		if err != nil || out.Failed || !out.TurnReturned || len(w.frames) != 3 {
+			t.Fatalf("long streaming turn failed: %+v %v writes=%d", out, err, len(w.frames))
+		}
+	})
+	t.Run("single frame limit", func(t *testing.T) {
+		oversized := fmt.Sprintf(`{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":%q,"update":{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":%q}}}}`, acpFixtureSession, strings.Repeat("x", antigravityACPFrameLimit+100)) + "\n"
+		r := &acpCountReader{r: strings.NewReader(acpExchangeStream(false) + oversized)}
+		w := &acpExchangeWriter{}
+		out, err := ExchangeAntigravityACP(context.Background(), r, w, "", t.TempDir(), "fictional task", func(context.Context, AntigravityACPCheckpoint) error { return nil })
+		if err == nil || !out.Failed || len(w.frames) != 3 || r.n > antigravityACPFrameLimit+8192 {
+			t.Fatalf("single frame limit: %+v %v reads=%d writes=%d", out, err, r.n, len(w.frames))
+		}
+	})
+	t.Run("cancel drain limit", func(t *testing.T) {
+		frame := fmt.Sprintf(`{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":%q,"update":{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":"x"}}}}`, acpFixtureSession) + "\n"
+		input := acpExchangeStream(false, acpPermission(`1`, acpFixtureSession)) + strings.Repeat(frame, antigravityACPCancelFrameLimit+5)
+		r := &acpCountReader{r: strings.NewReader(input)}
+		w := &acpExchangeWriter{}
+		out, err := ExchangeAntigravityACP(context.Background(), r, w, "", t.TempDir(), "fictional task", func(context.Context, AntigravityACPCheckpoint) error { return nil })
+		if err == nil || !out.Failed || !out.NeedsUser {
+			t.Fatalf("cancel drain limit: %+v %v", out, err)
+		}
+	})
 }

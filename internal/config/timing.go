@@ -40,8 +40,12 @@ func (c *Config) TimingSummary() *TimingSummary {
 	if m := first.Model(); m != "" {
 		route += " (" + m + ")"
 	}
+	collecting := "timing: collecting usage readings for " + route + "; with no steps configured it does not change routes"
+	if len(t.Steps) > 0 {
+		collecting = "timing: collecting usage readings for " + route + " and moving between its steps (" + strings.Join(t.Steps, ", ") + ") up to " + t.Ceiling + " at turn boundaries"
+	}
 	s := &TimingSummary{
-		Collecting: "timing: collecting usage readings for " + route + "; it does not change routes yet",
+		Collecting: collecting,
 		Warnings:   []string{},
 		ProbeEvery: t.ProbeEvery.Duration.String(),
 		ProbeModel: first.ProbeModel(false),
@@ -70,6 +74,11 @@ func (c *Config) TimingSummary() *TimingSummary {
 	}
 	if fb := c.FallbackSet; fb != nil && fb.Probe.Disabled {
 		s.Warnings = append(s.Warnings, "timing: scheduled probes are off in the fallbacks file (probe.scheduled_disabled), so no timing probe runs")
+	}
+	if c.RouteList.Unreadable {
+		s.Warnings = append(s.Warnings, "timing preview unavailable: the standard route list could not be read")
+	} else if c.TimingStepsUnavailable != "" {
+		s.Warnings = append(s.Warnings, "timing preview unavailable: "+c.TimingStepsUnavailable)
 	}
 	return s
 }

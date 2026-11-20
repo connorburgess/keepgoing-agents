@@ -10,9 +10,9 @@ import (
 
 	"gopkg.in/yaml.v3"
 
-	"github.com/connorburgess/keepgoing-agents/internal/config"
-	"github.com/connorburgess/keepgoing-agents/internal/snapshot"
-	"github.com/connorburgess/keepgoing-agents/internal/state"
+	"github.com/looptender/looptender/internal/config"
+	"github.com/looptender/looptender/internal/snapshot"
+	"github.com/looptender/looptender/internal/state"
 )
 
 // RouteNote says where a loop's other routes come from and whether anything
@@ -26,6 +26,9 @@ type RouteNote struct {
 	// CurrentNotInList: the loop is on a route that is no longer in its list.
 	// It stays there until the ordinary rules move it.
 	CurrentNotInList bool `json:"currentNotInList,omitempty"`
+	// ListChanged: the standard list changed since this loop's last check.
+	// It is a timeline record only; nothing is reported.
+	ListChanged bool `json:"listChanged,omitempty"`
 }
 
 // CurrentRouteName is the saved record of the route a following loop is on.
@@ -43,7 +46,7 @@ type currentRoute struct {
 // LoadCurrentRoute reads the saved template. A missing, oversized or
 // malformed record is simply no record.
 func LoadCurrentRoute(stateDir string) (config.Route, bool) {
-	f, err := snapshot.Open(filepath.Join(stateDir, CurrentRouteName))
+	f, err := snapshot.OpenRecord(filepath.Join(stateDir, CurrentRouteName))
 	if err != nil {
 		return config.Route{}, false
 	}
@@ -67,7 +70,7 @@ func saveCurrentRoute(stateDir string, rt config.Route) error {
 		return errors.New("current route record could not be written")
 	}
 	path := filepath.Join(stateDir, CurrentRouteName)
-	if old, err := os.ReadFile(path); err == nil && bytes.Equal(old, raw) {
+	if old, err := snapshot.ReadFile(path); err == nil && bytes.Equal(old, raw) {
 		return nil
 	}
 	if err := os.MkdirAll(stateDir, 0o700); err != nil {
@@ -168,16 +171,24 @@ func (t *tick) noteRouteList() {
 	list := t.cfg.RouteList
 	if list.Source != config.RoutesStandard {
 		// A loop that no longer follows the list has nothing to report.
-		if t.st.RoutesUnreadable && !t.opts.DryRun {
-			t.st.RoutesUnreadable = false
+		if !t.opts.DryRun {
+			t.st.RoutesUnreadable, t.st.RoutesDigest = false, ""
 		}
 		return
 	}
 	for _, w := range list.Warnings {
 		t.warn("%s", w)
 	}
-	if list.Unreadable || t.routeOutsideList {
-		t.res.Routes = &RouteNote{Source: list.Source, Unreadable: list.Unreadable, CurrentNotInList: t.routeOutsideList}
+	// A change to a readable list is noted once, against the list this loop
+	// last read; the first read, an unreadable list and a dry run note
+	// nothing, and a dry run leaves the note to the next real check.
+	changed := !t.opts.DryRun && list.Digest != "" && t.st.RoutesDigest != "" && list.Digest != t.st.RoutesDigest
+	if list.Digest != "" && !t.opts.DryRun {
+		t.st.RoutesDigest = list.Digest
+	}
+	t.incidentRouteListChanged = changed
+	if list.Unreadable || t.routeOutsideList || changed {
+		t.res.Routes = &RouteNote{Source: list.Source, Unreadable: list.Unreadable, CurrentNotInList: t.routeOutsideList, ListChanged: changed}
 	}
 	if list.Unreadable {
 		t.warn("%s", config.StandardRoutesUnreadable)

@@ -1,5 +1,7 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!-- The loop's configuration file is looptender.yaml (keepgoing.yaml from
+     releases up to v0.2.0 is read the same way); use whichever your loop has. -->
 <!-- Run one tick every five minutes. Copy to ~/Library/LaunchAgents/,
      replace the fictional paths, then: launchctl load <file>. -->
 <plist version="1.0">
@@ -10,7 +12,7 @@
     <string>/usr/local/bin/keepgoing</string>
     <string>tick</string>
     <string>-c</string>
-    <string>/Users/example/.config/keepgoing/example-bb-loop/keepgoing.yaml</string>
+    <string>/Users/example/.config/agent-loops/example-bb-loop/looptender.yaml</string>
   </array>
   <key>StartInterval</key><integer>300</integer>
   <key>StandardOutPath</key><string>/Users/example/Library/Logs/keepgoing-example.log</string>

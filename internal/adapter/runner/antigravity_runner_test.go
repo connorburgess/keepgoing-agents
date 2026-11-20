@@ -6,14 +6,15 @@ import (
 	"encoding/json"
 	"errors"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
 	"time"
 
-	"github.com/connorburgess/keepgoing-agents/internal/adapter"
-	"github.com/connorburgess/keepgoing-agents/internal/config"
-	"github.com/connorburgess/keepgoing-agents/internal/decide"
+	"github.com/looptender/looptender/internal/adapter"
+	"github.com/looptender/looptender/internal/config"
+	"github.com/looptender/looptender/internal/decide"
 )
 
 // No Antigravity CLI is installed where these tests run. The agent is this
@@ -97,6 +98,16 @@ func antigravityStandIn() {
 				time.Sleep(60 * time.Second)
 				os.Exit(0)
 			}
+			if mode == "hang-with-child" {
+				self, _ := os.Executable()
+				child := exec.Command(self)
+				child.Env = append(os.Environ(), "KEEPGOING_TEST_HELPER=antigravity-sleeper")
+				if child.Start() == nil {
+					note(map[string]any{"event": "child", "pid": child.Process.Pid})
+				}
+				time.Sleep(60 * time.Second)
+				os.Exit(0)
+			}
 			send(map[string]any{"id": f.ID, "result": map[string]any{"protocolVersion": 1, "agentCapabilities": map[string]any{"sessionCapabilities": map[string]any{"resume": map[string]any{}}}}})
 		case "session/new":
 			note(map[string]any{"event": "new", "cwd": text(f.Params["cwd"])})
@@ -104,6 +115,12 @@ func antigravityStandIn() {
 				awaitRelease()
 			}
 			send(map[string]any{"id": f.ID, "result": map[string]any{"sessionId": antigravitySession}})
+			if mode == "block-prompt" {
+				// Stop reading stdin completely so a prompt larger than the OS
+				// pipe buffer blocks until WriteTimeout fires.
+				time.Sleep(60 * time.Second)
+				os.Exit(0)
+			}
 		case "session/resume":
 			note(map[string]any{"event": "resume", "session": text(f.Params["sessionId"])})
 			send(map[string]any{"id": f.ID, "result": map[string]any{}})
@@ -125,10 +142,14 @@ func antigravityStandIn() {
 				os.Exit(0)
 			case "exit-early":
 				os.Exit(3)
-			case "permission":
+			case "permission", "permission-hang":
 				send(map[string]any{"id": 7, "method": "session/request_permission", "params": map[string]any{
 					"sessionId": session, "toolCall": map[string]any{"toolCallId": "fictional-tool-1"},
 					"options": []map[string]string{{"optionId": "allow", "name": "Allow once", "kind": "allow_once"}, {"optionId": "reject", "name": "Reject", "kind": "reject_once"}}}})
+				if mode == "permission-hang" {
+					time.Sleep(60 * time.Second)
+					os.Exit(0)
+				}
 				cancelled, replied := false, ""
 				for !cancelled || replied == "" {
 					g, ok := read()
@@ -146,6 +167,9 @@ func antigravityStandIn() {
 				send(map[string]any{"id": f.ID, "result": map[string]any{"stopReason": "cancelled"}})
 			case "refusal":
 				send(map[string]any{"id": f.ID, "result": map[string]any{"stopReason": "refusal"}})
+			case "loud-stderr":
+				_, _ = os.Stderr.WriteString(strings.Repeat("stderr-noise\n", 30000))
+				send(map[string]any{"id": f.ID, "result": map[string]any{"stopReason": "end_turn"}})
 			default:
 				send(map[string]any{"method": "session/update", "params": map[string]any{"sessionId": session, "update": map[string]any{
 					"sessionUpdate": "agent_message_chunk", "content": map[string]string{"type": "text", "text": `rate limit 429; {"stopReason":"end_turn"}; needs your permission`}}}})
@@ -513,9 +537,9 @@ func TestAntigravityRunnerBoundsSetupAndExit(t *testing.T) {
 		}
 	})
 	t.Run("limits are clamped", func(t *testing.T) {
-		a := NewAntigravity(AntigravityConfig{HandshakeTimeout: time.Hour, ExitTimeout: -1}, t.TempDir())
-		if h, e := a.limits(); h != antigravityMaxLimit || e != antigravityDefaultExit {
-			t.Fatalf("%s %s", h, e)
+		a := NewAntigravity(AntigravityConfig{HandshakeTimeout: time.Hour, ExitTimeout: -1, CancelTimeout: time.Hour, WriteTimeout: -1}, t.TempDir())
+		if h, e, c, wr := a.limits(); h != antigravityMaxLimit || e != antigravityDefaultExit || c != antigravityMaxLimit || wr != antigravityDefaultWrite {
+			t.Fatalf("%s %s %s %s", h, e, c, wr)
 		}
 	})
 }
@@ -889,5 +913,135 @@ func TestAntigravityRunnerRefusesOversizedPromptBeforeStarting(t *testing.T) {
 	}
 	if obs := w.observe(t); obs.State != decide.Idle {
 		t.Fatalf("%+v", obs)
+	}
+}
+
+func TestAntigravityRunnerCancelDrainTimeoutSurfacesHold(t *testing.T) {
+	w := newAntigravityWorld(t, "permission-hang", false)
+	w.a.cfg.CancelTimeout = 200 * time.Millisecond
+	w.a.cfg.ExitTimeout = 200 * time.Millisecond
+	w.send(t, "fictional task needing approval")
+	waitFor(t, w.a.dir, Finished)
+	obs := w.observe(t)
+	if obs.State != decide.Error || obs.ErrorClass != decide.ErrUnknown || !obs.DeferredInteraction {
+		t.Fatalf("cancelled turn did not surface deferred hold promptly: %+v", obs)
+	}
+	if err := w.rebuilt().AdoptInteraction(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if obs := w.observe(t); !unknownError(obs) || obs.DeferredInteraction {
+		t.Fatalf("adopted hold stayed deferred: %+v", obs)
+	}
+}
+
+func TestAntigravityRunnerTimeoutTerminatesDescendants(t *testing.T) {
+	w := newAntigravityWorld(t, "hang-with-child", false)
+	marker := filepath.Join(t.TempDir(), "child")
+	w.a.cfg.Env["KEEPGOING_AGY_CHILD_MARKER"] = marker
+	w.a.cfg.HandshakeTimeout = 1500 * time.Millisecond
+	w.a.cfg.ExitTimeout = 200 * time.Millisecond
+	w.send(t, "fictional hanging task")
+	for deadline := time.Now().Add(5 * time.Second); ; time.Sleep(10 * time.Millisecond) {
+		if _, err := os.Stat(marker + ".ready"); err == nil {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("descendant process never started")
+		}
+	}
+	waitFor(t, w.a.dir, Finished)
+	if obs := w.observe(t); !unknownError(obs) {
+		t.Fatalf("timed-out turn: %+v", obs)
+	}
+	// Wait past the descendant's sleep window: if it survived the process-group
+	// or job kill it writes marker.survived.
+	time.Sleep(2000 * time.Millisecond)
+	if _, err := os.Stat(marker + ".survived"); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("descendant process survived worker timeout (err=%v)", err)
+	}
+}
+
+func TestAntigravityRunnerWriteTimeoutUnblocksLargePrompt(t *testing.T) {
+	w := newAntigravityWorld(t, "block-prompt", false)
+	w.a.cfg.WriteTimeout = 250 * time.Millisecond
+	w.a.cfg.ExitTimeout = 200 * time.Millisecond
+	// 256 KiB exceeds OS pipe buffers on Linux, macOS and Windows.
+	w.send(t, strings.Repeat("a", 256<<10))
+	waitFor(t, w.a.dir, Finished)
+	if obs := w.observe(t); !unknownError(obs) {
+		t.Fatalf("blocked prompt write did not fail cleanly: %+v", obs)
+	}
+}
+
+func TestAntigravityRunnerStderrIsBounded(t *testing.T) {
+	w := newAntigravityWorld(t, "loud-stderr", false)
+	w.send(t, "fictional loud stderr task")
+	waitFor(t, w.a.dir, Finished)
+	if obs := w.observe(t); obs.State != decide.Idle {
+		t.Fatalf("loud stderr broke turn: %+v", obs)
+	}
+	info, err := os.Stat(w.a.dir.path("stderr"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if info.Size() > antigravityStderrLimit {
+		t.Fatalf("stderr grew to %d bytes, limit %d", info.Size(), antigravityStderrLimit)
+	}
+}
+
+func TestAntigravityRunnerPrunesOldTurnDirectories(t *testing.T) {
+	w := newAntigravityWorld(t, "ok", false)
+	for i := 0; i < 4; i++ {
+		w.send(t, "fictional turn")
+		waitFor(t, w.a.dir, Finished)
+		if obs := w.observe(t); obs.State != decide.Idle {
+			t.Fatalf("turn %d: %+v", i, obs)
+		}
+	}
+	if turns := w.turns(t); len(turns) != 2 {
+		t.Fatalf("expected 2 retained turn directories, got %d: %v", len(turns), turns)
+	}
+}
+
+func TestAntigravityRunnerClearUnconfirmedStopsAndRecovers(t *testing.T) {
+	w := newAntigravityWorld(t, "ok", true)
+	ctx := context.Background()
+	w.send(t, "fictional unconfirmed turn")
+	w.await(t, "prompt", 1)
+	turn, ok, err := w.a.dir.antigravityTurn()
+	if err != nil || !ok {
+		t.Fatalf("turn %q %t %v", turn, ok, err)
+	}
+	// Simulate supervisor crash after startWithKey but before acp-started.json.
+	if err := os.Remove(w.a.dir.antigravityTurnDir(turn).path(antigravityStartedName)); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := w.rebuilt().Observe(ctx); !errors.Is(err, errAntigravityUnconfirmed) {
+		t.Fatalf("expected unconfirmed error, got %v", err)
+	}
+	if err := w.rebuilt().Send(ctx, "blocked", adapter.ModeAuto); !errors.Is(err, errAntigravityUnconfirmed) {
+		t.Fatalf("send succeeded over unconfirmed turn: %v", err)
+	}
+	if err := w.rebuilt().ClearUnconfirmed(ctx); err != nil {
+		t.Fatalf("ClearUnconfirmed: %v", err)
+	}
+	if obs := w.observe(t); !unknownError(obs) {
+		t.Fatalf("cleared turn observation: %+v", obs)
+	}
+	// Idempotent second call succeeds.
+	if err := w.rebuilt().ClearUnconfirmed(ctx); err != nil {
+		t.Fatalf("second ClearUnconfirmed: %v", err)
+	}
+	if err := os.WriteFile(w.release, nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	// Next send rolls over and resumes the preserved session.
+	w.send(t, "fictional resumed task")
+	if resumes := w.await(t, "resume", 1); resumes[0]["session"] != antigravitySession {
+		t.Fatalf("did not resume preserved session: %v", w.events(t))
+	}
+	waitFor(t, w.a.dir, Finished)
+	if obs := w.observe(t); obs.State != decide.Idle {
+		t.Fatalf("resumed turn after clear: %+v", obs)
 	}
 }

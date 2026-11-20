@@ -14,11 +14,11 @@ git -C "$root" archive HEAD | tar -x -C "$out/src"
 ext=""; [ "$goos" = windows ] && ext=".exe"
 cd "$root"
 for pkg in $(go list ./...); do
-  rel=${pkg#github.com/connorburgess/keepgoing-agents}; rel=${rel#/}; [ -z "$rel" ] && rel=.
+  rel=${pkg#github.com/looptender/looptender}; rel=${rel#/}; [ -z "$rel" ] && rel=.
   name=$(basename "$pkg")
   CGO_ENABLED=0 GOOS=$goos GOARCH=$goarch go test -c -ldflags "-s -w" -o "$out/src/$rel/$name.test$ext" "$pkg" 2>/dev/null || true
 done
-CGO_ENABLED=0 GOOS=$goos GOARCH=$goarch go build -ldflags "-s -w -X main.version=$(git rev-parse --short HEAD)" -o "$out/src/keepgoing$ext" ./cmd/keepgoing
+CGO_ENABLED=0 GOOS=$goos GOARCH=$goarch go build -ldflags "-s -w -X main.version=$(git rev-parse --short HEAD)" -o "$out/src/keepgoing$ext" ./cmd/looptender
 cat > "$out/src/run-tests.sh" <<'RUN'
 #!/bin/sh
 # Run every compiled test binary from its own package directory.

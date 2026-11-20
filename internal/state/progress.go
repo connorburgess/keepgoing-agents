@@ -10,7 +10,7 @@ import (
 	"sort"
 	"time"
 
-	"github.com/connorburgess/keepgoing-agents/internal/snapshot"
+	"github.com/looptender/looptender/internal/snapshot"
 )
 
 const ProgressName = "progress.json"
@@ -50,7 +50,7 @@ func ProgressSources(repositories []string) string {
 
 // LoadProgress returns nil for a new allowance. Corruption is not a reset.
 func LoadProgress(dir string) (*Progress, error) {
-	b, err := snapshot.ReadFile(filepath.Join(dir, ProgressName))
+	b, err := snapshot.ReadRecord(filepath.Join(dir, ProgressName))
 	if errors.Is(err, os.ErrNotExist) {
 		return nil, nil
 	}

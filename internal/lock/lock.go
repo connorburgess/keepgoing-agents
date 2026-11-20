@@ -14,6 +14,11 @@ import (
 var ErrHeld = errors.New("lock held by another process")
 
 // Names of the locks keepgoing uses.
+//
+// A new lock file under the per-user directories or a loop's state
+// directory must also be added to migrateLockNames in
+// cmd/looptender/migrate.go, or keepgoing migrate neither looks at it nor
+// holds it while the directories move.
 const (
 	Tick    = "tick"
 	Daemon  = "daemon"
@@ -29,6 +34,21 @@ func Acquire(stateDir string) (*Lock, error) { return AcquireNamed(stateDir, Tic
 
 // AcquireNamed takes the named lock without waiting.
 func AcquireNamed(stateDir, name string) (*Lock, error) {
+	return acquireNamed(stateDir, name, lockFile)
+}
+
+// AcquireNamedShared takes a shared observation lock without waiting. Other
+// shared readers may overlap; existing exclusive holders and contenders keep
+// their exclusion semantics. A shared guard fences generation changes; it does
+// not serialize writers. Generic mutation is prohibited. The runner's narrowly
+// documented same-generation idempotent session restoration is the sole
+// exception: concurrent publishers must derive identical bytes and publish
+// atomically. This does not authorize SaveSession or other runner mutations.
+func AcquireNamedShared(stateDir, name string) (*Lock, error) {
+	return acquireNamed(stateDir, name, lockFileShared)
+}
+
+func acquireNamed(stateDir, name string, try func(*os.File) error) (*Lock, error) {
 	if err := os.MkdirAll(stateDir, 0o700); err != nil {
 		return nil, err
 	}
@@ -36,7 +56,7 @@ func AcquireNamed(stateDir, name string) (*Lock, error) {
 	if err != nil {
 		return nil, err
 	}
-	if err := lockFile(f); err != nil {
+	if err := try(f); err != nil {
 		f.Close()
 		return nil, err
 	}
@@ -55,4 +75,47 @@ func (l *Lock) Release() error {
 		return err
 	}
 	return cerr
+}
+
+// Held reports whether a process holds the named lock in dir right now. It
+// creates nothing: a directory or lock file that does not exist is not
+// held. It takes the lock for an instant to find out, so a check that
+// starts at that instant may skip; use it only where that is acceptable.
+// An error means it could not tell.
+func Held(dir, name string) (bool, error) {
+	return HeldFile(filepath.Join(dir, name+".lock"))
+}
+
+// HeldFile is Held for a lock file given by its path.
+func HeldFile(path string) (bool, error) {
+	f, err := os.OpenFile(path, os.O_RDWR, 0)
+	if errors.Is(err, os.ErrNotExist) {
+		return false, nil
+	}
+	if err != nil {
+		return false, err
+	}
+	defer f.Close()
+	if err := lockFile(f); err != nil {
+		if errors.Is(err, ErrHeld) {
+			return true, nil
+		}
+		return false, err
+	}
+	return false, unlockFile(f)
+}
+
+// HoldFile takes the lock in an existing lock file without waiting and
+// without creating anything. It returns ErrHeld when another holder has it,
+// and an error satisfying os.ErrNotExist when there is no such file.
+func HoldFile(path string) (*Lock, error) {
+	f, err := os.OpenFile(path, os.O_RDWR, 0)
+	if err != nil {
+		return nil, err
+	}
+	if err := lockFile(f); err != nil {
+		f.Close()
+		return nil, err
+	}
+	return &Lock{f: f}, nil
 }

@@ -3,8 +3,8 @@ package health
 import (
 	"testing"
 
-	"github.com/connorburgess/keepgoing-agents/internal/probe"
-	"github.com/connorburgess/keepgoing-agents/internal/snapshot/snapshottest"
+	"github.com/looptender/looptender/internal/probe"
+	"github.com/looptender/looptender/internal/snapshot/snapshottest"
 )
 
 // status reads health.json while a tick saves probe evidence.

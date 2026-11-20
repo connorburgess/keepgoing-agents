@@ -1,6 +1,6 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://github.com/connorburgess/keepgoing-agents/schema/fallbacks.schema.json",
+  "$id": "https://github.com/looptender/looptender/schema/fallbacks.schema.json",
   "title": "fallbacks.yaml",
   "type": "object",
   "additionalProperties": false,
@@ -80,6 +80,11 @@
             "type": "string",
             "description": "account or quota pool; defaults to provider"
           },
+          "account": {
+            "type": "string",
+            "pattern": "^[0-9a-f]{32}$",
+            "description": "accounts catalog ID (32 lowercase hexadecimal characters, as accounts add prints) of the account a person states this route uses; never derived, and optional"
+          },
           "bb": {
             "$ref": "#/$defs/bb"
           },
@@ -93,6 +98,7 @@
             "$ref": "#/$defs/codex"
           },
           "cursor": false,
+          "antigravity": false,
           "custom": {
             "$ref": "#/$defs/custom"
           },
@@ -133,6 +139,8 @@
                       "none",
                       "rate_limit",
                       "auth",
+                      "restricted",
+                      "refused",
                       "overloaded",
                       "network",
                       "unknown"
@@ -274,6 +282,8 @@
                 "none",
                 "rate_limit",
                 "auth",
+                "restricted",
+                "refused",
                 "overloaded",
                 "network",
                 "unknown"
@@ -621,6 +631,8 @@
                     "enum": [
                       "rate_limit",
                       "auth",
+                      "restricted",
+                      "refused",
                       "overloaded",
                       "network",
                       "unknown"
@@ -640,6 +652,8 @@
                       "enum": [
                         "rate_limit",
                         "auth",
+                        "restricted",
+                        "refused",
                         "overloaded",
                         "network",
                         "unknown"

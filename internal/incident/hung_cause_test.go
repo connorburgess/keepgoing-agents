@@ -3,7 +3,7 @@ package incident
 import (
 	"testing"
 
-	"github.com/connorburgess/keepgoing-agents/internal/decide"
+	"github.com/looptender/looptender/internal/decide"
 )
 
 // A held-back nudge, the wait on a hung turn and the stall rule's hold after

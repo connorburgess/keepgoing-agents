@@ -1,6 +1,7 @@
 package runner
 
 import (
+	"github.com/looptender/looptender/internal/envvar"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -10,10 +11,10 @@ import (
 
 	"context"
 
-	"github.com/connorburgess/keepgoing-agents/internal/adapter"
-	"github.com/connorburgess/keepgoing-agents/internal/config"
-	"github.com/connorburgess/keepgoing-agents/internal/decide"
-	"github.com/connorburgess/keepgoing-agents/internal/testexec"
+	"github.com/looptender/looptender/internal/adapter"
+	"github.com/looptender/looptender/internal/config"
+	"github.com/looptender/looptender/internal/decide"
+	"github.com/looptender/looptender/internal/testexec"
 )
 
 // helperCLI returns argv that re-runs this test binary as a fake agent CLI.
@@ -125,5 +126,42 @@ func TestWrapperDoesNotLeakItsVariables(t *testing.T) {
 	}
 	if found != 2 {
 		t.Errorf("wrapper selection variables missing: %d", found)
+	}
+}
+
+// A turn is not the BB thread that started its supervisor, nor that
+// thread's agent session: the wrapper, and so the agent, runs without any of
+// envvar.SupervisorSession. How to reach BB and account selection are kept,
+// and an entry the loop's configuration sets wins. Names only are reported.
+func TestWrapperDropsTheSupervisorsSession(t *testing.T) {
+	for _, n := range envvar.SupervisorSession {
+		t.Setenv(n, "fictional")
+	}
+	for _, n := range []string{"BB_CLI", "BB_SERVER_URL", "BB_HOST_DAEMON_PORT", "CLAUDE_CONFIG_DIR"} {
+		t.Setenv(n, "fictional")
+	}
+	cmd, err := wrapperCommand([]string{"x"}, ".", "/fictional/dir", []string{"BB_PROJECT_ID=configured"}, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	have := map[string]int{}
+	configured := false
+	for _, kv := range cmd.Env {
+		name, value, _ := strings.Cut(kv, "=")
+		have[strings.ToUpper(name)]++
+		configured = configured || (name == "BB_PROJECT_ID" && value == "configured")
+	}
+	for _, n := range envvar.SupervisorSession {
+		if want := map[bool]int{true: 1}[n == "BB_PROJECT_ID"]; have[n] != want {
+			t.Errorf("%s: %d entries, want %d", n, have[n], want)
+		}
+	}
+	for _, n := range []string{"BB_CLI", "BB_SERVER_URL", "BB_HOST_DAEMON_PORT", "CLAUDE_CONFIG_DIR"} {
+		if have[n] != 1 {
+			t.Errorf("%s was not kept", n)
+		}
+	}
+	if !configured {
+		t.Error("the configured entry did not win")
 	}
 }

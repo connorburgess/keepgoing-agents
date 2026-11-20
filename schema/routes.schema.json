@@ -1,7 +1,7 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://github.com/connorburgess/keepgoing-agents/schema/routes.schema.json",
-  "title": "keepgoing standard route list",
+  "$id": "https://github.com/looptender/looptender/schema/routes.schema.json",
+  "title": "looptender standard route list",
   "type": "object",
   "additionalProperties": false,
   "required": [
@@ -100,6 +100,11 @@
           "type": "string",
           "maxLength": 128,
           "description": "the usage limit this route draws on"
+        },
+        "account": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{32}$",
+          "description": "accounts catalog ID (32 lowercase hexadecimal characters, as accounts add prints) of the account a person states this route uses; never derived, and optional"
         },
         "enter": {
           "enum": [

@@ -1,0 +1,320 @@
+package main
+
+import (
+	"bytes"
+	"context"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"io"
+	"os"
+	"os/exec"
+	"path/filepath"
+	"runtime"
+	"strings"
+	"testing"
+	"time"
+
+	"github.com/looptender/looptender/internal/config"
+	"github.com/looptender/looptender/internal/control"
+	"github.com/looptender/looptender/internal/daemoninfo"
+	"github.com/looptender/looptender/internal/lock"
+	"github.com/looptender/looptender/internal/state"
+	"github.com/looptender/looptender/internal/testexec"
+)
+
+// Build the real entrypoint and a local process fixture. No provider CLI is
+// available to this loop. This also exercises Windows detached pipe inheritance.
+func TestStartBackgroundProcess(t *testing.T) {
+	if runtime.GOOS != "windows" && runtime.GOOS != "darwin" && runtime.GOOS != "linux" {
+		t.Skip("detached process integration")
+	}
+	dir := t.TempDir()
+	t.Setenv("BB_THREAD_ID", "thr_start_fixture")
+	// Both programs are built here and run by this test. testexec runs each
+	// once as it is built, so a refusal by the host of a file it has not
+	// seen is retried there and never reaches an assertion below.
+	tools, err := testexec.NewDir(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	build := func(name, source string, firstRun ...string) string {
+		t.Helper()
+		bin, err := tools.Build(name, source, nil, firstRun...)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return bin
+	}
+	bin := build("keepgoing", ".", "version")
+	fixtureSource := filepath.Join(dir, "fixture.go")
+	if err := os.WriteFile(fixtureSource, []byte(`package main
+import ("fmt"; "os"; "path/filepath")
+func main() {
+ if len(os.Args) != 2 { os.Exit(2) }
+ mode := os.Args[1]
+ if mode != "status" && mode != "stop" && mode != "resume" { os.Exit(2) }
+ if err := os.WriteFile(filepath.Join(os.Getenv("START_FIXTURE_DIR"), mode), []byte("called"), 0600); err != nil { os.Exit(1) }
+ if mode == "status" { fmt.Println("{\"state\":\"active\"}") }
+}
+`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	fixtureBin := build("fixture", fixtureSource)
+	quote := func(v string) string { b, _ := json.Marshal(v); return string(b) }
+	cfg := filepath.Join(dir, "keepgoing.yaml")
+	contents := fmt.Sprintf(`version: 1
+loop:
+  name: example-start
+  state_dir: state
+  adapter: process
+  process:
+    status_command: [%[1]s, status]
+    resume_command: [%[1]s, resume]
+    stop_command: [%[1]s, stop]
+    env: {START_FIXTURE_DIR: %[2]s}
+  prompt: Continue the fictional example.
+  daemon: {interval: 1h, control_poll: 100ms}
+`, quote(fixtureBin), quote(dir))
+	if err := os.WriteFile(cfg, []byte(contents), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	stateDir := filepath.Join(dir, "state")
+	if err := control.Save(stateDir, control.File{Paused: true, Note: "fictional review"}); err != nil {
+		t.Fatal(err)
+	}
+	invoke := func(args ...string) (int, string) {
+		t.Helper()
+		ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+		defer cancel()
+		cmd := exec.CommandContext(ctx, bin, append(args, "-c", "keepgoing.yaml")...)
+		cmd.Dir = dir // Parent passes an absolute path to the detached child.
+		out, err := cmd.CombinedOutput()
+		if err == nil {
+			return 0, string(out)
+		}
+		var x *exec.ExitError
+		if errors.As(err, &x) {
+			return x.ExitCode(), string(out)
+		}
+		t.Fatalf("invoke: %v %s", err, out)
+		return -1, ""
+	}
+	// A child-side validation failure must return its error, never claim readiness
+	// or enable the loop. Restore the valid config before testing detachment.
+	if err := os.WriteFile(cfg, []byte(strings.ReplaceAll(contents, quote(fixtureBin), quote(filepath.Join(dir, "absent")))), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if code, out := invoke("start", "--background"); code != exitFailed || !strings.Contains(out, "not executable") {
+		t.Fatalf("failed startup: %d %s", code, out)
+	}
+	if ctl, err := control.Load(stateDir); err != nil || ctl.Enabled || ctl.Ownership != nil {
+		t.Fatalf("failed startup changed control: %+v %v", ctl, err)
+	}
+	// With --json the same failure is one object on stdout.
+	invokeJSON := func(args ...string) (int, map[string]any, string) {
+		t.Helper()
+		ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+		defer cancel()
+		cmd := exec.CommandContext(ctx, bin, append(args, "-c", "keepgoing.yaml")...)
+		cmd.Dir = dir
+		var stdout, stderr bytes.Buffer
+		cmd.Stdout, cmd.Stderr = &stdout, &stderr
+		err := cmd.Run()
+		code := 0
+		var x *exec.ExitError
+		if errors.As(err, &x) {
+			code = x.ExitCode()
+		} else if err != nil {
+			t.Fatalf("invoke: %v", err)
+		}
+		var v map[string]any
+		if json.Unmarshal(stdout.Bytes(), &v) != nil || strings.Count(strings.TrimSpace(stdout.String()), "\n") != 0 {
+			t.Fatalf("start --json printed %q", stdout.String())
+		}
+		return code, v, stderr.String()
+	}
+	if code, v, errs := invokeJSON("start", "--background", "--json"); code != exitFailed || v["schemaVersion"] != float64(1) || v["outcome"] != "failed" || v["exitCode"] != float64(exitFailed) || !strings.Contains(errs, "not executable") {
+		t.Fatalf("failed startup --json: %d %v %s", code, v, errs)
+	}
+	if err := os.WriteFile(cfg, []byte(contents), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	code, v, errs := invokeJSON("start", "--background", "--json")
+	if code != 0 || v["outcome"] != "started" || v["schemaVersion"] != float64(1) {
+		t.Fatalf("start: %d %v %s", code, v, errs)
+	}
+	pidValue, _ := v["pid"].(float64)
+	pid := int(pidValue)
+	if pid <= 0 || v["control"] == "" {
+		t.Fatalf("no PID or control: %v", v)
+	}
+	proc, err := os.FindProcess(pid)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		_ = proc.Kill()
+		_ = proc.Release()
+		// Let Windows release inherited files before TempDir cleanup.
+		for deadline := time.Now().Add(5 * time.Second); time.Now().Before(deadline); time.Sleep(20 * time.Millisecond) {
+			l, err := lock.AcquireNamed(stateDir, lock.Daemon)
+			if err == nil {
+				l.Release()
+				return
+			}
+		}
+		t.Error("daemon did not release its process lock")
+	})
+	// Only synthetic files created by this test are eligible for failure output.
+	// Read before killing the child so live daemon evidence is still available.
+	t.Cleanup(func() {
+		if !t.Failed() {
+			return
+		}
+		ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+		defer cancel()
+		info, err := daemoninfo.Query(ctx, stateDir)
+		t.Logf("fixture daemon: %+v; query error: %v", info, err)
+		for _, name := range []string{control.FileName, state.FileName, "incidents.json", state.LogName} {
+			f, err := os.Open(filepath.Join(stateDir, name))
+			if err != nil {
+				t.Logf("fixture %s: %v", name, err)
+				continue
+			}
+			b, err := io.ReadAll(io.LimitReader(f, 16*1024))
+			f.Close()
+			t.Logf("fixture %s (first 16 KiB): %s; read error: %v", name, b, err)
+		}
+		for _, name := range []string{"status", "stop", "resume"} {
+			_, err := os.Stat(filepath.Join(dir, name))
+			t.Logf("fixture %s marker: %v", name, err)
+		}
+	})
+	waitFor := func(stage string, budget time.Duration, predicate func() bool) {
+		t.Helper()
+		started := time.Now()
+		for deadline := started.Add(budget); time.Now().Before(deadline); time.Sleep(25 * time.Millisecond) {
+			if predicate() {
+				t.Logf("stage %s reached after %s", stage, time.Since(started))
+				return
+			}
+		}
+		t.Fatalf("background daemon did not reach %s", stage)
+	}
+	wait := func(stage string, predicate func() bool) {
+		t.Helper()
+		waitFor(stage, 5*time.Second, predicate)
+	}
+	query := func() (daemoninfo.Snapshot, error) {
+		ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+		defer cancel()
+		return daemoninfo.Query(ctx, stateDir)
+	}
+	wait("paused check", func() bool {
+		st, _ := state.Load(stateDir)
+		return st.LastCheck != nil && st.LastCheck.Reason == "paused"
+	})
+	before, err := daemoninfo.Query(context.Background(), stateDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctl, err := control.Load(stateDir)
+	if err != nil || !ctl.Enabled || !ctl.Paused || ctl.Ownership == nil || ctl.Ownership.ThreadID != "thr_start_fixture" {
+		t.Fatalf("control: %+v %v", ctl, err)
+	}
+	if _, err := os.Stat(filepath.Join(dir, "status")); !os.IsNotExist(err) {
+		t.Fatal("paused start queried the fixture")
+	}
+	for _, mode := range []string{"--foreground", "--background"} {
+		code, out := invoke("start", mode)
+		if code != exitSkipped || !strings.Contains(out, "another daemon") {
+			t.Fatalf("duplicate: %d %s", code, out)
+		}
+		got, err := control.Load(stateDir)
+		if err != nil || got.UpdatedAt != ctl.UpdatedAt {
+			t.Fatal("duplicate changed control")
+		}
+	}
+	if code, out := invoke("status", "--json"); code != 0 || !strings.Contains(out, `"responsive"`) {
+		t.Fatalf("status: %d %s", code, out)
+	}
+	// The launcher's process and pipes have exited; controls still reach the
+	// daemon, and stop overrides the preserved pause within a control cycle.
+	// A live daemon can contend for the diagnostic lock after a successful
+	// control save. Force that documented partial-success path instead of
+	// requiring a race-dependent zero exit. Never replay the control command.
+	for _, operation := range []string{"pause", "stop"} {
+		var diagnosticLock *lock.Lock
+		wait(operation+" diagnostic lock", func() bool {
+			var err error
+			diagnosticLock, err = lock.AcquireNamed(stateDir, "incident")
+			if errors.Is(err, lock.ErrHeld) {
+				return false
+			}
+			if err != nil {
+				t.Fatal(err)
+			}
+			return true
+		})
+		t.Cleanup(func() { diagnosticLock.Release() })
+		code, out := invoke(operation)
+		diagnosticLock.Release()
+		if code != exitFailed || !strings.Contains(out, errControlHistory.Error()) {
+			t.Fatalf("%s with diagnostic contention: %d %s", operation, code, out)
+		}
+		saved, err := control.Load(stateDir)
+		if err != nil || !saved.Enabled || !saved.Paused || (saved.Stop != (operation == "stop")) || saved.Ownership == nil || saved.Ownership.ThreadID != "thr_start_fixture" {
+			t.Fatalf("%s did not preserve the saved hold/owner: %+v %v", operation, saved, err)
+		}
+		if operation == "pause" {
+			// Settle the repeated pause before stop, so a later checking phase
+			// cannot be the earlier pause pass. The daemon's ordinary interval
+			// is one hour; no unrelated pass should start during this test.
+			wait("saved pause observed and waiting", func() bool {
+				st, err := state.Load(stateDir)
+				info, queryErr := query()
+				return err == nil && st.LastCheck != nil && st.LastCheck.Reason == "paused" &&
+					!st.CheckedAt.Before(saved.UpdatedAt) && queryErr == nil && info.Phase == "waiting"
+			})
+		}
+	}
+	// Check scheduling promptly, independently of OS subprocess startup latency.
+	// A fast completed stop also proves the control was handled. No provider
+	// work runs in the earlier hold.
+	wait("stop check started", func() bool {
+		info, err := query()
+		st, stateErr := state.Load(stateDir)
+		return (err == nil && info.Phase == "checking") || (stateErr == nil && st.StopRequestedSent)
+	})
+	// Observe and stop each have the configured adapter timeout. Completion is
+	// a separate assertion from noticing control within the five-second bound.
+	waitFor("stop marker", 2*config.DefaultProcessTimeout+5*time.Second, func() bool {
+		_, err := os.Stat(filepath.Join(dir, "stop"))
+		return err == nil
+	})
+	// The marker means the stop command entered, not that it exited. Allow
+	// its configured command deadline, then a bounded five seconds for the
+	// successful result to be synced and published. The separate five-second
+	// control-response assertion above stays independent of command duration.
+	loaded, err := config.Load(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	completionBudget := loaded.Loop.Process.Timeout.Duration + 5*time.Second
+	t.Logf("stop command entered; waiting up to %s for its recorded outcome (command timeout %s)", completionBudget, loaded.Loop.Process.Timeout.Duration)
+	waitFor("successful stop record", completionBudget, func() bool {
+		st, err := state.Load(stateDir)
+		if err == nil && st.LastCheck != nil && st.LastCheck.Action == "stop" && st.LastCheck.Outcome == "failed" {
+			t.Fatalf("stop command entered but its recorded outcome failed: stopRequestedSent=%t, check=%+v", st.StopRequestedSent, st.LastCheck)
+		}
+		return st.StopRequestedSent && st.LastCheck != nil && st.LastCheck.Outcome == "succeeded"
+	})
+	if _, err := os.Stat(filepath.Join(dir, "resume")); !os.IsNotExist(err) {
+		t.Fatal("unexpected prompt sent")
+	}
+	after, err := daemoninfo.Query(context.Background(), stateDir)
+	if err != nil || !before.StartedAt.Equal(after.StartedAt) {
+		t.Fatalf("daemon replaced: %v", err)
+	}
+}

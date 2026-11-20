@@ -4,9 +4,9 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/connorburgess/keepgoing-agents/internal/decide"
-	"github.com/connorburgess/keepgoing-agents/internal/report"
-	"github.com/connorburgess/keepgoing-agents/internal/state"
+	"github.com/looptender/looptender/internal/decide"
+	"github.com/looptender/looptender/internal/report"
+	"github.com/looptender/looptender/internal/state"
 )
 
 // limitWaitEvent is the report event for a long limit wait.
@@ -117,8 +117,11 @@ func (t *tick) reportLongLimitWait(target string, obs decide.Observation) {
 	t.st.LimitWaitReport = rec
 	reason := "no confirmed fallback"
 	cause := decide.WaitNoFallback
-	if kind == decide.WaitFailoverDisabled {
+	switch kind {
+	case decide.WaitFailoverDisabled:
 		reason, cause = "failover disabled", kind
+	case decide.WaitRefusalUnrecovered:
+		reason, cause = "a refusal on this route is unrecovered, so the work is not moved", kind
 	}
 	text := fmt.Sprintf("%s: %s is waiting on a provider limit that resets in about %s, and no handoff is possible (%s). keepgoing keeps checking and continues when the limit lifts; a person may want to retarget or review failover.",
 		t.loop.Name, target, resetIn.Round(time.Minute), reason)

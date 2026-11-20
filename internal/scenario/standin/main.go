@@ -61,7 +61,8 @@
 //	    Exits 0 when ok, 1 when failed, 2 when it needs input.
 //
 // What each successive turn does comes from example-agent.turns, one outcome
-// per line consumed in order (default ok). Every turn is recorded in
+// per line consumed in order (default ok; failed_no_session fails without
+// reporting a session). Every turn is recorded in
 // sends.jsonl like the other headless stand-ins: kind "turn", the agent's name,
 // the session it resumed as the mode, and its prompt.
 //
@@ -72,6 +73,8 @@ package main
 import (
 	"encoding/json"
 	"fmt"
+	"github.com/looptender/looptender/internal/control"
+	"github.com/looptender/looptender/internal/envvar"
 	"io"
 	"os"
 	"path/filepath"
@@ -160,6 +163,15 @@ func run(world string, args []string) int {
 	if _, err := os.Stat(filepath.Join(world, "bb.down")); err == nil {
 		fmt.Fprintln(os.Stderr, "fictional: bb is unavailable")
 		return 1
+	}
+	// kill.next names a bb subcommand ("show", "log", ...). The next such
+	// call self-signals once. This proves signal termination, not its cause.
+	if b, err := os.ReadFile(filepath.Join(world, "kill.next")); err == nil && len(args) > 1 && strings.TrimSpace(string(b)) == args[1] {
+		os.Remove(filepath.Join(world, "kill.next"))
+		if p, err := os.FindProcess(os.Getpid()); err == nil {
+			p.Kill()
+		}
+		select {} // until the signal lands
 	}
 	// BB's optional retry plugin: its last decision for a thread, from
 	// <thread>.retry-decision, and its pending retries, from <thread>.retries.
@@ -420,6 +432,11 @@ func exampleAgent(world string, args []string) int {
 	case "needs_input":
 		status, code = "needs_input", 2
 	}
+	if outcome == "failed_no_session" {
+		// A failure before the agent could say which session it was in.
+		fmt.Println(`{"type":"result","status":"failed"}`)
+		return 1
+	}
 	fmt.Printf(`{"type":"result","status":%q,"session":%q}`+"\n", status, exampleSession)
 	return code
 }
@@ -469,6 +486,16 @@ func turn(world, cli string, args []string) int {
 		}
 	}
 	appendLine(filepath.Join(world, "sends.jsonl"), map[string]string{"kind": "turn", "thread": cli, "mode": resumed, "message": string(prompt)})
+	// Which of the supervisor's own session variables the turn received, by
+	// name only, so a scenario can check a session is not given them.
+	var received []string
+	// The supervised-loop marker is reported too: it must still arrive.
+	for _, n := range append(append([]string{}, envvar.SupervisorSession...), control.SupervisedLoopVar) {
+		if _, set := os.LookupEnv(n); set {
+			received = append(received, n)
+		}
+	}
+	appendLine(filepath.Join(world, "turn-session-vars.jsonl"), map[string]string{"cli": cli, "received": strings.Join(received, " ")})
 	mode := readMode(filepath.Join(world, "headless.mode"), "")
 	if mode == "" {
 		mode = readMode(filepath.Join(world, "net.mode"), "online")

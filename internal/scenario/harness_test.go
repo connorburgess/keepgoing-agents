@@ -22,9 +22,9 @@ import (
 
 	"gopkg.in/yaml.v3"
 
-	"github.com/connorburgess/keepgoing-agents/internal/adapter/runner"
-	"github.com/connorburgess/keepgoing-agents/internal/report"
-	"github.com/connorburgess/keepgoing-agents/internal/testexec"
+	"github.com/looptender/looptender/internal/adapter/runner"
+	"github.com/looptender/looptender/internal/report"
+	"github.com/looptender/looptender/internal/testexec"
 )
 
 // keepgoingBin is built once for the whole suite. standinDir holds the
@@ -54,7 +54,7 @@ func TestMain(m *testing.M) {
 			// under test is never on a scenario's PATH.
 			built, err := testexec.NewDir(filepath.Join(dir, "built"))
 			if err == nil {
-				keepgoingBin, err = built.Build("keepgoing", "../../cmd/keepgoing", nil, "version")
+				keepgoingBin, err = built.Build("keepgoing", "../../cmd/looptender", nil, "version")
 			}
 			if err != nil {
 				fmt.Fprintln(os.Stderr, err)
@@ -136,9 +136,13 @@ type World struct {
 	Project string
 	Config  string
 	Now     time.Time
-	Net     *Connectivity
-	Hooks   *Receiver
-	Threads map[string]*Thread
+	// AllowSignalExits lets a scenario kill a stand-in on purpose. Otherwise a
+	// stand-in that did not end on its own fails the step as an environment
+	// failure (standinTrouble).
+	AllowSignalExits bool
+	Net              *Connectivity
+	Hooks            *Receiver
+	Threads          map[string]*Thread
 	// otherLoops is set when another loop sends to the same stand-ins, so
 	// this loop's runs do not account for every send.
 	otherLoops bool
@@ -274,6 +278,21 @@ func (w *World) Must(args ...string) Result {
 	return r
 }
 
+// initConfig is the configuration file init wrote in dir: looptender.yaml,
+// or keepgoing.yaml from a build before the rename (KEEPGOING_TEST_BINARY can
+// name one).
+func initConfig(dir string) string {
+	if p := filepath.Join(dir, "looptender.yaml"); fileExists(p) {
+		return p
+	}
+	return filepath.Join(dir, "keepgoing.yaml")
+}
+
+func fileExists(path string) bool {
+	_, err := os.Lstat(path)
+	return err == nil
+}
+
 // Init creates a BB loop with `keepgoing init`, exactly as a user would, then
 // subscribes the fake receiver to the given report events.
 func (w *World) Init(events ...string) {
@@ -281,7 +300,7 @@ func (w *World) Init(events ...string) {
 	dir := filepath.Join(w.Root, "setup")
 	w.Must("init", "--non-interactive", "--name", "example-loop", "--agent", "bb", "--thread", primaryThread,
 		"--provider", "claude-code", "--project", w.Project, "--directory", dir, "--task", scenarioTask)
-	w.Config = filepath.Join(dir, "keepgoing.yaml")
+	w.Config = initConfig(dir)
 	w.Thread(primaryThread)
 	if len(events) > 0 {
 		w.EditConfig(func(loop map[string]any) {
@@ -424,7 +443,7 @@ func (w *World) InitHeadless(cli string, events ...string) {
 	dir := filepath.Join(w.Root, "setup")
 	w.Must("init", "--non-interactive", "--name", "example-loop", "--agent", cli,
 		"--project", w.Project, "--directory", dir, "--task", scenarioTask)
-	w.Config = filepath.Join(dir, "keepgoing.yaml")
+	w.Config = initConfig(dir)
 	w.Headless = cli
 	if len(events) > 0 {
 		w.EditConfig(func(loop map[string]any) {
@@ -652,7 +671,7 @@ func (w *World) record(label string, r Result, line map[string]any) *Step {
 	// A headless turn started by this command runs detached; let it end so
 	// this step records what it sent and the next one sees its result.
 	w.settle()
-	if trouble := standinTrouble(w.world, r.Stderr); trouble != "" {
+	if trouble := standinTrouble(w.world, r.Stderr); trouble != "" && !w.AllowSignalExits {
 		w.t.Fatalf("ENVIRONMENT FAILURE in %s at %s (%s): %s. Nothing in keepgoing or in this harness ends a stand-in early, so this step's result says nothing about the product. Run the scenario again; if it keeps happening, look for what is killing processes on this machine.",
 			w.Name, w.stamp(), label, trouble)
 	}
@@ -773,6 +792,19 @@ func (w *World) Check(s *Step, name string, err error) {
 	if err != nil {
 		w.Failf(s, "%s: %v", name, err)
 	}
+}
+
+// signalTermination returns the diagnostic for a Unix signal exit observed
+// outside adapter timeout/cancellation. It does not identify the cause.
+func signalTermination(s *Step) string {
+	if warnings, _ := s.Tick["warnings"].([]any); len(warnings) > 0 {
+		for _, w := range warnings {
+			if text, _ := w.(string); strings.Contains(text, "terminated by a Unix signal") {
+				return text
+			}
+		}
+	}
+	return ""
 }
 
 // Waiting names open work a known failure is waiting on.

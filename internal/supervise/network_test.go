@@ -6,13 +6,13 @@ import (
 	"testing"
 	"time"
 
-	"github.com/connorburgess/keepgoing-agents/internal/config"
-	"github.com/connorburgess/keepgoing-agents/internal/control"
-	"github.com/connorburgess/keepgoing-agents/internal/decide"
-	"github.com/connorburgess/keepgoing-agents/internal/health"
-	"github.com/connorburgess/keepgoing-agents/internal/incident"
-	"github.com/connorburgess/keepgoing-agents/internal/probe"
-	"github.com/connorburgess/keepgoing-agents/internal/state"
+	"github.com/looptender/looptender/internal/config"
+	"github.com/looptender/looptender/internal/control"
+	"github.com/looptender/looptender/internal/decide"
+	"github.com/looptender/looptender/internal/health"
+	"github.com/looptender/looptender/internal/incident"
+	"github.com/looptender/looptender/internal/probe"
+	"github.com/looptender/looptender/internal/state"
 )
 
 // An outage as observed on a supervised loop: the retry notice expired while
@@ -283,6 +283,10 @@ func TestWrongCheckTargetIsSetAsideWhenTheProviderAnswers(t *testing.T) {
 		{"probe passes", probe.Result{OK: true}},
 		{"provider refuses: overloaded", probe.Result{ErrorClass: "overloaded"}},
 		{"provider refuses: rate limited", probe.Result{ErrorClass: "rate_limit"}},
+		// A permission or policy decision is the provider's answer too: a
+		// restriction must not be mistaken for an outage.
+		{"provider denies permission", probe.Result{ErrorClass: "restricted"}},
+		{"provider declines the request", probe.Result{ErrorClass: "refused"}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			w, p, check := probeWorld(t, func() probe.Result { return tc.answer })

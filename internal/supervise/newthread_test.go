@@ -8,17 +8,17 @@ import (
 	"testing"
 	"time"
 
-	"github.com/connorburgess/keepgoing-agents/internal/adapter"
-	"github.com/connorburgess/keepgoing-agents/internal/adapter/bb"
-	"github.com/connorburgess/keepgoing-agents/internal/config"
-	"github.com/connorburgess/keepgoing-agents/internal/control"
-	"github.com/connorburgess/keepgoing-agents/internal/decide"
-	"github.com/connorburgess/keepgoing-agents/internal/health"
-	"github.com/connorburgess/keepgoing-agents/internal/incident"
-	"github.com/connorburgess/keepgoing-agents/internal/probe"
-	rd "github.com/connorburgess/keepgoing-agents/internal/rundiscovery"
-	"github.com/connorburgess/keepgoing-agents/internal/rungraph"
-	"github.com/connorburgess/keepgoing-agents/internal/state"
+	"github.com/looptender/looptender/internal/adapter"
+	"github.com/looptender/looptender/internal/adapter/bb"
+	"github.com/looptender/looptender/internal/config"
+	"github.com/looptender/looptender/internal/control"
+	"github.com/looptender/looptender/internal/decide"
+	"github.com/looptender/looptender/internal/health"
+	"github.com/looptender/looptender/internal/incident"
+	"github.com/looptender/looptender/internal/probe"
+	rd "github.com/looptender/looptender/internal/rundiscovery"
+	"github.com/looptender/looptender/internal/rungraph"
+	"github.com/looptender/looptender/internal/state"
 )
 
 // fakeThreads stands in for BB's thread creation and listing. Every call is
@@ -153,7 +153,7 @@ func TestHandoffToANewThreadCreatesItOnce(t *testing.T) {
 	st, _ := state.Load(w.dir)
 	created := st.NewThreads["claude-other"]
 	if st.Target() != "claude-other" || created.Thread != "thr_created_1" || created.Title != r.Title || created.From != state.Primary || created.Continues != "thr_primary" ||
-		st.NewThreadsCreated != 1 || !st.LastNewThreadAt.Equal(t0) || st.NewThreadIntent != nil || st.Handoffs != 1 {
+		st.NewThreadsCreated != 1 || !st.LastNewThreadAt.Equal(t0) || st.NewThreadIntent != nil || st.Handoffs != 1 || st.TargetSetBy != state.SetByNewThread {
 		t.Fatalf("state %+v", st)
 	}
 	// The conversation that was left: nothing sent, nothing stopped.
