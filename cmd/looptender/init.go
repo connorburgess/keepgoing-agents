@@ -65,7 +65,7 @@ func setupLoop(e env, args []string, input io.Reader, lookPath func(string) (str
 	fs.DurationVar(&o.noProgressTimeout, "no-progress-timeout", 0, "hold after this time without verified Git changes; zero disables")
 	fs.Int64Var(&o.maxSends, "max-sends", 0, "total automatic send attempts while this limit is enabled; zero disables")
 	fs.StringVar(&o.deadline, "deadline", "", "RFC3339 cutoff for future supervision; does not cancel running turns")
-	fs.StringVar(&o.agent, "agent", "", "bb, claude, codex, or cursor; detects installed CLIs")
+	fs.StringVar(&o.agent, "agent", "", "bb, claude, codex, cursor, or antigravity; detects installed CLIs")
 	fs.StringVar(&o.thread, "thread", "", "existing BB thread ID; required for bb")
 	fs.StringVar(&o.provider, "provider", "", "existing BB thread provider label; required for bb")
 	fs.StringVar(&o.account, "account-dir", "", "existing Claude Code or Codex account configuration directory")
@@ -154,6 +154,9 @@ func setupLoop(e env, args []string, input io.Reader, lookPath func(string) (str
 	fmt.Fprintln(e.stdout, initBindingNotice(o))
 	if o.agent == "cursor" {
 		fmt.Fprintln(e.stdout, initCursorNotice)
+	}
+	if o.agent == "antigravity" {
+		fmt.Fprintln(e.stdout, initAntigravityNotice)
 	}
 	printInitAccount(e.stdout, cfg.Loop.Agent)
 	fmt.Fprintf(e.stdout, "Limits: stall nudge spacing >= %s; stall %s; %d nudges; %d error re-prompts with %s backoff; check every %s\n", o.wake, o.stall, o.nudges, o.reprompts, o.backoff, o.interval)
@@ -247,14 +250,14 @@ func collectInit(e env, o *initOptions, input io.Reader, lookPath func(string) (
 		return err
 	}
 	var installed []string
-	for _, a := range []string{"codex", "claude", "bb", "cursor"} {
+	for _, a := range []string{"codex", "claude", "bb", "cursor", "antigravity"} {
 		if _, err := lookPath(initCLIName(a)); err == nil {
 			installed = append(installed, a)
 		}
 	}
 	fmt.Fprintf(e.stdout, "Detected CLIs: %s\n", strings.Join(installed, ", "))
 	if len(installed) == 0 {
-		return errors.New("no supported CLI found on PATH (codex, claude, bb, or Cursor CLI agent)")
+		return errors.New("no supported CLI found on PATH (codex, claude, bb, Cursor CLI agent, or Antigravity CLI agy)")
 	}
 	if err := str("name", "Loop name", &o.name, "my-loop"); err != nil {
 		return err
@@ -308,7 +311,12 @@ func collectInit(e env, o *initOptions, input io.Reader, lookPath func(string) (
 			o.accountEntry = entry
 		}
 	} else {
-		if o.agent != "cursor" {
+		switch o.agent {
+		case "cursor":
+			fmt.Fprintln(e.stdout, "Cursor uses the agent CLI and inherits its existing login. Separate account directories and fallbacks are unsupported.")
+		case "antigravity":
+			fmt.Fprintln(e.stdout, "Antigravity uses the agy CLI over ACP and inherits its existing login. Separate account directories, per-loop model flags, and fallbacks are unsupported.")
+		default:
 			// A directory or an account given as a flag is not asked again.
 			if !visited["account"] && !visited["account-dir"] {
 				entry, dir, err := initPickAccount(e.stdout, ask, o.agent, "", true)
@@ -317,17 +325,17 @@ func collectInit(e env, o *initOptions, input io.Reader, lookPath func(string) (
 				}
 				o.accountEntry, o.account = entry, dir
 			}
-		} else {
-			fmt.Fprintln(e.stdout, "Cursor uses the agent CLI and inherits its existing login. Separate account directories and fallbacks are unsupported.")
 		}
-		if err := str("model", "Model (blank inherits CLI configuration)", &o.model, ""); err != nil {
-			return err
+		if o.agent != "antigravity" {
+			if err := str("model", "Model (blank inherits CLI configuration)", &o.model, ""); err != nil {
+				return err
+			}
 		}
 	}
 	provider := o.provider
 	if o.agent == "claude" {
 		provider = "claude-code"
-	} else if o.agent == "codex" || o.agent == "cursor" {
+	} else if o.agent == "codex" || o.agent == "cursor" || o.agent == "antigravity" {
 		provider = o.agent
 	}
 	groupDef := provider
@@ -361,7 +369,7 @@ func collectInit(e env, o *initOptions, input io.Reader, lookPath func(string) (
 			}
 		}
 	}
-	if !visited["fallback"] && o.agent != "cursor" && o.routes != config.RoutesStandard {
+	if !visited["fallback"] && o.agent != "cursor" && o.agent != "antigravity" && o.routes != config.RoutesStandard {
 		fmt.Fprintln(e.stdout, "Optional fallbacks use existing logins. Use the same quota label for accounts sharing limits. Blank keeps a single agent.")
 		for {
 			a, err := ask("Next fallback agent (claude/codex, blank to finish)", "")
@@ -437,6 +445,12 @@ func planInit(o *initOptions, lookPath func(string) (string, error)) (map[string
 	var err error
 	if o.agent == "cursor" && len(o.fallbacks) > 0 {
 		return fail(errors.New("cursor does not support --fallback; configure a primary-only loop"))
+	}
+	if o.agent == "antigravity" && len(o.fallbacks) > 0 {
+		return fail(errors.New("antigravity does not support --fallback; configure a primary-only loop"))
+	}
+	if o.agent == "antigravity" && strings.TrimSpace(o.model) != "" {
+		return fail(errors.New("antigravity ACP does not support --model yet; omit --model"))
 	}
 	if o.project == "" {
 		o.project, err = os.Getwd()
@@ -605,6 +619,8 @@ func planInit(o *initOptions, lookPath func(string) (string, error)) (map[string
 		loop["codex"] = primary.Codex
 	case primary.Cursor != nil:
 		loop["cursor"] = primary.Cursor
+	case primary.Antigravity != nil:
+		loop["antigravity"] = primary.Antigravity
 	}
 	files := map[string][]byte{}
 	if len(fallbacks.Candidates) > 0 {
@@ -658,16 +674,22 @@ func initAgent(kind, account, group, model, project string, lookPath func(string
 	if strings.Trim(a.Group, "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789-_.") != "" {
 		return a, errors.New("quota group labels may contain only letters, digits, hyphens, underscores, and dots")
 	}
-	if kind != "bb" && kind != "claude" && kind != "codex" && kind != "cursor" {
-		return a, errors.New("agent must be bb, claude, codex, or cursor")
+	if kind != "bb" && kind != "claude" && kind != "codex" && kind != "cursor" && kind != "antigravity" {
+		return a, errors.New("agent must be bb, claude, codex, cursor, or antigravity")
 	}
 	if kind == "cursor" && account != "" {
 		return a, errors.New("cursor does not support --account-dir; existing Cursor CLI login and environment are inherited")
+	}
+	if kind == "antigravity" && account != "" {
+		return a, errors.New("antigravity does not support --account-dir; existing Antigravity CLI login and environment are inherited")
 	}
 	cli, err := lookPath(initCLIName(kind))
 	if err != nil {
 		if kind == "cursor" {
 			return a, errors.New("Cursor CLI executable \"agent\" not found on PATH; the desktop cursor launcher is not supported")
+		}
+		if kind == "antigravity" {
+			return a, errors.New("Antigravity CLI executable \"agy\" not found on PATH")
 		}
 		return a, fmt.Errorf("%s CLI not found on PATH", kind)
 	}
@@ -702,12 +724,17 @@ func initAgent(kind, account, group, model, project string, lookPath func(string
 	case "cursor":
 		a.Provider = "cursor"
 		a.Cursor = &config.Cursor{CLI: cli, Workdir: project, Model: model}
+	case "antigravity":
+		a.Provider = "antigravity"
+		a.Antigravity = &config.Antigravity{CLI: cli, Workdir: project}
 	}
 	if a.Group == "" {
 		a.Group = a.Provider
 	}
 	return a, nil
 }
+
+const initAntigravityNotice = "Antigravity runs as a standalone primary ACP loop (agy acp --stdio). Existing login and permissions are inherited; permission requests hold for a person; fallbacks, switch-back, and IDE-chat attachment are unavailable."
 
 // Cursor's desktop launcher is named cursor; its headless CLI is agent.
 // initCanFollow reports whether a loop of this agent can follow the
@@ -755,10 +782,14 @@ func standardRoutesWritten() (int, bool) {
 }
 
 func initCLIName(kind string) string {
-	if kind == "cursor" {
+	switch kind {
+	case "cursor":
 		return "agent"
+	case "antigravity":
+		return "agy"
+	default:
+		return kind
 	}
-	return kind
 }
 
 func existingDirectory(p string) (string, error) {
