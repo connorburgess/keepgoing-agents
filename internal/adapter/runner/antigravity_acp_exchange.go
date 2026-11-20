@@ -98,11 +98,7 @@ func ExchangeAntigravityACP(ctx context.Context, r io.Reader, w io.Writer, saved
 		if ctx.Err() != nil {
 			return fail("cancelled")
 		}
-		if g.frames >= antigravityACPFrameCount {
-			return fail("read")
-		}
-		limit := min(antigravityACPFrameLimit, antigravityACPTotalLimit-g.bytes)
-		frame, err := readAntigravityACPFrame(ctx, reader, limit)
+		frame, err := readAntigravityACPFrame(ctx, reader, antigravityACPFrameLimit)
 		if err != nil {
 			return fail("read")
 		}
