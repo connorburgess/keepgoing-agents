@@ -108,7 +108,9 @@ func Text(s string, max int) bool {
 	}
 	return true
 }
-func supported(p string) bool   { return p == "claude-code" || p == "codex" }
+func supported(p string) bool {
+	return p == "claude-code" || p == "codex" || p == "antigravity"
+}
 func validToken(s string) bool  { b, e := hex.DecodeString(s); return e == nil && len(b) == 16 }
 func validDigest(s string) bool { b, e := hex.DecodeString(s); return e == nil && len(b) == 32 }
 func validEntry(e Entry) bool {
@@ -116,7 +118,7 @@ func validEntry(e Entry) bool {
 		return false
 	}
 	switch e.Provider {
-	case "claude-code", "codex", "cursor", "bb", "other":
+	case "claude-code", "codex", "antigravity", "cursor", "bb", "other":
 	default:
 		return false
 	}

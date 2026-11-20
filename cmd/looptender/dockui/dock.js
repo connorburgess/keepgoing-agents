@@ -1393,6 +1393,7 @@
     function date(v) { return typeof v === "string" && isFinite(Date.parse(v)); }
     if (c.provider === "codex" && s.source === "codex account/rateLimits/read" && date(s.observedAt) && !s.retrievedAt && (s.freshness === "fresh" || s.freshness === "stale")) return s;
     if (c.provider === "claude-code" && s.source === "claude:get_usage" && date(s.retrievedAt) && !s.observedAt && s.freshness === "provider_unknown") return s;
+    if (c.provider === "antigravity" && s.source === "agy:/usage" && date(s.retrievedAt) && !s.observedAt && s.freshness === "provider_unknown") return s;
     return null;
   }
   function accountQuotaRequest(c, confirm, recovery) {
@@ -1449,7 +1450,7 @@
       box.appendChild(el("p", "sub", "Source: " + saved.source));
     } else box.appendChild(el("p", "sub", (q.summary && q.summary.state !== "reported" && q.summary.text) || accountQuotaReason(q.reason || "schema_unavailable")));
     if (saved.failedRefreshAt) box.appendChild(el("p", "sub", "Refresh failed " + when({ at: saved.failedRefreshAt }) + ". " + saved.failedRefreshText + " Any earlier reading retains its original time."));
-    if (c.provider !== "codex" && c.provider !== "claude-code") return box;
+    if (c.provider !== "codex" && c.provider !== "claude-code" && c.provider !== "antigravity") return box;
     var change = state.accountQuotaChange, current = change && change.id === c.id ? change : null;
     if (current) {
       var review = el("div", "account-quota-review");
@@ -1474,8 +1475,8 @@
       return box;
     }
     if (changesOn() && accountQuotaSupported(c)) {
-      if (!current) box.appendChild(button(c.provider === "claude-code" ? "Retrieve usage…" : "Refresh subscription quota…", "quota-refresh-" + c.id, "", function () { accountQuotaRequest(c, false); }));
-    } else box.appendChild(el("p", "sub", c.provider === "claude-code" ? "Claude usage retrieval requires a panel with changes allowed on Darwin arm64 and the inspected native Claude Code 2.1.326 image. Each selection is checked before a request; other images remain unavailable." : "Review a refresh in a panel with changes allowed."));
+      if (!current) box.appendChild(button((c.provider === "claude-code" || c.provider === "antigravity") ? "Retrieve usage…" : "Refresh subscription quota…", "quota-refresh-" + c.id, "", function () { accountQuotaRequest(c, false); }));
+    } else box.appendChild(el("p", "sub", c.provider === "claude-code" ? "Claude usage retrieval requires a panel with changes allowed on Darwin arm64 and the inspected native Claude Code 2.1.326 image. Each selection is checked before a request; other images remain unavailable." : c.provider === "antigravity" ? "Antigravity usage retrieval requires a panel with changes allowed. It runs agy /usage without an ordinary model turn." : "Review a refresh in a panel with changes allowed."));
     return box;
   }
   function renderAccounts(d, pane) {
@@ -1525,7 +1526,7 @@
       var summary = el("summary", "account-summary");
       summary.setAttribute("data-focus", "account-" + c.id);
       var name = el("span", "account-name", c.label);
-      var provider = el("span", "sub", c.provider === "claude-code" ? "Claude Code" : c.provider === "codex" ? "Codex" : c.provider);
+      var provider = el("span", "sub", c.provider === "claude-code" ? "Claude Code" : c.provider === "codex" ? "Codex" : c.provider === "antigravity" ? "Antigravity" : c.provider);
       var identity = el("span", "account-title"); identity.appendChild(name); identity.appendChild(provider);
       identity.appendChild(el("span", "sub", c.selection === "inherited" ? "Inherited context" : c.selection === "explicit_directory" ? "Selected context" : "External context"));
       summary.appendChild(identity);
@@ -1556,7 +1557,7 @@
         if (!compact.childNodes.length) compact.appendChild(el("span", "sub", qs.partial ? "Partial quota evidence" : "Quota details recorded"));
         compact.appendChild(el("span", "sub", qs.freshness === "provider_unknown" ? "Provider freshness unknown" : qs.freshness === "stale" ? "Older quota reading" : "Saved quota reading"));
         compact.title = "Saved account quota; expand for all recorded detail";
-      } else if (c.provider === "codex" || c.provider === "claude-code") compact.appendChild(el("span", "sub", "Account quota unavailable"));
+      } else if (c.provider === "codex" || c.provider === "claude-code" || c.provider === "antigravity") compact.appendChild(el("span", "sub", "Account quota unavailable"));
       summary.appendChild(compact);
       details.appendChild(summary);
       var body = el("div", "account-body");
@@ -1566,7 +1567,7 @@
       var use = byCard[c.id];
       facts.appendChild(fact("Routes", use && list(use.routes).length ? accountRouteList(d, use, true) : accountRoutes(c)));
       body.appendChild(facts);
-      if (c.provider === "codex" || c.provider === "claude-code") body.appendChild(accountQuotaBox(c));
+      if (c.provider === "codex" || c.provider === "claude-code" || c.provider === "antigravity") body.appendChild(accountQuotaBox(c));
       // The catalog records no model: a route chooses it, and a check never
       // calls one. Said once, quietly, in place of two empty rows.
       if (c.configuredModel && c.configuredModel.missing === "not_recorded" && c.observedModel && c.observedModel.missing === "not_recorded") body.appendChild(el("p", "sub", "Models are not recorded here: a route chooses the model, and a check never calls one."));

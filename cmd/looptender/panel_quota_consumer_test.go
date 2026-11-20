@@ -20,11 +20,13 @@ func TestPanelAccountQuotaClientCapabilityAndProvenance(t *testing.T) {
 		source += jsFunction(t, js, head) + "\n}\n"
 	}
 	source += `
-const claude={provider:'claude-code'},codex={provider:'codex'};
-assert.equal(accountQuotaSupported(claude),false);assert.equal(accountQuotaSupported(codex),true);
-state.server.accountQuotaProviders=['codex'];assert.equal(accountQuotaSupported(claude),false);
-state.server.accountQuotaProviders=['codex','claude-code'];assert.equal(accountQuotaSupported(claude),true);
-state.server.accountQuota=false;assert.equal(accountQuotaSupported(claude),false);
+const claude={provider:'claude-code'},codex={provider:'codex'},antigravity={provider:'antigravity'};
+assert.equal(accountQuotaSupported(claude),false);assert.equal(accountQuotaSupported(codex),true);assert.equal(accountQuotaSupported(antigravity),false);
+state.server.accountQuotaProviders=['codex'];assert.equal(accountQuotaSupported(claude),false);assert.equal(accountQuotaSupported(antigravity),false);
+state.server.accountQuotaProviders=['codex','claude-code'];assert.equal(accountQuotaSupported(claude),true);assert.equal(accountQuotaSupported(antigravity),false);
+state.server.accountQuotaProviders=['codex','antigravity'];assert.equal(accountQuotaSupported(antigravity),true);
+state.server.accountQuota=false;assert.equal(accountQuotaSupported(claude),false);assert.equal(accountQuotaSupported(antigravity),false);
+state.server.accountQuota=true;
 const c={state:'reported',source:'claude:get_usage',retrievedAt:'2030-03-04T12:00:00Z',freshness:'provider_unknown',rows:[]};
 claude.quota={summary:c};assert.equal(accountQuotaSummary(claude),c);
 for(const bad of [{freshness:'fresh'},{source:'codex account/rateLimits/read'},{retrievedAt:null},{retrievedAt:'not-a-date'},{observedAt:'2030-03-04T11:00:00Z'},{state:'unavailable'}]){
@@ -34,6 +36,11 @@ codex.quota={summary:c};assert.equal(accountQuotaSummary(codex),null);
 const x={state:'reported',source:'codex account/rateLimits/read',observedAt:'2030-03-04T12:00:00Z',freshness:'stale',rows:[]};
 codex.quota={summary:x};assert.equal(accountQuotaSummary(codex),x);
 codex.quota={summary:{...x,retrievedAt:c.retrievedAt}};assert.equal(accountQuotaSummary(codex),null);
+const a={state:'reported',source:'agy:/usage',retrievedAt:'2030-03-04T12:00:00Z',freshness:'provider_unknown',rows:[]};
+antigravity.quota={summary:a};assert.equal(accountQuotaSummary(antigravity),a);
+for(const bad of [{freshness:'fresh'},{source:'claude:get_usage'},{retrievedAt:null},{observedAt:'2030-03-04T11:00:00Z'}]){
+ antigravity.quota={summary:{...a,...bad}};assert.equal(accountQuotaSummary(antigravity),null);
+}
 console.log('Legacy/explicit provider capability and source/time/freshness contract PASS');
 `
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)

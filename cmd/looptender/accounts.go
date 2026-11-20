@@ -41,7 +41,7 @@ func accountsCommand(e env, args []string, run accountRun) int {
 	dir := fs.String("directory", "", "private catalog directory")
 	id := fs.String("id", "", "selected connection ID")
 	label := fs.String("label", "", "owner-selected account label")
-	provider := fs.String("provider", "", "claude-code, codex, cursor, bb or other")
+	provider := fs.String("provider", "", "claude-code, codex, antigravity, cursor, bb or other")
 	mode := fs.String("selection", "inherited", "inherited, explicit_directory or externally_managed")
 	cli := fs.String("cli", "", "selected provider executable")
 	accountDir := fs.String("account-dir", "", "existing selected account directory; never copied")
@@ -87,12 +87,16 @@ func accountsCommand(e env, args []string, run accountRun) int {
 	case "list":
 	case "add", "update":
 		selected := accounts.Entry{Label: *label, Provider: *provider, Mode: *mode}
-		if *provider == "claude-code" || *provider == "codex" {
+		if *provider == "claude-code" || *provider == "codex" || *provider == "antigravity" {
 			name := *cli
 			if name == "" {
-				name = "claude"
-				if *provider == "codex" {
+				switch *provider {
+				case "codex":
 					name = "codex"
+				case "antigravity":
+					name = "agy"
+				default:
+					name = "claude"
 				}
 			}
 			resolved, lookup := exec.LookPath(name)
