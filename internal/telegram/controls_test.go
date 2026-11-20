@@ -230,3 +230,103 @@ func TestFormatStatusMessage(t *testing.T) {
 		t.Fatalf("unexpected second button callback: %+v (%t)", cb1, ok)
 	}
 }
+
+func TestResumeCallbackCodecAndReviewFormat(t *testing.T) {
+	const regID = "loop_0123456789abcdef0123456789abcdef"
+	const ticketID = "resume_fedcba9876543210fedcba9876543210"
+	const prefix = "abcdef0123456789"
+
+	// Prepare-resume round trip.
+	prData, err := EncodeControlCallback(ControlCallback{
+		Action:         ActionPrepareResume,
+		RegistrationID: regID,
+		ExpectPrefix:   prefix,
+	})
+	if err != nil {
+		t.Fatalf("encode prepare_resume: %v", err)
+	}
+	if len(prData) > MaxCallbackDataBytes {
+		t.Fatalf("prepare_resume exceeded 64 bytes: %d", len(prData))
+	}
+	gotPR, ok := DecodeControlCallback(prData)
+	if !ok || gotPR.Action != ActionPrepareResume || gotPR.RegistrationID != regID || gotPR.ExpectPrefix != prefix {
+		t.Fatalf("decode prepare_resume: got %+v (%v)", gotPR, ok)
+	}
+
+	// Confirm-resume lossless 47-byte round trip.
+	rData, err := EncodeControlCallback(ControlCallback{
+		Action:         ActionResume,
+		RegistrationID: regID,
+		TicketID:       ticketID,
+	})
+	if err != nil {
+		t.Fatalf("encode resume: %v", err)
+	}
+	if len(rData) != 47 || len(rData) > MaxCallbackDataBytes {
+		t.Fatalf("resume payload length = %d, want 47", len(rData))
+	}
+	gotR, ok := DecodeControlCallback(rData)
+	if !ok || gotR.Action != ActionResume || gotR.RegistrationID != regID || gotR.TicketID != ticketID {
+		t.Fatalf("decode resume: got %+v (%v)", gotR, ok)
+	}
+
+	// Invalid resume payloads must fail closed.
+	invalid := []string{
+		"r:",
+		"r:short:short",
+		"r:AAAAAAAAAAAAAAAAAAAAAA:BBBBBBBBBBBBBBBBBBBBBB:extra",
+		"r:!!!!!!!!!!!!!!!!!!!!!!:!!!!!!!!!!!!!!!!!!!!!!",
+		// Non-canonical trailing bits in 22-char base64url (last char 'B' has non-zero unused bits).
+		"r:AAAAAAAAAAAAAAAAAAAAAB:AAAAAAAAAAAAAAAAAAAAAA",
+	}
+	for _, raw := range invalid {
+		if _, ok := DecodeControlCallback(raw); ok {
+			t.Errorf("expected invalid payload %q to be rejected", raw)
+		}
+	}
+	if _, err := EncodeControlCallback(ControlCallback{Action: ActionResume, RegistrationID: regID, TicketID: "bad"}); err == nil {
+		t.Fatal("expected bad ticket id to be rejected")
+	}
+	if _, err := EncodeControlCallback(ControlCallback{Action: ActionResume, RegistrationID: regID, TicketID: ticketID, ExpectPrefix: prefix}); err == nil {
+		t.Fatal("expected ExpectPrefix on ActionResume to be rejected")
+	}
+	if _, err := EncodeControlCallback(ControlCallback{Action: ActionPause, RegistrationID: regID, TicketID: ticketID}); err == nil {
+		t.Fatal("expected TicketID on ActionPause to be rejected")
+	}
+
+	// FormatResumeReviewMessage renders redacted review and Confirm resume button.
+	exp := time.Date(2026, 11, 20, 12, 5, 0, 0, time.UTC)
+	text, markup, err := FormatResumeReviewMessage(ResumeReview{
+		Device:         "example-host",
+		Loop:           "alpha-loop",
+		RegistrationID: regID,
+		TicketID:       ticketID,
+		ExpiresAt:      exp,
+		ControlState:   "paused",
+		Paused:         true,
+		AwaitingUser:   true,
+		Freshness:      "fresh",
+		LastAction:     "hold",
+		LastOutcome:    "ok",
+	})
+	if err != nil {
+		t.Fatalf("FormatResumeReviewMessage: %v", err)
+	}
+	for _, want := range []string{"resume review — alpha-loop", "Holds to clear: paused, awaiting-user", "2026-11-20T12:05:00Z", "Loop-wide limits are unchanged"} {
+		if !strings.Contains(text, want) {
+			t.Errorf("review message missing %q:\n%s", want, text)
+		}
+	}
+	if markup == nil || len(markup.InlineKeyboard) != 1 || len(markup.InlineKeyboard[0]) != 1 {
+		t.Fatalf("expected 1 Confirm resume button, got %+v", markup)
+	}
+	btn := markup.InlineKeyboard[0][0]
+	if !strings.HasPrefix(btn.Text, "Confirm resume ") {
+		t.Fatalf("unexpected button label %q", btn.Text)
+	}
+	decoded, ok := DecodeControlCallback(btn.CallbackData)
+	if !ok || decoded.Action != ActionResume || decoded.RegistrationID != regID || decoded.TicketID != ticketID {
+		t.Fatalf("Confirm resume callback mismatch: %+v (%v)", decoded, ok)
+	}
+}
+

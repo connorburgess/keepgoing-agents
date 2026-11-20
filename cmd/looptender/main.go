@@ -107,7 +107,7 @@ Fallbacks:
 
 Reporting:
   report test              Send a test webhook (--dry-run prints it instead)
-  telegram setup|status|test|poll|disconnect
+  telegram setup|status|test|poll|topics|disconnect
                            Pair and run a personal Telegram bot over outbound HTTPS
 
 Tools (no config needed):

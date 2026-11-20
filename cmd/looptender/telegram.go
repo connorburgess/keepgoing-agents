@@ -10,9 +10,11 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"time"
 
+	"github.com/looptender/looptender/internal/registry"
 	"github.com/looptender/looptender/internal/telegram"
 	"github.com/looptender/looptender/internal/userdir"
 )
@@ -21,7 +23,8 @@ const telegramUsage = `Telegram remote channel (zero-infrastructure local pairin
   telegram setup       Pair a personal @BotFather bot via one-tap ?start= deep link
   telegram status      Show local Telegram pairing status (read-only; never prints tokens)
   telegram test        Send one redacted test alert to the paired chat (--dry-run previews)
-  telegram poll        Long-poll getUpdates for /status and Pause/Stop inline controls
+  telegram poll        Long-poll getUpdates for /status, Pause/Stop, and ticketed Resume
+  telegram topics      Inspect or sync per-loop private-chat topics (--sync creates missing topics)
   telegram disconnect  Remove local Telegram pairing and saved token file
 `
 
@@ -44,6 +47,8 @@ func telegramCommandWithInput(e env, args []string, stdin io.Reader) int {
 		return telegramTestCommand(e, rest)
 	case "poll":
 		return telegramPollCommand(e, rest)
+	case "topics":
+		return telegramTopicsCommand(e, rest)
 	case "disconnect":
 		return telegramDisconnectCommand(e, rest)
 	default:
@@ -63,6 +68,7 @@ func telegramSetupCommand(e env, args []string, stdin io.Reader) int {
 	fs := flag.NewFlagSet("telegram setup", flag.ContinueOnError)
 	fs.SetOutput(e.stderr)
 	dirFlag := fs.String("dir", "", "private state directory for Telegram pairing (default: user state dir)")
+	regFlag := fs.String("registry", "", "private loop registry directory for optional topic creation")
 	modeFlag := fs.String("mode", telegram.ModeAlerts, "channel mode: alerts (redacted default) or chat (explicit opt-in)")
 	acceptNonE2E := fs.Bool("accept-non-e2e", false, "acknowledge Telegram Bot API is not end-to-end encrypted (required for --mode chat)")
 	tokenEnv := fs.String("token-env", telegram.TokenEnv, "environment variable to read the @BotFather token from")
@@ -227,6 +233,29 @@ func telegramSetupCommand(e env, args []string, stdin io.Reader) int {
 	if err := telegram.SavePairing(dir, rec); err != nil {
 		e.errf("telegram setup: failed to save pairing record: %v", err)
 		return exitFailed
+	}
+
+	if rec.TopicsEnabled {
+		if regDir, err := registryDirectory(*regFlag); err == nil {
+			if names := registeredLoopNames(regDir); len(names) > 0 {
+				if synced, res, syncErr := telegram.EnsureLoopTopics(e.ctx, client, dir, rec, names, pairedAt); syncErr == nil {
+					rec = synced
+					if len(res.Created) > 0 {
+						var createdLoops []string
+						for name := range res.Created {
+							createdLoops = append(createdLoops, name)
+						}
+						sort.Strings(createdLoops)
+						for _, name := range createdLoops {
+							tid := res.Created[name]
+							if link, err := telegram.TopicLink(rec.BotUsername, tid); err == nil {
+								fmt.Fprintf(e.stdout, "Topic for %s: %s\n", name, link)
+							}
+						}
+					}
+				}
+			}
+		}
 	}
 
 	host, _ := os.Hostname()
@@ -398,3 +427,162 @@ func telegramDisconnectCommand(e env, args []string) int {
 	fmt.Fprintln(e.stdout, "Removed local Telegram pairing and saved token file. To invalidate the token remotely, send /revoke to @BotFather.")
 	return exitOK
 }
+
+type telegramTopicEntry struct {
+	Loop     string `json:"loop"`
+	ThreadID int64  `json:"threadId"`
+	Link     string `json:"link,omitempty"`
+	Status   string `json:"status,omitempty"`
+}
+
+type telegramTopicsView struct {
+	TopicsEnabled bool                 `json:"topicsEnabled"`
+	Synced        bool                 `json:"synced"`
+	Topics        []telegramTopicEntry `json:"topics"`
+	FailedLoops   []string             `json:"failedLoops,omitempty"`
+}
+
+func registeredLoopNames(regDir string) []string {
+	f, err := registry.Load(regDir)
+	if err != nil {
+		return nil
+	}
+	seen := map[string]bool{}
+	var names []string
+	for _, entry := range f.Entries {
+		name := strings.TrimSpace(entry.Loop)
+		if name == "" || seen[name] {
+			continue
+		}
+		seen[name] = true
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	return names
+}
+
+func telegramTopicsCommand(e env, args []string) int {
+	fs := flag.NewFlagSet("telegram topics", flag.ContinueOnError)
+	fs.SetOutput(e.stderr)
+	dirFlag := fs.String("dir", "", "private state directory for Telegram pairing")
+	regFlag := fs.String("registry", "", "private loop registry directory")
+	apiURL := fs.String("api-url", "", "override Telegram Bot API base URL (https, or loopback http for tests)")
+	syncFlag := fs.Bool("sync", false, "create missing private-chat forum topics for registered loops")
+	asJSON := fs.Bool("json", false, "print topic mappings as JSON")
+	if err := fs.Parse(args); err != nil {
+		if errors.Is(err, flag.ErrHelp) {
+			return exitOK
+		}
+		return exitUsage
+	}
+	if fs.NArg() > 0 {
+		e.errf("telegram topics takes no positional arguments")
+		return exitUsage
+	}
+	dir, err := resolveTelegramDir(*dirFlag)
+	if err != nil {
+		e.errf("telegram topics: %v", err)
+		return exitFailed
+	}
+	rec, ok, err := telegram.LoadPairing(dir)
+	if err != nil {
+		e.errf("telegram topics: %v", err)
+		return exitFailed
+	}
+	if !ok {
+		e.errf("telegram topics: not paired; run `looptender telegram setup` first")
+		return exitFailed
+	}
+
+	view := telegramTopicsView{
+		TopicsEnabled: rec.TopicsEnabled,
+		Synced:        *syncFlag,
+		Topics:        []telegramTopicEntry{},
+	}
+
+	var created map[string]int64
+	if *syncFlag && rec.TopicsEnabled {
+		regDir, err := registryDirectory(*regFlag)
+		if err != nil {
+			e.errf("telegram topics: %v", err)
+			return exitFailed
+		}
+		token, err := telegram.LoadToken(dir)
+		if err != nil {
+			e.errf("telegram topics: %v", err)
+			return exitFailed
+		}
+		base := strings.TrimSpace(*apiURL)
+		if base == "" {
+			base = strings.TrimSpace(os.Getenv(telegram.APIURLEnv))
+		}
+		client, err := telegram.NewClient(telegram.ClientConfig{
+			Token:   token,
+			BaseURL: base,
+		})
+		if err != nil {
+			e.errf("telegram topics: %v", err)
+			return exitUsage
+		}
+		names := registeredLoopNames(regDir)
+		synced, res, err := telegram.EnsureLoopTopics(e.ctx, client, dir, rec, names, time.Now().UTC())
+		if err != nil {
+			e.errf("telegram topics: %v", err)
+			return exitFailed
+		}
+		rec = synced
+		created = res.Created
+		for loopName := range res.Failed {
+			view.FailedLoops = append(view.FailedLoops, loopName)
+		}
+		sort.Strings(view.FailedLoops)
+	}
+
+	var loopNames []string
+	for name := range rec.LoopTopics {
+		loopNames = append(loopNames, name)
+	}
+	sort.Strings(loopNames)
+	for _, name := range loopNames {
+		tid := rec.LoopTopics[name]
+		link, _ := telegram.TopicLink(rec.BotUsername, tid)
+		status := "mapped"
+		if created != nil && created[name] == tid {
+			status = "created"
+		}
+		view.Topics = append(view.Topics, telegramTopicEntry{
+			Loop:     name,
+			ThreadID: tid,
+			Link:     link,
+			Status:   status,
+		})
+	}
+
+	if *asJSON {
+		enc := json.NewEncoder(e.stdout)
+		enc.SetIndent("", "  ")
+		_ = enc.Encode(view)
+		return exitOK
+	}
+	if !view.TopicsEnabled {
+		fmt.Fprintln(e.stdout, "Telegram topics: disabled (using single private DM)")
+		return exitOK
+	}
+	if len(view.Topics) == 0 {
+		fmt.Fprintln(e.stdout, "Telegram topics: enabled (no loop topics mapped yet)")
+	} else {
+		fmt.Fprintf(e.stdout, "Telegram topics: enabled (%d mapped)\n", len(view.Topics))
+		for _, item := range view.Topics {
+			if item.Link != "" {
+				fmt.Fprintf(e.stdout, "  %s: thread %d (%s) — %s\n", item.Loop, item.ThreadID, item.Status, item.Link)
+			} else {
+				fmt.Fprintf(e.stdout, "  %s: thread %d (%s)\n", item.Loop, item.ThreadID, item.Status)
+			}
+		}
+	}
+	if len(view.FailedLoops) > 0 {
+		fmt.Fprintf(e.stdout, "Fallback to single DM for loops that could not create topics: %s\n", strings.Join(view.FailedLoops, ", "))
+	}
+	return exitOK
+}
+
