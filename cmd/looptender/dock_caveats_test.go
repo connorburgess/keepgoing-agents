@@ -97,12 +97,12 @@ func TestOverviewSaysEachCaveatOnce(t *testing.T) {
 	}
 	// The first loop is the first thing in the card: nothing is appended
 	// between the heading and the list.
-	i := strings.Index(js, `var p = panel("Loops and lanes");`)
-	if i < 0 || !strings.HasPrefix(strings.TrimSpace(js[i+len(`var p = panel("Loops and lanes");`):]), `var ul = el("ul", "work-tree");`) {
-		t.Error("something sits above the first loop in Loops and lanes")
+	i := strings.Index(js, `var p = panel("Loops");`)
+	if i < 0 || !strings.HasPrefix(strings.TrimSpace(js[i+len(`var p = panel("Loops");`):]), `var ul = el("ul", "work-tree");`) {
+		t.Error("something sits above the first loop in Loops")
 	}
-	if !strings.Contains(js, "as of its last check") {
-		t.Error("the one line under the loop list is missing")
+	if !strings.Contains(js, `(l.lastCheck && l.lastCheck.text) || "Last check unknown"`) {
+		t.Error("each loop must show its last-check age or explicitly say it is unknown")
 	}
 	// The overview says once that it is not live.
 	r := dockReport{Loops: []dockLoop{{State: "supervising"}}}
