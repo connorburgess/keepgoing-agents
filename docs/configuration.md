@@ -46,6 +46,7 @@ loop:
 | `provider`, `group` | no | `group` defaults to `provider`, then to `primary`. Set `group` so a limit on this account skips fallbacks that share it. |
 | `account` | no | The [accounts catalog](accounts.md#say-which-account-a-route-uses) ID of the account you state this route uses. Your statement only: never set or derived by looptender, and it changes nothing about how the loop runs. `validate` and `doctor` compare it with the catalog. A fallback in `fallbacks.yaml` and a route in the standard list take the same field. |
 | `prompt_goal` | `false` | Explicitly append the latest private goal specification and revision to automatic messages, including handoffs. A valid goal for this loop is required before sending. See [current goal context](goals.md#current-goal-context-in-wake-messages). |
+| `pr_backlog` | off | Unreleased. Explicit repository/WIP policy consulted only for an already-selected ordinary wake, using bounded cached GitHub reads. No extra wakes or branch-creation enforcement. See [PR backlog](pr-backlog.md). |
 | `prompt_context` | `false` | Append the loop's supervision context, as `context -c` prints it, at the end of wakes, nudges, re-prompts and handoff briefs: with every brief, and otherwise only on the first send after it is turned on, after a control save (enable, resume, a change of owner), when the context changes, or into a new headless conversation. Never to the notice-only lane-error wake. Unreleased. See [supervision context in sends](operations.md#supervision-context-in-sends). |
 | `prompt_goal_on_change` | `false` | Unreleased. With `prompt_goal`, send the goal in full only on the first send to a conversation, after a goal revision, a target change, a new conversation (such as after `session reset`), a failed full send, 12 short sends or 4 hours; otherwise send one fixed line naming the goal ID and revision as unchanged. Requires `prompt_goal: true`. Handoff and switch-back briefs always carry the goal in full. See [sending an unchanged goal once](goals.md#sending-an-unchanged-goal-once). |
 | `prompt` or `prompt_file` | one of them | The text sent on wake, nudge, and re-prompt. The file is read on every send, so you can edit it while the loop runs. |
@@ -470,11 +471,11 @@ See [operations.md](operations.md).
 
 | Field | Default |
 | --- | --- |
-| `report.url_env`, `report.secret_env` | `LOOPTENDER_WEBHOOK_URL`, `LOOPTENDER_WEBHOOK_SECRET`; each is also read under its [earlier name](#environment-variables) |
+| `report.url_env`, `report.secret_env` | `LOOPTENDER_WEBHOOK_URL`, `LOOPTENDER_WEBHOOK_SECRET`; each is also read under its [earlier name](#environment-variables). With `format: telegram`, defaults to `LOOPTENDER_TELEGRAM_API_URL` (optional, defaults to `https://api.telegram.org`) and `LOOPTENDER_TELEGRAM_BOT_TOKEN` (or the paired `token.env` from `telegram setup`). |
 | `report.secret_file` | none |
 | `report.source` | the loop name |
-| `report.scheme` | `standard-webhooks` (or `bearer`) |
-| `report.format` | `standard` (or `text`; unreleased `sessionpipe` requires `scheme: bearer`, see [Sessionpipe setup](sessionpipe.md)) |
+| `report.scheme` | `standard-webhooks` (or `bearer`; `telegram-bot` when `format: telegram`) |
+| `report.format` | `standard` (or `text`; unreleased `sessionpipe` requires `scheme: bearer`, see [Sessionpipe setup](sessionpipe.md); unreleased `telegram` defaults to `scheme: telegram-bot`, see [Telegram remote channel](telegram.md)) |
 | `report.events` | `handoff, switch_back, timing, degraded, recovered, await_user, limit_wait, network_wait, child_error, child_recovery, refusal_streak, complete, stop, error` (the `complete` event requires v0.1.3 or newer; `limit_wait`, `network_wait`, `child_error` and `child_recovery` are v0.2.0; `child_recovery` is sent only by a loop with `bb.children.retry_errored`; `timing`, unreleased, reports applied steps and failures; `refusal_streak`, unreleased, is sent when a streak of refused turns reaches 3, 10 and every 10 after; `check_gap`, also v0.2.0, is not a default and must be named) |
 | `report.timeout` | `20s` |
 | `yield.busy_command`, `yield.timeout` | required, `10s` |
@@ -612,3 +613,34 @@ Each tick prints one JSON line:
 ```
 
 `action` is one of `none`, `wake`, `nudge`, `reprompt`, `await_user`, `stop`, `handoff`, or `switch_back`. Optional fields include `resetsAt`, `redundancy`, `probes`, `yielded`, `dryRun`, `warnings`, `outcome` (`succeeded`, `failed` or `dry_run`; absent when the check could not be recorded) and `missingWorktrees`. A probe entry with `skipped` produced no result. With `--dry-run`, the tick decides and records but sends nothing and runs no probes.
+
+### Assignment lifecycle (unreleased)
+
+`loop.assignment_lifecycle: true` opts a BB coordinator into explicit assignment reviews,
+handoff imports/acknowledgements and an explicit `await-user` contradiction check. Default
+is false. A current private goal and existing BB ownership are required before writing.
+Older strict readers reject this key, so verify associated instances before activation.
+No new ordinary queries, automatic lane actions or hold clearing occur. See the full
+[initial review and handoff workflow](assignments.md), limits and remaining acceptance.
+
+### Independent assignment coordination (unreleased)
+
+`loop.assignment_coordination: {enabled: true, max_evidence_age: 30m}` requires
+`assignment_lifecycle: true` and a BB primary. Default absent/disabled preserves existing
+supervision/query behavior. Evidence age defaults to 30m and is bounded to 1m–24h;
+expiry withholds the exception without clearing holds or discarding work. Explicit
+`assignment ready` and `assignment reconcile-wake` govern one durable batch grant.
+See the [complete workflow and failure limits](assignments.md#opt-in-coordinator-wake-for-independent-work).
+One optional pre-send structured child scan is bounded to 20s within existing reserves;
+no additional wake cadence, automatic dispatch or new route is enabled.
+
+### Whole-objective completion review (unreleased)
+
+`loop.assignment_completion: true` separately opts a BB loop with
+`assignment_lifecycle: true` into the explicit `complete --review-file` safeguard.
+Default false preserves prior completion/query behavior. Strict older readers
+refuse the new key; no existing record is migrated. The typed declaration binds
+the current goal and assignment revisions and explicitly attests whole-objective
+completion, including zero-child objectives. It is not inferred authorization or
+proof of acceptance. See [completion review](assignments.md#whole-objective-completion-review-unreleased)
+for query bounds, historical completed-lane absence and hold/source checks.

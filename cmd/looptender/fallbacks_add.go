@@ -256,6 +256,9 @@ func fallbacksAdd(e env, args []string, input io.Reader, lookPath func(string) (
 	if cfg.Loop.Adapter == "cursor" {
 		return refuse(errors.New("A Cursor primary supports standalone loops only; fallbacks are unverified."))
 	}
+	if cfg.Loop.Adapter == "antigravity" {
+		return refuse(errors.New("An Antigravity primary supports standalone loops only; fallbacks are unavailable."))
+	}
 	if cfg.Loop.FollowsStandard() {
 		return refuse(errors.New(followsStandardRefusal("add")))
 	}
@@ -536,6 +539,7 @@ func (w *fallbackAddWizard) collect() error {
 		{"codex", "can be a fallback"},
 		{"bb", "an existing thread can be one"},
 		{"cursor", "cannot be a fallback yet"},
+		{"antigravity", "cannot be a fallback yet"},
 	} {
 		p, err := w.lookPath(initCLIName(a.kind))
 		if err != nil {
@@ -543,7 +547,7 @@ func (w *fallbackAddWizard) collect() error {
 			continue
 		}
 		fmt.Fprintf(tw, "  %s\t%s\t%s\n", a.kind, p, a.note)
-		if a.kind != "cursor" {
+		if a.kind != "cursor" && a.kind != "antigravity" {
 			usable = append(usable, a.kind)
 		}
 	}
@@ -763,6 +767,8 @@ func fallbackAddAgentSupported(agent string) error {
 		return nil
 	case "cursor":
 		return errors.New("Cursor cannot be a fallback yet: its account and model probes are unverified.")
+	case "antigravity":
+		return errors.New("Antigravity cannot be a fallback yet: only standalone primary loops are supported.")
 	case "process":
 		return errors.New("Guided add supports claude, codex and bb only.\n  A process candidate still needs a hand-written entry; see docs/fallbacks.md.")
 	case "":

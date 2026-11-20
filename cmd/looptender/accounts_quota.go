@@ -14,7 +14,7 @@ import (
 	"github.com/looptender/looptender/internal/snapshot"
 )
 
-type accountQuotaRun func(context.Context, string, []string, string) ([]byte, error)
+type accountQuotaRun func(context.Context, string, string, []string, string) ([]byte, error)
 type accountQuotaSelection struct {
 	Entry                   accounts.Entry
 	Bound                   string
@@ -35,7 +35,7 @@ func accountQuotaCapture(dir, id string, env []string) (accountQuotaSelection, e
 		return accountQuotaSelection{}, accounts.ErrChanged
 	}
 	s := accountQuotaSelection{Entry: *e, Bound: bound}
-	if e.Provider != "codex" {
+	if e.Provider != "codex" && e.Provider != "claude-code" && e.Provider != "antigravity" {
 		return s, nil
 	}
 	// Selection paths must remain canonical: a replacement symlink is not the
@@ -81,8 +81,17 @@ func (s accountQuotaSelection) same(t accountQuotaSelection) bool {
 	}
 	return s.CLI == nil || (s.CLI.Size() == t.CLI.Size() && s.CLI.ModTime().Equal(t.CLI.ModTime()) && s.CLI.Mode() == t.CLI.Mode())
 }
-func accountQuotaRead(ctx context.Context, cli string, env []string, workdir string) ([]byte, error) {
-	return accountCodexRPC(ctx, cli, env, workdir, "account/rateLimits/read", map[string]bool{"excludeResetCreditDetails": true})
+func accountQuotaRead(ctx context.Context, provider, cli string, env []string, workdir string) ([]byte, error) {
+	switch provider {
+	case "claude-code":
+		return accountClaudeQuotaRead(ctx, cli, env, workdir)
+	case "antigravity":
+		return accountAntigravityQuotaRead(ctx, cli, env, workdir)
+	case "codex":
+		return accountCodexRPC(ctx, cli, env, workdir, "account/rateLimits/read", map[string]bool{"excludeResetCreditDetails": true})
+	default:
+		return nil, errors.New("unsupported")
+	}
 }
 
 // accountQuotaRefresh never runs a route probe. CheckGuard prevents parallel
@@ -101,17 +110,38 @@ func accountQuotaRefresh(ctx context.Context, dir, id string, expected *accountQ
 	if expected != nil && !expected.same(s) {
 		return unavailable, accounts.ErrChanged
 	}
-	if _, err := accounts.LoadQuota(dir); err != nil {
+	load, publish := accounts.LoadQuota, accounts.PublishQuota
+	switch s.Entry.Provider {
+	case "claude-code":
+		load, publish = accounts.LoadClaudeQuota, accounts.PublishClaudeQuota
+	case "antigravity":
+		load, publish = accounts.LoadAntigravityQuota, accounts.PublishAntigravityQuota
+	}
+	if _, err := load(dir); err != nil {
 		return unavailable, err
 	}
 	a := accounts.QuotaAttempt{}
-	if s.Entry.Provider != "codex" {
+	if s.Entry.Provider != "codex" && s.Entry.Provider != "claude-code" && s.Entry.Provider != "antigravity" {
 		a.Reason = "unsupported_provider"
 	} else {
-		c, cancel := context.WithTimeout(ctx, 5*time.Second)
-		raw, err := run(c, s.Entry.CLI, accounts.ExecutionEnvironment(s.Entry, env), s.Entry.Workdir)
+		timeout := 5 * time.Second
+		if s.Entry.Provider == "antigravity" {
+			timeout = 10 * time.Second
+		}
+		c, cancel := context.WithTimeout(ctx, timeout)
+		raw, err := run(c, s.Entry.Provider, s.Entry.CLI, accountQuotaExecutionEnvironment(s.Entry, env), s.Entry.Workdir)
 		cancel()
-		a.Windows, a.Reason = accountQuotaParse(raw, err)
+		switch s.Entry.Provider {
+		case "claude-code":
+			a.Details, a.Reason = accountClaudeQuotaParse(raw, err)
+		case "antigravity":
+			a.Details, a.Reason = accountAntigravityQuotaParse(raw, err)
+		default:
+			a.Details, a.Reason = accountQuotaDetailsParse(raw, err)
+			if a.Reason == "" {
+				a.Windows, _ = accountQuotaParse(raw, nil)
+			}
+		}
 	}
 	a.At = now().UTC()
 	verify := func() error {
@@ -121,7 +151,7 @@ func accountQuotaRefresh(ctx context.Context, dir, id string, expected *accountQ
 		}
 		return nil
 	}
-	if err := accounts.PublishQuota(dir, s.Entry, s.Bound, a, env, verify); err != nil {
+	if err := publish(dir, s.Entry, s.Bound, a, env, verify); err != nil {
 		return unavailable, err
 	}
 	f, err := accounts.Load(dir)
@@ -253,8 +283,22 @@ func accountsUsage(e env, dir, id string, asJSON bool) int {
 		if v.ObservedAt != nil {
 			fmt.Fprintf(e.stdout, "Read %s (%s); source: %s\n", v.ObservedAt.Format(time.RFC3339), v.Freshness, v.Source)
 		}
-		for _, w := range v.Windows {
-			fmt.Fprintf(e.stdout, "%s: %d%% used\n", w.Name, w.UsedPercent)
+		if v.RetrievedAt != nil {
+			fmt.Fprintf(e.stdout, "Retrieved %s; provider freshness unknown (may be cached or seeded); source: %s\n", v.RetrievedAt.Format(time.RFC3339), v.Source)
+		}
+		summary := accounts.SummarizeQuota(v, time.Now())
+		for _, row := range summary.Rows {
+			fmt.Fprintf(e.stdout, "%s: %s", row.Name, row.Text)
+			if row.ResetsAt != nil {
+				fmt.Fprintf(e.stdout, "; reset %s", row.ResetsAt.Format(time.RFC3339))
+			}
+			fmt.Fprintln(e.stdout)
+		}
+		if summary.Partial {
+			fmt.Fprintln(e.stdout, "Partial quota evidence; missing values are not zero.")
+		}
+		if summary.Omitted > 0 {
+			fmt.Fprintf(e.stdout, "%d additional buckets not shown.\n", summary.Omitted)
 		}
 		if v.FailedRefreshReason != "" {
 			fmt.Fprintf(e.stdout, "Refresh failed %s (%s); any retained reading has its original timestamp.\n", v.FailedRefreshAt.Format(time.RFC3339), v.FailedRefreshReason)

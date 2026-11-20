@@ -18,7 +18,7 @@ A manually created successor with separate loop state has no inferred relationsh
 ## Packages
 
 ```
-cmd/looptender               CLI: start, service, tick, daemon, status, context, timeline, goal, registry, client status/pause/stop/prepare-resume/resume/review/apply, dock, panel, transfer, control, fallbacks, report, adapter check, ci-wait, net-retry
+cmd/looptender               CLI: start, service, tick, daemon, status, context, timeline, goal, assignment, registry, client status/pause/stop/prepare-resume/resume/review/apply, dock, panel, telegram, transfer, control, fallbacks, report, adapter check, pr-backlog, ci-wait, net-retry
 internal/config             a loop's configuration file (looptender.yaml, or keepgoing.yaml) and fallbacks.yaml: loading, defaults, validation
 internal/envvar             the environment variables' two names: LOOPTENDER_X, and the earlier KEEPGOING_X
 internal/userdir            the per-user directories and their name: looptender, or keepgoing where one already exists; the explicit move between them
@@ -38,7 +38,8 @@ internal/allowance          usage reading history per window instance and the pr
 internal/timing             usage-aware timing: the step decision (pure) and its input from state and health records
 internal/contextwindow      context-threshold reset: the decision (pure), previewed by status only; nothing acts on it
 internal/handoff            the brief a fallback receives
-internal/report             signed webhook reports and diagnostic delivery history
+internal/report             signed webhook and Telegram Bot API reports plus diagnostic delivery history
+internal/telegram           outbound-only Telegram Bot API client, one-time pairing primitives, atomic 0600 pairing/token state, redacted alert/status formatting, and compact Pause/Stop callback codec
 internal/incident           bounded typed tick/control/retarget history; diagnostic only
 internal/evidence           pure, allowlisted diagnostic source/code metadata
 internal/registry           explicit private local loop references; independent of loop controls
@@ -172,7 +173,7 @@ Runtime records live in `state_dir`, outside any repository. Managed service def
 | `deliveries.json`, `delivery.lock` | report diagnostic writer | bounded typed delivery evidence (64 records/128 KiB); separate short lock; never send/replay authority |
 | `daemon-endpoint.json` | daemon | private loopback endpoint and random verification key; removed on clean exit, stale records do not prove liveness |
 | `service-launchd.json`, `service-systemd.json` | service commands | private backend-specific plan/recovery record; no task text or credentials |
-| `tick.lock`, `daemon.lock`, `control.lock`, `service.lock` | the tool | advisory locks, released by the OS on exit . Every lock file the tool keeps in a loop's state directory or under the per-user directories (these, `turn.lock`, `graph.lock`, `incident.lock`, `delivery.lock`, the registry's, the route list's, the panel's two and the session claims) is listed by name in `migrateLockNames` in `cmd/looptender/migrate.go`; a new one must be added there, or `migrate` neither looks at it nor holds it while the directories move |
+| `tick.lock`, `daemon.lock`, `control.lock`, `service.lock` | the tool | advisory locks, released by the OS on exit . Every lock file the tool keeps in a loop's state directory or under the per-user directories (these, `turn.lock`, `graph.lock`, `incident.lock`, `delivery.lock`, the registry's, the route list's, the panel's two, Telegram's two (`telegram.lock`, `telegram-poll.lock`), and the session claims) is listed by name in `migrateLockNames` in `cmd/looptender/migrate.go`; a new one must be added there, or `migrate` neither looks at it nor holds it while the directories move |
 | `targets/<id>/` | the tool | headless turn files (`run.json` with private stop key, `turn.lock` held by the live turn wrapper, `turn.started` naming the turn whose wrapper took the lock, `turn.finishing` while a wrapper publishes its exit code, stop request/acknowledgement, prompt, stdout, stderr, exit code, session id) the BB log cursor (`bb-cursor.json`), and, from internal fixtures only, create-once ACP interaction-hold records (`acp-prompt-reserved.json`, `acp-needs-user.json`, `acp-hold-adopted.json`) |
 
 ## Ownership and control writes
@@ -358,7 +359,7 @@ Configuration validates optional ordered same-allowance steps after loading the 
 
 ## Selected account metadata
 
-The internal/accounts package stores one bounded private device-local catalog with revision-bound minimized observations. It imports existing private-file, lock and atomic-write primitives, never a provider adapter or transcript reader. The command layer owns fixed bounded status execution outside the writer lock and revalidates the selection before committing. The dock projection reads snapshots only. Selected-context subscription quota uses a separate bounded private cache, never catalog promotion or routing authority. The command layer performs an explicit bounded model-free RPC outside the catalog writer lock, then revalidates catalog revision, effective environment and executable/directory snapshots under that lock before atomic publication. Same-selection checks share a single-flight guard; unsuccessful refreshes retain the successful reading with its original time. Legacy-compatible writes retain private catalog schema 1; new plan metadata/tiers promote it to schema 2, which older strict readers refuse in full. Promotion is retained on later writes; reads do not migrate data. Catalog metadata and caller provenance grant no loop authority; route changes and panel startup authorization retain their existing boundaries. See [Accounts](accounts.md).
+The internal/accounts package stores one bounded private device-local catalog with revision-bound minimized observations. It imports existing private-file, lock and atomic-write primitives, never a provider adapter or transcript reader. The command layer owns fixed bounded status execution outside the writer lock and revalidates the selection before committing. The dock projection reads snapshots only. Selected-context subscription quota uses a separate bounded private cache, never catalog promotion or routing authority. The command layer performs an explicit bounded model-free RPC outside the catalog writer lock, then revalidates catalog revision, effective environment and executable/directory snapshots under that lock before atomic publication. Claude experimental quota uses its own strict private file with retrieval timestamps and fixed unknown provider freshness, leaving the Codex cache and catalog schemas unchanged. Native artifact admission and a parked control-only transport belong to the command layer; no provider session adapter is reused. Same-selection checks share a single-flight guard; unsuccessful refreshes retain the successful reading with its original time. Legacy-compatible writes retain private catalog schema 1; new plan metadata/tiers promote it to schema 2, which older strict readers refuse in full. Promotion is retained on later writes; reads do not migrate data. Catalog metadata and caller provenance grant no loop authority; route changes and panel startup authorization retain their existing boundaries. See [Accounts](accounts.md).
 
 ## Explicit migration review (unreleased)
 
@@ -369,3 +370,80 @@ The command layer composes existing read-only transfer inventories into two comp
 ## Sessionpipe reporting (unreleased)
 
 The report package owns the opt-in OUT integration described in [Sessionpipe reporting](sessionpipe.md). It reserves an opaque stream identity and sequences in a private snapshot under the existing delivery lock before bounded discovery/POST transport. No network operation holds that lock. A shared report.ErrNoRetry transport marker stops once-per-episode notification retry through an optional persisted retryStopped flag; it does not mark delivery sent or suppress new episodes/independent per-check reports. Ordinary webhook retries retain their behavior. Report results remain diagnostics; the pure decision engine, agent observation classifications, ownership, controls, budgets and send permissions do not read this state. No supervision adapter, provider process or inbound control channel is added.
+
+## Bound BB registry publication
+
+Explicit BB plugin lifecycle operations publish a CLI reference only after their own success is confirmed. The command layer preserves configuration path resolution semantics and binds config/runtime native identity, configuration sources, current BB route, owner and controls to an opaque preview, then revalidates under nonwaiting registry → tick → control locks through `registry.AddChecked`. The storage callback cannot query providers or edit controls. Existing schema-1 reference identity and unrelated entries remain intact; no new ledger or package boundary is introduced. The plugin's existing SDK target checks bind host/project/environment/path independently of progress evidence.
+
+Lifecycle, CLI registry and private plugin-reference writes are not an atomic transaction. Publication returns separate repair-needed evidence and never causes lifecycle replay or control rollback. Explicit `registry reconcile` repairs existing references without provider queries or changing ownership/holds/accounting. Status, menu and page reads never reconcile or scan. Plugin provenance and CLI registry coverage describe distinct explicit reference sets, not a complete process inventory. Durable supersession alone controls historical/no-Resume behavior; registration never infers it from a pause.
+
+## Explicit assignment lifecycle (unreleased)
+
+`loop.assignment_lifecycle` opts a BB coordinator into a separate private
+`assignments.json` record in `internal/control`, command-layer inventory/import/acknowledgement,
+and a pure minimized summary. It does not overload goals, migration checklists or run graphs.
+Record writes hold tick then control locks, verify source/owner/current goal bindings, use
+strict regular-file snapshots and atomic replacement, and refuse stale revisions or capacity
+without dropping unfinished IDs. The 32-revision/200-assignment/1-MiB limits are refusals,
+not eviction. History transition invariants apply on load as well as write.
+
+With lifecycle alone, only explicit coordinator `await-user` uses this record for a decision under those locks. The separate coordination opt-in below also permits a revision-bound wake.
+All remaining unfinished work must be explicitly acknowledged as person-blocked; missing,
+stale or partial evidence refuses that declaration. Pause/stop and automatic safety holds
+are unchanged. Ordinary status/panel read minimized local counts/dates without new queries;
+with lifecycle alone, only explicit inventory/review adds BB direct-child list/show reads. Lane execution,
+assignment outcome and declared availability are independent. No transcript decisions, lane
+actions, self-resume, authenticated worker publication or mandatory turn-end hook are added.
+See [assignment lifecycle](assignments.md) for the explicit initial-review journey and gaps.
+
+## PR backlog consultation (unreleased)
+
+`internal/prbacklog` owns bounded read-only GraphQL acquisition through `gh`, typed aggregate projection, pure policy evaluation and validated private cache/notice records. `config` validates the explicit opt-in repository, threshold, labels and freshness policy; `state` stores one aggregate cache and one notice record. No acquisition is performed by config/state loading. The standalone command acquires fresh evidence without loading or writing loop records.
+
+Only the ordinary-wake branch of `internal/supervise.act` consults this policy, after the existing decision and before reserving the send. Refresh uses optional time, preserves mandatory reserves, has no retries and rechecks effective controls before sending. Failure is notice evidence, never a hold, failover or permission. Cache attempts are interval-throttled; notices use semantic change/known conversation bookkeeping with a three-attempt cap, not new wake decisions. No decision-engine, lane, repository, merge or approval authority is added. See [the full freshness/privacy/acceptance contract](pr-backlog.md).
+
+## Explicit assignment coordination (unreleased)
+
+The separate `assignment_coordination` opt-in adds a minimized readiness fact to the pure
+ordinary idle-wake stage. BB exposes exact direct-child execution/interaction evidence
+from its existing scan, separate from diagnostic identities/titles. `internal/supervise/assignment.go`
+compares that snapshot with strictly loaded current assignment declarations and performs
+one bounded optional revalidation before consuming a grant. It bypasses only healthy
+active-child suppression, never control gates, cadence/budgets, child authority or route rules.
+
+The same assignments.json history holds an explicit batch selection, immutable binding,
+pre-delivery attempt and explicit coordinator reconciliation. New scheduling data promotes
+the record to version 2; version 1 remains readable and unsupported readers fail closed.
+The tick/control lock order, optimistic record revision and source checks remain in force.
+Sends allowance is reserved before atomic assignment consumption, then the existing parent
+Send is called. A failed second write spends allowance but sends nothing; a crash after
+consumption cannot replay the grant. Ordinary no-active-child wakes preserve the task and
+retire valid grants as attempted, never delivered. No cross-file or BB observation/tell
+transaction is claimed. Capacity withholds coordination notices and refuses record writes rather than dropping obligations; it does not suppress baseline ordinary wakes.
+
+## Explicit assignment completion review (unreleased)
+
+The command layer's separate `assignment_completion` opt-in guards only explicit
+completion. A bounded typed private declaration identifies the current goal and
+assignment revision and attests whole-objective completion. `internal/control`
+checks local complete/acknowledged obligations; the command composes existing
+bounded structured direct-child inventory and interaction reads under tick.lock,
+then revalidates sources, goal/owner/target binding and exact decoded assignment record in the existing control mutation lock. Completed acknowledged
+historical rows may remain absent after explicit inventory review; unseen
+unfinished obligations never disappear. The pure local precondition cannot
+infer acceptance from inventory. No new package, record schema, supervisor rule,
+host hook, dispatch or authorization source is introduced. Existing completion
+history/reporting projects only a successful explicit declaration. Reads of BB
+and control publication are not a distributed transaction.
+
+Explicit panel connection tasks also remain in the command layer. A session-bound
+review allocates the attempt identity before starting the provider's native login
+flow. Every attempt uses an exclusive new private directory and an immutable
+staged executable; the original selection is never a login write target. Completion
+verification belongs to that same bounded task, while status polling reads only
+its local state. Catalog publication takes the existing writer lock and checks
+reviewed identities again. Additive connections append a distinct selection;
+replacement connections retain the old directory and revise only the selected row.
+Neither path grants loop, route or BB provider authority. Cancellation never
+claims credential rollback; failed/uncertain directories remain private and are
+not automatically adopted. See [explicit connection limits](accounts.md#explicit-provider-sign-in-unreleased-source).

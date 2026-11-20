@@ -80,7 +80,7 @@ func TestAccountQuotaSelectionPrivacyAndFailedRefresh(t *testing.T) {
 	before, _ := os.ReadFile(filepath.Join(dir, accounts.FileName))
 	at := time.Now().UTC().Add(-time.Hour)
 	var failure error
-	run := func(ctx context.Context, cli string, env []string, wd string) ([]byte, error) {
+	run := func(ctx context.Context, provider, cli string, env []string, wd string) ([]byte, error) {
 		if cli != e.CLI || wd != e.Workdir {
 			t.Fatal("wrong selection")
 		}
@@ -171,7 +171,7 @@ func TestAccountQuotaMutationAndUnavailableFences(t *testing.T) {
 				}
 			}
 			calls := 0
-			run := func(context.Context, string, []string, string) ([]byte, error) {
+			run := func(context.Context, string, string, []string, string) ([]byte, error) {
 				calls++
 				switch kind {
 				case "revision", "removed":
@@ -252,7 +252,7 @@ func TestAccountQuotaSingleFlight(t *testing.T) {
 	dir, e := accountFixture(t, "codex")
 	entered, release, done := make(chan struct{}), make(chan struct{}), make(chan error, 1)
 	go func() {
-		_, err := accountQuotaRefresh(context.Background(), dir, e.ID, nil, func(context.Context, string, []string, string) ([]byte, error) {
+		_, err := accountQuotaRefresh(context.Background(), dir, e.ID, nil, func(context.Context, string, string, []string, string) ([]byte, error) {
 			close(entered)
 			<-release
 			return []byte(quotaResponse), nil
@@ -260,7 +260,7 @@ func TestAccountQuotaSingleFlight(t *testing.T) {
 		done <- err
 	}()
 	<-entered
-	_, err := accountQuotaRefresh(context.Background(), dir, e.ID, nil, func(context.Context, string, []string, string) ([]byte, error) {
+	_, err := accountQuotaRefresh(context.Background(), dir, e.ID, nil, func(context.Context, string, string, []string, string) ([]byte, error) {
 		t.Error("overlapping read")
 		return nil, nil
 	}, os.Environ(), time.Now)
@@ -313,7 +313,7 @@ case "$request" in *'"method":"account/rateLimits/read"'*'"excludeResetCreditDet
 			testexec.Script(t, cli, script)
 			ctx, cancel := context.WithTimeout(context.Background(), 300*time.Millisecond)
 			defer cancel()
-			raw, err := accountQuotaRead(ctx, cli, []string{"PATH=" + os.Getenv("PATH"), "CODEX_HOME=" + root}, root)
+			raw, err := accountQuotaRead(ctx, "codex", cli, []string{"PATH=" + os.Getenv("PATH"), "CODEX_HOME=" + root}, root)
 			w, r := accountQuotaParse(raw, err)
 			if kind == "ok" {
 				if err != nil || r != "" || len(w) != 1 || w[0].UsedPercent != 0 {
@@ -367,11 +367,13 @@ func TestAccountQuotaBrowserFixture(t *testing.T) {
 		if i == 2 {
 			raw = []byte(`{"rateLimits":null}`)
 		}
-		if _, err := accountQuotaRefresh(context.Background(), dir, entry.ID, nil, func(context.Context, string, []string, string) ([]byte, error) { return raw, nil }, os.Environ(), func() time.Time { return now }); err != nil {
+		if _, err := accountQuotaRefresh(context.Background(), dir, entry.ID, nil, func(context.Context, string, string, []string, string) ([]byte, error) { return raw, nil }, os.Environ(), func() time.Time { return now }); err != nil {
 			t.Fatal(err)
 		}
 		if i == 1 {
-			if _, err := accountQuotaRefresh(context.Background(), dir, entry.ID, nil, func(context.Context, string, []string, string) ([]byte, error) { return nil, context.DeadlineExceeded }, os.Environ(), func() time.Time { return at }); err != nil {
+			if _, err := accountQuotaRefresh(context.Background(), dir, entry.ID, nil, func(context.Context, string, string, []string, string) ([]byte, error) {
+				return nil, context.DeadlineExceeded
+			}, os.Environ(), func() time.Time { return at }); err != nil {
 				t.Fatal(err)
 			}
 		}
@@ -399,7 +401,9 @@ func TestAccountQuotaMissingCachedPercentageRefusesRPC(t *testing.T) {
 	for _, kind := range []string{"missing", "null"} {
 		t.Run(kind, func(t *testing.T) {
 			dir, e := accountFixture(t, "codex")
-			run := func(context.Context, string, []string, string) ([]byte, error) { return []byte(quotaResponse), nil }
+			run := func(context.Context, string, string, []string, string) ([]byte, error) {
+				return []byte(quotaResponse), nil
+			}
 			if _, err := accountQuotaRefresh(context.Background(), dir, e.ID, nil, run, os.Environ(), time.Now); err != nil {
 				t.Fatal(err)
 			}
@@ -431,7 +435,7 @@ func TestAccountQuotaMissingCachedPercentageRefusesRPC(t *testing.T) {
 				t.Fatal(view)
 			}
 			calls := 0
-			_, err := accountQuotaRefresh(context.Background(), dir, e.ID, nil, func(context.Context, string, []string, string) ([]byte, error) {
+			_, err := accountQuotaRefresh(context.Background(), dir, e.ID, nil, func(context.Context, string, string, []string, string) ([]byte, error) {
 				calls++
 				return []byte(quotaResponse), nil
 			}, os.Environ(), time.Now)
@@ -445,9 +449,17 @@ func TestAccountQuotaMissingCachedPercentageRefusesRPC(t *testing.T) {
 
 func TestAccountQuotaUnsupportedProviderIsUnavailable(t *testing.T) {
 	dir, e := accountFixture(t, "claude-code")
+	if err := accounts.Update(dir, func(f *accounts.File) error {
+		e.Provider, e.Mode, e.CLI, e.Workdir = "other", "externally_managed", "", ""
+		e.Context = accounts.Context(*f, e, os.Environ())
+		f.Entries[0] = e
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
 	before, _ := os.ReadFile(filepath.Join(dir, accounts.FileName))
 	calls := 0
-	v, err := accountQuotaRefresh(context.Background(), dir, e.ID, nil, func(context.Context, string, []string, string) ([]byte, error) { calls++; return nil, nil }, os.Environ(), time.Now)
+	v, err := accountQuotaRefresh(context.Background(), dir, e.ID, nil, func(context.Context, string, string, []string, string) ([]byte, error) { calls++; return nil, nil }, os.Environ(), time.Now)
 	if err != nil || calls != 0 || v.State != "unavailable" || v.Reason != "unsupported_provider" || len(v.Windows) != 0 {
 		t.Fatal(v, err, calls)
 	}

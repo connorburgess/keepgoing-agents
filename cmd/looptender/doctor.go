@@ -539,6 +539,10 @@ func doctorAgent(ctx context.Context, r *doctorReport, id string, a config.Agent
 		r.add(prefix+".models", "unavailable", doctorCursorModels(a.Cursor.Model), "Check the model with Cursor's own model listing; doctor does not parse it.")
 		r.add(prefix+".workspace", "unavailable", "Whether Cursor trusts the configured project directory cannot be checked. In a directory it does not trust, every turn exits with an error before it starts; keepgoing never passes a trust or approval flag.", "Open the project once with Cursor's own CLI and answer its trust question before starting supervision.")
 		r.add(prefix+".capabilities", "unavailable", initCursorNotice, "Review the Cursor integration limits before starting supervision.")
+	case a.Antigravity != nil:
+		cli, workdir, env = a.Antigravity.CLI, a.Antigravity.Workdir, a.Antigravity.Env
+		r.add(prefix+".account", "unavailable", "Antigravity login is inherited from the environment; doctor does not verify account identity or query /usage. Use `looptender accounts usage` for model-free quota reads.", "")
+		r.add(prefix+".capabilities", "unavailable", "Antigravity runs as a standalone primary ACP loop (`agy acp --stdio`). Permission requests hold the loop for a person; chat-only questions without ACP elicitation cannot be distinguished from a returned turn, and fallbacks/switch-back are unavailable.", "Review docs/antigravity.md before running unattended loops.")
 	case a.Custom != nil:
 		// A defined agent declares no version or login interface, and doctor
 		// runs nothing a definition does not declare: it resolves the

@@ -175,8 +175,8 @@ func (s *panelState) pagePath() string { return "/s/" + s.segment + "/" }
 // also writes the launch page and returns that file's name; otherwise it
 // returns the opening address.
 func (s *panelState) mint(key string, asFile bool) (address, file string, err error) {
-	if key != "" && !panelKeyPattern.MatchString(key) {
-		return "", "", errors.New("not a loop key")
+	if key != "" && !panelKeyPattern.MatchString(key) && !(strings.HasPrefix(key, "a") && panelAccountID.MatchString(strings.TrimPrefix(key, "a"))) {
+		return "", "", errors.New("not a panel page key")
 	}
 	code, err := panelRandom(32)
 	if err != nil {
@@ -422,6 +422,9 @@ func (h *panelHandler) served(w http.ResponseWriter) func(session string) {
 			since := h.changes.since
 			out.Changes, out.ChangesSince, out.Form = "on", &since, h.changes.prepareValue(session)
 			out.AccountQuota = true
+			out.AccountQuotaProviders = panelQuotaProvidersFor(runtime.GOOS, runtime.GOARCH)
+			out.AccountSelectionReview = true
+			out.AccountConnectProviders = panelConnectProvidersFor(runtime.GOOS, runtime.GOARCH)
 			out.ChangesText = txt("Changes allowed for "+dockSpan(now.Sub(since))+": started with looptender panel --allow-changes at ", tm(since, "clock"), ". "+panelExposure+" looptender panel stop turns them off.")
 		}
 		w.Header().Set("Content-Type", "application/json")
@@ -456,7 +459,9 @@ func (h *panelHandler) open(w http.ResponseWriter, r *http.Request) {
 	// session, and with this server whichever comes first.
 	http.SetCookie(w, &http.Cookie{Name: panelCookieName, Value: session, Path: h.state.pagePath(), HttpOnly: true, SameSite: http.SameSiteStrictMode})
 	target := h.state.pagePath()
-	if opening.key != "" {
+	if strings.HasPrefix(opening.key, "a") {
+		target += "#/accounts/" + strings.TrimPrefix(opening.key, "a")
+	} else if opening.key != "" {
 		target += "#/loop/" + opening.key
 	}
 	// The target is this server's own path and a validated key.
@@ -664,6 +669,7 @@ func runPanelServer(parent context.Context, c panelServerConfig) int {
 		if handler.changes, err = newPanelChanges(ctx, c.registry, reader, rec.StartedAt, c.now); err != nil {
 			return exitFailed
 		}
+		defer handler.changes.closeAccountConnect()
 	}
 	if rec.IdleSeconds < 1 {
 		rec.IdleSeconds = 1

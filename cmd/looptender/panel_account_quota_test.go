@@ -6,6 +6,8 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"reflect"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -21,7 +23,7 @@ func TestPanelAccountQuotaGuardsAndSingleUseReview(t *testing.T) {
 		t.Fatal(err)
 	}
 	calls := 0
-	c.quotaRun = func(context.Context, string, []string, string) ([]byte, error) {
+	c.quotaRun = func(context.Context, string, string, []string, string) ([]byte, error) {
 		calls++
 		return []byte(quotaResponse), nil
 	}
@@ -128,6 +130,9 @@ func TestPanelAccountQuotaGuardsAndSingleUseReview(t *testing.T) {
 		if served.AccountQuota != on {
 			t.Fatal("wrong capability", served)
 		}
+		if on && !reflect.DeepEqual(served.AccountQuotaProviders, panelQuotaProvidersFor(runtime.GOOS, runtime.GOARCH)) || !on && len(served.AccountQuotaProviders) != 0 {
+			t.Fatal("provider capability differs from platform/authorization", served.AccountQuotaProviders)
+		}
 	}
 }
 
@@ -138,7 +143,7 @@ func TestPanelAccountQuotaExpiredAndChangedExecutable(t *testing.T) {
 			now := time.Now().UTC()
 			c, _ := newPanelChanges(context.Background(), "", &dockReader{accountsDir: dir}, now, func() time.Time { return now })
 			calls := 0
-			c.quotaRun = func(context.Context, string, []string, string) ([]byte, error) {
+			c.quotaRun = func(context.Context, string, string, []string, string) ([]byte, error) {
 				calls++
 				return []byte(quotaResponse), nil
 			}

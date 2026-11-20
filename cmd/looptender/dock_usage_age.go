@@ -58,8 +58,12 @@ func dockMarkOldUsage(r *dockReport, staleAfter time.Duration) {
 	for i := range r.Routes {
 		mark(&r.Routes[i].Usage, atLimit[r.Routes[i].Key])
 	}
+	// A catalog entry's block has no reading of its own: its lines are the
+	// routes above.
 	for i := range r.Allowances {
-		mark(&r.Allowances[i].Usage, dockNotesAtLimit(r.Allowances[i].Notes))
+		if u := r.Allowances[i].Usage; u != nil {
+			mark(u, dockNotesAtLimit(r.Allowances[i].Notes))
+		}
 	}
 }
 
