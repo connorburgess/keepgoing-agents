@@ -18,7 +18,7 @@ A manually created successor with separate loop state has no inferred relationsh
 ## Packages
 
 ```
-cmd/looptender               CLI: start, service, tick, daemon, status, context, timeline, goal, assignment, registry, client status/pause/stop/prepare-resume/resume/review/apply, dock, panel, transfer, control, fallbacks, report, adapter check, pr-backlog, ci-wait, net-retry
+cmd/looptender               CLI: start, service, tick, daemon, status, context, timeline, goal, assignment, registry, client status/pause/stop/prepare-resume/resume/review/apply, dock, panel, telegram, transfer, control, fallbacks, report, adapter check, pr-backlog, ci-wait, net-retry
 internal/config             a loop's configuration file (looptender.yaml, or keepgoing.yaml) and fallbacks.yaml: loading, defaults, validation
 internal/envvar             the environment variables' two names: LOOPTENDER_X, and the earlier KEEPGOING_X
 internal/userdir            the per-user directories and their name: looptender, or keepgoing where one already exists; the explicit move between them
@@ -38,8 +38,8 @@ internal/allowance          usage reading history per window instance and the pr
 internal/timing             usage-aware timing: the step decision (pure) and its input from state and health records
 internal/contextwindow      context-threshold reset: the decision (pure), previewed by status only; nothing acts on it
 internal/handoff            the brief a fallback receives
-internal/report             signed webhook reports and diagnostic delivery history
-internal/telegram           outbound-only Telegram Bot API client, one-time pairing primitives, atomic pairing state and redacted event formatting (TG1 foundation; not yet wired into CLI/daemon)
+internal/report             signed webhook and Telegram Bot API reports plus diagnostic delivery history
+internal/telegram           outbound-only Telegram Bot API client, one-time pairing primitives, atomic 0600 pairing/token state and redacted alert formatting
 internal/incident           bounded typed tick/control/retarget history; diagnostic only
 internal/evidence           pure, allowlisted diagnostic source/code metadata
 internal/registry           explicit private local loop references; independent of loop controls

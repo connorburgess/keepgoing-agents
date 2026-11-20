@@ -107,6 +107,8 @@ Fallbacks:
 
 Reporting:
   report test              Send a test webhook (--dry-run prints it instead)
+  telegram setup|status|test|disconnect
+                           Pair and manage a personal Telegram bot over outbound HTTPS
 
 Tools (no config needed):
   init                     Guide setup of a disabled loop outside the checkout
@@ -200,6 +202,8 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 		return panelCommand(e, rest)
 	case "__panel-server":
 		return panelServerCommand(e, rest)
+	case "telegram":
+		return telegramCommand(e, rest)
 	case "doctor":
 		return doctor(e, rest, doctorExec)
 	case "init":

@@ -277,7 +277,7 @@ The remaining work includes continuity across supported adapters, cross-project 
 - [Roadmap](docs/roadmap.md): current priorities, planned scaling across devices and remaining acceptance gates; [feature analysis](docs/supervision-feature-analysis.md) gives checkable criteria.
 - [Current scale limits and read-only benchmarks](docs/scale-baseline.md): local bounds, loss domains and measurement scope; no fleet capacity claim.
 - [Where the supervisor runs](docs/command-center.md): design record on why looptender runs on the machine where the agents live, and how a person elsewhere is reached (mostly planned).
-- [Telegram remote channel](docs/telegram.md): design specification and phased plan (TG1–TG5) for reaching a device's loops through a personal Telegram bot over outbound HTTPS; only the internal `internal/telegram` client/pairing foundation exists in unreleased source, verified with offline stand-ins.
+- [Telegram remote channel](docs/telegram.md): zero-infrastructure personal bot over outbound HTTPS (`TG1`–`TG5`); unreleased source includes `looptender telegram setup|status|test|disconnect` and `loop.report.format: telegram`, verified with offline stand-ins only (daemon polling and live Telegram verification remain open).
 - [Glossary](docs/glossary.md): what loop, lane, route, device and hold mean.
 - [Coordinating lanes](docs/coordinating-lanes.md): a convention for a conversation that hands out and reviews lane work; coordination decisions remain the coordinator’s; the opt-in backlog safeguard supplies evidence and a reminder.
 - [Loops across devices](docs/devices.md): design only, nothing built; how a loop could move between a person's machines.

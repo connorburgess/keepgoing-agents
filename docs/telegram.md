@@ -2,7 +2,7 @@
 
 Design specification and delivery plan, 2026-11-20. This document specifies how a person reaches a device's loops through a personal Telegram bot—starting with redacted alerts and safe remote controls, and optionally extending to threaded chat steering as a lightweight mobile interface.
 
-**Current status:** Only the internal Bot API client, pairing primitives, state store, and redacted event formatter (`internal/telegram`, foundation for **TG1**) exist on this branch, verified with offline HTTP stand-ins and unit tests. CLI setup commands, daemon polling, outbound report integration, chat steering, and live Telegram verification remain **planned, not built**.
+**Current status:** **TG1** (`internal/telegram` plus `loop.report.format: telegram` in `internal/report`, `internal/config`, and `schema/looptender.schema.json`) and **TG2** (`looptender telegram setup|status|test|disconnect`) are implemented on this branch and verified with offline HTTP stand-ins and unit tests. `doctor` integration, **TG3–TG5** (daemon `getUpdates` polling for `/status`/`Pause`/`Stop`, ticketed `Resume`, per-loop private-chat topic creation, opt-in `chat` steering, and unified `onboard`), and live Telegram Bot API verification remain **planned, not built**.
 
 ## Where the architectural line sits
 
