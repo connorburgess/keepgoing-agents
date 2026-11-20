@@ -8,8 +8,11 @@ import Foundation
   let list=try Contract.panelList(data,exit:0)
   guard let q=list.accountQuotas,q.accounts.map(\.label).prefix(2)==["Example Codex","Example Claude"] else {fatalError("Not the fictional quota fixture")}
   let model=MenuBuilder.build(.read(list,at:Date()),now:Date())
-  guard let account=model.rows.first(where:{$0.title=="Example Codex"}),account.detail.contains("37.5"),account.submenu.contains(where:{$0.accessibilityLabel.contains("currency not reported")}),account.submenu.compactMap(\.command)==[.openPanel] else {fatalError("Native quota menu lost units or authority boundary")}
-  guard let claude=model.rows.first(where:{$0.title=="Example Claude"}),claude.detail=="Quota unavailable",!claude.submenu.contains(where:{$0.title.contains("0%")}) else {fatalError("Unsupported provider became zero")}
+  guard let account=model.rows.first(where:{$0.title=="Example Codex"}),account.detail.contains("37.5"),account.submenu.contains(where:{$0.accessibilityLabel.contains("currency not reported")}),account.submenu.compactMap(\.command)==[q.accounts[0].id.map { .openAccount(id:$0) } ?? .openPanel] else {fatalError("Native quota menu lost units or authority boundary")}
+  guard let claude=model.rows.first(where:{$0.title=="Example Claude"}),claude.detail==(q.accounts[1].id == nil ? "Quota unavailable" : "Connect Claude"),!claude.submenu.contains(where:{$0.title.contains("0%")}) else {fatalError("Unsupported provider became zero")}
+  if let id=q.accounts[1].id {
+   guard claude.command == .connectAccount(id:id), MenuBuilder.arguments(.openAccountWithChanges(id:id)) == ["panel","--allow-changes","--account",id], MenuBuilder.arguments(.openAccountWithChanges(id:"../other")) == nil else {fatalError("Connect account lost scoped navigation")}
+  }
   var object=try JSONSerialization.jsonObject(with:data) as! [String:Any]
   var quotas=object["accountQuotas"] as! [String:Any]
   var accounts=quotas["accounts"] as! [[String:Any]]

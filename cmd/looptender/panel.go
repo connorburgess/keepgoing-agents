@@ -672,7 +672,7 @@ func panelLoopKey(registryDir, value string) (string, error) {
 	return "", errors.New("more than one registered loop has that name; pass its registration ID from keepgoing registry list")
 }
 
-const panelUsage = `Usage: keepgoing panel [--loop NAME] [--no-open] [--idle 30m] [--allow-changes] [--directory private-registry]
+const panelUsage = `Usage: keepgoing panel [--loop NAME | --account ID] [--no-open] [--idle 30m] [--allow-changes] [--directory private-registry]
        keepgoing panel status [--json]
        keepgoing panel stop
        keepgoing panel list [--json] [--directory private-registry]
@@ -681,7 +681,8 @@ Open the looptender panel, the page about every registered loop, in your
 browser. The panel's background process, for this computer only, is started when
 none is running and stops by itself when unused. It is read-only unless it was started
 with --allow-changes, which lets the page pause, stop and resume loops and replace a loop’s own build, each
-after a review and a confirmation. Supervision is not affected by starting,
+after a review and a confirmation. Accounts also offers reviewed provider sign-in
+and quota reads. Opening an account page does not start sign-in. Supervision is not affected by starting,
 stopping or closing it.`
 
 func panelCommand(e env, args []string) int {
@@ -702,6 +703,7 @@ func panelCommand(e env, args []string) int {
 	fs := flag.NewFlagSet("panel", flag.ContinueOnError)
 	fs.SetOutput(io.Discard)
 	loop := fs.String("loop", "", "open this loop's page: its name, registration ID or key")
+	account := fs.String("account", "", "open this selected account in Accounts; does not start sign-in")
 	noOpen := fs.Bool("no-open", false, "print the opening address and do not start a browser")
 	idle := fs.Duration("idle", panelDefaultIdle, "stop the panel's background process after this long without a request (1m to 24h)")
 	directory := fs.String("directory", "", "private registry directory")
@@ -709,7 +711,7 @@ func panelCommand(e env, args []string) int {
 	refresh := fs.Duration("refresh", dockDefaultRefresh, "how often the page reads again (5s to 10m)")
 	staleAfter := fs.Duration("stale-after", defaultStaleAfter, "age at which a check or child listing is shown as stale")
 	offline := fs.Bool("offline", false, "do not ask each loop's local daemon for its next check")
-	changes := fs.Bool("allow-changes", false, "let the page change loop controls/builds and explicitly read selected Codex subscription quota (a panel this command starts; a running one keeps its own mode)")
+	changes := fs.Bool("allow-changes", false, "let the page change loop controls/builds and offer reviewed account sign-in and quota reads (a panel this command starts; a running one keeps its own mode)")
 	if err := fs.Parse(args); err != nil {
 		if errors.Is(err, flag.ErrHelp) {
 			fmt.Fprintln(e.stdout, panelUsage)
@@ -720,7 +722,7 @@ func panelCommand(e env, args []string) int {
 		e.errf("panel: invalid arguments; see panel --help")
 		return exitUsage
 	}
-	if fs.NArg() != 0 || *idle < panelMinIdle || *idle > panelMaxIdle || *refresh < dockMinRefresh || *refresh > dockMaxRefresh || *staleAfter <= 0 {
+	if (*account != "" && (!panelAccountID.MatchString(*account) || *loop != "")) || fs.NArg() != 0 || *idle < panelMinIdle || *idle > panelMaxIdle || *refresh < dockMinRefresh || *refresh > dockMaxRefresh || *staleAfter <= 0 {
 		e.errf("panel: idle 1m-24h, refresh 5s-10m, a positive stale-after; no positional arguments except status, stop or list")
 		return exitUsage
 	}
@@ -746,6 +748,9 @@ func panelCommand(e env, args []string) int {
 		}
 	}
 	key := ""
+	if *account != "" {
+		key = "a" + *account
+	}
 	if *loop != "" {
 		if key, err = panelLoopKey(*directory, *loop); err != nil {
 			e.errf("panel: %v", err)

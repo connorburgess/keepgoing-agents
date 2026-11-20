@@ -797,3 +797,68 @@ The web hard response ceiling remains the existing 8 MiB. The combined widest
 registry/route-list plus 64 detailed quota fixture requires the existing main
 6 MiB regression threshold; all quota rows remain obtainable in the separate
 1 MiB response. Native remains bounded to 1 MiB.
+
+
+## Connect an account in the panel (unreleased)
+
+The Accounts row offers **Connect Claude** or **Connect Codex** when quota is unavailable. This is an action, not a diagnosis: a missing quota reading can also mean an unsupported source or a failed request. A structured missing-login observation is shown separately as **Sign-in required**.
+
+Open the panel with controls enabled, choose Connect for the intended account, and review the change before starting sign-in. Finish authentication on the provider's page. Looptender does not ask for your password or copy credentials from another account. Each attempt creates a private, separate provider context. Only confirmed sign-in and an unchanged reviewed selection allow publication to that account's catalog entry. Its label, provider, executable and working directory are retained; routes and held loops are not changed. Retrieve quota separately after connection succeeds.
+
+For multiple accounts, choose **Connect another Claude account** or **Connect another Codex account**, enter a distinct label, and review the new connection. The existing selection supplies the CLI and working directory; successful sign-in adds a new entry rather than replacing that selection. Duplicate labels and the catalog limit are checked again before publication. Adding the first provider selection still uses the existing explicit catalog setup; the panel does not discover or import other credentials.
+
+If the reply is lost, **Check connection** checks the already reviewed attempt. It never repeats sign-in. **Cancel sign-in** cancels that attempt; an unknown outcome is not automatically retried. The panel can retain an unused private context after failure rather than risk deleting authentication files of uncertain state. Stopping the panel process stops its owned connection processes; closing a browser tab alone leaves the attempt running until cancellation or its deadline. Opening the native menu, reading status or refreshing the saved account list never starts sign-in.
+
+Codex connection requires a supported standalone native CLI on macOS or Linux. Claude connection is limited to the inspected macOS arm64 native Claude Code artifact and Claude subscription login; Console authentication is excluded. Unsupported binaries, wrappers, platform admission and conflicting authentication overrides refuse before sign-in. The provider may require a person to finish authentication; terminal-only fallback is not silently automated. Windows connection is not enabled. The native Connect row opens the selected account through the existing panel-controls confirmation. Source and fictional tests do not establish live provider acceptance.
+
+## Explicit provider sign-in (unreleased source)
+
+A changes-enabled panel can review **Connect Claude** or **Connect Codex** for
+an existing catalog selection. The person completes the provider's own browser
+sign-in. Navigation, page refresh and status polling never start sign-in. An
+unavailable quota reading does not establish that login is missing.
+
+Each attempt creates a new private configuration directory. It never signs in
+within an inherited context or overwrites credentials in an existing selected
+directory. Verified completion changes only the reviewed row to select the new
+directory; its ID, name, provider, executable and working directory stay fixed.
+**Connect another account** instead uses that row's executable and working
+directory as a template, reviews a new name, and appends a separate catalog ID
+on success. Names must be distinct without regard to case; the catalog's
+64-selection limit still applies. The template and unrelated rows are retained.
+Neither operation changes routes, defaults or any BB connection. Retrieve quota
+separately after sign-in; no model or quota request runs as part of Connect.
+
+Claude sign-in uses the inspected native Claude Code 2.1.326 image on Darwin
+arm64 and its subscription-only `auth login --claudeai` command. The provider
+opens the browser itself. Completion additionally requires its structured
+status to report a claude.ai login in exactly the new configuration directory.
+Console, third-party authentication and manual-code terminal fallback are not
+implemented by the panel. Codex sign-in supports standalone native executables
+on Darwin/Linux: its documented app-server browser flow must confirm a
+file-based credential store, matching login completion and a ChatGPT account.
+The new Codex context retains its own `cli_auth_credentials_store = "file"`
+setting. Script launchers, unsupported platforms, overridden authentication,
+unverified executables and unsupported provider protocols refuse. Explicit
+token/API-key/cloud authentication in the panel environment is refused, never
+silently removed or borrowed.
+
+Start requires a session-bound, single-use review. Its opaque attempt ID is
+allocated in the preview, so a lost start reply can be checked without repeating
+sign-in. Status/cancel inspect only the initiating session's owned local attempt.
+There is one attempt per selection at a time and at most 16 attempts per panel
+lifetime, with a ten-minute deadline. Server exit cancels its owned processes;
+restart does not resume or retry sign-in. Cancellation and timeout do not claim
+to undo a provider's credential write. Failed, cancelled or uncertain private
+contexts are retained without being selected or automatically reused. A person
+must inspect an unknown outcome before a new explicit review. No token,
+credential content, raw provider error or authorization URL is saved in catalog
+or diagnostic logs. Codex continuation links are transient, same-session data.
+
+Catalog publication locks/reloads the catalog and verifies the original
+revision, effective context, executable, working directory and original account
+directory identities plus the new directory's identity. Drift refuses
+publication even if the provider already finished. Existing quota evidence
+keeps its old revision and is never reassigned to the new login. This is a
+panel/CLI capability requiring a coordinated build upgrade, not a background
+supervisor login or an account identity assertion.

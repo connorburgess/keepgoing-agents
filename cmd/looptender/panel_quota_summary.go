@@ -9,6 +9,7 @@ type panelQuotaList struct {
 	Omitted  int                 `json:"omitted"`
 }
 type panelQuotaAccount struct {
+	ID       string                `json:"id,omitempty"`
 	Label    string                `json:"label"`
 	Provider string                `json:"provider"`
 	Summary  accounts.QuotaSummary `json:"summary"`
@@ -33,7 +34,7 @@ func panelQuotaSummary(r dockReport) *panelQuotaList {
 		if q == nil {
 			q = &accounts.QuotaView{State: "unavailable", Reason: "unsupported_provider", Freshness: "unavailable"}
 		}
-		out.Accounts = append(out.Accounts, panelQuotaAccount{Label: clip(c.Label, 120), Provider: c.Provider, Summary: accounts.SummarizeQuota(*q, r.ReadAt)})
+		out.Accounts = append(out.Accounts, panelQuotaAccount{ID: c.ID, Label: clip(c.Label, 120), Provider: c.Provider, Summary: accounts.SummarizeQuota(*q, r.ReadAt)})
 	}
 	return out
 }
