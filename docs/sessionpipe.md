@@ -99,14 +99,52 @@ receipt. Diagnostic history remains in `deliveries.json`; the new `protocol_fail
 has no POST attempt, and protocol failure is recorded separately.
 
 This is **best-effort reporting**, not a conformant durable Sessionpipe sender:
-it has no outbox, cursor, indefinite backoff, replay, daily discovery cache or
-persistent authentication-error pause. It does not retry uncertain delivery;
+it has no outbox, cursor, indefinite backoff, replay or daily discovery cache. Authentication failures now have the report-only pause described below. It does not retry uncertain delivery;
 a later report is a new event with new sequences. Discovery runs per report.
 An attempted Sessionpipe POST that fails or has an uncertain acknowledgement returns the shared transport marker `report.ErrNoRetry`. Once-per-episode supervision reports persist `retryStopped: true` while retaining `sent: false` and the actual attempt count; later checks and fresh reporter instances do not repeat that episode, even after receiver recovery. A new episode starts its own accounting. Independent per-check failed-check reports remain new events and can still send; this is not global notification deduplication. Failures before POST remain eligible for the existing bounded episode retry, as no delivery was attempted. An accepted POST followed by diagnostic-history failure also forbids retry. Ordinary webhook backend retry behavior is unchanged.
 
 The optional `OnceReport.retryStopped` state field is ignored by older builds; downgrade does not preserve this reporting suppression. Persistence depends on the check successfully publishing its state. A crash after POST but before that publication is not protected by an atomic delivery journal; durable episode replay/suppression remains follow-up work. Report history failure never changes loop holds or authorizes another agent send.
 The existing report event subscription still applies. No delivery outcome is
 used as a provider limit, refusal, policy or availability signal.
+
+## Authentication pause and explicit resume
+
+A POST returning HTTP 401 persists `unauthorized` in private schema-1
+`sessionpipe-gate.json`. Subsequent reports, including from fresh processes or
+with changed credentials, refuse discovery and POST until a person explicitly
+runs:
+
+```sh
+keepgoing report resume -c looptender.yaml
+```
+
+Inspect/fix receiver credentials first. The command sends nothing, does not test
+credentials, replay failed batches or retry stopped episodes, and leaves loop
+holds, ownership, budgets and sequence identity unchanged. Only future reports
+are enabled. It requires Sessionpipe configuration and current caller ownership,
+refuses transfer fences and a running check, and rejects dry-run/extra arguments.
+`status` and `doctor` show the report gate without contacting the receiver.
+
+A separate nonwaiting `sessionpipe` lock serializes network reporting and resume;
+contention refuses a report rather than waiting. Before POST the gate is atomically
+published as `pending`. Exit before `client.Do` returns, or failure to publish the final gate, leaves
+it closed; explicit resume is required even if delivery is unknown. On return
+from `client.Do` (response headers or a transport error), a 401 retains the pause;
+other results immediately return the gate to `ready`, before acknowledgement-body
+validation or history publication. Pending therefore does not protect a crash
+during acknowledgement/history processing. The existing no-retry-per-episode
+contract still applies; this is not a durable delivery journal.
+Corrupt, oversized, nonregular or missing/null/duplicate or incorrectly cased gate fields refuse network
+and resume without replacing the evidence. Genuine absence means ready for
+compatibility with existing state. The gate contains no URL, token, payload
+or raw error. Migration fences the new lock and moves this state with the loop.
+
+Older builds ignore the new gate. All report writers must be upgraded to retain
+the pause; downgrade is not compatible with that guarantee. The guarantee uses
+existing atomic snapshot primitives, not a power-loss durability claim. Discovery
+failure (including unauthenticated discovery rejection) still has no POST attempt
+and does not create an authentication pause. HTTP 403, 429 and 5xx do not change
+provider classifications or loop authority; this slice adds no automatic retries.
 
 ## Evidence and remaining scope
 
@@ -148,9 +186,9 @@ remote-answer or coordinator-message authority.
 | Event endpoint | POST `{events:[...]}`, content type, bearer and `sessionpipe-protocol: 1`; advertised two-event/byte bounds | No native endpoint, file sink, outbox, control or pairing endpoint. No webhook HMAC is needed for v1 bearer delivery. |
 | Envelopes / fields | Protocol, ULID, fixed harness, opaque session ID, reserved seq, UTC milliseconds, tier 0, empty privacy rulesets, typed data | No source/loop/task names, transcript, arbitrary report data, account/model, machine/path/repo/title/URL or attention words. |
 | Event vocabulary | `session.started`, `attention.needed`, `session.ended`; empty-data `looptender.<report>` extensions | No invented provider turns, limit readings, periodic heartbeat, attention-cleared/answer assertion, backfill or forget. Extensions may need a receiver view. |
-| Authentication / errors | Explicit bearer config; token withheld from discovery and errors; HTTP/transport failures diagnostic only; no redirects | No automatic reauth, login, credential copying or persistent 401 sink pause. Error classification never reaches routing. |
+| Authentication / errors | Explicit bearer config; token withheld from discovery and errors; HTTP/transport failures diagnostic only; persistent POST-401 pause; no redirects | No automatic reauth, login or credential copying. Resume affects future reports only; no durable replay. Error classification never reaches routing. |
 | Acknowledgements | Only 202; accepted+duplicates exactly two, zero rejected, valid tier; duplicate acknowledgement accepted | Invalid/oversized/missing/rejected/mismatched responses remain unverified; no automatic resend or cursor advance. |
-| Restart / concurrency | Fresh CLI processes retain identity and sequences; private two-sequence reservation under nonwaiting delivery lock; rejected/corrupt state refuses send | Contention can lose a best-effort report. No replay/outbox/indefinite retry, crash-before-POST recovery or power-loss guarantee. |
+| Restart / concurrency | Fresh CLI processes retain identity and sequences; private two-sequence reservation under nonwaiting delivery lock; separate nonwaiting report gate serializes sends/resume; rejected/corrupt state refuses send | Contention can lose a best-effort report. No replay/outbox/indefinite retry, crash-before-POST recovery or power-loss guarantee. |
 | Evidence | Native macOS fictional Go receivers, race tests, optional local demo with actual built core schema/data/filter | Local reference receiver package is a placeholder. This is not upstream receiver/conformance certification, GUI/phone or live provider acceptance. |
 | IN | None exposed | F8 typed intake + observe-only ownership decision first; explicit filtered file sink only, silence unknown; usage limits unavailable at tier 0. |
 | BACK | None exposed; #233 remains held | Needs owner authorization plus upstream non-harness control dispatch and a looptender-hold command/board support. Existing prompt/cancel commands cannot grant loop authority. |
@@ -181,7 +219,7 @@ that the upstream receiver accepted events.
 The [upstream integration contribution draft](sessionpipe-upstream.md) is ready
 for review with this change. It is not submitted or published. The next
 maintainable OUT work is durable pending batches, restart replay with the same
-identity/seq, bounded worker backoff and persistent authentication pause, proved
+identity/seq, bounded worker backoff, proved
 with core delivery scenarios. Those are local implementation gaps, not missing
 upstream protocol capabilities. IN requires local ownership/intake work; BACK has
 an actual documented upstream capability gap as well as the owner hold.

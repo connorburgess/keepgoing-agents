@@ -316,6 +316,15 @@ The version-1 file holds up to **64 deliveries / 128 KiB**, with monotonically a
 
 Text status prints historical warnings, their times, request counts and final HTTP statuses. JSON `notifications` contains `state` (`not_recorded`, `recorded`, `unavailable`), `latest` (most recently started retained delivery), `warnings` and `dropped`. Every retained delivery without final HTTP acceptance appears in `warnings`. Later acceptance of another event does not erase an older failure; these warnings age out only with bounded retention. A retry that receives 2xx leaves earlier attempt evidence within that delivery, without a final-failure warning. Doctor adds the same typed summary and a `notifications` check; missing evidence is unavailable, never an all-clear. Reporting disabled/unsubscribed, no invocation, older builds, deletion and crash gaps can all produce no evidence. Do not infer receipt from an empty warning list.
 
+Unreleased Sessionpipe reporting adds optional `notifications.sessionpipeGate`:
+`ready`, `pending`, `unauthorized`, or `unavailable`. It is read from a separate
+private report gate, not inferred from historical HTTP failures. `status` and
+`doctor` show a closed/unavailable gate even without delivery history. Inspect
+credentials, then explicitly use `report resume` for a valid pause; this sends
+nothing, does not replay or clear loop holds, and refuses corrupt gate evidence.
+Older builds ignore the gate and cannot preserve the authentication pause. See
+[Sessionpipe authentication resume](sessionpipe.md#authentication-pause-and-explicit-resume).
+
 Records exclude endpoint URLs, secrets, signing IDs, headers, event text/data, notes, account/thread/loop identities and raw errors. Unknown event names become `unknown`; readers reject unknown fields, unsupported schemas, invalid enum values, oversized/non-regular files and symlinks. Status itself still contains its existing private fields such as control notes; only the new delivery metadata is redacted. Store the state directory outside repositories.
 
 Writes use a separate nonblocking `delivery.lock`, a synced owner-private temporary file and atomic replacement. No delivery lock is held during HTTP; a stop/pause can still update control while a report is in flight. A write failure warns through the existing report-error path after the original send policy runs. It does not roll back a hold, suppress a send, add retries, or refund completion deduplication. Missing/corrupt history is never silently repaired by the reader; failed writes can leave missing or stale evidence. Lock contention, process crashes, power loss, external writers and retention prevent this from being a complete audit. There is no automatic resend or failure-acknowledgement command.
