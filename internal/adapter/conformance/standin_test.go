@@ -102,7 +102,7 @@ func standIn(part, dir string, args []string) int {
 		return 0
 	case "process":
 		return standInProcess(dir, situation, args)
-	case "claude", "codex":
+	case "claude", "codex", "antigravity":
 		if part == "codex" && len(args) > 0 && args[0] == "app-server" {
 			return codexAppServer(situation)
 		}
@@ -115,8 +115,11 @@ func standIn(part, dir string, args []string) int {
 		}
 		mark(dir, "begin")
 		play := standInClaude
-		if part == "codex" {
+		switch part {
+		case "codex":
 			play = standInCodex
+		case "antigravity":
+			play = standInAntigravity
 		}
 		code := play(dir, situation, args, string(generation))
 		mark(dir, "finish")
