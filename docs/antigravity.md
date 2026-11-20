@@ -128,25 +128,31 @@ loop:
 
 ## Installed testing and debugging
 
-After building and installing `looptender` from `main` (for example `go install ./cmd/looptender` or `go build -o ~/bin/looptender ./cmd/looptender`):
+After building and installing `looptender` from `main` (for example `go install github.com/looptender/looptender/cmd/looptender@main`, making sure `$(go env GOPATH)/bin` is first on `PATH` or invoking `$(go env GOPATH)/bin/looptender`):
 
-1. **Verify CLI and loop diagnostics:**
+1. **Create a standalone loop with guided setup (or write `loop.yaml`):**
    ```bash
-   looptender doctor --config /path/to/loop.yaml
+   looptender init --agent antigravity --project /path/to/project --directory /path/to/loop-dir
+   ```
+   Or create `loop.yaml` directly as shown above.
+2. **Verify CLI and loop diagnostics:**
+   ```bash
+   looptender doctor -c /path/to/loop.yaml
    ```
    Confirm `agy --version` resolves cleanly and review the capability/account notes.
-2. **Verify model-free `/usage` account quota:**
+3. **Verify model-free `/usage` account quota:**
    ```bash
    looptender accounts add --label "Example Antigravity" --provider antigravity --selection inherited
    looptender accounts usage --id <ID> --json
    ```
    Confirm `state: "reported"`, `source: "agy:/usage"`, `freshness: "provider_unknown"`, and the four Gemini / Claude-GPT windows.
-3. **Scratch-directory two-turn, hold, and stop walkthrough:**
+4. **Scratch-directory two-turn, hold, and stop walkthrough:**
    - Create a temporary scratch directory and `loop.yaml` with `adapter: antigravity` and `antigravity.workdir` pointing to the scratch directory.
-   - Run `looptender tick --config loop.yaml` for turn 1, wait for the worker to exit, and run `looptender tick --config loop.yaml` for turn 2; confirm `acp-session.json` holds the exact conversation ID and turn 2 resumes it.
-   - Test a turn that requires a tool permission: confirm the loop enters `AwaitingUser` hold (`DeferredInteractionReason`) and does not send again until `looptender resume`.
-   - Test `looptender stop` during an active turn and confirm the `agy acp --stdio` process group exits cleanly.
-4. **Debugging turn state on disk** (under `<state_dir>/targets/primary/`):
+   - Enable the loop (`looptender enable -c loop.yaml`), run `looptender tick -c loop.yaml` for turn 1, wait for the worker to exit, and run `looptender tick -c loop.yaml` for turn 2; confirm `acp-session.json` holds the exact conversation ID and turn 2 resumes it.
+   - Test a turn that requires a tool permission: confirm the loop enters `AwaitingUser` hold (`DeferredInteractionReason`) and does not send again until `looptender resume -c loop.yaml`.
+   - Test `looptender stop -c loop.yaml -immediately` during an active turn and confirm the `agy acp --stdio` process group exits cleanly.
+   - **Live installed walkthrough (2026-11-20, `agy 1.5.13`, macOS arm64):** verified `looptender accounts add`/`usage` (all 4 buckets reported), `looptender doctor -c`, `looptender enable -c`, turn 1 `wake` → `active` (no duplicate send) → `idle` with `0600` `acp-session.json` and zero stderr, and turn 2 `wake` resuming the saved session. Live permission-hold and owned-stop walkthroughs remain open.
+5. **Debugging turn state on disk** (under `<state_dir>/targets/primary/`):
    - `acp-turn.json` — current turn identity.
    - `acp-session.json` — exact opaque conversation ID written once on the first prompt reservation.
    - `acp-turns/<turn>/` — per-turn records (current and immediately preceding turn are retained; older turn directories are pruned automatically):
@@ -160,10 +166,10 @@ After building and installing `looptender` from `main` (for example `go install 
 
 ## Remaining acceptance gates
 
-- Complete an installed end-to-end scratch-project walkthrough (`looptender tick` two-turn resume, permission hold + resume, and `looptender stop`) using the installed binary on macOS/Linux/Windows.
+- Complete the remaining installed scratch-project checks (live tool permission hold + `looptender resume`, and live `looptender stop -immediately`) and test on Linux and Windows.
 - Expose `ClearUnconfirmed` via an operator CLI recovery command.
 - Resolve chat-only questions without ACP elicitation (currently indistinguishable from a returned `end_turn`) and permission rules that allow/deny without emitting a request.
-- Establish typed authentication, exact account/model probe evidence, and separate-account isolation before enabling fallbacks, switch-back, or guided setup. Existing graphical IDE-chat attachment remains a separate investigation.
+- Establish typed authentication, exact account/model probe evidence, and separate-account isolation before enabling fallbacks or switch-back. Existing graphical IDE-chat attachment remains a separate investigation.
 
 ## Verification
 

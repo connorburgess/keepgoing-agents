@@ -58,7 +58,7 @@ Agent tools have their own loops, retries and background agents, and each of the
 
 ## Where it works best today
 
-BB threads get the most: lane awareness, retrying a failed turn by reference, and the BB plugin. Headless Claude Code and Codex sessions get the general behaviour (wakes, limited re-prompts with exact session resume, routes, limits and reports) but nothing for lanes. Cursor runs as a first route only and cannot be a fallback. Agents defined in configuration have been tested only with stand-ins. For Antigravity there is an internal foundation tested with a stand-in; looptender has no Antigravity adapter and has never run Antigravity itself ([details](docs/antigravity.md)). Much of the rest is fixture-tested and the full live walkthrough is unfinished; the table below says what has been verified where.
+BB threads get the most: lane awareness, retrying a failed turn by reference, and the BB plugin. Headless Claude Code and Codex sessions get the general behaviour (wakes, limited re-prompts with exact session resume, routes, limits and reports) but nothing for lanes. Cursor and Antigravity run as standalone first routes only and cannot be fallbacks ([Antigravity details](docs/antigravity.md)). Agents defined in configuration have been tested only with stand-ins. Much of the rest is fixture-tested and the full live walkthrough is unfinished; the table below says what has been verified where.
 
 ## Current availability
 
