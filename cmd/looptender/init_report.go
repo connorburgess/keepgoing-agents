@@ -159,6 +159,9 @@ func printInitJSON(e env, o initOptions, cfg *config.Config, goal *control.Goal)
 	if o.agent == "cursor" {
 		r.Limitations = append(r.Limitations, initCursorNotice)
 	}
+	if o.agent == "antigravity" {
+		r.Limitations = append(r.Limitations, initAntigravityNotice)
+	}
 	if o.withGoal {
 		r.TaskPath = filepath.Join(o.directory, "task.md")
 		r.Goal = &initGoalReport{PromptContext: true, TitleSource: "loop_name", SpecificationSource: "task_snapshot"}

@@ -98,6 +98,7 @@
             "$ref": "#/$defs/codex"
           },
           "cursor": false,
+          "antigravity": false,
           "custom": {
             "$ref": "#/$defs/custom"
           },

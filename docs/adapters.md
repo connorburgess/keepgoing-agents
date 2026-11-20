@@ -44,7 +44,7 @@ To change the matrix, edit the table and run `KEEPGOING_UPDATE_ADAPTERS_DOC=1 go
 ## Matrix
 
 <!-- capability-matrix:begin -->
-| Behaviour | BB thread | Claude Code headless | Codex headless | Cursor headless | Antigravity | Generic process | Agent defined in configuration |
+| Behaviour | BB thread | Claude Code headless | Codex headless | Cursor headless | Antigravity ACP | Generic process | Agent defined in configuration |
 | --- | --- | --- | --- | --- | --- | --- | --- |
 | [Explicit whole-objective completion guard](#explicit-whole-objective-completion-guard) | yes · fixture | n/a | n/a | n/a | missing · none | n/a | n/a |
 | [Observe state](#observe-state) | yes · live | yes · fixture | yes · fixture | yes · live | missing · none | yes · fixture | yes · fixture |
@@ -71,7 +71,7 @@ To change the matrix, edit the table and run `KEEPGOING_UPDATE_ADAPTERS_DOC=1 go
 | [Run graph and keepgoing runs](#run-graph-and-keepgoing-runs) | yes · live | yes · fixture | yes · fixture | yes · fixture | missing · none | partial · fixture | partial · fixture |
 | [Stop and owned cancellation](#stop-and-owned-cancellation) | yes · live | yes · fixture | yes · fixture | yes · live | missing · none | partial · fixture | partial · fixture |
 | [Stop the lanes too](#stop-the-lanes-too) | yes · fixture | n/a | n/a | n/a | missing · none | n/a | n/a |
-| [Permission prompts](#permission-prompts) | yes · live | missing · none | missing · none | missing · none | missing · fixture | yes · fixture | partial · fixture |
+| [Permission prompts](#permission-prompts) | yes · live | missing · none | missing · none | missing · none | yes · fixture | yes · fixture | partial · fixture |
 
 ### Explicit whole-objective completion guard
 
@@ -81,7 +81,7 @@ Separately opt in to current goal/review-bound attestation and completed acknowl
 - **Claude Code headless:** n/a. Requires a BB primary and explicit assignment lifecycle.
 - **Codex headless:** n/a. Requires a BB primary and explicit assignment lifecycle.
 - **Cursor headless:** n/a. Requires a BB primary and explicit assignment lifecycle.
-- **Antigravity:** missing, evidence none. No adapter is registered, so a loop cannot use it. [antigravity.md](antigravity.md)
+- **Antigravity ACP:** missing, evidence none. Not supported by the primary-only Antigravity ACP adapter. [antigravity.md](antigravity.md)
 - **Generic process:** n/a. Requires a BB primary and explicit assignment lifecycle.
 - **Agent defined in configuration:** n/a. Requires a BB primary and explicit assignment lifecycle.
 
@@ -93,7 +93,7 @@ Report idle, active, error or unknown from structured status, never from transcr
 - **Claude Code headless:** yes, evidence fixture. The turn's process state, exit code and result object. [`TestClaudeTurnLifecycle`](../internal/adapter/runner/runner_test.go)
 - **Codex headless:** yes, evidence fixture. The turn's process state, exit code and event stream. [`TestCodexTurn`](../internal/adapter/runner/runner_test.go)
 - **Cursor headless:** yes, evidence live. The turn's process state, exit code and bounded event stream. Live once, on one CLI version on macOS. [cursor.md](cursor.md) [`TestCursorLifecycleOnThisPlatform`](../internal/adapter/runner/cursor_test.go)
-- **Antigravity:** missing, evidence none. No adapter is registered, so a loop cannot use it. [antigravity.md](antigravity.md)
+- **Antigravity ACP:** missing, evidence none. Not supported by the primary-only Antigravity ACP adapter. [antigravity.md](antigravity.md)
 - **Generic process:** yes, evidence fixture. The JSON the status command prints. [`TestObserveJSON`](../internal/adapter/process/process_test.go)
 - **Agent defined in configuration:** yes, evidence fixture. The turn's process state, its exit code and the JSON fields the definition names. Output over the definition's limit is not read. [`TestDefinedAgentTurnLifecycle`](../internal/adapter/runner/definition_unix_test.go) [`TestDefinedAgentOutputBound`](../internal/adapter/runner/definition_unix_test.go)
 
@@ -105,7 +105,7 @@ Classify a failure as rate_limit, auth, restricted, refused, overloaded or netwo
 - **Claude Code headless:** yes, evidence fixture. From api_error_status, terminal_reason and subtype. A real usage-limit result has not been captured. [`TestClaudeErrorClassification`](../internal/adapter/runner/runner_test.go)
 - **Codex headless:** yes, evidence live. Live for a usage limit, read from the app-server's structured snapshot because the event stream carries it only as prose. Other classes are fixture-only. [integrations.md#agent-providers](integrations.md#agent-providers) [`TestCodexTurnLimitClassifiedFromAppServerNotProse`](../internal/adapter/runner/runner_test.go)
 - **Cursor headless:** missing, evidence live. Every failure is unknown: the CLI has no structured error contract. A live usage limit and an untrusted directory were both an exit code and stderr text. Connection records add a diagnostic category only. [cursor.md](cursor.md) [`TestCursorFailuresRemainUnknown`](../internal/adapter/runner/cursor_test.go) [`TestCursorConnectionRecordsAreDiagnosticOnly`](../internal/adapter/runner/cursor_test.go)
-- **Antigravity:** missing, evidence none. No adapter is registered, so a loop cannot use it. [antigravity.md](antigravity.md)
+- **Antigravity ACP:** missing, evidence none. Not supported by the primary-only Antigravity ACP adapter. [antigravity.md](antigravity.md)
 - **Generic process:** yes, evidence fixture. From errorClass in the status JSON or the exit_codes map. [`TestObserveExitCodeMap`](../internal/adapter/process/process_test.go)
 - **Agent defined in configuration:** partial, evidence fixture. With structured_errors: the codes, HTTP status field and exit codes the definition maps. Everything else, and every failure without that declaration, is unknown. [`TestDefinedAgentErrorClassification`](../internal/adapter/runner/definition_unix_test.go) [`TestDefinitionReadings`](../internal/adapter/runner/definition_test.go)
 
@@ -117,7 +117,7 @@ Recognise, from a structured field, a provider denying permission (restricted) o
 - **Claude Code headless:** yes, evidence fixture. Restricted: HTTP 403 in api_error_status, or a permission code in any result field. Refused: stop_reason "refusal", which Claude Code documents for a declined turn, whether or not the result is marked as an error. Neither has been captured from the real CLI. [`TestClaudeErrorClassification`](../internal/adapter/runner/runner_test.go) [`TestRestrictedHoldsAndNeverMoves`](../internal/decide/restricted_test.go) [`TestRefusedContinuesWithSpacingAndNeverMoves`](../internal/decide/restricted_test.go)
 - **Codex headless:** partial, evidence fixture. Restricted: an event carrying HTTP 403 or a permission code. Refused: the codes cyberPolicy and misalignmentPolicyViolation, or the type policy. Whether codex exec prints those codes was not captured; a failure carried only as a message is unknown or looks like a finished turn. [`TestParseCodexEventsRestricted`](../internal/adapter/runner/runner_test.go) [`TestRestrictedHoldsAndNeverMoves`](../internal/decide/restricted_test.go) [`TestRefusedContinuesWithSpacingAndNeverMoves`](../internal/decide/restricted_test.go)
 - **Cursor headless:** missing, evidence none. Every failure is unknown.
-- **Antigravity:** missing, evidence none. No adapter is registered, so a loop cannot use it. [antigravity.md](antigravity.md)
+- **Antigravity ACP:** missing, evidence none. Not supported by the primary-only Antigravity ACP adapter. [antigravity.md](antigravity.md)
 - **Generic process:** yes, evidence fixture. When the status command reports errorClass restricted or refused, or an exit code is mapped to either. [`TestObserveRestricted`](../internal/adapter/process/process_test.go) [`TestRestrictedHoldsAndNeverMoves`](../internal/decide/restricted_test.go) [`TestRefusedContinuesWithSpacingAndNeverMoves`](../internal/decide/restricted_test.go)
 - **Agent defined in configuration:** partial, evidence fixture. A definition may map its agent's own codes or exit codes to restricted or refused, and HTTP 403 in http_status_field is restricted; either in any field wins over a limit and over a matching finished rule, and restricted wins over refused. Validation refuses a definition that maps a code looptender itself reads as a refusal or restriction to a class a loop may fail over on. What the agent does not report in a declared field stays unknown or looks like a finished turn. [`TestDefinitionDeclaredRefusalsAndRestrictions`](../internal/adapter/runner/definition_test.go) [`TestDeclinedTurnIsNotFinished`](../internal/adapter/runner/definition_test.go) [`TestCustomDefinitionCannotRelabelARefusalAsALimit`](../internal/config/custom_test.go)
 
@@ -129,7 +129,7 @@ Stop honouring a provider's "retrying" notice when nothing fresh stands behind i
 - **Claude Code headless:** n/a. A headless turn is one process that is running, finished or gone. The CLI retries inside that process and reports no retry notice that could go stale.
 - **Codex headless:** n/a. A headless turn is one process that is running, finished or gone. The CLI retries inside that process and reports no retry notice that could go stale.
 - **Cursor headless:** n/a. A headless turn is one process that is running, finished or gone. The CLI retries inside that process and reports no retry notice that could go stale.
-- **Antigravity:** missing, evidence none. No adapter is registered, so a loop cannot use it. [antigravity.md](antigravity.md)
+- **Antigravity ACP:** missing, evidence none. Not supported by the primary-only Antigravity ACP adapter. [antigravity.md](antigravity.md)
 - **Generic process:** n/a. The status contract has no retry notice.
 - **Agent defined in configuration:** n/a. A turn is one process that is running, finished or gone, as for the built-in headless agents.
 
@@ -141,7 +141,7 @@ After an error, send the task prompt again, with backoff, up to errors.max_repro
 - **Claude Code headless:** yes, evidence fixture. Run end to end with a stand-in CLI. [`TestScenarioHeadlessOutage`](../internal/scenario/headless_outage_test.go)
 - **Codex headless:** yes, evidence fixture. Run end to end with a stand-in CLI. [`TestScenarioHeadlessOutage`](../internal/scenario/headless_outage_test.go)
 - **Cursor headless:** yes, evidence live. A failed turn is re-prompted in its verified session. Live once after a usage-limit failure and after a stop; connection loss is fixture-only. [cursor.md](cursor.md) [`TestCursorRecoversInitializedSessionAfterWrapperCrash`](../internal/adapter/runner/cursor_recovery_test.go) [`TestCursorConnectionLossKeepsSessionAndStaysUnknown`](../internal/adapter/runner/cursor_test.go)
-- **Antigravity:** missing, evidence none. No adapter is registered, so a loop cannot use it. [antigravity.md](antigravity.md)
+- **Antigravity ACP:** missing, evidence none. Not supported by the primary-only Antigravity ACP adapter. [antigravity.md](antigravity.md)
 - **Generic process:** yes, evidence fixture. The decision is the same for every adapter and is tested with a fake adapter, not with this one. [`TestErrorRepromptsThenAwaitsUser`](../internal/supervise/supervise_test.go)
 - **Agent defined in configuration:** yes, evidence fixture. Run end to end with a stand-in agent. [`TestDefinedAgentJourney`](../internal/scenario/defined_agent_test.go)
 
@@ -153,7 +153,7 @@ Continue the same conversation by its saved identifier, never "the most recent".
 - **Claude Code headless:** yes, evidence fixture. --resume with the saved session ID. If no turn ever reported one, the next turn starts a new session. [`TestClaudeTurnLifecycle`](../internal/adapter/runner/runner_test.go) [`TestScenarioHeadlessOutage`](../internal/scenario/headless_outage_test.go)
 - **Codex headless:** yes, evidence fixture. exec resume with the saved thread ID. If no turn ever reported one, the next turn starts a new session. [`TestCodexResumeArgs`](../internal/adapter/runner/runner_test.go) [`TestScenarioHeadlessOutage`](../internal/scenario/headless_outage_test.go)
 - **Cursor headless:** yes, evidence live. --resume with the saved session ID, live once across three turns. A new conversation is refused when the previous turn's identity is unverified, unless that turn exited 1 having written nothing on a CLI version whose start order is verified. [cursor.md](cursor.md) [`TestCursorSessionSafety`](../internal/adapter/runner/cursor_test.go) [`TestCursorFreshStartNeedsExactShapeAndVerifiedVersion`](../internal/adapter/runner/cursor_test.go)
-- **Antigravity:** missing, evidence none. No adapter is registered, so a loop cannot use it. [antigravity.md](antigravity.md)
+- **Antigravity ACP:** missing, evidence none. Not supported by the primary-only Antigravity ACP adapter. [antigravity.md](antigravity.md)
 - **Generic process:** n/a. The resume command owns session identity.
 - **Agent defined in configuration:** partial, evidence fixture. With exact_resume: the resume command with the saved session identifier, read from a declared field or file. A saved identifier that is no longer usable holds the loop for a person; no new conversation is started in its place until someone runs looptender session reset. Without exact_resume every turn starts a new session. [`TestDefinedAgentTurnLifecycle`](../internal/adapter/runner/definition_unix_test.go) [`TestDefinedAgentLostSessionHoldsInsteadOfStartingAnother`](../internal/adapter/runner/definition_unix_test.go) [`TestDefinitionSessionFile`](../internal/adapter/runner/definition_test.go)
 
@@ -165,7 +165,7 @@ Ask the provider to retry the failed turn itself, instead of sending a new promp
 - **Claude Code headless:** missing, evidence none. A re-prompt is always a new turn in the resumed session.
 - **Codex headless:** missing, evidence none. A re-prompt is always a new turn in the resumed session.
 - **Cursor headless:** missing, evidence none. A re-prompt is always a new turn in the resumed session.
-- **Antigravity:** missing, evidence none. No adapter is registered, so a loop cannot use it. [antigravity.md](antigravity.md)
+- **Antigravity ACP:** missing, evidence none. Not supported by the primary-only Antigravity ACP adapter. [antigravity.md](antigravity.md)
 - **Generic process:** missing, evidence none. The contract has a resume command only.
 - **Agent defined in configuration:** missing, evidence none. A re-prompt is always a new turn.
 
@@ -177,7 +177,7 @@ Tell an outage from a provider failure, wait it out without spending re-prompts 
 - **Claude Code headless:** yes, evidence fixture. As for BB. The wake that ran into the outage is spent; nothing else is, and no hold is raised. Run end to end with a stand-in CLI. [`TestScenarioHeadlessOutage`](../internal/scenario/headless_outage_test.go) [operations.md#network-outages](operations.md#network-outages)
 - **Codex headless:** yes, evidence fixture. As for Claude Code. [`TestScenarioHeadlessOutage`](../internal/scenario/headless_outage_test.go) [operations.md#network-outages](operations.md#network-outages)
 - **Cursor headless:** yes, evidence fixture. The decision is the same for every adapter and is tested with a fake adapter, not with this one. [`TestOutageDoesNotSpendRepromptsOrProbes`](../internal/supervise/network_test.go) [operations.md#network-outages](operations.md#network-outages)
-- **Antigravity:** missing, evidence none. No adapter is registered, so a loop cannot use it. [antigravity.md](antigravity.md)
+- **Antigravity ACP:** missing, evidence none. Not supported by the primary-only Antigravity ACP adapter. [antigravity.md](antigravity.md)
 - **Generic process:** yes, evidence fixture. The decision is the same for every adapter and is tested with a fake adapter, not with this one. [`TestOutageDoesNotSpendRepromptsOrProbes`](../internal/supervise/network_test.go) [operations.md#network-outages](operations.md#network-outages)
 - **Agent defined in configuration:** yes, evidence fixture. As for the built-in headless agents. The turn that ran into the outage is spent; nothing else is sent and no hold is raised until the network returns. Run end to end with a stand-in agent. [`TestDefinedAgentOutage`](../internal/scenario/defined_agent_test.go) [operations.md#network-outages](operations.md#network-outages)
 
@@ -189,7 +189,7 @@ Normally hold a parent that is not in error while conversations it started are s
 - **Claude Code headless:** n/a. A headless turn has no child conversations outside its own process. Subagents the CLI starts live and end inside the turn.
 - **Codex headless:** n/a. A headless turn has no child conversations outside its own process. Subagents the CLI starts live and end inside the turn.
 - **Cursor headless:** n/a. A headless turn has no child conversations outside its own process. Subagents the CLI starts live and end inside the turn.
-- **Antigravity:** missing, evidence none. No adapter is registered, so a loop cannot use it. [antigravity.md](antigravity.md)
+- **Antigravity ACP:** missing, evidence none. Not supported by the primary-only Antigravity ACP adapter. [antigravity.md](antigravity.md)
 - **Generic process:** partial, evidence fixture. A background count in the status JSON holds the loop. No child identities are reported. [`TestObserveJSON`](../internal/adapter/process/process_test.go)
 - **Agent defined in configuration:** n/a. A definition cannot declare work that outlives a turn, so none is assumed.
 
@@ -201,7 +201,7 @@ Permit one existing coordinator wake alongside healthy busy direct children, onl
 - **Claude Code headless:** n/a. This BB direct-child assignment contract is not supported by this adapter.
 - **Codex headless:** n/a. This BB direct-child assignment contract is not supported by this adapter.
 - **Cursor headless:** n/a. This BB direct-child assignment contract is not supported by this adapter.
-- **Antigravity:** missing, evidence none. No adapter is registered, so a loop cannot use it. [antigravity.md](antigravity.md)
+- **Antigravity ACP:** missing, evidence none. Not supported by the primary-only Antigravity ACP adapter. [antigravity.md](antigravity.md)
 - **Generic process:** n/a. This BB direct-child assignment contract is not supported by this adapter.
 - **Agent defined in configuration:** n/a. This BB direct-child assignment contract is not supported by this adapter.
 
@@ -213,7 +213,7 @@ Tell the parent conversation, and optionally the owner, when a child fails.
 - **Claude Code headless:** n/a. No child conversations.
 - **Codex headless:** n/a. No child conversations.
 - **Cursor headless:** n/a. No child conversations.
-- **Antigravity:** missing, evidence none. No adapter is registered, so a loop cannot use it. [antigravity.md](antigravity.md)
+- **Antigravity ACP:** missing, evidence none. Not supported by the primary-only Antigravity ACP adapter. [antigravity.md](antigravity.md)
 - **Generic process:** n/a. No child identities are reported.
 - **Agent defined in configuration:** n/a. No child conversations.
 
@@ -225,7 +225,7 @@ Ask the provider to retry the failed turn of a lane (a direct child conversation
 - **Claude Code headless:** missing, evidence none. No child conversations to recover.
 - **Codex headless:** missing, evidence none. No child conversations to recover.
 - **Cursor headless:** missing, evidence none. No child conversations to recover.
-- **Antigravity:** missing, evidence none. No adapter is registered, so a loop cannot use it. [antigravity.md](antigravity.md)
+- **Antigravity ACP:** missing, evidence none. Not supported by the primary-only Antigravity ACP adapter. [antigravity.md](antigravity.md)
 - **Generic process:** missing, evidence none. No child identities are reported.
 - **Agent defined in configuration:** missing, evidence none. A defined agent reports no child conversations to recover.
 
@@ -237,7 +237,7 @@ When it is the active target and hits a configured error class, move the loop to
 - **Claude Code headless:** yes, evidence fixture. The decision is the same for every adapter and is tested with a fake adapter, not with this one. [`TestHandoffToFirstCandidatePassingExactProbe`](../internal/supervise/supervise_test.go)
 - **Codex headless:** yes, evidence fixture. The decision is the same for every adapter and is tested with a fake adapter, not with this one. [`TestHandoffToFirstCandidatePassingExactProbe`](../internal/supervise/supervise_test.go)
 - **Cursor headless:** missing, evidence none. Configuration refuses fallbacks for a Cursor loop, and every Cursor failure is unknown, which never fails over. [cursor.md](cursor.md)
-- **Antigravity:** missing, evidence none. No adapter is registered, so a loop cannot use it. [antigravity.md](antigravity.md)
+- **Antigravity ACP:** missing, evidence none. Not supported by the primary-only Antigravity ACP adapter. [antigravity.md](antigravity.md)
 - **Generic process:** yes, evidence fixture. The decision is the same for every adapter and is tested with a fake adapter, not with this one. [`TestHandoffToFirstCandidatePassingExactProbe`](../internal/supervise/supervise_test.go)
 - **Agent defined in configuration:** yes, evidence fixture. The decision is the same for every adapter and is tested with a fake adapter, not with this one. [`TestHandoffToFirstCandidatePassingExactProbe`](../internal/supervise/supervise_test.go)
 
@@ -249,7 +249,7 @@ Be a fallback candidate that takes the work over after an exact probe.
 - **Claude Code headless:** yes, evidence fixture. Guided setup creates it; run only against stand-in CLIs. [fallbacks.md](fallbacks.md)
 - **Codex headless:** yes, evidence fixture. Guided setup creates it; run only against stand-in CLIs. [fallbacks.md](fallbacks.md)
 - **Cursor headless:** missing, evidence none. Cursor fallback candidates are refused: there is no account and model probe contract. [cursor.md](cursor.md)
-- **Antigravity:** missing, evidence none. No adapter is registered, so a loop cannot use it. [antigravity.md](antigravity.md)
+- **Antigravity ACP:** missing, evidence none. Not supported by the primary-only Antigravity ACP adapter. [antigravity.md](antigravity.md)
 - **Generic process:** yes, evidence fixture. The decision is the same for every adapter and is tested with a fake adapter, not with this one. [`TestHandoffToFirstCandidatePassingExactProbe`](../internal/supervise/supervise_test.go)
 - **Agent defined in configuration:** partial, evidence fixture. With a probe in the definition, or a command probe. Guided setup does not create it; the candidate is written by hand. [`TestCustomAgentDefinition`](../internal/config/custom_test.go) [configuration.md#an-agent-defined-in-configuration](configuration.md#an-agent-defined-in-configuration)
 
@@ -261,7 +261,7 @@ Return to the primary once its limit has lifted, when enabled.
 - **Claude Code headless:** yes, evidence fixture. The decision is the same for every adapter and is tested with a fake adapter, not with this one. [`TestSwitchBackAfterThePrimaryResets`](../internal/supervise/supervise_test.go)
 - **Codex headless:** yes, evidence fixture. The decision is the same for every adapter and is tested with a fake adapter, not with this one. [`TestSwitchBackAfterThePrimaryResets`](../internal/supervise/supervise_test.go)
 - **Cursor headless:** missing, evidence none. Refused with fallbacks. [cursor.md](cursor.md)
-- **Antigravity:** missing, evidence none. No adapter is registered, so a loop cannot use it. [antigravity.md](antigravity.md)
+- **Antigravity ACP:** missing, evidence none. Not supported by the primary-only Antigravity ACP adapter. [antigravity.md](antigravity.md)
 - **Generic process:** yes, evidence fixture. The decision is the same for every adapter and is tested with a fake adapter, not with this one. [`TestSwitchBackAfterThePrimaryResets`](../internal/supervise/supervise_test.go)
 - **Agent defined in configuration:** yes, evidence fixture. The decision is the same for every adapter and is tested with a fake adapter, not with this one. [`TestSwitchBackAfterThePrimaryResets`](../internal/supervise/supervise_test.go)
 
@@ -273,7 +273,7 @@ Check a candidate's account and model with a small real request before relying o
 - **Claude Code headless:** yes, evidence live. One real healthy probe. [integrations.md#agent-providers](integrations.md#agent-providers) [`TestClaudeProbe`](../internal/probe/probe_test.go)
 - **Codex headless:** yes, evidence live. A real probe, and a real probe on a limited account. [integrations.md#agent-providers](integrations.md#agent-providers) [`TestCodexProbe`](../internal/probe/probe_test.go)
 - **Cursor headless:** missing, evidence none. No probe contract. [cursor.md](cursor.md)
-- **Antigravity:** missing, evidence none. No adapter is registered, so a loop cannot use it. [antigravity.md](antigravity.md)
+- **Antigravity ACP:** missing, evidence none. Not supported by the primary-only Antigravity ACP adapter. [antigravity.md](antigravity.md)
 - **Generic process:** yes, evidence fixture. A command probe. [`TestCommandProbe`](../internal/probe/probe_test.go)
 - **Agent defined in configuration:** partial, evidence fixture. With a probe in the definition: one small request with the prompt passed as a turn's is, judged by the finished and error rules. [`TestCustomProbe`](../internal/probe/custom_test.go)
 
@@ -285,7 +285,7 @@ Record how much of a usage window is used, from structured fields a probe alread
 - **Claude Code headless:** yes, evidence live. One real manual probe recorded a reading. [integrations.md#agent-providers](integrations.md#agent-providers) [`TestClaudeProbeJudgesStreamAndPlainOutputAlike`](../internal/probe/probe_test.go)
 - **Codex headless:** partial, evidence live. Structured usage is collected after successful probes and unknown failures, without another model call. Successful-probe collection is unreleased and fixture-tested; the failed-probe limit lookup has live evidence. [`TestCodexProbeRecordsUsageFromSuccessfulAndUnknownProbes`](../internal/probe/probe_test.go)
 - **Cursor headless:** missing, evidence none. No probe contract.
-- **Antigravity:** missing, evidence none. No adapter is registered, so a loop cannot use it. [antigravity.md](antigravity.md)
+- **Antigravity ACP:** missing, evidence none. Not supported by the primary-only Antigravity ACP adapter. [antigravity.md](antigravity.md)
 - **Generic process:** missing, evidence none. A command probe reports health only.
 - **Agent defined in configuration:** missing, evidence none. No usage reading is taken. A limit lookup, when defined, only says whether an unclassified failure is a usage limit and when it resets. [`TestDefinedAgentLimitLookup`](../internal/adapter/runner/definition_unix_test.go)
 
@@ -297,7 +297,7 @@ Record how much of the model's context window the supervised conversation uses, 
 - **Claude Code headless:** missing, evidence none. Unavailable: no reading is taken.
 - **Codex headless:** missing, evidence none. Unavailable. The per-turn token counts in the event stream are recorded as turn usage, which is not a context window size.
 - **Cursor headless:** missing, evidence none. Unavailable: no reading is taken.
-- **Antigravity:** missing, evidence none. No adapter is registered, so a loop cannot use it. [antigravity.md](antigravity.md)
+- **Antigravity ACP:** missing, evidence none. Not supported by the primary-only Antigravity ACP adapter. [antigravity.md](antigravity.md)
 - **Generic process:** missing, evidence none. Unavailable: no reading is taken.
 - **Agent defined in configuration:** missing, evidence none. Unavailable: a definition declares no context window reading.
 
@@ -309,7 +309,7 @@ With `loop.prompt_context` (off by default), append the loop's supervision conte
 - **Claude Code headless:** yes, evidence fixture. Last in the turn's prompt, on standard input or in the private prompt file, with no wake header. The turn that a `session reset` starts, a new conversation, carries it again. Never in a probe's request. Run against a stand-in CLI only. [`TestScenarioPromptContextHeadless`](../internal/scenario/prompt_context_test.go) [`TestPromptContextAfterASessionReset`](../internal/supervise/promptcontext_test.go) [operations.md#supervision-context-in-sends](operations.md#supervision-context-in-sends)
 - **Codex headless:** yes, evidence fixture. As for Claude Code, through the same runner. The scenario runs with Claude Code's stand-in only. [`TestPromptContextAfterASessionReset`](../internal/supervise/promptcontext_test.go) [operations.md#supervision-context-in-sends](operations.md#supervision-context-in-sends)
 - **Cursor headless:** yes, evidence fixture. Last in the prompt Cursor's runner sends. `session reset` is not available for Cursor and looptender cannot see a new Cursor conversation, so only the events above send it again. The decision is the same for every adapter and is tested with a fake adapter, not with this one. [`TestPromptContextResendRules`](../internal/supervise/promptcontext_test.go) [operations.md#supervision-context-in-sends](operations.md#supervision-context-in-sends)
-- **Antigravity:** missing, evidence none. No adapter is registered, so a loop cannot use it. [antigravity.md](antigravity.md)
+- **Antigravity ACP:** missing, evidence none. Not supported by the primary-only Antigravity ACP adapter. [antigravity.md](antigravity.md)
 - **Generic process:** yes, evidence fixture. Last on the resume command's standard input, after the prompt. The status, stop and probe commands never receive it. looptender cannot see which conversation the command reaches, so a new one there does not send it again; a pause and resume does. [`TestPromptContextOnAProcessStandIn`](../internal/supervise/promptcontext_process_unix_test.go) [operations.md#supervision-context-in-sends](operations.md#supervision-context-in-sends)
 - **Agent defined in configuration:** yes, evidence fixture. Last in the prompt, passed as the definition declares, with no wake header. With exact_resume, the turn a `session reset` starts carries it again; without it every turn starts a new session, so every turn carries it. The decision is the same for every adapter and is tested with a fake adapter, not with this one. [`TestPromptContextAfterASessionReset`](../internal/supervise/promptcontext_test.go) [operations.md#supervision-context-in-sends](operations.md#supervision-context-in-sends)
 
@@ -321,7 +321,7 @@ Record the token counts the agent reports for each finished turn, for status onl
 - **Claude Code headless:** missing, evidence none. Not captured: no Claude Code result object with usage fields has been recorded, so none is read. [`TestClaudeReportsNoTurnUsage`](../internal/adapter/runner/turnusage_test.go)
 - **Codex headless:** yes, evidence fixture. The typed usage object of `turn.completed` in `codex exec --json`: input, cached input, cache write input, output and reasoning output tokens. Only plain integers up to ten billion are kept; anything else is absent. Each turn is counted once, by its run record. Unreleased; the parser runs against fixtures only. [`TestCodexTurnUsageReadsOnlyTypedCounts`](../internal/adapter/runner/turnusage_test.go) [`TestTurnUsageChangesNoDecision`](../internal/supervise/turnusage_test.go) [operations.md#turn-usage-reading](operations.md#turn-usage-reading)
 - **Cursor headless:** missing, evidence none. Unavailable: the agent reports no per-turn token counts that are read.
-- **Antigravity:** missing, evidence none. No adapter is registered, so a loop cannot use it. [antigravity.md](antigravity.md)
+- **Antigravity ACP:** missing, evidence none. Not supported by the primary-only Antigravity ACP adapter. [antigravity.md](antigravity.md)
 - **Generic process:** missing, evidence none. Unavailable: the agent reports no per-turn token counts that are read.
 - **Agent defined in configuration:** missing, evidence none. Unavailable: a definition declares no per-turn token counts.
 
@@ -333,7 +333,7 @@ Take the work over in a conversation that did not exist before the handoff.
 - **Claude Code headless:** yes, evidence fixture. A headless candidate has no saved session, so the handoff brief starts one. [`TestClaudeTurnLifecycle`](../internal/adapter/runner/runner_test.go)
 - **Codex headless:** yes, evidence fixture. A headless candidate has no saved session, so the handoff brief starts one. [`TestCodexTurn`](../internal/adapter/runner/runner_test.go)
 - **Cursor headless:** missing, evidence none. Not a fallback candidate.
-- **Antigravity:** missing, evidence none. No adapter is registered, so a loop cannot use it. [antigravity.md](antigravity.md)
+- **Antigravity ACP:** missing, evidence none. Not supported by the primary-only Antigravity ACP adapter. [antigravity.md](antigravity.md)
 - **Generic process:** n/a. The resume command decides which conversation receives the brief.
 - **Agent defined in configuration:** yes, evidence fixture. A candidate has no saved session, so the handoff brief starts one. [`TestDefinedAgentTurnLifecycle`](../internal/adapter/runner/definition_unix_test.go)
 
@@ -345,7 +345,7 @@ Record runs, sends and the conversation reference, and show them offline.
 - **Claude Code headless:** yes, evidence fixture. The runner's saved resume ID, labelled observed. [`TestHeadlessTargetRecordsItsSavedSession`](../internal/supervise/graph_test.go)
 - **Codex headless:** yes, evidence fixture. The runner's saved resume ID, labelled observed. [`TestHeadlessTargetRecordsItsSavedSession`](../internal/supervise/graph_test.go)
 - **Cursor headless:** yes, evidence fixture. The runner's saved resume ID, labelled observed. [`TestHeadlessTargetRecordsItsSavedSession`](../internal/supervise/graph_test.go)
-- **Antigravity:** missing, evidence none. No adapter is registered, so a loop cannot use it. [antigravity.md](antigravity.md)
+- **Antigravity ACP:** missing, evidence none. Not supported by the primary-only Antigravity ACP adapter. [antigravity.md](antigravity.md)
 - **Generic process:** partial, evidence fixture. Runs and sends are recorded. No conversation reference exists to record. [`TestHeadlessTargetRecordsNoChildListing`](../internal/supervise/graph_test.go)
 - **Agent defined in configuration:** partial, evidence fixture. Runs and sends are recorded. The session identifier is the agent's own shape and is not shown. [`TestDefinitionBecomesASpecification`](../internal/adapter/runner/definition_test.go)
 
@@ -357,7 +357,7 @@ Stop a running turn on request, signalling only a process looptender itself star
 - **Claude Code headless:** yes, evidence fixture. The live turn wrapper stops its own process group on a private per-turn request. A saved PID never authorizes a signal. [`TestStopKillsTurnAndCrashIsUnknown`](../internal/adapter/runner/runner_test.go) [testing.md#lifecycle-and-platform-review](testing.md#lifecycle-and-platform-review)
 - **Codex headless:** yes, evidence fixture. The same wrapper as Claude Code. [`TestStopKillsTurnAndCrashIsUnknown`](../internal/adapter/runner/runner_test.go)
 - **Cursor headless:** yes, evidence live. The same wrapper. Live once on macOS; a helper process Cursor leaves running per project is not managed. [cursor.md](cursor.md) [`TestCursorOwnedStopOnThisPlatform`](../internal/adapter/runner/cursor_test.go)
-- **Antigravity:** missing, evidence none. No adapter is registered, so a loop cannot use it. [antigravity.md](antigravity.md)
+- **Antigravity ACP:** missing, evidence none. Not supported by the primary-only Antigravity ACP adapter. [antigravity.md](antigravity.md)
 - **Generic process:** partial, evidence fixture. Only if a stop command is configured; looptender owns no process to cancel. [`TestStopUnsupported`](../internal/adapter/process/process_test.go)
 - **Agent defined in configuration:** partial, evidence fixture. With can_be_stopped: the same wrapper as the built-in headless agents. Without it a stop is refused and nothing is signalled. [`TestDefinedAgentStop`](../internal/adapter/runner/definition_unix_test.go)
 
@@ -369,7 +369,7 @@ On a person's request (`keepgoing stop --lanes`), stop the conversations the sup
 - **Claude Code headless:** n/a. Not applicable: a headless turn has no child conversations outside its own process. The stop goes ahead and its report says lanes do not apply.
 - **Codex headless:** n/a. Not applicable: a headless turn has no child conversations outside its own process. The stop goes ahead and its report says lanes do not apply.
 - **Cursor headless:** n/a. Not applicable: a headless turn has no child conversations outside its own process. The stop goes ahead and its report says lanes do not apply.
-- **Antigravity:** missing, evidence none. No adapter is registered, so a loop cannot use it. [antigravity.md](antigravity.md)
+- **Antigravity ACP:** missing, evidence none. Not supported by the primary-only Antigravity ACP adapter. [antigravity.md](antigravity.md)
 - **Generic process:** n/a. Not applicable: no child identities are reported. The stop goes ahead and its report says lanes do not apply.
 - **Agent defined in configuration:** n/a. Not applicable: a defined agent reports no child conversations. The stop goes ahead and its report says lanes do not apply.
 
@@ -381,7 +381,7 @@ Notice that the agent is waiting for a person to approve something, hold, and re
 - **Claude Code headless:** missing, evidence none. permission_mode is passed to the CLI. A headless turn cannot wait for approval and reports no typed permission state. [configuration.md](configuration.md)
 - **Codex headless:** missing, evidence none. The sandbox setting is passed to the CLI. No typed permission state is read. [configuration.md](configuration.md)
 - **Cursor headless:** missing, evidence none. No force or approval flag is added, and print mode has no typed permission-wait signal. A rejection has not been observed live. [cursor.md](cursor.md)
-- **Antigravity:** missing, evidence fixture. An internal ACP gate cancels permission requests and saves a hold, and an unregistered runner reports that hold once its worker has exited, with stand-in fixtures only. No adapter is registered. [antigravity.md](antigravity.md)
+- **Antigravity ACP:** yes, evidence fixture. ACP gate cancels permission requests and saves a durable DeferredInteraction hold, reported once its worker exits (stand-in fixtures). Chat-only questions without ACP elicitation and silent permission rules remain open. [antigravity.md](antigravity.md)
 - **Generic process:** yes, evidence fixture. awaitingInput in the status JSON. [`TestObserveAwaitingInput`](../internal/adapter/process/process_test.go)
 - **Agent defined in configuration:** partial, evidence fixture. With structured_waiting: a turn that ends on the declared waiting rule raises one awaiting-user hold. Nothing is approved or answered. [`TestDefinedAgentWaitingRaisesOneHold`](../internal/adapter/runner/definition_unix_test.go)
 <!-- capability-matrix:end -->
