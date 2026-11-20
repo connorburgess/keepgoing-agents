@@ -10,7 +10,7 @@ Every situation in which a loop needs a person becomes one **question**: what ha
 - A person answers it on whichever surface is in front of them: the BB thread, the panel, the macOS menu, a terminal. Each answer goes through the existing review and apply path, bound to that question and to the loop as it was when they read it.
 - The answer is recorded in the loop's history. looptender never picks an option on its own.
 
-Today a hold is `awaitingUser` plus a `note` built from the decision's reason. Several reasons share the cause `other`, so the panel shows the same sentence for an auth failure, a target that is gone, errors that persisted and an unconfirmed brief ([dock_view.go](../cmd/keepgoing/dock_view.go), `dockHoldNeed`). The person then has to know which of `resume`, `retarget`, `complete` or a configuration edit applies. This design replaces that guesswork.
+Today a hold is `awaitingUser` plus a `note` built from the decision's reason. Several reasons share the cause `other`, so the panel shows the same sentence for an auth failure, a target that is gone, errors that persisted and an unconfirmed brief ([dock_view.go](../cmd/looptender/dock_view.go), `dockHoldNeed`). The person then has to know which of `resume`, `retarget`, `complete` or a configuration edit applies. This design replaces that guesswork.
 
 ## The record
 
@@ -76,7 +76,7 @@ The `basis` is a SHA-256 over:
 
 So the basis changes whenever the target changes, or a stop, pause or resume is saved. An answer read before the situation moved therefore cannot act after it.
 
-Answering reuses the review and apply path the panel and the menu already use ([client_review.go](../cmd/keepgoing/client_review.go), [panel_changes.go](../cmd/keepgoing/panel_changes.go)):
+Answering reuses the review and apply path the panel and the menu already use ([client_review.go](../cmd/looptender/client_review.go), [panel_changes.go](../cmd/looptender/panel_changes.go)):
 
 1. **Review.** `client review answer --loop KEY --question q_… --option fresh_session`, or the panel's `prepare` with `{"action":"answer","question":"q_…","option":"fresh_session"}`. It reads the control record once, under its lock, and returns:
    - the option's review lines;
@@ -201,7 +201,7 @@ These are worth knowing, but nothing in them needs an answer, so they stay where
 
 ## Build order
 
-Each step is its own PR, after this one is agreed. The roadmap calls them Q1 to Q6.
+Each step is its own PR, after this one is agreed. The six steps below belong to this design; the roadmap’s Q identifiers refer to quota monitoring.
 
 1. **The record and its words, read-only.**
    - `internal/question`: the record, the strict load, the basis, the words function and the length test.
