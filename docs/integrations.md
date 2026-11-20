@@ -91,7 +91,7 @@ BB `transfer preview` is available in v0.1.4, with **Fakes** covering a single p
 | Standard Webhooks signing | **Live** against the specification's published test vector. **Fakes** for delivery to a local receiver. | none |
 | Text format (`source`, `sent_at`, `text`) | **Live**: test, wake, and await-user reports were delivered to a real receiver | none |
 | Bearer scheme | **Live** with a real receiver. No unit test yet. | add a delivery test |
-| Telegram Bot API (`format: telegram`, `telegram setup\|status\|test\|disconnect`) | **Fakes** (unreleased): offline HTTP stand-ins verify `getMe`, `setMyCommands`, one-tap `?start=pair_<nonce>` pairing, `0600` `token.env`/`pairing.json`, token-redacted errors, redirect refusal, single-attempt delivery and `deliveries.json` history. See [Telegram remote channel](telegram.md). | pair a personal test bot against live `api.telegram.org` and confirm alert receipt |
+| Telegram Bot API (`format: telegram`, `telegram setup\|status\|test\|poll\|disconnect`) | **Fakes** (unreleased): offline HTTP stand-ins verify `getMe`, `setMyCommands`, one-tap `?start=pair_<nonce>` pairing, `0600` `token.env`/`pairing.json`, token-redacted errors, redirect refusal, single-attempt delivery and `deliveries.json` history, plus `telegram poll` outbound `getUpdates` handling for `/status`, `Pause`, and `Stop` (persisted offsets, staleness cutoff, `observation_changed` refusal, `telegram_pause`/`telegram_stop` attribution, lock contention, `retry_after`). See [Telegram remote channel](telegram.md). | pair a personal test bot against live `api.telegram.org` and confirm alert receipt and remote `/status`/`Pause`/`Stop` |
 
 ## Developer tooling
 

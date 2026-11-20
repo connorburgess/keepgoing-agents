@@ -175,5 +175,5 @@ looptender telegram test --dry-run
 looptender telegram disconnect
 ```
 
-Pairing writes the bot token to a private `0600` `token.env` file and locks `pairing.json` strictly to the paired `allowed_user_id` and `allowed_chat_id` via a one-time `?start=pair_<nonce>` deep link. Default `alerts` mode sends redacted event summaries only (`loop.report.format: telegram`); `--mode chat` requires explicit `--accept-non-e2e` because Telegram Bot API traffic is not end-to-end encrypted. Current coverage uses offline loopback HTTP stand-ins only; terminal QR rendering, `doctor` diagnostics, daemon polling (`TG3`–`TG5`) and live Telegram verification remain open. See [Telegram remote channel](telegram.md).
+Pairing writes the bot token to a private `0600` `token.env` file and locks `pairing.json` strictly to the paired `allowed_user_id` and `allowed_chat_id` via a one-time `?start=pair_<nonce>` deep link. Default `alerts` mode sends redacted event summaries only (`loop.report.format: telegram`); `--mode chat` requires explicit `--accept-non-e2e` because Telegram Bot API traffic is not end-to-end encrypted. Current coverage uses offline loopback HTTP stand-ins only; terminal QR rendering, `doctor` diagnostics, background service wiring, `TG4`–`TG5` and live Telegram verification remain open. See [Telegram remote channel](telegram.md).
 

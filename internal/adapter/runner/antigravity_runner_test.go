@@ -938,7 +938,7 @@ func TestAntigravityRunnerTimeoutTerminatesDescendants(t *testing.T) {
 	w := newAntigravityWorld(t, "hang-with-child", false)
 	marker := filepath.Join(t.TempDir(), "child")
 	w.a.cfg.Env["KEEPGOING_AGY_CHILD_MARKER"] = marker
-	w.a.cfg.HandshakeTimeout = 250 * time.Millisecond
+	w.a.cfg.HandshakeTimeout = 1500 * time.Millisecond
 	w.a.cfg.ExitTimeout = 200 * time.Millisecond
 	w.send(t, "fictional hanging task")
 	for deadline := time.Now().Add(5 * time.Second); ; time.Sleep(10 * time.Millisecond) {
@@ -955,7 +955,7 @@ func TestAntigravityRunnerTimeoutTerminatesDescendants(t *testing.T) {
 	}
 	// Wait past the descendant's sleep window: if it survived the process-group
 	// or job kill it writes marker.survived.
-	time.Sleep(1600 * time.Millisecond)
+	time.Sleep(2000 * time.Millisecond)
 	if _, err := os.Stat(marker + ".survived"); !errors.Is(err, os.ErrNotExist) {
 		t.Fatalf("descendant process survived worker timeout (err=%v)", err)
 	}

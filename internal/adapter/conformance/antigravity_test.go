@@ -16,6 +16,10 @@ import (
 )
 
 func standInAntigravity(dir string, situation Situation, args []string, generation string) int {
+	if situation == Crashed {
+		work(dir, generation)
+		return 0
+	}
 	sc := bufio.NewScanner(os.Stdin)
 	sc.Buffer(make([]byte, 0, 64*1024), 2<<20)
 	writeFrame := func(v any) {

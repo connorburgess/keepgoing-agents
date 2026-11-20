@@ -923,6 +923,9 @@ func (c *Config) Validate() error {
 	if l.Adapter == "cursor" && (l.HasRouteList() || l.SwitchBack.Enabled) {
 		add("Cursor currently supports standalone primary loops only; fallbacks and switch-back are unverified")
 	}
+	if l.Adapter == "antigravity" && (l.HasRouteList() || l.SwitchBack.Enabled) {
+		add("Antigravity currently supports standalone primary loops only; fallbacks and switch-back are unverified")
+	}
 	if l.SwitchBack.Enabled {
 		switch l.Probe.Kind {
 		case "claude", "codex":
@@ -943,6 +946,9 @@ func (c *Config) Validate() error {
 		tm := l.Timing
 		if l.Adapter == "cursor" {
 			add("loop.timing is not supported for Cursor loops")
+		}
+		if l.Adapter == "antigravity" {
+			add("loop.timing is not supported for Antigravity loops")
 		}
 		switch l.Probe.Kind {
 		case "claude", "codex":
