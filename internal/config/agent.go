@@ -10,12 +10,12 @@ import (
 // Agent describes how to reach one agent session. The primary loop and
 // every fallback candidate use the same shape.
 type Agent struct {
-	Adapter  string   `yaml:"adapter"`
-	Provider string   `yaml:"provider,omitempty"` // claude-code, codex, or any label
-	Group    string   `yaml:"group,omitempty"`    // account or quota pool; defaults to provider
-	Account  string   `yaml:"account,omitempty"`  // accounts catalog ID a person states this route uses; never derived
-	BB       *BB      `yaml:"bb,omitempty"`
-	Process  *Process `yaml:"process,omitempty"`
+	Adapter     string       `yaml:"adapter"`
+	Provider    string       `yaml:"provider,omitempty"` // claude-code, codex, or any label
+	Group       string       `yaml:"group,omitempty"`    // account or quota pool; defaults to provider
+	Account     string       `yaml:"account,omitempty"`  // accounts catalog ID a person states this route uses; never derived
+	BB          *BB          `yaml:"bb,omitempty"`
+	Process     *Process     `yaml:"process,omitempty"`
 	Claude      *Claude      `yaml:"claude,omitempty"`
 	Codex       *Codex       `yaml:"codex,omitempty"`
 	Cursor      *Cursor      `yaml:"cursor,omitempty"`
