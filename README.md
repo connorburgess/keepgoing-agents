@@ -6,11 +6,59 @@
 
 # looptender
 
-looptender supervises a coding agent: it wakes an idle session, handles structured failures with bounded retries, and can hand off to a confirmed fallback when configured. Your agents do the work. Looptender keeps their loops supervised, bounded, and visible.
+looptender supervises a coding agent: it wakes an idle session, handles structured failures with bounded retries, and can hand off to a confirmed fallback when configured. Your agents do the work. looptender keeps their loops supervised, bounded, and visible.
+
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="docs/assets/looptender-model-dark.svg">
+  <source media="(prefers-color-scheme: light)" srcset="docs/assets/looptender-model-light.svg">
+  <img alt="Diagram: You, at the top, set goals and give approvals to a Coordinator session that plans, assigns and reviews work. A dashed ring labelled looptender surrounds the coordinator: looptender wakes it, bounds it, recovers it and holds for you when needed. Below the ring, the coordinator delegates to three Lane conversations, which sit outside it." src="docs/assets/looptender-model-light.svg" width="960">
+</picture>
+
+In one line: you talk to one coordinator per project. The coordinator splits the work into lanes, picks a model for each lane that fits its task, and sends requests to the coordinators of your other projects, which can decline them. looptender keeps each coordinator going while you are away, and stops to ask you when something needs your approval.
+
+The picture has three parts, using the words in the [glossary](docs/glossary.md):
+
+- **You** are the person in the loop. Goals and approvals come from you, and a **hold** sends nothing until a person acts.
+- A **coordinator** is the session you put under supervision: it hands out work and reviews it. Supervising that one session is a **loop**. looptender wakes it, keeps it within the limits you set, recovers it from structured failures and holds it for you when it needs a person. Coordinator is a role, not a setting: a session that delegates nothing is supervised the same way.
+- **Lanes** are the conversations a coordinator starts for pieces of its work, each on the model the coordinator chose for it. For a BB loop looptender counts them and their state, so a working lane keeps the loop from being woken as idle; it retries a lane's failed turn when the loop opts in, and stops lanes when a person asks with `stop --lanes`.
+
+There are two layers. The looptender supervisor watches, wakes, bounds, recovers and holds the coordinator's session and, on a limit, moves it to the next route you configured; the coordinator agent under it splits the work into lanes, chooses their models and talks to other coordinators. The supervised session can be a BB thread, a headless Claude Code, Codex or Cursor session, an agent defined in configuration, or another program described to looptender by its status and resume commands.
 
 The core is a single binary for macOS, Linux and Windows. Use its daemon or an existing scheduler to check the loop. No separate loop skill is required. The host and supervisor must be running for checks to happen.
 
 The goal is to grow from one loop on your machine to fleets of agents across machines, with clear ownership, bounded execution, and work that stays visible. Today, [supervision runs on the same machine as the agents](docs/architecture.md); [cross-device coordination is planned](docs/roadmap.md#loops-across-devices-planned).
+
+## What it handles
+
+These are the failures that stop an agent nobody is watching, and what looptender does about each today:
+
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="docs/assets/looptender-failures-dark.svg">
+  <source media="(prefers-color-scheme: light)" srcset="docs/assets/looptender-failures-light.svg">
+  <img alt="Diagram: one row per case and what looptender does. Limit reached: moves to the next route you configured, or waits for the reset. Connection lost: waits for a later check; existing holds still apply. Turn failed: retries or re-prompts, within a cap. No progress: nudges within a cap, then holds. Needs a person: holds and shows it in status and the panel. Caption: when the right move is not clear, looptender holds and asks you." src="docs/assets/looptender-failures-light.svg" width="960">
+</picture>
+
+- **A provider limit is reached.** If you configured other routes, looptender moves the work to the next one in your list, in the order you gave, after one small real request confirms that route works. It is an ordered list, not a pool that it balances. Without other routes it waits, and a known reset time holds recovery until then. Returning to the first route is opt-in. The full [preferred routes](docs/roadmap.md#preferred-routes-planned) rule is partly implemented.
+- **The network drops.** Before recovery work, looptender checks configured reachability so an unavailable connection can withhold re-prompts, handoffs and probes. Recovery still requires a running host, a later check and the usual holds and bounds. One real outage was observed; unattended lane recovery and the full network-cut procedure remain unverified ([evidence](docs/testing.md#observed-once-a-real-outage-2026-11-14)).
+- **The machine goes away and comes back.** Nothing runs while the machine is off. Managed macOS and Linux [services](docs/services.md) can keep checks running when the user service manager is available; `status`, `doctor` and the panel show recorded check and service evidence. Live logout/reboot, sleep and recovery acceptance remains open, so installation alone does not establish that supervision will return.
+- **A turn dies for no clear reason.** A failed BB turn is retried by reference. An error looptender cannot classify gets a limited number of re-prompts and then a hold, and it never moves the work to another route.
+- **A loop spins without progress.** Nudges to a stalled session are capped, and when they are spent the loop holds for a person. Optional deadlines, send limits and a Git-based no-progress timeout bound the total.
+
+Whenever the right move is not clear, looptender holds and asks you instead of deciding for you.
+
+## How this differs from built-in loops
+
+Agent tools have their own loops, retries and background agents, and each of them knows only its own tool. looptender runs on your machine outside any one tool and watches sessions in several of them. You do not do your development through it, and it is not another chat interface: each session stays where it lives, and looptender only watches, wakes, bounds and holds it.
+
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="docs/assets/looptender-tools-dark.svg">
+  <source media="(prefers-color-scheme: light)" srcset="docs/assets/looptender-tools-light.svg">
+  <img alt="Diagram: one machine with four agent tools side by side, each with its own session: an agent host such as BB with a BB thread, headless Claude Code or Codex, the Cursor CLI, and your own agent described by its status and resume commands. One looptender box on the same machine has dashed arrows to every session: watch, wake, bound, hold. Caption: the session stays where it lives." src="docs/assets/looptender-tools-light.svg" width="960">
+</picture>
+
+## Where it works best today
+
+BB threads get the most: lane awareness, retrying a failed turn by reference, and the BB plugin. Headless Claude Code and Codex sessions get the general behaviour (wakes, limited re-prompts with exact session resume, routes, limits and reports) but nothing for lanes. Cursor runs as a first route only and cannot be a fallback. Agents defined in configuration have been tested only with stand-ins. For Antigravity there is an internal foundation tested with a stand-in; looptender has no Antigravity adapter and has never run Antigravity itself ([details](docs/antigravity.md)). Much of the rest is fixture-tested and the full live walkthrough is unfinished; the table below says what has been verified where.
 
 ## Current availability
 
@@ -194,12 +242,12 @@ Decisions use structured status: exit codes, JSON fields, HTTP status and provid
 
 ## What it does
 
-- **Wakes, nudges and retries.** Idle sessions can wake at each ordinary check. Stall nudges and error re-prompts have separate caps/backoff. A failed BB turn is retried by reference, not prompted again. A BB loop may also opt in (`bb.children.retry_errored`, off by default) to having the failed turn of a child conversation retried the same way; a child is never messaged or created; it is retried only with `bb.children.retry_errored` and stopped only by an explicit `stop --lanes`, and only typed fields of its event log are read, never message text. Active BB children and pending provider retries suppress duplicate work; pending human input requires attention. A session that is itself in error is recovered whether or not its BB children are working.
+- **Wakes, nudges and retries.** Idle sessions can wake at each ordinary check. Stall nudges and error re-prompts have separate caps/backoff. A failed BB turn is retried by reference, not prompted again. A BB loop may also opt in (`bb.children.retry_errored`, off by default) to having the failed turn of a lane retried the same way. A lane is never messaged or created; it is retried only with `bb.children.retry_errored` and stopped only by an explicit `stop --lanes`, and only typed fields of its event log are read, never message text. Working lanes and pending provider retries suppress duplicate work; pending human input requires attention. A session that is itself in error is recovered whether or not its lanes are working.
 - **Bounds automatic work.** Optional deadlines, total send allowances and Git-based no-progress timeouts persist across turns and restarts. Failed sends count; resume does not refund them. These are not dollar budgets or proof of useful work. See [operations](docs/operations.md).
 - **Confirms fallbacks before handoff.** Eligible configured fallbacks need health evidence and an exact-model probe. Known reset times can hold recovery while ordinary checks continue. Switch-back is opt-in; no configured fallbacks means no automatic handoff. See [fallbacks](docs/fallbacks.md).
 - **One loop per session.** Two loops never act on one BB thread or headless working directory at the same moment: a check claims its session first, and one that finds it claimed by another loop sends nothing. Turning on a second loop on a supervised session is refused, naming the first, unless asked for. See [one loop per session](docs/operations.md#one-loop-per-session).
 - **Preserves control and ownership.** Stop and holds take precedence on checks. A different BB thread needs explicit takeover; transfer keeps the loop held until explicitly resumed. In unreleased source, the supervised session cannot resume or retarget its own loop: the current target thread and anything the loop's supervisor started are refused. The check is cooperative, not an authentication boundary ([details](docs/operations.md#the-supervised-session-cannot-clear-its-own-hold)). Invalid or stale configuration can withhold provider operations, including stop, until repaired/reloaded.
-- **Tells a session what supervises it.** In unreleased source, `context -c <config>` (text, or `--json` with `schemaVersion: 1`) prints a loop's supervision context: its name, adapter, target with its configured identity, recorded owner, holds, bounds with used and remaining (an unset loop-wide limit says unset), lane policy, the commands a session may run, and fixed statements of the authority looptender keeps. It reads the loop's records only: it writes nothing and queries no provider. Nothing sends it to a session yet. `context --here` finds the loop whose active target is the session running it, by `BB_THREAD_ID` (not checked with BB) or else by its exact working directory only, and prints that context, more than one when several loops target it, or `no loop targets this session`; it never counts a lane through its parent. Headless and process turns no longer inherit their supervisor's `BB_THREAD_ID`, though a supervisor on an older build passes it until restarted. See [supervision context](docs/operations.md#supervision-context) and [which loop supervises this session](docs/operations.md#which-loop-supervises-this-session).
+- **Tells a session what supervises it.** In unreleased source, `context -c <config>` (text, or `--json` with `schemaVersion: 1`) prints a loop's supervision context: its name, adapter, target with its configured identity, recorded owner, holds, bounds with used and remaining (an unset loop-wide limit says unset), lane policy, the commands a session may run, and fixed statements of the authority looptender keeps. It reads the loop's records only: it writes nothing and queries no provider. Opt-in `loop.prompt_context` can append the context to automatic sends; it changes no authority or hold ([details](docs/operations.md#supervision-context-in-sends)). `context --here` finds the loop whose active target is the session running it, by `BB_THREAD_ID` (not checked with BB) or else by its exact working directory only, and prints that context, more than one when several loops target it, or `no loop targets this session`; it never counts a lane through its parent. Headless and process turns no longer inherit their supervisor's `BB_THREAD_ID`, though a supervisor on an older build passes it until restarted. See [supervision context](docs/operations.md#supervision-context) and [which loop supervises this session](docs/operations.md#which-loop-supervises-this-session).
 - **Explains recorded failures.** `doctor` checks supported setup/access/status signals; `status` separates holds, historical checks and daemon evidence; `timeline` reads keepgoing-owned incident and notification records, and filters them by event kind, target and time. Missing evidence stays unavailable. See [diagnostics](docs/diagnostics.md). `runs` shows each loop's recorded runs, sends and chat/session references offline, by exact ID; it also shows which child conversations and which owner a loop is waiting on, from recorded checks; it opens no chat and does not say who holds a lock. See [run discovery](docs/run-discovery.md#cli-navigation-d3).
 - **Reports attention and completion.** Signed webhooks support escalation and completion declarations. Delivery history distinguishes transport/HTTP results from unverified human receipt. Reports require configuration; they are not an implicit notification service.
 - **Runs with your host.** Use `start`, a daemon, an existing scheduler, or managed macOS/Linux [services](docs/services.md). `ci-wait` and `net-retry` are separate command helpers. Unreleased: an opt-in [PR backlog safeguard](docs/pr-backlog.md) adds bounded GitHub WIP evidence to ordinary wakes; `pr-backlog` also checks it explicitly. It neither prevents arbitrary branch creation nor grants merge permission. Windows service management remains planned.
@@ -211,6 +259,12 @@ Decisions use structured status: exit codes, JSON fields, HTTP status and provid
 - Headless stop requests go to an owned wrapper, never a PID trusted from a file. Legacy turns without a stop key are refused. Acceptance is not proof of exit; abrupt wrapper death can leave descendants requiring inspection. [Cancellation details](docs/operations.md#owned-headless-cancellation).
 - A BB fallback probe uses the local Claude/Codex CLI account, not the BB thread's login. Configure the probe account explicitly when needed; looptender cannot establish account equivalence from a label.
 - Setup, transfer, multi-account recovery, installed-service lifecycle and menu interaction still have live verification gaps. Do not equate a compiled feature or passing fixture with a successful real-provider walkthrough.
+
+## Where this is headed
+
+The coordinator and lane model is already how a person can organize their work. Unreleased source adds the read-only supervision context command, opt-in context in sends, recorded BB context size, idle-wake spacing and a panel view of recorded direct lanes. A narrow CLI path can explicitly move one BB loop to an existing thread on another provider, and the plugin can attach an existing compatible loop reference; neither establishes automatic migration or installed/live acceptance.
+
+The remaining work includes continuity across supported adapters, cross-project transfer, healthy-lane ownership reconciliation and verified preferred-route return at safe turn boundaries. Task, goal and hold reconciliation, automatic dispatch and broader cross-adapter return remain open. [Coordinating lanes](docs/coordinating-lanes.md) describes the coordinator's role; the [roadmap](docs/roadmap.md#5-conversation-setup-and-durable-supervision-continuity) separates implemented source, plans and remaining acceptance. No roadmap item upgrades a running supervisor or clears an existing hold.
 
 ## Documentation
 
