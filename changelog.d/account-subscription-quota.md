@@ -1,2 +1,0 @@
-- Explicit selected-context Codex subscription-quota reads in `accounts usage` and the reviewed Accounts panel, with a separate private cache, original successful-read freshness and independent failed-refresh evidence.
-- Preserve complete bounded panel-control authority disclosures in the macOS confirmation, including combined route and subscription-quota capabilities; reject invalid authority instead of truncating it.

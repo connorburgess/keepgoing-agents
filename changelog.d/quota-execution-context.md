@@ -1,1 +1,0 @@
-Keep saved Codex account quota visible across execution sandbox changes without changing the provider environment. Older definition-2 selection bindings require an explicit reviewed update and quota refresh; Accounts and native quota details explain this recovery instead of silently rebinding saved evidence.

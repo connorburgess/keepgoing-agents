@@ -2,6 +2,83 @@
 
 ## Unreleased
 
+## 0.2.1 (2026-11-20)
+
+- Unreleased CLI: explicitly supersede an obsolete BB loop after a manual move; durable resume/start fencing preserves holds and stop without changing the successor.
+
+- BB CLI transfer can explicitly move supervision across providers to an existing thread in the same project, environment, host and working directory. Provider changes remain refused by default; `--allow-provider-change` requires destination provider, quota-group, model and reasoning flags (empty model/reasoning clears). The move replaces labels, clears the old account annotation/probe/timing settings, preserves holds, goals and budgets, and leaves awaiting-user without starting supervision. Versioned pending recovery records the provider plan. This is unreleased source with offline fixtures; live transfer, BB plugin attach/start after manual handoff, automatic handoff detection and cross-IDE continuity remain open. See [transfer](docs/transfer.md#explicit-provider-change-unreleased-source).
+
+- Explicit Codex account checks read allowlisted ChatGPT plans with `account/read` and `refreshToken:false`, independently of login status. Unknown, API-key, null and failed readings say why the plan is unavailable; transient failures keep earlier plans stale at their original time. No model request or sign-in runs. Legacy-compatible writes retain schema 1 without empty plan fields; new plan metadata or tiers promote the catalog to schema 2 and require upgrading all readers first. Rollback requires a compatible metadata backup. Production acceptance remains unrun.
+
+- Check the daemon limit-reset fixture against its saved reset time, with bounded setup retries.
+
+The Routes page's Allowances strip groups routes only when they consistently state the same catalog account. Each route keeps its own dated probe reading and windows; no combined allowance is shown. Unassigned or mismatched routes keep their configured group and route labels without inferred account identities. Selected-context subscription quota remains separate on Accounts.
+
+- The panel says each caveat once, in plain words. The first loop is the first thing in **Loops and lanes**, with one line under the list; the overview says once that it is not live; the recent-activity card has one plain line; the footer is two lines and no longer describes how the page is served; the sidebar's Versions line is short enough never to be cut, and a cut picker name is reachable by keyboard and touch, not only by hover; the "No standby route is ready" line is a plain notice, not a warning. The detail moved to docs/dock.md.
+
+- Fix the Accounts page presenting unbound route contexts as extra unnamed accounts. Only selected catalog entries count as accounts; routes without an explicit binding appear separately under **Routes with unknown accounts**, with their loops and individual recorded usage readings. This replaces the earlier unnamed-account presentation: route contexts do not establish additional subscriptions, inferred account-match hints and per-context registration suggestions are removed, and provider, model, group or selection never establishes an account identity. Mismatched stated bindings remain marked and excluded from account summaries. Unbroken route and loop names wrap on narrow screens. See [Routes with unknown accounts](docs/accounts.md#routes-with-unknown-accounts).
+
+- Keep fault-scenario stand-ins alive until their killed supervisor has exited, preventing an extra orphaned command.
+
+- A stopped headless turn now always reads as crashed. A stop ends the turn wrapper's whole process group, but the wrapper could see its agent exit before its own termination arrived and record an exit code, so the same stop sometimes left a finished turn whose partial output was read as the turn's result (a completion, an error class or a session to keep). The wrapper now records no exit code once it has accepted a stop. Found as intermittent test failures on Linux and macOS CI; Windows uses the same publication guard. Fixture-tested only; live provider cancellation remains unverified.
+
+- Isolate command fixtures from agent programs installed on PATH and fail Unix command tests that reach an unstubbed agent CLI.
+
+- Wait for the output-bound regression fixture's second turn to finish before removing its runner directory.
+
+- `transfer preview` can assess a move to a thread in another BB project or environment on the same host (`--across-environment`) and with changed labels (`--provider`, `--quota-group`, `--model`/`--no-model`, `--reasoning`/`--no-reasoning`), reported as an unverified `plan`. A provider change requires every label explicitly and no probe or timing section, and the destination must be inside a progress repository unless `--accept-workspace-outside` is given. Read-only; `transfer apply` does not perform these moves yet.
+
+- Distinguish temporarily unavailable transfer records from invalid content and require successful concurrent reads in the Windows replacement fixture.
+
+- Add `looptender session clear-unconfirmed` to clear an unconfirmed Antigravity turn record after a supervisor crash while preserving any saved session and active holds.
+
+- Support `looptender init --agent antigravity` (discovering `agy` on `PATH` and creating standalone primary-only ACP loops), refuse `fallbacks add` for Antigravity primary or fallback targets, and update `README.md`, `docs/antigravity.md`, and `docs/roadmap.md` with the installed macOS `agy 1.5.13` two-turn verification and `-c` runbook commands.
+
+Register `adapter: antigravity` (`agy acp --stdio`) as a standalone primary-only ACP loop adapter in configuration, schema, adapter factory, and `doctor`, with live `agy 1.5.13` verification and an installed testing/debugging runbook.
+
+Selected inherited Antigravity (`agy`) accounts can retrieve model-free `/usage` quota into the Accounts catalog, panel, and native menu.
+
+- Harden the unregistered Antigravity ACP runner with per-message streaming bounds, cancel-drain and stdin write timeouts, process-group/job termination on worker timeouts, bounded stderr capture, old turn-directory pruning, and `ClearUnconfirmed` recovery for interrupted starts.
+
+- Add person-started Connect Claude and Connect Codex actions to Accounts, separate named account connections, and native-menu navigation to the selected account. Sign-in uses a new private provider context after review, with bounded start/status/cancel ownership and publication guarded against selection changes. Polling never starts authentication or clears loop holds. Platform and executable admission apply; sign-in completion remains personal and quota reads remain separate.
+
+- Show supported saved Claude usage windows in Accounts and the native menu with retrieval time and unknown provider freshness. Explicit panel retrieval is available only on the reviewed Darwin arm64 platform and still requires exact native-image and isolation admission; polling never queries a provider. Claude selections can also use the panel’s fixed-field, revision-bound context review; recovery makes no provider call and quota retrieval requires a separate review.
+
+- Accounts in a panel with changes allowed can review an unchanged Codex selection for that panel's environment, retaining its paths and caller provenance. The single-use revision update invalidates old evidence without querying a provider; quota refresh remains a separate reviewed action. Read-only panels and native-menu summaries explain the recovery path.
+
+- Add an explicit experimental Claude selected-context quota read for an inspected native CLI artifact, using an unclaimed control-only process with behavior scanning disabled. Preserve independent quota scopes in a separate private cache and label retrieval time with unknown provider freshness; wrappers and unverified builds refuse. Native/web display and panel-action integration require coordinated consumers.
+
+Keep saved Codex account quota visible across execution sandbox changes without changing the provider environment. Older definition-2 selection bindings require an explicit reviewed update and quota refresh; Accounts and native quota details explain this recovery instead of silently rebinding saved evidence.
+
+Accounts and the native menu share compact saved quota summaries with separate supported Codex buckets, named windows, used/remaining values, resets, source/freshness and typed credit/individual-limit detail. Missing and partial evidence never becomes zero; Claude account-quota acquisition remains explicitly unavailable and separate from dated route readings. Refresh preserves the selected-context review and publication fences; polling contacts no provider. Quota cache schema 2 reads legacy evidence without changing the catalog.
+
+- Add a separate opt-in BB whole-objective completion review: require explicit goal/review-bound attestation, acknowledged completed obligations and fresh bounded direct-child evidence before explicit completion. Historical completed lanes may remain absent after review; unfinished or unknown work, pending input and stale evidence refuse without changing controls. No automatic completion, self-resume or new authority; fixture-tested unreleased source.
+
+- Add opt-in coordinator wakes for explicitly declared independent assignments while healthy lanes stay busy, with bounded structured revalidation, durable attempt consumption and explicit reconciliation. Preserve ordinary task prompts, controls, cadence and allowances; no child dispatch or hold clearing.
+
+- Publish CLI menu references after confirmed BB plugin setup, start and transfer operations, with explicit identity-bound repair for existing references. Report publication failure separately without repeating lifecycle operations, and distinguish plugin reference provenance from CLI registry coverage.
+
+- Add opt-in explicit BB coordinator assignment reviews, lane handoff import/acknowledgement, dated read-only status/panel counts and a contradiction check on explicit awaiting-user declarations. Missing evidence remains unknown; no lane is dispatched and no hold is cleared automatically.
+
+- Add an opt-in PR backlog safeguard: bounded cached GitHub WIP evidence and an integration-first reminder on ordinary wakes, plus a read-only `pr-backlog` command. Unavailable evidence stays unknown; no extra wakes, repository edits, merges, branch-creation enforcement or permission changes.
+
+- Show saved migration-review counts and dated historical evidence in the panel, including unfinished declarations beside each loop. Missing, unavailable and changed-binding records remain distinct from valid counts. The view adds no private assignment details, queries, control changes or lane actions.
+
+- Explicit selected-context Codex subscription-quota reads in `accounts usage` and the reviewed Accounts panel, with a separate private cache, original successful-read freshness and independent failed-refresh evidence.
+- Preserve complete bounded panel-control authority disclosures in the macOS confirmation, including combined route and subscription-quota capabilities; reject invalid authority instead of truncating it.
+
+- Unreleased panel Routes editor for existing account selections, model and effort entry or an explicitly requested BB model listing, preferred-route ordering, reviewed route changes, and separate per-loop reviews for following the standard list. It retains caller restrictions, stale-review protection, holds, budgets and conversation-creation opt-in; it does not verify account identity, model access or independent quota.
+
+- Add an opt-in, unreleased Sessionpipe reporting format for tier-0 loop events sent to a configured receiver, with opaque stream identity, private monotonic sequence reservations, bounded discovery and acknowledgement validation. Incomplete sequence snapshots refuse sending unchanged, and uncertain once-per-episode deliveries retain an unsent retry-stop marker across later checks; ordinary webhook retries are unchanged. This is best-effort OUT reporting only; session intake, supervision controls, full sender conformance and live board/phone acceptance remain open, and remote hold answering stays held.
+
+- Let the detached-start fixture wait for stop-command completion within its configured deadline before requiring the saved success record; control responsiveness remains separately bounded.
+
+- Wait for finalized turn publication in the bounded-output runner fixture, so an exit file visible before publication cleanup cannot cause a false failure.
+
+- Add an explicit private migration review checklist for separately created BB successor loops. `transfer reconcile preview|apply|show` records verified direct-lane/worktree observations separately from declared assignments, retains unfinished dormant or absent work, and exposes counts in status. It changes no workers, tasks, goals, holds or supervision authority and does not certify migration execution.
+
+- The BB plugin can explicitly attach an existing single-primary BB loop from its target host's CLI registry, or reconcile its stale reference after an external transfer to an already-owned successor. Preview and attachment verify config/registry/target/owner identity; lost-response status is read-only and repeated attachment is idempotent. Only the plugin reference changes: holds, budgets and services survive, and nothing starts or resumes. Imported status labels failed checks separately from a responsive daemon and shows when no check is recorded. Unreleased source and local fixtures only; live/remote/startup acceptance remains open. See [attachment](integrations/bb-plugin-keepgoing/README.md#attach-an-existing-loop-unreleased-source).
+
 - The read-only panel says how to add an account and add or reorder a route, with commands to copy and run in Terminal. The Accounts page has **Add an account** (another subscription of a provider you use, a provider that manages its own login, an API key), each with its `looptender accounts add` command, and, with no accounts, three sentences on what an account, a route and a loop's order are. Each loop page has **Add a route to this loop** (`fallbacks add`, then `fallbacks check --exact`, one real request, and `fallbacks handoff on` when handoff is off) and **Change the order** (`fallbacks move`), with `--loop` and the loop's name filled in, or the standard list's `routes add`, `routes check` and `routes move` for a loop that follows it. The Routes page has **Add a route for every loop** (`routes add … --account`, then `routes follow-standard --loop`). The page runs none of them. The panel data adds `loopArg` per loop and `chain.standard`; no field is removed. See [the panel](docs/dock.md#what-the-page-shows).
 
 - Panel accessibility: with reduced motion the page no longer switches off every animation and transition at once; **Read now**'s icon still turns, slowly, while a read runs, and colour changes stay. Choosing another view, or the skip link, moves the keyboard focus to the view's heading, with the page's focus ring, instead of to the whole page area without one; a read moves no focus. Without JavaScript the page says that it needs it and shows no header buttons and no "Reading…" line. In forced colours the route in use keeps its filled position badge. See [the panel](docs/dock.md).
