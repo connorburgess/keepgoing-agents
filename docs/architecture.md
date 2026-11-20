@@ -39,7 +39,7 @@ internal/timing             usage-aware timing: the step decision (pure) and its
 internal/contextwindow      context-threshold reset: the decision (pure), previewed by status only; nothing acts on it
 internal/handoff            the brief a fallback receives
 internal/report             signed webhook and Telegram Bot API reports plus diagnostic delivery history
-internal/telegram           outbound-only Telegram Bot API client, one-time pairing primitives, atomic 0600 pairing/token state and redacted alert formatting
+internal/telegram           outbound-only Telegram Bot API client, one-time pairing primitives, atomic 0600 pairing/token state, redacted alert/status formatting, and compact Pause/Stop callback codec
 internal/incident           bounded typed tick/control/retarget history; diagnostic only
 internal/evidence           pure, allowlisted diagnostic source/code metadata
 internal/registry           explicit private local loop references; independent of loop controls
@@ -173,7 +173,7 @@ Runtime records live in `state_dir`, outside any repository. Managed service def
 | `deliveries.json`, `delivery.lock` | report diagnostic writer | bounded typed delivery evidence (64 records/128 KiB); separate short lock; never send/replay authority |
 | `daemon-endpoint.json` | daemon | private loopback endpoint and random verification key; removed on clean exit, stale records do not prove liveness |
 | `service-launchd.json`, `service-systemd.json` | service commands | private backend-specific plan/recovery record; no task text or credentials |
-| `tick.lock`, `daemon.lock`, `control.lock`, `service.lock` | the tool | advisory locks, released by the OS on exit . Every lock file the tool keeps in a loop's state directory or under the per-user directories (these, `turn.lock`, `graph.lock`, `incident.lock`, `delivery.lock`, the registry's, the route list's, the panel's two and the session claims) is listed by name in `migrateLockNames` in `cmd/looptender/migrate.go`; a new one must be added there, or `migrate` neither looks at it nor holds it while the directories move |
+| `tick.lock`, `daemon.lock`, `control.lock`, `service.lock` | the tool | advisory locks, released by the OS on exit . Every lock file the tool keeps in a loop's state directory or under the per-user directories (these, `turn.lock`, `graph.lock`, `incident.lock`, `delivery.lock`, the registry's, the route list's, the panel's two, Telegram's two (`telegram.lock`, `telegram-poll.lock`), and the session claims) is listed by name in `migrateLockNames` in `cmd/looptender/migrate.go`; a new one must be added there, or `migrate` neither looks at it nor holds it while the directories move |
 | `targets/<id>/` | the tool | headless turn files (`run.json` with private stop key, `turn.lock` held by the live turn wrapper, `turn.started` naming the turn whose wrapper took the lock, `turn.finishing` while a wrapper publishes its exit code, stop request/acknowledgement, prompt, stdout, stderr, exit code, session id) the BB log cursor (`bb-cursor.json`), and, from internal fixtures only, create-once ACP interaction-hold records (`acp-prompt-reserved.json`, `acp-needs-user.json`, `acp-hold-adopted.json`) |
 
 ## Ownership and control writes

@@ -25,12 +25,13 @@ func updateControlAnnotated(dir, operation string, fn func(*control.File) error,
 }
 
 // controlOrigins are where a control change can come from besides a command:
-// "panel" is the keepgoing panel's own pause, stop and resume. The history
-// records it in the operation's value ("panel_pause"), never as a field of
-// its own, because the journal is decoded strictly and a binary from before
-// that field would refuse the whole journal. Older binaries read an
-// operation value they do not know as "unavailable" instead.
-var controlOrigins = map[string]bool{"panel": true}
+// "panel" is the keepgoing panel's own pause, stop and resume, and "telegram"
+// is a restrictive hold saved from the paired Telegram remote channel. The
+// history records it in the operation's value ("panel_pause", "telegram_pause"),
+// never as a field of its own, because the journal is decoded strictly and a
+// binary from before that field would refuse the whole journal. Older binaries
+// read an operation value they do not know as "unavailable" instead.
+var controlOrigins = map[string]bool{"panel": true, "telegram": true}
 
 // updateControlFrom is updateControlWithHistory for a change from origin
 // ("" for a command).
