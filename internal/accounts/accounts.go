@@ -108,15 +108,18 @@ func Text(s string, max int) bool {
 	}
 	return true
 }
-func supported(p string) bool   { return p == "claude-code" || p == "codex" }
-func validToken(s string) bool  { b, e := hex.DecodeString(s); return e == nil && len(b) == 16 }
-func validDigest(s string) bool { b, e := hex.DecodeString(s); return e == nil && len(b) == 32 }
+func supported(p string) bool {
+	return p == "claude-code" || p == "codex" || p == "antigravity"
+}
+func explicitDirectorySupported(p string) bool { return p == "claude-code" || p == "codex" }
+func validToken(s string) bool                 { b, e := hex.DecodeString(s); return e == nil && len(b) == 16 }
+func validDigest(s string) bool                { b, e := hex.DecodeString(s); return e == nil && len(b) == 32 }
 func validEntry(e Entry) bool {
 	if !validToken(e.ID) || !validToken(e.Revision) || !validDigest(e.Context) || !Text(e.Label, 120) || e.UpdatedAt.IsZero() || len(e.UpdatedBy) > 160 {
 		return false
 	}
 	switch e.Provider {
-	case "claude-code", "codex", "cursor", "bb", "other":
+	case "claude-code", "codex", "antigravity", "cursor", "bb", "other":
 	default:
 		return false
 	}
@@ -125,7 +128,7 @@ func validEntry(e Entry) bool {
 	default:
 		return false
 	}
-	if e.Mode == "explicit_directory" && (!supported(e.Provider) || !filepath.IsAbs(e.Directory) || !Text(e.Directory, 4096)) {
+	if e.Mode == "explicit_directory" && (!explicitDirectorySupported(e.Provider) || !filepath.IsAbs(e.Directory) || !Text(e.Directory, 4096)) {
 		return false
 	}
 	if e.Mode != "explicit_directory" && e.Directory != "" {
@@ -230,16 +233,22 @@ func contextForOS(f File, e Entry, env []string, windows bool) string {
 		for _, prefix := range []string{"ANTHROPIC_", "CLAUDE_", "CODEX_", "OPENAI_", "AWS_", "GOOGLE_", "AZURE_"} {
 			relevant = relevant || strings.HasPrefix(k, environmentKey(prefix, windows))
 		}
+		if e.Provider == "antigravity" {
+			for _, prefix := range []string{"AGY_", "ANTIGRAVITY_"} {
+				relevant = relevant || strings.HasPrefix(k, environmentKey(prefix, windows))
+			}
+		}
 		if relevant {
 			m[k] = v
 		}
 	}
 	if e.Mode == "explicit_directory" {
-		k := "CLAUDE_CONFIG_DIR"
-		if e.Provider == "codex" {
-			k = "CODEX_HOME"
+		switch e.Provider {
+		case "claude-code":
+			m[environmentKey("CLAUDE_CONFIG_DIR", windows)] = e.Directory
+		case "codex":
+			m[environmentKey("CODEX_HOME", windows)] = e.Directory
 		}
-		m[environmentKey(k, windows)] = e.Directory
 	}
 	keys := make([]string, 0, len(m))
 	for k := range m {
@@ -730,9 +739,14 @@ func executionEnvironmentForOS(e Entry, env []string, windows bool) []string {
 	if e.Mode != "explicit_directory" {
 		return env
 	}
-	key := "CLAUDE_CONFIG_DIR"
-	if e.Provider == "codex" {
+	key := ""
+	switch e.Provider {
+	case "claude-code":
+		key = "CLAUDE_CONFIG_DIR"
+	case "codex":
 		key = "CODEX_HOME"
+	default:
+		return env
 	}
 	out := make([]string, 0, len(env)+1)
 	for _, pair := range env {

@@ -327,14 +327,18 @@ func SameSelection(a, b Entry) bool {
 func QuotaViews(dir string, catalog File, env []string, now time.Time) map[string]QuotaView {
 	codex, codexErr := LoadQuota(dir)
 	claude, claudeErr := LoadClaudeQuota(dir)
+	antigravity, antigravityErr := LoadAntigravityQuota(dir)
 	out := map[string]QuotaView{}
 	for _, e := range catalog.Entries {
 		v := QuotaView{State: "unavailable", Reason: "not_checked", Freshness: "unavailable", Windows: []QuotaWindow{}}
 		q, err := codex, codexErr
-		if e.Provider == "claude-code" {
+		switch e.Provider {
+		case "claude-code":
 			q, err = claude, claudeErr
+		case "antigravity":
+			q, err = antigravity, antigravityErr
 		}
-		if e.Provider != "codex" && e.Provider != "claude-code" {
+		if e.Provider != "codex" && e.Provider != "claude-code" && e.Provider != "antigravity" {
 			v.Reason = "unsupported_provider"
 		} else if err != nil {
 			v.Reason = "cache_unavailable"
@@ -384,6 +388,10 @@ func QuotaViews(dir string, catalog File, env []string, now time.Time) map[strin
 						v.Source, v.Freshness = ClaudeQuotaSource, "provider_unknown"
 						v.RetrievedAt, v.ObservedAt = &at, nil
 					}
+					if e.Provider == "antigravity" {
+						v.Source, v.Freshness = AntigravityQuotaSource, "provider_unknown"
+						v.RetrievedAt, v.ObservedAt = &at, nil
+					}
 				}
 				break
 			}
@@ -397,7 +405,8 @@ func QuotaViews(dir string, catalog File, env []string, now time.Time) map[strin
 
 func AttachQuota(v *View, readings map[string]QuotaView) {
 	for i := range v.Cards {
-		if v.Cards[i].Provider == "codex" || v.Cards[i].Provider == "claude-code" {
+		switch v.Cards[i].Provider {
+		case "codex", "claude-code", "antigravity":
 			q, ok := readings[v.Cards[i].ID]
 			if ok {
 				v.Cards[i].Quota = &q
