@@ -22,7 +22,7 @@ func panelQuotaSummary(r dockReport) *panelQuotaList {
 	out.State = r.Accounts.State
 	out.Complete = r.Accounts.Complete
 	for _, c := range r.Accounts.Cards {
-		if c.Provider != "codex" && c.Provider != "claude-code" {
+		if c.Provider != "codex" && c.Provider != "claude-code" && c.Provider != "antigravity" {
 			continue
 		}
 		if len(out.Accounts) >= 16 {

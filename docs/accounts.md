@@ -705,6 +705,24 @@ Other platforms can show saved evidence but offer no Claude refresh action.
 There is no automatic refresh, login, account switch or model call. Do not claim
 installed-panel acceptance from a source-only change.
 
+**Antigravity selected-context reads** run the selected `agy` CLI with
+`--print /usage --mode plan --output-format json` in read-only plan mode, with
+empty stdin, discarded stderr, a 10-second deadline and a 64 KiB stdout bound.
+Only `inherited` selections are supported for `antigravity`; `explicit_directory`
+is rejected because no separate-account directory variable has been verified for
+`agy`. The parser requires `status: "SUCCESS"`, `num_turns: 0`,
+`command.name: "usage"`, explicit `remaining_fraction` values in `[0, 1]` and
+RFC3339 reset timestamps. Recognized buckets (`gemini-weekly`, `gemini-5h`,
+`3p-weekly`, `3p-5h`) keep their own percentages and reset times; unknown extra
+buckets mark the reading partial with an omitted count. Because the reply may be
+cached and carries no provider observation timestamp, successful output has
+source `agy:/usage`, `retrievedAt` and freshness `provider_unknown`, **never
+`observedAt` or fresh**. Antigravity evidence is stored separately in private
+`antigravity-subscription-quota.json` (schema 1) and never overwrites Codex or
+Claude caches. Panel selection recovery supports rebinding unchanged inherited
+Antigravity selections. No live `agy` CLI or authenticated read is established
+by the offline fixture evidence.
+
 The Accounts page shows compact named windows before expansion. Expanded rows
 show used and remaining values, independent reset timestamps, source, read age,
 partial evidence and failed refreshes. The native menu shows the same saved

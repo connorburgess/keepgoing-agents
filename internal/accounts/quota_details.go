@@ -150,8 +150,9 @@ func SummarizeQuota(v QuotaView, now time.Time) QuotaSummary {
 		return s
 	}
 	claude := v.Source == ClaudeQuotaSource && v.Freshness == "provider_unknown" && v.RetrievedAt != nil && v.ObservedAt == nil
+	antigravity := v.Source == AntigravityQuotaSource && v.Freshness == "provider_unknown" && v.RetrievedAt != nil && v.ObservedAt == nil
 	codex := v.Source == QuotaSource && (v.Freshness == "fresh" || v.Freshness == "stale") && v.ObservedAt != nil && v.RetrievedAt == nil
-	if !claude && !codex {
+	if !claude && !antigravity && !codex {
 		s.State, s.Freshness, s.Text = "unavailable", "unavailable", QuotaReasonText("schema_unavailable")
 		return s
 	}
@@ -159,7 +160,7 @@ func SummarizeQuota(v QuotaView, now time.Time) QuotaSummary {
 	s.ObservedAt = v.ObservedAt
 	s.RetrievedAt = v.RetrievedAt
 	s.Text = "Saved selected-context quota; account identity and live thread binding are not verified."
-	if claude {
+	if claude || antigravity {
 		s.Text = "Saved selected-context quota; provider freshness unknown. Retrieval may return cached or seeded data. Account identity and live thread binding are not verified."
 	}
 	d := v.Details
@@ -193,6 +194,18 @@ func SummarizeQuota(v QuotaView, now time.Time) QuotaSummary {
 			row := QuotaSummaryRow{Name: label + " · " + name, Text: fmt.Sprintf("%g%% used · %g%% remaining", used, remaining), UsedPercent: &used, RemainingPercent: &remaining, ResetsAt: w.ResetsAt}
 			if claude {
 				row.Name = map[string]string{"five_hour": "5-hour", "seven_day": "7-day", "seven_day_oauth_apps": "7-day OAuth apps", "seven_day_opus": "7-day Opus", "seven_day_sonnet": "7-day Sonnet"}[b.Key]
+				if row.Name == "" {
+					s.Partial = true
+					continue
+				}
+			}
+			if antigravity {
+				row.Name = map[string]string{
+					"gemini-weekly": "Gemini · 7-day",
+					"gemini-5h":     "Gemini · 5-hour",
+					"3p-weekly":     "Claude/GPT · 7-day",
+					"3p-5h":         "Claude/GPT · 5-hour",
+				}[b.Key]
 				if row.Name == "" {
 					s.Partial = true
 					continue
