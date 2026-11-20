@@ -160,9 +160,6 @@ func TestRegisteredAdaptersMatchTheFactory(t *testing.T) {
 	if got := sorted(built); !reflect.DeepEqual(got, sorted(want)) {
 		t.Fatalf("the factory builds %v; the capability table registers %v. A new adapter needs a column in every row.", got, sorted(want))
 	}
-	if _, err := factory.New(config.Agent{Adapter: "antigravity"}, t.TempDir(), "primary"); err == nil {
-		t.Fatal("antigravity is listed as not registered but the factory built it")
-	}
 }
 
 func TestSessionEvidenceMatchesTheCheck(t *testing.T) {
@@ -206,12 +203,13 @@ func byID(id string) Behaviour {
 func TestOptionalInterfacesMatchTheAdapters(t *testing.T) {
 	dir := t.TempDir()
 	built := map[string]adapter.Adapter{
-		"bb":      bb.New(config.BB{Thread: "thr_example"}),
-		"claude":  runner.NewClaude(config.Claude{CLI: "absent"}, dir),
-		"codex":   runner.NewCodex(config.Codex{CLI: "absent"}, dir),
-		"cursor":  runner.NewCursor(config.Cursor{CLI: "absent"}, dir),
-		"custom":  definedRunner(t, "", dir),
-		"process": process.New(config.Process{}),
+		"antigravity": runner.NewAntigravity(runner.AntigravityConfig{Command: []string{"absent"}}, dir),
+		"bb":          bb.New(config.BB{Thread: "thr_example"}),
+		"claude":      runner.NewClaude(config.Claude{CLI: "absent"}, dir),
+		"codex":       runner.NewCodex(config.Codex{CLI: "absent"}, dir),
+		"cursor":      runner.NewCursor(config.Cursor{CLI: "absent"}, dir),
+		"custom":      definedRunner(t, "", dir),
+		"process":     process.New(config.Process{}),
 	}
 	for _, a := range Adapters {
 		impl, ok := built[a.ID]
