@@ -162,12 +162,11 @@ After building and installing `looptender` from `main` (for example `go install 
      - `acp-needs-user.json` / `acp-hold-adopted.json` — saved permission-request hold and supervisor adoption.
      - `acp-outcome.json` — boolean transport outcome (`returned`, `needsUser`, `failed`; never prompt or response text).
    - `stderr` — bounded 64 KiB capture from `agy acp --stdio` for manual inspection (never parsed by `looptender`).
-   - If a crash left a turn unconfirmed (`acp-pending.json` without `acp-started.json` or `acp-not-started.json`), the loop fails closed with `errAntigravityUnconfirmed` until cleared.
+   - If a crash left a turn unconfirmed (`acp-pending.json` without `acp-started.json` or `acp-not-started.json`), the loop fails closed with `errAntigravityUnconfirmed` until cleared with `looptender session clear-unconfirmed -c loop.yaml`.
 
 ## Remaining acceptance gates
 
 - Complete the remaining installed scratch-project checks (live tool permission hold + `looptender resume`, and live `looptender stop -immediately`) and test on Linux and Windows.
-- Expose `ClearUnconfirmed` via an operator CLI recovery command.
 - Resolve chat-only questions without ACP elicitation (currently indistinguishable from a returned `end_turn`) and permission rules that allow/deny without emitting a request.
 - Establish typed authentication, exact account/model probe evidence, and separate-account isolation before enabling fallbacks or switch-back. Existing graphical IDE-chat attachment remains a separate investigation.
 
