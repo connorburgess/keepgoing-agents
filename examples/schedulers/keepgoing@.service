@@ -2,11 +2,13 @@
 #   cp keepgoing@.service ~/.config/systemd/user/
 #   systemctl --user enable --now keepgoing@example-bb-loop
 # SIGTERM from systemctl stop ends the daemon at once.
+# The loop's configuration file is looptender.yaml (keepgoing.yaml from
+# releases up to v0.2.0 is read the same way); use whichever your loop has.
 [Unit]
 Description=keepgoing daemon for %i
 
 [Service]
-ExecStart=/usr/local/bin/keepgoing daemon -c %h/.config/agent-loops/%i/keepgoing.yaml
+ExecStart=/usr/local/bin/keepgoing daemon -c %h/.config/agent-loops/%i/looptender.yaml
 Restart=on-failure
 RestartSec=30
 

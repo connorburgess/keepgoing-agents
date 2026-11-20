@@ -10,8 +10,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/connorburgess/keepgoing-agents/internal/decide"
-	"github.com/connorburgess/keepgoing-agents/internal/evidence"
+	"github.com/looptender/looptender/internal/decide"
+	"github.com/looptender/looptender/internal/evidence"
 )
 
 // questionIDPattern is control.QuestionIDPattern; the journal does not import control.
@@ -67,6 +67,10 @@ type Record struct {
 	Nudges               int            `json:"nudges"`
 	Reprompts            int            `json:"reprompts"`
 	LastActiveRecoveryAt *time.Time     `json:"lastActiveRecoveryAt"`
+	// ContextBytes is the length of the supervision context blocks
+	// (loop.prompt_context) this check's sends carried, counting only sends
+	// the adapter did not refuse to start. Zero when there were none.
+	ContextBytes int `json:"contextBytes,omitempty"`
 }
 
 // ControlChange describes a successful save, not report delivery or an agent
@@ -220,7 +224,7 @@ func repeatable(r Record) bool {
 	if dry {
 		return true // A dry run executes nothing, whatever it proposed.
 	}
-	return r.Action == "none" && !attempted(r) && r.LimitWaitReport == "none" && r.Lanes == (LaneWork{}) && !r.NewThread && !r.RouteListChanged && r.Refusal == "" && !r.ModelFallback
+	return r.Action == "none" && !attempted(r) && r.LimitWaitReport == "none" && r.Lanes == (LaneWork{}) && !r.NewThread && !r.RouteListChanged && r.Refusal == "" && !r.ModelFallback && r.Cause != TimingRepair
 }
 
 // returned reports a check that returned the loop to the primary. The
@@ -257,7 +261,9 @@ func tierOf(r Record) string {
 		return TierActivity
 	case "control":
 		c := r.ControlChange
-		if !sameControls(r.ControlBefore, r.ControlAfter) || (c != nil && (c.OwnershipChanged || c.Operation == "daemon_takeover" || c.Operation == "transfer_begin" || c.Operation == "transfer_finish")) {
+		if !sameControls(r.ControlBefore, r.ControlAfter) || (c != nil && (c.OwnershipChanged || c.Operation == "daemon_takeover" || c.Operation == "transfer_begin" || c.Operation == "transfer_finish" || c.Operation == "supersede" ||
+			c.Operation == "session_reset_by_thread" || c.Operation == "session_reset_by_terminal")) {
+			// A session reset changes which conversation has the loop.
 			return TierKey
 		}
 		return TierActivity
@@ -276,7 +282,7 @@ func tierOf(r Record) string {
 		if (r.Action == "handoff" || r.Action == "switch_back") && r.TargetKeyAfter == "unavailable" && r.Outcome == "succeeded" {
 			return TierKey
 		}
-		if attempted(r) || failedProbes(r) > 0 || limitWaitCause(r.Cause) || r.LimitWaitReport != "none" || r.Lanes != (LaneWork{}) {
+		if attempted(r) || failedProbes(r) > 0 || limitWaitCause(r.Cause) || r.LimitWaitReport != "none" || r.Lanes != (LaneWork{}) || r.Cause == TimingRepair {
 			return TierCondition
 		}
 		if repeatable(r) && r.Outcome != "failed" {
@@ -545,11 +551,16 @@ func clean(r Record) Record {
 			Action: "none", Cause: "other", Outcome: "control_saved"}
 		if r.ControlChange != nil {
 			c := *r.ControlChange
-			c.Operation = oneOf(c.Operation, "unavailable", "enable", "disable", "pause", "resume", "stop", "complete", "await-user", "start", "daemon_takeover", "transfer_begin", "transfer_finish",
+			c.Operation = oneOf(c.Operation, "unavailable", "enable", "disable", "pause", "resume", "stop", "complete", "await-user", "start", "daemon_takeover", "transfer_begin", "transfer_finish", "supersede",
 				// The same three changes made from the keepgoing panel.
 				"panel_pause", "panel_stop", "panel_resume",
+				// Restrictive holds saved from the paired Telegram remote channel.
+				"telegram_pause", "telegram_stop",
 				// A question the loop raised for a person, and its end.
-				"question_raised", "question_answered", "question_withdrawn")
+				"question_raised", "question_answered", "question_withdrawn",
+				// The file that runs a loop's checks, replaced with the panel's
+				// build or restored from its backup (no path, no label).
+				"panel_replace_build", "panel_undo_replace_build", "session_reset_by_thread", "session_reset_by_terminal")
 			c.Caller = oneOf(c.Caller, "unavailable", "owner_thread", "other_thread", "terminal", "client")
 			c.NewEpisode = c.NewEpisode && (c.Operation == "resume" || c.Operation == "panel_resume")
 			if !questionIDPattern.MatchString(c.QuestionID) {
@@ -582,8 +593,10 @@ func clean(r Record) Record {
 	r.TurnRetry = oneOf(r.TurnRetry, "none", "retried", "queued", "nothing_to_retry", "not_in_error", "already_queued", "queue_unconfirmed", "refused", "unsupported")
 	r.Lanes = LaneWork{Retried: max(0, r.Lanes.Retried), GivenUp: max(0, r.Lanes.GivenUp), Deferred: max(0, r.Lanes.Deferred)}
 	r.Refusal = oneOf(r.Refusal, "", "refused", "recovered")
+	r.ContextBytes = max(0, r.ContextBytes)
 	if r.Kind != "tick" {
 		r.LimitWaitReport, r.TurnRetry, r.Lanes, r.RouteListChanged, r.Refusal, r.ModelFallback, r.Returned = "none", "none", LaneWork{}, false, "", false, nil
+		r.ContextBytes = 0
 	}
 	if r.Returned != nil {
 		ret := Return{FromKey: r.Returned.FromKey, Reason: oneOf(r.Returned.Reason, "unavailable", ReturnRemoved, ReturnDisabled, ReturnNoCreatedThread)}
@@ -660,6 +673,8 @@ func Cause(reason string) string {
 		return "nudge_held"
 	case decide.HungTurnReason:
 		return "hung_wait"
+	case decide.IdleSpacedReason:
+		return string(decide.IdleUnchanged)
 	}
 	// The stall rule's hold after nudges that were held back.
 	if strings.HasPrefix(reason, "no progress after ") && strings.Contains(reason, decide.HeldNudgesClause+")") {
@@ -684,12 +699,18 @@ func DecisionCause(d decide.Decision) string {
 	if d.LimitWait != "" {
 		return cleanCause(string(d.LimitWait))
 	}
+	if d.IdleWait != "" {
+		return cleanCause(string(d.IdleWait))
+	}
 	return Cause(d.Reason)
 }
 
 func cleanCause(value string) string {
-	return oneOf(value, "unavailable", "disabled", "paused", "awaiting_user", "completed", "retrying", "retry_unverified", "retry_silent", "handoff_deferred", "network_down", "deadline", "send_limit", "git_limit", "stall_limit", "stall_limit_held", "nudge_held", "hung_wait", "stall", "idle", "active", "child_input", "child_busy", "child_error", "child_unverified", "input", "stop", "limit_wait", "limit_no_fallback", "limit_failover_disabled", "limit_refusal_unrecovered", "restricted", "refused_continue", "refused_wait", "refusal_ask", "decline_acknowledged", "other")
+	return oneOf(value, "unavailable", "disabled", "paused", "awaiting_user", "completed", "retrying", "retry_unverified", "retry_silent", "handoff_deferred", "network_down", "deadline", "send_limit", "git_limit", "stall_limit", "stall_limit_held", "nudge_held", "hung_wait", "stall", "idle", "active", "child_input", "child_busy", "child_error", "child_unverified", "input", "stop", "limit_wait", "limit_no_fallback", "limit_failover_disabled", "limit_refusal_unrecovered", "restricted", "refused_continue", "refused_wait", "refusal_ask", "decline_acknowledged", "idle_unchanged",
+		TimingStepUp, TimingStepDown, TimingReturn, TimingRepair,
+		"near_reset_unused", "projected_over_down_at", "reset_passed", "runs_out_since_step_up", "left_configuration", "unsettled_step", "route_left_configuration", "other")
 }
 func cleanAction(value string) string {
-	return oneOf(value, "unavailable", "none", "wake", "nudge", "reprompt", "await_user", "stop", "handoff", "switch_back")
+	return oneOf(value, "unavailable", "none", "wake", "nudge", "reprompt", "await_user", "stop", "handoff", "switch_back",
+		TimingStepUp, TimingStepDown, TimingReturn, TimingRepair)
 }

@@ -35,6 +35,7 @@ public struct PanelLoop: Decodable, Equatable {
 }
 
 public struct PanelList: Decodable, Equatable {
+    public var accountQuotas: AccountQuotaList? = nil
     let schemaVersion: Int
     public let registry: String
     public let complete: Bool
@@ -81,6 +82,7 @@ extension Contract {
         guard let result = try? JSONDecoder().decode(PanelStatus.self, from: data) else { throw ClientFailure.invalidResponse }
         guard result.schemaVersion == 1 else { throw ClientFailure.unsupported }
         guard (result.idleRemainingSeconds ?? 0) >= 0 else { throw ClientFailure.invalidResponse }
+        if let exposure = result.exposure, panelAuthority(exposure) == nil { throw ClientFailure.invalidResponse }
         return result
     }
 
@@ -99,6 +101,7 @@ extension Contract {
               result.loops.count <= 128, result.needsYou >= 0, result.unread >= 0, result.unread <= result.needsYou, result.omitted >= 0,
               Set(result.loops.map(\.key)).count == result.loops.count,
               // Checked on what will be shown: a name of control characters only is empty.
+              (result.accountQuotas == nil || validQuotas(result.accountQuotas!)),
               result.loops.allSatisfy({ validKey($0.key) && !text($0.name).isEmpty && !text($0.phrase).isEmpty }) else {
             throw ClientFailure.invalidResponse
         }
@@ -116,6 +119,10 @@ public enum MenuCommand: Equatable {
     case readStatus
     /// Runs `keepgoing panel`: the page opens on what needs a person.
     case openPanel
+    /// Opens this account in the panel; no sign-in or provider read.
+    case openAccount(id: String)
+    case connectAccount(id: String)
+    case openAccountWithChanges(id: String)
     /// Runs `keepgoing panel --loop <key>`.
     case openLoop(key: String)
     /// Runs `keepgoing panel --allow-changes`, after a confirmation.
@@ -253,9 +260,9 @@ public enum MenuBuilder {
     /// only while it is running.
     public static func build(_ reading: MenuReading, now: Date, notice: String? = nil, refreshing: Bool = false, panel: PanelStatus? = nil) -> MenuModel {
         // The first row is always there and always tries, whatever was read.
-        var rows = [action("Open keepgoing Panel", .openPanel, symbol: "macwindow", help: "Opens the keepgoing panel in your browser.")]
+        var rows = [action("Open looptender Panel", .openPanel, symbol: "macwindow", help: "Opens the looptender panel in your browser.")]
         var badge = ""
-        var iconLabel = "keepgoing"
+        var iconLabel = "looptender"
         var line: String
         switch reading {
         case .notRead:
@@ -263,13 +270,13 @@ public enum MenuBuilder {
         case .reading:
             line = "Reading…"
         case .unsupported:
-            line = "The menu and keepgoing are different versions. Use the panel."
+            line = "The menu and looptender are different versions. Use the panel."
             badge = "?"
-            iconLabel = "keepgoing, can't be read"
+            iconLabel = "looptender, can't be read"
         case .unavailable:
-            line = "Can't reach keepgoing. Run keepgoing doctor."
+            line = "Can't reach looptender. Run keepgoing doctor."
             badge = "?"
-            iconLabel = "keepgoing, can't be read"
+            iconLabel = "looptender, can't be read"
         case .read(let list, let at):
             let held = max(0, list.needsYou - list.unread)
             if let needs = needsLine(held: held, unread: list.unread) {
@@ -277,13 +284,17 @@ public enum MenuBuilder {
                 // that something could not be read.
                 rows.append(action(needs, .openPanel, symbol: held > 0 ? "exclamationmark.circle.fill" : "questionmark.circle", help: "Opens the panel on what needs you."))
                 badge = list.needsYou > 99 ? "99+" : String(list.needsYou)
-                iconLabel = "keepgoing, " + needs
+                iconLabel = "looptender, " + needs
             } else if !list.allClear {
                 // The icon is plain only when the CLI says every loop was
                 // read and none needs a person. An unreadable registry or a
                 // read that was cut off is not "nothing needs you".
                 badge = "?"
-                iconLabel = list.registry == "available" ? "keepgoing, not every loop was read" : "keepgoing, the list of loops can't be read"
+                iconLabel = list.registry == "available" ? "looptender, not every loop was read" : "looptender, the list of loops can't be read"
+            }
+            if let quota = list.accountQuotas {
+                rows.append(separator)
+                rows.append(contentsOf: quotaRows(quota))
             }
             if !list.loops.isEmpty { rows.append(separator) }
             for loop in list.loops.prefix(maxLoops) {
@@ -327,14 +338,14 @@ public enum MenuBuilder {
         rows.append(separator)
         if let panel, panel.exposure != nil {
             rows.append(action("Open Panel with Controls…", .openPanelWithChanges, symbol: "slider.horizontal.3",
-                               help: "Opens the panel so its page can pause, stop and resume loops. Asks first."))
+                               help: "Opens the panel so its page can pause, stop and resume loops and offer a separate review to replace a loop’s own build. Asks first."))
         }
         if let panel, panel.running {
             // Named for what it stops, the page, so it is not taken for
             // stopping a loop; what happens to the loops is in the help.
             rows.append(action("Stop the Panel Page", .stopPanel, symbol: "xmark.circle", help: "Stops the panel's background process. Your loops keep running.", detail: stopsIn(panel.idleRemainingSeconds)))
         }
-        rows.append(action("Quit keepgoing Menu", .quit, symbol: "power", help: "Quits this menu. Supervision keeps running."))
+        rows.append(action("Quit looptender Menu", .quit, symbol: "power", help: "Quits this menu. Supervision keeps running."))
         rows.append(separator)
         rows.append(status(notice ?? (refreshing ? "Reading…" : line)))
         return MenuModel(rows: rows, badge: badge, iconAccessibilityLabel: iconLabel)
@@ -368,6 +379,8 @@ public enum MenuBuilder {
         case .readList: return ["panel", "list", "--json"]
         case .readStatus: return ["panel", "status", "--json"]
         case .openPanel: return ["panel"]
+        case .openAccountWithChanges(let id): return id.count == 32 && id.allSatisfy { "0123456789abcdef".contains($0) } ? ["panel", "--allow-changes", "--account", id] : nil
+        case .connectAccount(let id), .openAccount(let id): return id.count == 32 && id.allSatisfy { "0123456789abcdef".contains($0) } ? ["panel", "--account", id] : nil
         case .openLoop(let key): return Contract.validKey(key) ? ["panel", "--loop", key] : nil
         case .openPanelWithChanges: return ["panel", "--allow-changes"]
         case .stopPanel: return ["panel", "stop"]

@@ -3,4 +3,7 @@
 *.test
 *.out
 .DS_Store
-/cmd/keepgoing/keepgoing
+/cmd/looptender/keepgoing
+/tools/modern-web-guidance/node_modules/
+/tools/modern-web-guidance/report/
+/tools/modern-web-guidance/__pycache__/

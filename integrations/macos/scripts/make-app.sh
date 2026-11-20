@@ -24,7 +24,7 @@ cat > "$app/Contents/Info.plist" <<PLIST
 	<key>CFBundleIdentifier</key>
 	<string>local.keepgoing.menu-preview</string>
 	<key>CFBundleName</key>
-	<string>keepgoing Menu</string>
+	<string>looptender Menu</string>
 	<key>CFBundleExecutable</key>
 	<string>KeepgoingMenu</string>
 	<key>CFBundlePackageType</key>

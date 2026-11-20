@@ -1,18 +1,22 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, realpath, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createFakePluginHost, makeHostResponse, makeMessageDispatchHookContext, makeThreadResponse } from "@get-bb/plugin-sdk/testing";
 import plugin from "./server.ts";
 import { hostContract } from "./host-contract.ts";
+import { setupOnHost, type Execute } from "./setup-host.ts";
 import { newThreadResult, marker, DEFAULT_BOUNDS } from "./new-thread-contract.ts";
 
 const TASK = "Fictional private task. Done when the example passes.";
 
 // A stand-in program that only answers `version`; running anything else is a failure.
-async function world(options: { mode?: "manual" | "automatic"; storedMode?: unknown; program?: "present" | "missing"; hook?: "absent" | "refused"; setups?: number } = {}) {
-  const dir = await mkdtemp(join(tmpdir(), "keepgoing-new-thread-"));
+// cli: route the host's init through the host's own setupOnHost, with a
+// stand-in CLI that names the configuration file so; otherwise the host is a
+// stand-in that answers the plan directly.
+async function world(options: { mode?: "manual" | "automatic"; storedMode?: unknown; program?: "present" | "missing"; hook?: "absent" | "refused"; setups?: number; cli?: string } = {}) {
+  const dir = await realpath(await mkdtemp(join(tmpdir(), "keepgoing-new-thread-")));
   const program = join(dir, "keepgoing-stand-in");
   await writeFile(program, "#!/bin/sh\n[ \"$1\" = version ] && exit 0\nexit 9\n", { mode: 0o700 });
   // BB creates the thread after the control asks for its request. The margin
@@ -21,7 +25,9 @@ async function world(options: { mode?: "manual" | "automatic"; storedMode?: unkn
   // BB titles a thread from its first message, so the title is task text too.
   const thread = makeThreadResponse({ id: "thr_new", environmentId: "env_example", projectId: "proj_example", providerId: "example-provider", title: "Fictional private task", status: "pending", createdAt: created });
   const host = makeHostResponse({ id: "host_example", status: "connected" });
-  const environment = { id: "env_example", projectId: "proj_example", hostId: host.id, path: "/projects/example-app", isGitRepo: true, status: "provisioning", hostLifecycle: "active", lifecycle: { phase: "active" } };
+  const project = join(dir, "example-app");
+  if (options.cli) await mkdir(project);
+  const environment = { id: "env_example", projectId: "proj_example", hostId: host.id, path: options.cli ? project : "/projects/example-app", isGitRepo: true, status: "provisioning", hostLifecycle: "active", lifecycle: { phase: "active" } };
   const agent = { adapter: "bb", provider: "example-provider", bbThread: thread.id };
   const state = { loop: "release-notes-for-2-4", target: "primary", controlState: "disabled", control: {}, window: "open", state: {}, primaryAgent: agent, targetAgent: agent, daemon: { state: "not_recorded" } };
   const hostCalls: { method: string; input: unknown }[] = [];
@@ -31,6 +37,18 @@ async function world(options: { mode?: "manual" | "automatic"; storedMode?: unkn
     sdk: { threads: { get: async () => thread }, environments: { get: async () => environment }, hosts: { get: async () => host } },
     experimental_callHostRpc: async ({ method, input, hostId }) => {
       assert.equal(hostId, host.id); hostCalls.push({ method, input });
+      if (method === "init" && options.cli) {
+        // The CLI's own JSON, as init prints it, under the given file name.
+        const cli: Execute = async (_bin, args) => {
+          const flag = (name: string) => args[args.indexOf(name) + 1];
+          const at = join(dir, "setup", flag("--name"));
+          return { code: 0, data: { schemaVersion: 1, outcome: args.includes("--dry-run") ? "preview" : "created", loop: flag("--name"), project: flag("--project"), configPath: join(at, options.cli!), stateDir: join(at, "state"), taskPath: join(at, "task.md"),
+            goal: { promptContext: true, titleSource: "loop_name", specificationSource: "task_snapshot", ...(args.includes("--dry-run") ? {} : { record: { id: "goal_0123456789abcdef0123456789abcdef", revision: 1, state: "recorded" } }) },
+            primary: { agent: { adapter: "bb", bbThread: flag("--thread"), provider: flag("--provider") } }, fallbacks: [],
+            limits: { interval: "5m0s", wakeEvery: "1h0m0s", stallAfter: "30m0s", backoff: "10m0s", maxNudges: 3, maxReprompts: 3, failoverOn: [], maxSends: Number(flag("--max-sends")), noProgressTimeout: flag("--no-progress-timeout") } } };
+        };
+        return setupOnHost(hostContract.init.input.parse(input), undefined, cli);
+      }
       if (method === "init") {
         const p = hostContract.init.input.parse(input);
         return { plan: { withGoal: true, loop: p.name, project: p.target.project, configPath: "/private/release-notes/keepgoing.yaml", stateDir: "/private/release-notes/state", threadId: p.target.threadId, provider: p.target.provider,
@@ -312,4 +330,26 @@ test("a host plan without the asked-for limits creates and starts nothing, and c
     const outcome = (await w.rpc({ action: "outcome", threadId: "thr_new" })).outcome!;
     assert.equal(outcome.state, "failed"); assert.match(outcome.message, /did not report the loop-wide limits/); assert.equal(outcome.bounds, undefined);
   } finally { await w.done(); }
+});
+
+test("new thread setup goes through the host's check of the file the CLI wrote: looptender.yaml and keepgoing.yaml pass, any other name stops it", async () => {
+  for (const [cli, state] of [["looptender.yaml", "ready"], ["keepgoing.yaml", "ready"], ["other.yaml", "failed"]] as const) {
+    const w = await world({ mode: "manual", cli });
+    try {
+      const armed = await w.rpc({ action: "arm", draftKey: "draft-example", projectId: "proj_example", bounds: DEFAULT_BOUNDS, shownMode: "manual" });
+      await w.hook({ experimental_submission: { pluginId: "keepgoing", data: marker(armed.intent!) } });
+      w.environment.status = "ready";
+      await w.turnStarts();
+      const outcome = (await w.rpc({ action: "outcome", threadId: "thr_new" })).outcome!;
+      assert.equal(outcome.state, state, cli);
+      const inits = w.hostCalls.filter(c => c.method === "init").length;
+      if (state === "ready") {
+        assert.equal(inits, 3, cli);
+        const saved = await w.bb.storage.kv.get("setups.v1") as { configPath: string }[];
+        assert.ok(saved.some(r => r.configPath.endsWith("/" + cli)), JSON.stringify(saved));
+      } else {
+        assert.equal(inits, 1, "a preview whose file has another name goes no further");
+      }
+    } finally { await w.done(); }
+  }
 });

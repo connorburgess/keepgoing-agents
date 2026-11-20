@@ -6,16 +6,17 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"github.com/looptender/looptender/internal/envvar"
 	"io"
 	"os"
 	"os/exec"
 	"strings"
 	"time"
 
-	"github.com/connorburgess/keepgoing-agents/internal/adapter"
-	"github.com/connorburgess/keepgoing-agents/internal/config"
-	"github.com/connorburgess/keepgoing-agents/internal/decide"
-	"github.com/connorburgess/keepgoing-agents/internal/evidence"
+	"github.com/looptender/looptender/internal/adapter"
+	"github.com/looptender/looptender/internal/config"
+	"github.com/looptender/looptender/internal/decide"
+	"github.com/looptender/looptender/internal/evidence"
 )
 
 // Cursor runs one print-mode turn per send. Only provider lifecycle fields and
@@ -351,7 +352,9 @@ func (c *Cursor) version(ctx context.Context) string {
 	defer cancel()
 	cmd := exec.CommandContext(ctx, c.cfg.CLI, "--version")
 	cmd.Dir = c.cfg.Workdir
-	cmd.Env = append(os.Environ(), envList(c.cfg.Env)...)
+	// The provider's program: not the session the supervisor was started
+	// from; the loop's own entries come after, so they win.
+	cmd.Env = append(envvar.WithoutSupervisorSession(os.Environ()), envList(c.cfg.Env)...)
 	cmd.WaitDelay = time.Second
 	out, err := cmd.Output()
 	if err != nil || len(out) > 128 {

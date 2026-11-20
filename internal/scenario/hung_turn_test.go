@@ -6,7 +6,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/connorburgess/keepgoing-agents/internal/decide"
+	"github.com/looptender/looptender/internal/decide"
 )
 
 // TestScenarioHungTurnAfterAShortOutageAndASleep is the owner's 20-minute

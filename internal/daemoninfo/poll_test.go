@@ -4,7 +4,7 @@ import (
 	"path/filepath"
 	"testing"
 
-	"github.com/connorburgess/keepgoing-agents/internal/snapshot/snapshottest"
+	"github.com/looptender/looptender/internal/snapshot/snapshottest"
 )
 
 // status reads the endpoint record while a restarting daemon replaces it. A

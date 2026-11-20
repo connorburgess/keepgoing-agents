@@ -108,7 +108,7 @@ public struct LocalClient {
     /// Nothing but the fixed arguments and a validated page key is passed.
     public func open(_ command: MenuCommand) throws {
         switch command {
-        case .openPanel, .openLoop, .openPanelWithChanges, .stopPanel: break
+        case .openPanel, .openAccount, .openAccountWithChanges, .openLoop, .openPanelWithChanges, .stopPanel: break
         default: throw ClientFailure.unavailable
         }
         guard var arguments = MenuBuilder.arguments(command) else { throw ClientFailure.unavailable }
@@ -145,8 +145,8 @@ public struct LocalClient {
             return ChangeResult(outcome: "uncertain", text: Contract.text(review.lost))
         }
     }
-    static let notStarted = "keepgoing could not be started, so nothing was changed. Check the keepgoing executable this menu was started with."
-    static let notAccepted = "keepgoing did not accept this request, so nothing ran and nothing was changed. The menu and keepgoing may be different versions."
+    static let notStarted = "looptender could not be started, so nothing was changed. Check the looptender executable this menu was started with."
+    static let notAccepted = "looptender did not accept this request, so nothing ran and nothing was changed. The menu and looptender may be different versions."
     /// The review of one change to every loop, by `client review --all`,
     /// which changes nothing.
     public func reviewAll(_ action: LoopAction) throws -> GroupReading {

@@ -16,9 +16,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/connorburgess/keepgoing-agents/internal/adapter"
-	"github.com/connorburgess/keepgoing-agents/internal/config"
-	"github.com/connorburgess/keepgoing-agents/internal/decide"
+	"github.com/looptender/looptender/internal/adapter"
+	"github.com/looptender/looptender/internal/config"
+	"github.com/looptender/looptender/internal/decide"
 )
 
 const (
@@ -294,7 +294,7 @@ func TestDecodedFieldsAreAnAllowlist(t *testing.T) {
 		observedAt ok outcomes parentThreadId pending providerCode providerThread providerThreadId queuedMessageCount
 		rateLimits resetsAt resetsAtMs retries retryOfRequestId retrySchema scannedAt seq status systemMessageKind
 		systemMessageSubject thread threadId turnSeq turnStartedMs type willRetry windows childOutcomeSeq blocked key lanes answeringRequest
-		evidence at class retryKnown activeBackgroundAgentCount turnStartSeq openTools toolsUncertain fallbackSeq
+		evidence at class retryKnown activeBackgroundAgentCount turnStartSeq openTools toolsUncertain fallbackSeq turnRequests turnStarts
 		title`)
 	want := map[string]bool{}
 	for _, tag := range allowed {

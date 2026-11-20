@@ -1,0 +1,496 @@
+package main
+
+import (
+	"context"
+	"encoding/json"
+	"errors"
+	"flag"
+	"fmt"
+	"io"
+	"os"
+	"path/filepath"
+	"regexp"
+	"strconv"
+	"time"
+
+	"github.com/looptender/looptender/internal/config"
+	"github.com/looptender/looptender/internal/control"
+	"github.com/looptender/looptender/internal/incident"
+	"github.com/looptender/looptender/internal/snapshot"
+	"github.com/looptender/looptender/internal/state"
+)
+
+var transferThreadID = regexp.MustCompile(`^thr_[A-Za-z0-9_-]{1,128}$`)
+var transferProjectID = regexp.MustCompile(`^proj_[A-Za-z0-9_-]{1,128}$`)
+var transferEnvironmentID = regexp.MustCompile(`^env_[A-Za-z0-9_-]{1,128}$`)
+var transferHostID = regexp.MustCompile(`^host_[A-Za-z0-9_-]{1,128}$`)
+var transferLabel = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._:/-]{0,127}$`)
+
+type transferTarget struct {
+	Thread      string `json:"thread"`
+	Project     string `json:"project,omitempty"`
+	Environment string `json:"environment,omitempty"`
+	Host        string `json:"host,omitempty"`
+	Provider    string `json:"provider,omitempty"`
+	Status      string `json:"status,omitempty"`
+}
+
+type transferPreview struct {
+	DestinationRoute     *config.BBTransferRoute `json:"destinationRoute,omitempty"`
+	SchemaVersion        int                     `json:"schemaVersion"`
+	Outcome              string                  `json:"outcome"`
+	ApplySupported       bool                    `json:"applySupported"`
+	ReadAt               time.Time               `json:"readAt"`
+	Compatibility        string                  `json:"compatibility"`
+	From                 transferTarget          `json:"from"`
+	To                   transferTarget          `json:"to"`
+	ConfiguredProvider   string                  `json:"configuredProvider,omitempty"`
+	ConfiguredModel      string                  `json:"configuredModel,omitempty"`
+	ConfiguredReasoning  string                  `json:"configuredReasoning,omitempty"`
+	ConfiguredQuotaGroup string                  `json:"configuredQuotaGroup,omitempty"`
+	Controls             *incident.Controls      `json:"controls,omitempty"`
+	Owner                string                  `json:"owner,omitempty"`
+	Goal                 *control.GoalSummary    `json:"goal,omitempty"`
+	Checks               []doctorCheck           `json:"checks"`
+	// Plan is present only when the preview was asked about a move across
+	// environments or with changed labels.
+	Plan *transferPlan `json:"plan,omitempty"`
+}
+
+// transferChange is one configured label before and after a planned move.
+// From is left out when the configured label failed the label shape check, so
+// a malformed value is never printed.
+type transferChange struct {
+	From *string `json:"from,omitempty"`
+	To   string  `json:"to"`
+}
+
+// transferPlan is what an explicit move across environments or with new
+// labels would change. Labels come only from flags and are never verified.
+type transferPlan struct {
+	AcrossEnvironment      bool            `json:"acrossEnvironment"`
+	AcceptWorkspaceOutside bool            `json:"acceptWorkspaceOutside"`
+	Provider               *transferChange `json:"provider,omitempty"`
+	QuotaGroup             *transferChange `json:"quotaGroup,omitempty"`
+	Model                  *transferChange `json:"model,omitempty"`
+	Reasoning              *transferChange `json:"reasoning,omitempty"`
+	LabelVerification      string          `json:"labelVerification"`
+}
+
+// A preview is advisory, not a prepared transaction or an authorization token.
+// The preview branch takes no locks and performs no provider commands, control
+// writes or environment changes. Apply/recover have their own guarded path.
+func transferCommand(e env, args []string, run doctorRun) int {
+	if len(args) > 0 && args[0] == "reconcile" {
+		return transferReconcileCommand(e, args, run, run)
+	}
+	if len(args) > 0 && args[0] == "supersede" {
+		return transferSupersede(e, args[1:])
+	}
+	if len(args) > 0 && (args[0] == "apply" || args[0] == "recover") {
+		return transferApply(e, args, run, nil)
+	}
+	if len(args) > 0 && args[0] == "inventory" {
+		return transferInventoryCommand(e, args, run, run)
+	}
+	if len(args) == 0 || args[0] != "preview" {
+		e.errf("usage: keepgoing transfer preview|inventory|apply|recover|supersede; see transfer <command> --help")
+		return exitUsage
+	}
+	fs := flag.NewFlagSet("transfer preview", flag.ContinueOnError)
+	fs.SetOutput(io.Discard)
+	allowProviderChange := fs.Bool("allow-provider-change", false, "explicitly change provider; clears account annotation, probe and timing settings")
+	path := fs.String("c", "", configFlagHelp("configuration path"))
+	thread := fs.String("thread", "", "existing destination BB thread ID")
+	asJSON := fs.Bool("json", false, "versioned advisory preview")
+	offline := fs.Bool("offline", false, "skip BB identity queries")
+	timeout := fs.Duration("timeout", 5*time.Second, "timeout per read-only BB query (at most 30s)")
+	across := fs.Bool("across-environment", false, "assess a move to a thread in another BB project, environment or working directory on the same host")
+	acceptOutside := fs.Bool("accept-workspace-outside", false, "with --across-environment, accept a destination working directory that is not inside a progress repository or its worktrees")
+	newProvider := fs.String("provider", "", "provider label after the move (explicit; never inferred from BB)")
+	newGroup := fs.String("quota-group", "", "quota group label after the move")
+	newModel := fs.String("model", "", "BB model label after the move")
+	noModel := fs.Bool("no-model", false, "clear the BB model label in the move")
+	newReasoning := fs.String("reasoning", "", "BB reasoning label after the move")
+	noReasoning := fs.Bool("no-reasoning", false, "clear the BB reasoning label in the move")
+	if err := fs.Parse(args[1:]); err != nil {
+		if errors.Is(err, flag.ErrHelp) {
+			fs.SetOutput(e.stdout)
+			fs.PrintDefaults()
+			return exitOK
+		}
+		e.errf("transfer: invalid arguments; see transfer preview --help")
+		return exitUsage
+	}
+	if fs.NArg() != 0 || !transferThreadID.MatchString(*thread) || *timeout <= 0 || *timeout > 30*time.Second {
+		e.errf("transfer: provide a valid --thread and a timeout greater than zero and at most 30s; no positional arguments")
+		return exitUsage
+	}
+	var providerFlags *transferProviderFlags
+	if *allowProviderChange {
+		providerFlags = &transferProviderFlags{
+			allow: true,
+			route: config.BBTransferRoute{
+				Provider:  *newProvider,
+				Group:     *newGroup,
+				Model:     *newModel,
+				Reasoning: *newReasoning,
+			},
+		}
+		if err := providerFlags.validate(fs, false); err != nil {
+			e.errf("transfer: %v", err)
+			return exitUsage
+		}
+	} else {
+		for _, l := range []string{*newProvider, *newGroup, *newModel, *newReasoning} {
+			if l != "" && !transferLabel.MatchString(l) {
+				e.errf("transfer: --provider, --quota-group, --model and --reasoning take a plain label")
+				return exitUsage
+			}
+		}
+		if (*newModel != "" && *noModel) || (*newReasoning != "" && *noReasoning) || (*acceptOutside && !*across) {
+			e.errf("transfer: --model and --no-model, or --reasoning and --no-reasoning, are exclusive; --accept-workspace-outside requires --across-environment")
+			return exitUsage
+		}
+	}
+	if !configDefault(e, "transfer", fs, path) {
+		return exitUsage
+	}
+	cfg, err := config.Load(*path)
+	if err != nil {
+		e.errf("transfer: configuration unavailable or invalid; inspect it privately")
+		return exitUsage
+	}
+	a := cfg.Loop.Agent
+	if a.Adapter != "bb" || a.BB == nil || !transferThreadID.MatchString(a.BB.Thread) {
+		e.errf("transfer: preview requires a BB primary with a valid thread ID")
+		return exitUsage
+	}
+	r := transferPreview{SchemaVersion: 1, Outcome: "preview", ApplySupported: true, ReadAt: time.Now().UTC(), Compatibility: "compatible_metadata", From: transferTarget{Thread: a.BB.Thread}, To: transferTarget{Thread: *thread}, Checks: []doctorCheck{}}
+	add := func(id, status, message string) {
+		r.Checks = append(r.Checks, doctorCheck{ID: id, Status: status, Message: message})
+		if status == "error" {
+			r.Compatibility = "blocked"
+		} else if status == "unavailable" && r.Compatibility != "blocked" {
+			r.Compatibility = "unavailable"
+		}
+	}
+	var route *config.BBTransferRoute
+	if providerFlags != nil {
+		var routeErr error
+		route, routeErr = providerFlags.plan(a.Provider)
+		if routeErr != nil {
+			add("provider", "error", routeErr.Error())
+		}
+		if route != nil {
+			r.DestinationRoute = route
+			add("provider_settings", "warning", "Explicit provider change replaces provider/model/reasoning/quota-group labels and clears account annotation, probe and timing settings. Account identity remains unverified.")
+		}
+	}
+	if *thread == a.BB.Thread {
+		add("destination", "error", "Source and destination are the same thread.")
+	}
+	// A copied label may describe an account, but never proves a subscription.
+	if !transferLabel.MatchString(a.Provider) || !transferLabel.MatchString(a.Group) || (a.BB.Model != "" && !transferLabel.MatchString(a.BB.Model)) || (a.BB.Reasoning != "" && !transferLabel.MatchString(a.BB.Reasoning)) {
+		add("labels", "error", "Provider, quota group, model or reasoning labels are missing or unsupported; raw values withheld.")
+	} else {
+		r.ConfiguredProvider, r.ConfiguredQuotaGroup, r.ConfiguredModel, r.ConfiguredReasoning = a.Provider, a.Group, a.BB.Model, a.BB.Reasoning
+		add("labels", "ok", "Configured labels have a supported shape; this does not verify accounts or model access.")
+	}
+	// The planned labels: unchanged unless a flag names a new value.
+	plan := &transferPlan{AcrossEnvironment: *across, AcceptWorkspaceOutside: *acceptOutside, LabelVerification: "unavailable"}
+	afterProvider := a.Provider
+	// optional says whether an empty label is allowed (model and reasoning).
+	change := func(from, to string, optional bool) *transferChange {
+		if from == to {
+			return nil
+		}
+		c := &transferChange{To: to}
+		if transferLabel.MatchString(from) || (optional && from == "") {
+			c.From = &from
+		}
+		return c
+	}
+	if *newProvider != "" {
+		afterProvider = *newProvider
+		plan.Provider = change(a.Provider, *newProvider, false)
+	}
+	if *newGroup != "" {
+		plan.QuotaGroup = change(a.Group, *newGroup, false)
+	}
+	if *newModel != "" || *noModel {
+		plan.Model = change(a.BB.Model, *newModel, true)
+	}
+	if *newReasoning != "" || *noReasoning {
+		plan.Reasoning = change(a.BB.Reasoning, *newReasoning, true)
+	}
+	if !*allowProviderChange && (*across || plan.Provider != nil || plan.QuotaGroup != nil || plan.Model != nil || plan.Reasoning != nil) {
+		r.Plan = plan
+		// This CLI's apply does not perform these moves yet.
+		r.ApplySupported = false
+	}
+	if !*allowProviderChange && plan.Provider != nil {
+		if *newGroup == "" || (*newModel == "" && !*noModel) || (*newReasoning == "" && !*noReasoning) {
+			add("labels_required", "error", "A provider change needs explicit --quota-group, --model or --no-model, and --reasoning or --no-reasoning; no label is carried over or guessed.")
+		}
+		writesProbe, err := cfg.WritesProbe()
+		if err != nil {
+			add("provider_settings", "unavailable", "The configuration file could not be reread to check for provider-bound settings.")
+		} else if writesProbe || cfg.Loop.Timing != nil {
+			add("provider_settings", "error", "The configuration has a probe or timing section, which names the current provider's models or accounts. Remove it before planning a provider change.")
+		} else {
+			add("provider_settings", "ok", "No probe or timing section names the current provider.")
+		}
+	}
+	if cfg.Loop.HasRouteList() {
+		add("fallbacks", "error", "Fallback configurations require a broader transfer plan; this preview only assesses a single BB primary.")
+	}
+	var ctl control.File
+	if err := readTransferRecord(cfg.Loop.StateDir, control.FileName, &ctl); err != nil || control.CheckOwner(ctl, "", false) != nil {
+		add("control", "unavailable", "Control or ownership metadata is unavailable; existing holds must be preserved.")
+	} else {
+		r.Controls = &incident.Controls{Enabled: ctl.Enabled, Paused: ctl.Paused, Stop: ctl.Stop, AwaitingUser: ctl.AwaitingUser, Completed: ctl.Completed}
+		if ctl.Ownership != nil {
+			r.Owner = ctl.Ownership.ThreadID
+		}
+		add("control", "ok", "Current control flags read; notes are withheld. Missing controls mean disabled.")
+		if ctl.PendingTransfer != nil {
+			add("transfer", "error", "A transfer is pending; inspect status and recover it before planning another move.")
+		}
+		if ctl.BBTarget != "" && ctl.BBTarget != a.BB.Thread {
+			add("binding", "error", "Configuration does not match the transferred BB target.")
+		}
+	}
+	var st state.File
+	if err := readTransferRecord(cfg.Loop.StateDir, state.FileName, &st); err != nil {
+		add("target", "unavailable", "Recorded active target is unavailable.")
+	} else if st.Target() != state.Primary {
+		add("target", "error", "The loop is supervising a fallback; a primary-only transfer cannot be assessed.")
+	} else {
+		add("target", "ok", "Recorded active target is primary.")
+	}
+	if g, err := control.LoadGoal(cfg.Loop.StateDir); err != nil {
+		add("goal", "unavailable", "Goal metadata is unavailable; repair it before planning a move.")
+	} else if g != nil {
+		summary := g.Summary()
+		r.Goal = &summary
+		if g.OwningLoop != cfg.Loop.Name {
+			add("goal", "error", "Goal belongs to a different loop name.")
+		}
+	}
+	if *offline {
+		add("threads", "unavailable", "Offline preview skipped BB thread identity and environment checks.")
+	} else {
+		from, fromPath, fromErr := inspectTransferTarget(e.ctx, a.BB.CLI, a.BB.Thread, *timeout, run)
+		to, toPath, toErr := inspectTransferTarget(e.ctx, a.BB.CLI, *thread, *timeout, run)
+		if fromErr != nil || toErr != nil {
+			add("threads", "unavailable", "Both live BB identities and environments could not be verified; raw output withheld.")
+		} else {
+			r.From, r.To = from, to
+			samePlace := from.Project == to.Project && from.Environment == to.Environment && filepath.Clean(fromPath) == filepath.Clean(toPath)
+			switch {
+			case from.Host != to.Host:
+				// Moving between devices is a hop, which this command never does.
+				add("environment", "error", "Destination is on another BB host; moving a loop between devices is not a transfer.")
+			case samePlace:
+				add("environment", "ok", "BB reports the same project, environment, host and working directory for both threads.")
+			case !*across:
+				add("environment", "error", "Destination differs in project, environment or working directory; add --across-environment to assess that move.")
+			default:
+				add("environment", "warning", "Destination differs in project, environment or working directory on the same host; assessed because --across-environment was given.")
+			}
+			switch {
+			case route != nil:
+				if from.Provider != a.Provider || to.Provider != route.Provider {
+					add("provider", "error", "A thread provider differs from the configured provider; automatic relabeling is not supported.")
+				} else {
+					add("provider", "ok", "Thread provider IDs match the source configuration and explicit destination plan.")
+				}
+			case from.Provider != a.Provider:
+				add("provider", "error", "The source thread's provider differs from the configured provider label; repair the configuration before planning a move.")
+			case to.Provider != afterProvider && *newProvider == "":
+				add("provider", "error", "The destination's provider differs from the configured provider; give the new label explicitly with --provider. It is never inferred.")
+			case to.Provider != afterProvider:
+				add("provider", "error", "The destination's provider differs from the --provider label.")
+			case plan.Provider != nil:
+				add("provider", "ok", "The source matches the configured provider label and the destination matches the --provider label.")
+			default:
+				add("provider", "ok", "Both thread provider IDs match the configured provider label.")
+			}
+			// A move to another place must land where progress is measured,
+			// unless a person explicitly accepts that it does not.
+			if *across && !samePlace {
+				status, _ := workspaceVerdict(e.ctx, toPath, cfg.Loop.Progress.Repositories, *timeout)
+				switch {
+				case status == "ok":
+					add("workspace", "ok", "The destination's working directory is inside a progress repository or one of its worktrees.")
+				case *acceptOutside:
+					add("workspace", "warning", "The destination's working directory is not confirmed inside a progress repository; accepted with --accept-workspace-outside. Progress there may not be seen.")
+				case status == "warning":
+					add("workspace", "error", "The destination's working directory is outside every progress repository and its worktrees. Progress there would not be seen; add --accept-workspace-outside to accept that.")
+				default:
+					add("workspace", "unavailable", "Whether the destination's working directory is inside a progress repository could not be established; add --accept-workspace-outside to proceed without it.")
+				}
+			}
+			// Advisory only: appended directly so that it never changes
+			// compatibility, whatever its status.
+			for _, side := range []struct{ id, path string }{{"workspace.from", fromPath}, {"workspace.to", toPath}} {
+				status, message := workspaceVerdict(e.ctx, side.path, cfg.Loop.Progress.Repositories, *timeout)
+				fix := ""
+				if status == "warning" {
+					fix = workspaceFix
+				}
+				r.Checks = append(r.Checks, doctorCheck{ID: side.id, Status: status, Message: message, Fix: fix})
+			}
+		}
+	}
+	if cfg.CheckSources() != nil {
+		add("config", "unavailable", "Configuration changed during preview; discard this result and inspect again.")
+	}
+	// The preview never grants authority or reserves a future apply operation.
+	r.Checks = append(r.Checks,
+		doctorCheck{ID: "model_account", Status: "unavailable", Message: "Thread show does not verify model/reasoning selection, account identity, quota or model access. Configured labels are not verification."},
+		applyCheck(r.Plan != nil),
+		doctorCheck{ID: "freshness", Status: "warning", Message: "Reads are independent, not an atomic snapshot. Holds, ownership and targets may change; a future apply operation must revalidate under locks."},
+	)
+	if *asJSON {
+		enc := json.NewEncoder(e.stdout)
+		enc.SetIndent("", "  ")
+		if enc.Encode(r) != nil {
+			return exitFailed
+		}
+	} else {
+		fmt.Fprintf(e.stdout, "Transfer preview: %s -> %s (%s; apply requires revalidation)\n", r.From.Thread, r.To.Thread, r.Compatibility)
+		for _, target := range []transferTarget{r.From, r.To} {
+			if target.Environment != "" {
+				fmt.Fprintf(e.stdout, "%s: provider=%s status=%s project=%s environment=%s host=%s\n", target.Thread, target.Provider, target.Status, target.Project, target.Environment, target.Host)
+			}
+		}
+		fmt.Fprintf(e.stdout, "Configured provider: %s; model: %s; reasoning: %s; quota group: %s\n", r.ConfiguredProvider, r.ConfiguredModel, r.ConfiguredReasoning, r.ConfiguredQuotaGroup)
+		if route := r.DestinationRoute; route != nil {
+			fmt.Fprintf(e.stdout, "Destination provider: %s; model: %q; reasoning: %q; quota group: %s\n", route.Provider, route.Model, route.Reasoning, route.Group)
+		}
+		if p := r.Plan; p != nil {
+			fmt.Fprintf(e.stdout, "Planned move: across-environment=%t accept-workspace-outside=%t (labels unverified)\n", p.AcrossEnvironment, p.AcceptWorkspaceOutside)
+			for _, c := range []struct {
+				name string
+				c    *transferChange
+			}{{"provider", p.Provider}, {"quota group", p.QuotaGroup}, {"model", p.Model}, {"reasoning", p.Reasoning}} {
+				if c.c != nil {
+					from := "(withheld: unsupported shape)"
+					if c.c.From != nil {
+						from = strconv.Quote(*c.c.From)
+					}
+					fmt.Fprintf(e.stdout, "  %s: %s -> %q\n", c.name, from, c.c.To)
+				}
+			}
+		}
+		if r.Controls != nil {
+			fmt.Fprintf(e.stdout, "Controls: enabled=%t paused=%t stop=%t awaiting-user=%t completed=%t\n", r.Controls.Enabled, r.Controls.Paused, r.Controls.Stop, r.Controls.AwaitingUser, r.Controls.Completed)
+		}
+		if r.Owner != "" {
+			fmt.Fprintf(e.stdout, "Recorded owner: %s\n", r.Owner)
+		}
+		if r.Goal != nil {
+			printGoal(e, *r.Goal, false)
+		}
+		for _, c := range r.Checks {
+			fmt.Fprintf(e.stdout, "%s [%s]: %s\n", c.ID, c.Status, c.Message)
+		}
+	}
+	if r.Compatibility != "compatible_metadata" {
+		return exitFailed
+	}
+	return exitOK
+}
+
+// errRecordBusy is readTransferRecord's answer when the record could not be
+// looked at or opened, which on Windows includes a replacement that outlasted
+// snapshot's bounded wait. Its text is the same as every other failure's, so
+// what a person sees is unchanged; tests tell it apart.
+var errRecordBusy = errors.New("record unavailable")
+
+func readTransferRecord(dir, name string, dst any) error {
+	p := filepath.Join(dir, name)
+	info, err := snapshot.LstatRecord(p)
+	if errors.Is(err, os.ErrNotExist) {
+		return nil
+	}
+	if err != nil {
+		return errRecordBusy
+	}
+	if !info.Mode().IsRegular() || info.Size() > 1<<20 {
+		return errors.New("record unavailable")
+	}
+	// Never block a concurrent control or state save (Windows).
+	f, err := snapshot.OpenRecord(p)
+	if err != nil {
+		return errRecordBusy
+	}
+	defer f.Close()
+	info, err = f.Stat()
+	if err != nil || !info.Mode().IsRegular() {
+		return errors.New("record unavailable")
+	}
+	b, err := io.ReadAll(io.LimitReader(f, (1<<20)+1))
+	if err != nil || len(b) > 1<<20 {
+		return errors.New("record unavailable")
+	}
+	// Require an object: a null control must not look like a disabled loop.
+	var object map[string]json.RawMessage
+	if json.Unmarshal(b, &object) != nil || object == nil {
+		return errors.New("record unavailable")
+	}
+	return json.Unmarshal(b, dst)
+}
+
+func inspectTransferTarget(ctx context.Context, cli, id string, timeout time.Duration, run doctorRun) (transferTarget, string, error) {
+	ctx, cancel := context.WithTimeout(ctx, timeout)
+	defer cancel()
+	b, err := run(ctx, cli, []string{"thread", "show", id, "--json"}, nil, "")
+	bad := errors.New("BB identity unavailable")
+	if err != nil || ctx.Err() != nil || len(b) > 64*1024 {
+		return transferTarget{}, "", bad
+	}
+	var v struct {
+		OK     *bool           `json:"ok"`
+		Error  json.RawMessage `json:"error"`
+		Thread *struct {
+			ID          string          `json:"id"`
+			Project     string          `json:"projectId"`
+			Environment string          `json:"environmentId"`
+			Provider    string          `json:"providerId"`
+			Status      string          `json:"status"`
+			Archived    json.RawMessage `json:"archivedAt"`
+			Deleted     json.RawMessage `json:"deletedAt"`
+		} `json:"thread"`
+		Environment *struct {
+			ID      string `json:"id"`
+			Project string `json:"projectId"`
+			Host    string `json:"hostId"`
+			Path    string `json:"path"`
+		} `json:"environment"`
+	}
+	if json.Unmarshal(b, &v) != nil || (v.OK != nil && !*v.OK) || (len(v.Error) != 0 && string(v.Error) != "null") || v.Thread == nil || v.Environment == nil {
+		return transferTarget{}, "", bad
+	}
+	t, e := v.Thread, v.Environment
+	if t.ID != id || !transferProjectID.MatchString(t.Project) || !transferEnvironmentID.MatchString(t.Environment) || !transferHostID.MatchString(e.Host) || !transferLabel.MatchString(t.Provider) || string(t.Archived) != "null" || string(t.Deleted) != "null" || e.ID != t.Environment || e.Project != t.Project || !filepath.IsAbs(e.Path) {
+		return transferTarget{}, "", bad
+	}
+	switch t.Status {
+	case "pending", "idle", "starting", "active", "stopping", "error":
+	default:
+		return transferTarget{}, "", bad
+	}
+	return transferTarget{Thread: id, Project: t.Project, Environment: t.Environment, Host: e.Host, Provider: t.Provider, Status: t.Status}, e.Path, nil
+}
+
+// applyCheck says what applying this preview takes. A plan across environments
+// or with new labels has no apply command yet.
+func applyCheck(planned bool) doctorCheck {
+	if planned {
+		return doctorCheck{ID: "apply", Status: "warning", Message: "Preview only. This CLI cannot yet apply a move across environments or with changed labels; the preview shows what such a move would require. Any future apply keeps every hold and adds an awaiting-user hold."}
+	}
+	return doctorCheck{ID: "apply", Status: "warning", Message: "Preview only. Use explicit transfer apply with expected --from and --thread; it revalidates under the tick lock and leaves an awaiting-user hold. The plugin move UI is not implemented."}
+}

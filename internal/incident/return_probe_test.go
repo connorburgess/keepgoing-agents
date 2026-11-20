@@ -179,3 +179,41 @@ func TestSchemaThirteenAddsReturnsAndManualProbes(t *testing.T) {
 		t.Fatalf("schema 12 probe record loaded: %v", err)
 	}
 }
+
+// Schema 14 (supervision context in sends) adds contextBytes on tick
+// records. A schema 13 journal has none, so a length in one is dropped on
+// load, and a negative length is never kept.
+func TestSchemaFourteenAddsContextBytes(t *testing.T) {
+	current := fmt.Sprintf(`"schemaVersion":%d`, SchemaVersion)
+	dir := t.TempDir()
+	r := retentionTick(0)
+	r.ContextBytes = 2600
+	mustAppend(t, dir, r)
+	b, err := os.ReadFile(filepath.Join(dir, FileName))
+	if err != nil || SchemaVersion != 14 || !strings.Contains(string(b), current) || !strings.Contains(string(b), `"contextBytes":2600`) {
+		t.Fatalf("%s %v", b, err)
+	}
+	if j := loadAccounted(t, dir); j.Records[0].ContextBytes != 2600 {
+		t.Fatalf("%+v", j.Records[0])
+	}
+	old := strings.Replace(string(b), current, `"schemaVersion":13`, 1)
+	if err := os.WriteFile(filepath.Join(dir, FileName), []byte(old), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if j := loadAccounted(t, dir); j.Records[0].ContextBytes != 0 {
+		t.Fatalf("schema 13 kept a length: %+v", j.Records[0])
+	}
+	newer := strings.Replace(string(b), current, fmt.Sprintf(`"schemaVersion":%d`, SchemaVersion+1), 1)
+	if err := os.WriteFile(filepath.Join(dir, FileName), []byte(newer), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := Load(dir); !errors.Is(err, ErrUnavailable) {
+		t.Fatalf("a newer journal loaded: %v", err)
+	}
+	r.ContextBytes = -5
+	dir = t.TempDir()
+	mustAppend(t, dir, r)
+	if j := loadAccounted(t, dir); j.Records[0].ContextBytes != 0 {
+		t.Fatalf("negative length kept: %+v", j.Records[0])
+	}
+}

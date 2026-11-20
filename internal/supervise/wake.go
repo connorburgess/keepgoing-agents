@@ -4,13 +4,13 @@ import (
 	"context"
 	"time"
 
-	"github.com/connorburgess/keepgoing-agents/internal/adapter"
-	"github.com/connorburgess/keepgoing-agents/internal/adapter/factory"
-	"github.com/connorburgess/keepgoing-agents/internal/config"
-	"github.com/connorburgess/keepgoing-agents/internal/control"
-	"github.com/connorburgess/keepgoing-agents/internal/decide"
-	"github.com/connorburgess/keepgoing-agents/internal/state"
-	"github.com/connorburgess/keepgoing-agents/internal/window"
+	"github.com/looptender/looptender/internal/adapter"
+	"github.com/looptender/looptender/internal/adapter/factory"
+	"github.com/looptender/looptender/internal/config"
+	"github.com/looptender/looptender/internal/control"
+	"github.com/looptender/looptender/internal/decide"
+	"github.com/looptender/looptender/internal/state"
+	"github.com/looptender/looptender/internal/window"
 )
 
 // PollWake asks whether a new notification warrants an early idle check. The
@@ -19,7 +19,7 @@ import (
 // acting; a notification does not authorize an action by itself.
 func PollWake(ctx context.Context, cfg *config.Config, newAdapter factory.Func) bool {
 	ctl, err := control.Load(cfg.Loop.StateDir)
-	if err != nil || !ctl.Enabled || ctl.Stop || ctl.Paused || ctl.Completed || ctl.AwaitingUser {
+	if err != nil || !ctl.Gate().Enabled || ctl.Stop || ctl.Paused || ctl.Completed || ctl.AwaitingUser {
 		return false
 	}
 	// Leave the deadline hold to the next ordinary tick without consuming child

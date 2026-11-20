@@ -16,6 +16,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"github.com/looptender/looptender/internal/envvar"
 	"io"
 	"os"
 	"os/exec"
@@ -26,8 +27,9 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/connorburgess/keepgoing-agents/internal/adapter"
-	"github.com/connorburgess/keepgoing-agents/internal/lock"
+	"github.com/looptender/looptender/internal/adapter"
+	"github.com/looptender/looptender/internal/lock"
+	"github.com/looptender/looptender/internal/snapshot"
 )
 
 // Phase is what the runner knows about the latest turn.
@@ -62,7 +64,7 @@ type Record struct {
 
 const (
 	livenessLock = "lock"
-	turnLock     = "turn" // listed in migrateLockNames (cmd/keepgoing/migrate.go); so must any new lock file
+	turnLock     = "turn" // listed in migrateLockNames (cmd/looptender/migrate.go); so must any new lock file
 )
 
 // wrapperStartTimeout bounds two waits: Start's wait for the turn lock, and
@@ -102,7 +104,7 @@ func (d Dir) wrapperLive(rec Record) (bool, error) {
 		}
 		return true, nil
 	}
-	held, err := lock.AcquireNamed(string(d), turnLock)
+	held, err := lock.AcquireNamedShared(string(d), turnLock)
 	if err == nil {
 		return false, held.Release()
 	}
@@ -128,7 +130,7 @@ func acquireTurnLock(dir string) (*lock.Lock, error) {
 
 // startedName is the file a wrapper writes, holding its turn key, once it
 // holds the turn lock. finishingName is the file it writes just before it
-// lets go of the lock to publish its exit code.
+// publishes its exit code and cleans up before releasing the lock.
 const (
 	startedName   = "turn.started"
 	finishingName = "turn.finishing"
@@ -147,7 +149,7 @@ var errNoWrapper = errors.New("runner: the turn wrapper did not start")
 // record reads run.json.
 func (d Dir) record() (Record, error) {
 	var rec Record
-	b, err := os.ReadFile(d.path("run.json"))
+	b, err := snapshot.ReadRecord(d.path("run.json"))
 	if err != nil {
 		return rec, err
 	}
@@ -155,7 +157,9 @@ func (d Dir) record() (Record, error) {
 }
 
 // saveRecord replaces run.json whole, so a reader never sees part of one and
-// a failed write leaves the previous record.
+// a failed write leaves the previous record. On Windows its narrow record
+// marker keeps a transient replacement miss unavailable rather than NeverRun;
+// delete-sharing readers and snapshot replacement can overlap.
 func (d Dir) saveRecord(rec Record) error {
 	b, _ := json.Marshal(rec)
 	tmp := d.path("run.json.tmp")
@@ -163,7 +167,7 @@ func (d Dir) saveRecord(rec Record) error {
 		os.Remove(tmp)
 		return err
 	}
-	if err := os.Rename(tmp, d.path("run.json")); err != nil {
+	if err := snapshot.Replace(tmp, d.path("run.json")); err != nil {
 		os.Remove(tmp)
 		return err
 	}
@@ -253,11 +257,26 @@ func (d Dir) path(name string) string { return filepath.Join(string(d), name) }
 // Status inspects the latest turn.
 func (d Dir) Status() (Status, error) { return d.statusWithOutputLimit(0) }
 
+// Only deterministic lifecycle tests set these status sampling hooks.
+var afterStatusRecordRead, beforeStatusFinished func()
+
 // statusWithOutputLimit bounds stdout loading for adapters with a finite stream
 // contract. Zero preserves the legacy adapters' output behavior.
 func (d Dir) statusWithOutputLimit(limit int64) (Status, error) {
+	return d.sampleStatus(limit, nil)
+}
+
+// sampleStatus may reuse an already-owned exclusive turn guard. Never acquire
+// recursively or upgrade a shared guard.
+func (d Dir) sampleStatus(limit int64, owned *lock.Lock) (Status, error) {
+	return d.sampleStatusRetained(limit, owned, nil)
+}
+
+// retained transfers the shared sampling guard to the caller, including on error.
+// The caller must release it before provider queries or wrapper waiting.
+func (d Dir) sampleStatusRetained(limit int64, owned *lock.Lock, retained **lock.Lock) (Status, error) {
 	var st Status
-	b, err := os.ReadFile(d.path("run.json"))
+	b, err := snapshot.ReadRecord(d.path("run.json"))
 	if errors.Is(err, os.ErrNotExist) {
 		st.Phase = NeverRun
 		return st, nil
@@ -268,6 +287,39 @@ func (d Dir) statusWithOutputLimit(limit int64) (Status, error) {
 	if err := json.Unmarshal(b, &st.Record); err != nil {
 		return st, err
 	}
+	if afterStatusRecordRead != nil {
+		afterStatusRecordRead()
+	}
+	// Take the existing turn lock before relying on a completed record. A
+	// publisher or setup holding it is conservatively running. Once acquired,
+	// reread run.json: setup may have replaced the generation since our first
+	// sample, including a first start replacing a legacy record. Hold it through
+	// exit/output sampling to prevent mixed generations,
+	// and normally release before returning Finished to the caller.
+	if owned == nil {
+		completedGuard, err := lock.AcquireNamedShared(string(d), turnLock)
+		if errors.Is(err, lock.ErrHeld) {
+			st.Phase = Running
+			return st, nil
+		}
+		if err != nil {
+			return st, errors.New("runner: the turn lock could not be checked" + errnoText(err))
+		}
+		if retained != nil {
+			*retained = completedGuard
+		} else {
+			defer completedGuard.Release()
+		}
+	}
+	b, err = snapshot.ReadRecord(d.path("run.json"))
+	if err != nil {
+		return Status{}, err
+	}
+	st = Status{}
+	if err := json.Unmarshal(b, &st.Record); err != nil {
+		return st, err
+	}
+
 	finished := func() (bool, error) {
 		code, err := os.ReadFile(d.path("exit"))
 		if errors.Is(err, os.ErrNotExist) {
@@ -277,6 +329,9 @@ func (d Dir) statusWithOutputLimit(limit int64) (Status, error) {
 			// Something is there that is not a readable exit code. Say so
 			// rather than guess between finished and crashed.
 			return false, errors.New("runner: the turn's exit status could not be read" + errnoText(err))
+		}
+		if beforeStatusFinished != nil {
+			beforeStatusFinished()
 		}
 		st.Phase = Finished
 		var parseErr error
@@ -300,16 +355,20 @@ func (d Dir) statusWithOutputLimit(limit int64) (Status, error) {
 	if st.Record.Abandoned {
 		return crashed()
 	}
-	live, err := d.wrapperLive(st.Record)
-	if err != nil {
-		return st, err
+	live := false
+	if st.Record.Liveness != livenessLock {
+		var err error
+		live, err = d.wrapperLive(st.Record)
+		if err != nil {
+			return st, err
+		}
 	}
 	if live {
 		st.Phase = Running
 		return st, nil
 	}
-	// The wrapper lets go of the lock just before it publishes its exit code.
-	// If it was doing that, wait for the code instead of reading a crash. The
+	// A crashed publisher or an older wrapper can leave a finishing marker.
+	// Keep the bounded wait for a late exit instead of reading a false crash. The
 	// wait ends finishingWait after the marker was written, so a marker left
 	// by a wrapper that died there costs a later read nothing.
 	until := time.Now()
@@ -369,7 +428,7 @@ func (d Dir) Start(argv []string, workdir, prompt string, env []string) error {
 
 // turnFiles are what one turn leaves, the exit code last: it is what makes a
 // turn read as finished, so it is the last to go and the last to come back.
-var turnFiles = []string{"prompt", "exit.tmp", "stdout", "stderr", "stop-request.json", "stop-ack.json", startedName, finishingName, waitAdoptedFile, "exit"}
+var turnFiles = []string{"prompt", "exit.tmp", "stdout", "stderr", "stop-request.json", "stop-ack.json", startedName, finishingName, waitAdoptedFile, sessionResetFile, sessionResetFile + ".present", "exit"}
 
 // renameFile is os.Rename. Tests replace it to make one file immovable.
 var renameFile = os.Rename
@@ -428,7 +487,16 @@ func (d Dir) putBack(moved []string) error {
 			lost = append(lost, name)
 			continue
 		}
-		os.Remove(d.path(name)) // what the failed start wrote in its place
+		// The fence alone uses the snapshot publication marker. Other turn
+		// records retain their existing publication/removal rules.
+		if name == sessionResetFile {
+			if err := removeResetFence(d.path(name)); err != nil && !errors.Is(err, os.ErrNotExist) {
+				lost = append(lost, name+errnoText(err))
+				continue
+			}
+		} else {
+			os.Remove(d.path(name))
+		} // what the failed start wrote in its place
 		if err := renameFile(d.aside(name), d.path(name)); err != nil {
 			lost = append(lost, name+errnoText(err))
 		}
@@ -450,18 +518,18 @@ func (d Dir) discardAside() {
 // turnProtocol is what a binary answers when asked which turn wrapper it
 // is. It names the contract between Start and the wrapper: what the wrapper
 // locks, checks and writes. It changes only when that contract changes, not
-// with every release, so two builds with the same label can be mixed. A
+// with every release, so two builds with the same protocol can interoperate. A
 // binary that answers anything else, or nothing, would not keep the contract:
 // started as a wrapper it could run the agent without the turn lock.
 const (
-	turnProtocol = "keepgoing-turn-wrapper 2"
+	turnProtocol = "keepgoing-turn-wrapper 3"
 	envTurnProbe = "KEEPGOING_RUN_TURN_PROBE"
 )
 
 // The two reasons a start is refused over the binary on disk. They are fixed
 // texts: the check reports them and status and doctor repeat them.
 const (
-	ReasonWrapperDiffers = "the keepgoing binary on disk does not speak the turn-wrapper protocol of the running process (it is another build): stop the daemon, then start it again"
+	ReasonWrapperDiffers = "the keepgoing binary on disk does not speak the turn-wrapper protocol of the running process: stop the daemon, then start it again"
 	ReasonWrapperSilent  = "the keepgoing binary on disk could not be asked which turn wrapper it is (it did not run, or did not answer in time): check that it is in place and executable, then restart the daemon"
 )
 
@@ -501,7 +569,7 @@ func wrapperAgrees(env []string) error {
 	ctx, cancel := context.WithTimeout(context.Background(), wrapperAskTimeout)
 	defer cancel()
 	cmd := exec.CommandContext(ctx, self)
-	cmd.Env = append(append(os.Environ(), env...), envTurnProbe+"=1")
+	cmd.Env = append(append(envvar.WithoutSupervisorSession(os.Environ()), env...), envTurnProbe+"=1")
 	cmd.WaitDelay = time.Second
 	var out bytes.Buffer
 	cmd.Stdout = &limitedWriter{w: &out, left: 256}
@@ -542,13 +610,18 @@ func (e notSpawned) Unwrap() error { return e.error }
 // start is Start with an optional ACP worker specification. It returns the
 // new turn's stop key, which identifies the worker that was started.
 func (d Dir) start(argv []string, workdir, prompt string, env []string, acp string) (string, error) {
-	return d.startTurn(argv, workdir, prompt, env, acp, false)
+	return d.startTurnGuarded(argv, workdir, prompt, env, acp, false, nil, "")
+}
+
+// startWithKey is start with a caller-generated stop key recorded before spawn.
+func (d Dir) startWithKey(argv []string, workdir, prompt string, env []string, acp, key string) (string, error) {
+	return d.startTurnGuarded(argv, workdir, prompt, env, acp, false, nil, key)
 }
 
 // StartWithPromptFile is Start for an agent that reads its prompt from the
 // private prompt file it was pointed at: its standard input is empty.
 func (d Dir) StartWithPromptFile(argv []string, workdir, prompt string, env []string) error {
-	_, err := d.startTurn(argv, workdir, prompt, env, "", true)
+	_, err := d.startTurnGuarded(argv, workdir, prompt, env, "", true, nil, "")
 	return err
 }
 
@@ -556,6 +629,16 @@ func (d Dir) StartWithPromptFile(argv []string, workdir, prompt string, env []st
 // the variable that carries it from the loop's own entries, so a value set
 // anywhere else can never take a prompt away from a turn.
 func (d Dir) startTurn(argv []string, workdir, prompt string, env []string, acp string, emptyStdin bool) (string, error) {
+	return d.startTurnGuarded(argv, workdir, prompt, env, acp, emptyStdin, nil, "")
+}
+
+// startTurnGuarded consumes an optional exclusive setup guard. A headless send
+// retains this guard from session-derived argv through record publication.
+// It is released at the existing protocol 3 boundary, before wrapper wait.
+func (d Dir) startTurnGuarded(argv []string, workdir, prompt string, env []string, acp string, emptyStdin bool, setup *lock.Lock, key string) (string, error) {
+	if setup != nil {
+		defer setup.Release()
+	}
 	kept := make([]string, 0, len(env)+1)
 	for _, kv := range env {
 		if name, _, _ := strings.Cut(kv, "="); !strings.EqualFold(name, envTurnStdin) {
@@ -583,11 +666,14 @@ func (d Dir) startTurn(argv []string, workdir, prompt string, env []string, acp 
 	// previous turn's wrapper to finish exiting, so its lock can never stand
 	// in for the new wrapper's, and it is released only after the new record
 	// is written. The new wrapper then takes it and says so.
-	setup, err := acquireTurnLock(string(d))
-	if err != nil {
-		return "", notSpawned{err}
+	if setup == nil {
+		var err error
+		setup, err = acquireTurnLock(string(d))
+		if err != nil {
+			return "", notSpawned{err}
+		}
+		defer setup.Release()
 	}
-	defer setup.Release()
 	moved, err := d.setAside()
 	if err != nil {
 		return "", notSpawned{err}
@@ -604,9 +690,14 @@ func (d Dir) startTurn(argv []string, workdir, prompt string, env []string, acp 
 	if err := os.WriteFile(d.path("prompt"), []byte(prompt), 0o600); err != nil {
 		return fail(errors.New("runner: the prompt could not be written" + errnoText(err)))
 	}
-	key, err := randomStopID()
-	if err != nil {
-		return fail(err)
+	if key == "" {
+		var err error
+		key, err = randomStopID()
+		if err != nil {
+			return fail(err)
+		}
+	} else if !validStopID(key) {
+		return fail(errors.New("runner: invalid stop key"))
 	}
 	pid, err := spawn(argv, workdir, string(d), append(env, envTurnKey+"="+key), acp)
 	if err != nil {

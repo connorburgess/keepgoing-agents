@@ -14,7 +14,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/connorburgess/keepgoing-agents/internal/lock"
+	"github.com/looptender/looptender/internal/lock"
 )
 
 func recordedWebhook(t *testing.T, dir, url string) recorded {

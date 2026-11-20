@@ -15,14 +15,14 @@ import (
 	"runtime"
 	"strings"
 
-	"github.com/connorburgess/keepgoing-agents/internal/lock"
-	"github.com/connorburgess/keepgoing-agents/internal/snapshot"
+	"github.com/looptender/looptender/internal/lock"
+	"github.com/looptender/looptender/internal/snapshot"
 )
 
 const FileName = "registry.json"
 
 // LockName is the registry's lock. It is listed in migrateLockNames
-// (cmd/keepgoing/migrate.go); so must any new lock file here.
+// (cmd/looptender/migrate.go); so must any new lock file here.
 const LockName = "registry"
 const MaxEntries = 128
 const maxBytes = 1 << 20
@@ -55,7 +55,7 @@ func CheckDirectory(dir string) error {
 	return nil
 }
 func privateFile(path string) error {
-	info, err := snapshot.Lstat(path)
+	info, err := snapshot.LstatRecord(path)
 	if errors.Is(err, os.ErrNotExist) {
 		return nil
 	}
@@ -79,10 +79,14 @@ func Load(dir string) (File, error) {
 		return File{}, ErrInvalid
 	}
 	path := filepath.Join(dir, FileName)
-	if privateFile(path) != nil {
+	info, err := snapshot.LstatRecord(path)
+	if errors.Is(err, os.ErrNotExist) {
+		return empty, nil
+	}
+	if err != nil || !info.Mode().IsRegular() || (runtime.GOOS != "windows" && info.Mode().Perm()&0077 != 0) {
 		return File{}, ErrInvalid
 	}
-	f, err := snapshot.Open(path)
+	f, err := snapshot.OpenRecord(path)
 	if errors.Is(err, os.ErrNotExist) {
 		return empty, nil
 	}
@@ -168,11 +172,23 @@ func update(dir string, fn func(*File) (bool, error)) error {
 // Add returns the existing ID for an identical registration. A changed binding
 // or another config for the same runtime directory requires explicit removal.
 func Add(dir, loop, configPath, stateDir string) (Entry, error) {
+	return AddChecked(dir, loop, configPath, stateDir, nil)
+}
+
+// AddChecked revalidates a caller's local binding under the registry lock,
+// including idempotent repeats. check must not wait, query providers or change
+// loop controls. A lost reply is repaired by repeating the same reference.
+func AddChecked(dir, loop, configPath, stateDir string, check func() error) (Entry, error) {
 	entry := Entry{ID: "loop_00000000000000000000000000000000", Loop: loop, ConfigPath: configPath, StateDir: stateDir}
 	if !validEntry(entry) {
 		return Entry{}, errors.New("invalid loop reference")
 	}
 	err := update(dir, func(f *File) (bool, error) {
+		if check != nil {
+			if err := check(); err != nil {
+				return false, err
+			}
+		}
 		for _, current := range f.Entries {
 			// The same files under another spelling, as through the link a
 			// renamed directory leaves, are the same registration.
@@ -263,8 +279,10 @@ func WithEntry(dir, id string, fn func(Entry) error) error {
 // safe to repeat: a second run finds nothing left to rewrite. A registry that
 // does not exist is left absent. With dryRun it only counts.
 func Rebase(dir string, rewrite func(string) string, dryRun bool) (int, error) {
-	if _, err := os.Lstat(filepath.Join(dir, FileName)); errors.Is(err, os.ErrNotExist) {
+	if _, err := snapshot.LstatRecord(filepath.Join(dir, FileName)); errors.Is(err, os.ErrNotExist) {
 		return 0, nil
+	} else if err != nil {
+		return 0, ErrInvalid
 	}
 	plan := func(f *File) (int, error) {
 		changed := 0

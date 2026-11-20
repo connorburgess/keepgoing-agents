@@ -1,6 +1,6 @@
 # Integrations
 
-This lists everything keepgoing talks to and how far each has been checked. Each item has one status:
+This lists everything looptender talks to and how far each has been checked. Historical evidence below retains the keepgoing name and the executable, package and interface labels observed at the time; the [README](../README.md) distinguishes the current product name from released v0.2.0 commands. Each item has one status:
 
 - **Live**: exercised against the real tool or service.
 - **Fakes**: covered by tests against a stand-in that follows the real tool's documented or observed output.
@@ -36,7 +36,7 @@ The [adapter capability matrix](adapters.md) lists, behaviour by behaviour, what
 
 **Offline incident timeline: Fakes, available in v0.1.3.** `timeline` combines normalized incident/delivery records and redacted current controls without external queries or writes. Existing BB/process/headless journeys exercise the command; a combined local process/webhook fixture verifies failure, hold, rejected alert, continued checks and explicit recovery. Missing/corrupt/legacy records, privacy, limits, dry runs, control precedence and clock skew are covered. No live outage, installed loop or migration readiness is certified. v0.2.0 adds target-move, probe and limit-wait records with kind/target/time filters, verified with fictional journals only. See [timeline](diagnostics.md#offline-incident-timeline).
 
-Other coding agents can be supervised today through the process adapter, given a status command and a resume command. Cursor has a v0.2.0 primary-only CLI adapter with offline fixtures; Antigravity remains planned. Neither has verified existing IDE-chat attachment. See [Planned integrations](#planned-integrations). Gemini CLI, OpenCode, and Aider remain discovery backlog items, with no compatibility claim or delivery commitment.
+Other coding agents can be supervised today through the process adapter, given a status command and a resume command. In unreleased source, `keepgoing adapter check` attempts one invocation of such a wrapper's status command (which is not sandboxed) and checks the observation against the [adapter contract](adapters.md#the-adapter-contract). Cursor has a v0.2.0 primary-only CLI adapter with offline fixtures; Antigravity remains planned. Neither has verified existing IDE-chat attachment. See [Planned integrations](#planned-integrations). Gemini CLI, OpenCode, and Aider remain discovery backlog items, with no compatibility claim or delivery commitment.
 
 ## Guided setup
 
@@ -91,6 +91,7 @@ BB `transfer preview` is available in v0.1.4, with **Fakes** covering a single p
 | Standard Webhooks signing | **Live** against the specification's published test vector. **Fakes** for delivery to a local receiver. | none |
 | Text format (`source`, `sent_at`, `text`) | **Live**: test, wake, and await-user reports were delivered to a real receiver | none |
 | Bearer scheme | **Live** with a real receiver. No unit test yet. | add a delivery test |
+| Telegram Bot API (`format: telegram`, `telegram setup\|status\|test\|poll\|disconnect`) | **Fakes** (unreleased): offline HTTP stand-ins verify `getMe`, `setMyCommands`, one-tap `?start=pair_<nonce>` pairing, `0600` `token.env`/`pairing.json`, token-redacted errors, redirect refusal, single-attempt delivery and `deliveries.json` history, plus `telegram poll` outbound `getUpdates` handling for `/status`, `Pause`, and `Stop` (persisted offsets, staleness cutoff, `observation_changed` refusal, `telegram_pause`/`telegram_stop` attribution, lock contention, `retry_after`). See [Telegram remote channel](telegram.md). | pair a personal test bot against live `api.telegram.org` and confirm alert receipt and remote `/status`/`Pause`/`Stop` |
 
 ## Developer tooling
 

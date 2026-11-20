@@ -16,11 +16,11 @@ import (
 	"strings"
 	"time"
 
-	"github.com/connorburgess/keepgoing-agents/internal/adapter"
-	"github.com/connorburgess/keepgoing-agents/internal/adapter/runner"
-	"github.com/connorburgess/keepgoing-agents/internal/config"
-	"github.com/connorburgess/keepgoing-agents/internal/decide"
-	"github.com/connorburgess/keepgoing-agents/internal/envvar"
+	"github.com/looptender/looptender/internal/adapter"
+	"github.com/looptender/looptender/internal/adapter/runner"
+	"github.com/looptender/looptender/internal/config"
+	"github.com/looptender/looptender/internal/decide"
+	"github.com/looptender/looptender/internal/envvar"
 )
 
 // Tier says why a probe ran.
@@ -53,8 +53,8 @@ type Result struct {
 	// ResetsAt is when a reported usage limit lifts, when the provider says.
 	ResetsAt *time.Time `json:"resetsAt,omitempty"`
 	// Usage is a usage reading the probe happened to carry. It is stored once
-	// per candidate by the health registry, not with each result, and no
-	// decision reads it.
+	// per candidate by the health registry, not with each result. The timing
+	// preview reads it, but no supervision action is decided from it.
 	Usage *Usage `json:"-"`
 	// UsageIdentity fingerprints the account the probe ran against, set on
 	// every result so a reading from another account can be discarded.
@@ -163,14 +163,16 @@ func Run(ctx context.Context, c config.Candidate, tier Tier, timeout time.Durati
 	if spec.Probe.Usage != nil {
 		res.Usage = newUsage(res.At, spec.Probe.UsageSource, res.UsageIdentity, usageWindows(spec.Probe.Usage(stdout)))
 	}
-	// An agent that reports a usage limit only as prose is asked for its
-	// structured snapshot instead.
-	if l := spec.Limits; l != nil && !res.OK && res.ErrorClass == string(decide.ErrUnknown) {
+	// Read display-only usage after a successful probe too. Unknown failures
+	// still use the structured snapshot for limit classification. The lookup
+	// shares the probe deadline (and Codex bounds it to 20 seconds); a failed
+	// lookup never changes the probe verdict or fabricates a fresh reading.
+	if l := spec.Limits; l != nil && ((!res.OK && res.ErrorClass == string(decide.ErrUnknown)) || (res.OK && l.UsageSource != "")) {
 		limits, err := l.Read(ctx, cli, env)
 		if err == nil && l.UsageSource != "" {
 			res.Usage = newUsage(res.At, l.UsageSource, res.UsageIdentity, CodexUsage(limits))
 		}
-		if err == nil && limits.Blocked {
+		if err == nil && !res.OK && limits.Blocked {
 			res.ErrorClass = string(decide.ErrRateLimit)
 			res.Detail = l.ProbeDetail + limits.ReachedType
 			if !limits.ResetsAt.IsZero() {
@@ -246,7 +248,9 @@ func (b *limitedBuffer) Write(p []byte) (int, error) {
 func run(ctx context.Context, argv []string, dir string, env []string, stdin string, limit int64) ([]byte, int, error) {
 	cmd := exec.CommandContext(ctx, argv[0], argv[1:]...)
 	cmd.Dir = dir
-	cmd.Env = append(os.Environ(), env...)
+	// Not the session the supervisor was started from; the probe's own
+	// entries come after, so they win.
+	cmd.Env = append(envvar.WithoutSupervisorSession(os.Environ()), env...)
 	cmd.Stdin = strings.NewReader(stdin)
 	out := &limitedBuffer{limit: limit}
 	stdout := &out.buf

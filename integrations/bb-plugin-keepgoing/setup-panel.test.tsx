@@ -128,3 +128,34 @@ test("keepgoing's refusal is shown in its words and the panel offers no way arou
     assert.ok(!ui.container.textContent?.includes("allow-second-loop"));
   } finally { ui.unmount(); cleanup(); }
 });
+
+test("the standard list is a choice only when offered, off by default, and its routes are shown before Create", async () => {
+  const inputs: Record<string, unknown>[] = [];
+  const routes = { list: "standard" as const, handoffOn: "rate_limit" as const, apply: [{ id: "codex-large", model: "example-large", group: "codex-large" }] };
+  const call = (offered: boolean) => async (input: Record<string, unknown>): Promise<SetupResult> => {
+    inputs.push(input);
+    if (input.action === "preview") return { ok: true, message: "Preview only", plan: input.followStandard ? { ...plan, routes } : plan, ticket: "example-ticket" };
+    return { ok: true, message: "Enter a task", ...(offered ? { standardRoutes: true as const } : {}) };
+  };
+  let ui = render(<SetupPanel threadId="thr_example" call={call(false)} onChanged={() => {}} />);
+  try {
+    await ui.findByText("Enter a task");
+    assert.equal(ui.queryByLabelText("Follow my standard route list for handoffs"), null);
+  } finally { cleanup(); }
+  ui = render(<SetupPanel threadId="thr_example" call={call(true)} onChanged={() => {}} />);
+  try {
+    await ui.findByText("Enter a task");
+    const box = ui.getByLabelText("Follow my standard route list for handoffs") as HTMLInputElement;
+    assert.equal(box.checked, false);
+    fireEvent.change(ui.getByLabelText("Task and completion criteria"), { target: { value: "Fictional task" } });
+    fireEvent.click(ui.getByRole("button", { name: "Preview setup" }));
+    await ui.findByText("No fallbacks; automatic handoff is off.");
+    assert.equal(inputs.at(-1)?.followStandard, undefined);
+    fireEvent.click(box);
+    fireEvent.click(ui.getByRole("button", { name: "Preview setup" }));
+    await ui.findByText(/Handoff on a rate limit is turned on/);
+    assert.equal(inputs.at(-1)?.followStandard, true);
+    assert.ok(ui.getByText("codex-large: example-large, usage limit codex-large"));
+    assert.ok(ui.getByRole("button", { name: "Create disabled setup" }));
+  } finally { cleanup(); }
+});

@@ -1,6 +1,6 @@
-# Licensing keepgoing
+# Licensing looptender
 
-keepgoing uses the [Sustainable Use License, Version 1.0](LICENSE), with separate commercial agreements for uses outside that license. Connor Burgess is the licensor and project steward. This guide explains the policy; it does not add restrictions to or replace the license text.
+looptender (formerly keepgoing) uses the [Sustainable Use License, Version 1.0](LICENSE), with separate commercial agreements for uses outside that license. Connor Burgess is the licensor and project steward. This guide explains the policy; it does not add restrictions to or replace the license text. References to keepgoing below include the earlier releases and the existing contribution agreement; the rename changes no license terms or prior grants.
 
 The source is public, but the commercial-use restrictions mean this is **source-available**, not OSI-approved open source. The same rules apply to everyone, including companies that make other agent tools. There is no list of prohibited competitors.
 
@@ -25,7 +25,7 @@ A working test for the area between internal use and a service: use is permitted
 
 The distinction is how the software is used or distributed, not whether its user earns money. Charging for a product or service that contains or provides keepgoing is different from running keepgoing yourself while doing paid work. If a case does not clearly fit the license, request terms before shipping it.
 
-For commercial terms, open a [licensing inquiry](https://github.com/connorburgess/keepgoing-agents/issues/new?title=Commercial%20licensing%20inquiry) requesting a private contact. Keep confidential business details out of public issues. A commercial agreement is separate from buying the project; an inquiry does not grant permission.
+For commercial terms, open a [licensing inquiry](https://github.com/looptender/looptender/issues/new?title=Commercial%20licensing%20inquiry) requesting a private contact. Keep confidential business details out of public issues. A commercial agreement is separate from buying the project; an inquiry does not grant permission.
 
 ## Previously published Apache-2.0 material
 

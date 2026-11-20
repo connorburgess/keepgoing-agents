@@ -68,7 +68,7 @@ func StateHome() (string, error) {
 // loop registry, the standard route list and the default home of new loops
 // under the configuration directory, and the session claims and the panel's
 // runtime files under the state directory. On macOS the two are one place.
-var Entries = []string{"registry", "routes.yaml", "loops", "sessions", "panel"}
+var Entries = []string{"registry", "routes.yaml", "loops", "sessions", "panel", "accounts"}
 
 // NameIn decides the directory's name from the places it could be in: the
 // earlier name when one of the tool's own entries (Entries) is in a

@@ -43,13 +43,13 @@ public struct OverdueNotices {
         if fresh.count <= Self.maxSeparate {
             return fresh.map { loop, since in
                 OverdueNotice(identifier: id(loop, since), title: "Checks have stopped: \(name(loop))",
-                              body: "No check has run since \(format(since)). The computer may have slept, or the scheduler that runs this loop may have stopped. Open the keepgoing panel to see what to do.")
+                              body: "No check has run since \(format(since)). The computer may have slept, or the scheduler that runs this loop may have stopped. Open the looptender panel to see what to do.")
             }
         }
         let names = fresh.prefix(2).map { name($0.0) }.joined(separator: ", ")
         return [OverdueNotice(identifier: "keepgoing.overdue.several." + fresh.map { id($0.0, $0.1) }.joined(separator: "+"),
                               title: "Checks have stopped for \(fresh.count) loops",
-                              body: "\(names) and \(fresh.count - 2) more have had no check for longer than usual. The computer may have slept, or their schedulers may have stopped. Open the keepgoing panel to see what to do.")]
+                              body: "\(names) and \(fresh.count - 2) more have had no check for longer than usual. The computer may have slept, or their schedulers may have stopped. Open the looptender panel to see what to do.")]
     }
 
     /// The last check's time in the person's own date and time format.

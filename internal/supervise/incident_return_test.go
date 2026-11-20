@@ -6,9 +6,9 @@ import (
 	"path/filepath"
 	"testing"
 
-	"github.com/connorburgess/keepgoing-agents/internal/decide"
-	"github.com/connorburgess/keepgoing-agents/internal/incident"
-	"github.com/connorburgess/keepgoing-agents/internal/state"
+	"github.com/looptender/looptender/internal/decide"
+	"github.com/looptender/looptender/internal/incident"
+	"github.com/looptender/looptender/internal/state"
 )
 
 // A check that begins on a fallback the loop can no longer use returns it to

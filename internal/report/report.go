@@ -22,8 +22,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/connorburgess/keepgoing-agents/internal/config"
-	"github.com/connorburgess/keepgoing-agents/internal/envvar"
+	"github.com/looptender/looptender/internal/config"
+	"github.com/looptender/looptender/internal/envvar"
 )
 
 // Event is one report.
@@ -34,6 +34,10 @@ type Event struct {
 	At   time.Time      `json:"at"`
 	Data map[string]any `json:"data,omitempty"`
 }
+
+// ErrNoRetry marks a report outcome whose delivery must not be repeated.
+// It is transport evidence only, never a provider classification or authority.
+var ErrNoRetry = errors.New("report delivery must not be retried")
 
 // Reporter sends events.
 type Reporter interface {
@@ -48,11 +52,13 @@ func (Nop) Report(context.Context, Event) error { return nil }
 
 // Webhook posts to one endpoint.
 type Webhook struct {
-	cfg    config.Report
-	url    string
-	secret string
-	client *http.Client
-	now    func() time.Time
+	stateDir string
+	cfg      config.Report
+	url      string
+	secret   string
+	client   *http.Client
+	now      func() time.Time
+	tg       *telegramSender
 }
 
 // MaxBody caps a report's size.
@@ -61,6 +67,9 @@ const MaxBody = 1 << 20
 // New resolves credentials from the environment, then the secret file.
 // Secrets are never logged or included in errors.
 func New(cfg config.Report) (*Webhook, error) {
+	if cfg.Format == "sessionpipe" && cfg.Scheme != "bearer" {
+		return nil, errors.New("report: sessionpipe format requires bearer scheme")
+	}
 	vals := map[string]string{}
 	if cfg.SecretFile != "" {
 		v, err := readEnvFile(cfg.SecretFile)
@@ -89,11 +98,17 @@ func New(cfg config.Report) (*Webhook, error) {
 		}
 		return ""
 	}
+	if cfg.Format == "telegram" {
+		return newTelegramWebhook(cfg, get)
+	}
 	w := &Webhook{cfg: cfg, url: get(cfg.URLEnv), secret: get(cfg.SecretEnv), client: &http.Client{Timeout: cfg.Timeout.Duration}, now: time.Now}
 	if w.url == "" || w.secret == "" {
 		return nil, fmt.Errorf("report: %s and %s must be set in the environment or the secret file", cfg.URLEnv, cfg.SecretEnv)
 	}
 	u, err := url.Parse(w.url)
+	if cfg.Format == "sessionpipe" && (err != nil || u.User != nil || (u.Path != "" && u.Path != "/") || u.RawQuery != "" || u.Fragment != "") {
+		return nil, errors.New("report: sessionpipe URL must be an origin without credentials, path, query or fragment")
+	}
 	if err != nil || u.Host == "" {
 		return nil, errors.New("report: the webhook URL is malformed")
 	}
@@ -121,6 +136,12 @@ func key(secret string) ([]byte, error) {
 func (w *Webhook) Body(e Event) ([]byte, error) {
 	if e.At.IsZero() {
 		e.At = w.now()
+	}
+	if w.tg != nil {
+		return w.tg.body(e, w.now())
+	}
+	if w.cfg.Format == "sessionpipe" {
+		return pipeBody(e, pipeState{Version: 1, ID: "00000000000000000000000000000000", Next: 1}, w.now())
 	}
 	var v any
 	if w.cfg.Format == "text" {
@@ -172,6 +193,12 @@ func (w *Webhook) report(ctx context.Context, e Event, observe func(Delivery)) e
 	if !w.cfg.ReportsEvent(e.Type) {
 		return nil
 	}
+	if w.tg != nil {
+		return w.tg.report(ctx, e, w.now, observe)
+	}
+	if w.cfg.Format == "sessionpipe" {
+		return w.reportPipe(ctx, e, observe)
+	}
 	d := Delivery{Event: eventName(e.Type), StartedAt: w.now().UTC(), Receipt: "unverified", Attempts: []Attempt{}}
 	snapshot := func(outcome string) {
 		d.Outcome, d.UpdatedAt = outcome, w.now().UTC()
@@ -205,7 +232,7 @@ func (w *Webhook) report(ctx context.Context, e Event, observe func(Delivery)) e
 	// A limit_wait, child_error or check_gap report is requested once and, like a
 	// completion, makes one attempt: an uncertain delivery must not page a
 	// person twice.
-	if e.Type == "complete" || e.Type == "limit_wait" || e.Type == "child_error" || e.Type == "child_recovery" || e.Type == "network_wait" || e.Type == "check_gap" || e.Type == "hung_turn" || e.Type == "refusal_streak" {
+	if (e.Type == "error" && e.Data["cause"] == "configuration_unavailable") || e.Type == "complete" || e.Type == "limit_wait" || e.Type == "child_error" || e.Type == "child_recovery" || e.Type == "network_wait" || e.Type == "check_gap" || e.Type == "hung_turn" || e.Type == "refusal_streak" {
 		attempts = 1
 		copy := *w.client
 		copy.CheckRedirect = func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }

@@ -15,7 +15,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/connorburgess/keepgoing-agents/internal/config"
+	"github.com/looptender/looptender/internal/config"
 )
 
 var secret = "whsec_" + base64.StdEncoding.EncodeToString([]byte("fictional-test-secret-0123456789"))

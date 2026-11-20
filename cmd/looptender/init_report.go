@@ -1,0 +1,212 @@
+package main
+
+import (
+	"context"
+	"encoding/json"
+	"errors"
+	"io"
+	"path/filepath"
+	"runtime"
+	"unicode/utf8"
+
+	"github.com/looptender/looptender/internal/config"
+	"github.com/looptender/looptender/internal/control"
+)
+
+const initTaskLimit = 1 << 20
+
+const initCursorNotice = "Cursor starts a separate CLI conversation; existing IDE chats are not attached. Interactive permission bridging, quota/reset detection and fallback recovery are unavailable. Existing permissions are inherited. Doctor can check the stored login; models, quota and permissions stay unverified. One CLI version has been inspected and walked through live once on macOS; other versions and platforms are unverified."
+
+const initTaskBindingNotice = "Task binding: snapshot imported into prompt.md at creation. Later edits to the original task source are not tracked; supervision rereads the saved prompt.md when preparing task prompts."
+
+// Do not expose reader errors: an integration's reader may include task text in
+// them. Cancellation can return while stdin is still blocked, as in the wizard;
+// the CLI owns its process lifetime, not the supplied reader.
+func readInitTask(ctx context.Context, input io.Reader) (string, error) {
+	if err := ctx.Err(); err != nil {
+		return "", err
+	}
+	type result struct {
+		data []byte
+		err  error
+	}
+	done := make(chan result, 1)
+	go func() {
+		data, err := io.ReadAll(io.LimitReader(input, initTaskLimit+1))
+		done <- result{data, err}
+	}()
+	select {
+	case <-ctx.Done():
+		return "", ctx.Err()
+	case r := <-done:
+		if err := ctx.Err(); err != nil {
+			return "", err
+		}
+		if r.err != nil {
+			return "", errors.New("could not read task from stdin")
+		}
+		if len(r.data) > initTaskLimit {
+			return "", errors.New("stdin task exceeds 1 MiB")
+		}
+		if !utf8.Valid(r.data) {
+			return "", errors.New("stdin task must be UTF-8 text")
+		}
+		return string(r.data), nil
+	}
+}
+
+// Success-only integration contract. Task/prompt text, environment values,
+// account-directory paths, and raw configuration never enter this report.
+// Next commands are argv arrays, not shell strings, and are never executed here.
+type initReport struct {
+	SchemaVersion int    `json:"schemaVersion"`
+	Version       string `json:"version"`
+	Outcome       string `json:"outcome"` // preview or created
+	// StartJSON says this build's start accepts --background --json, which
+	// reports a refusal as a code and the other loop's name.
+	StartJSON   bool            `json:"startJson"`
+	Loop        string          `json:"loop"`
+	Project     string          `json:"project"`
+	ConfigPath  string          `json:"configPath"`
+	StateDir    string          `json:"stateDir"`
+	PromptPath  string          `json:"promptPath"`
+	TaskPath    string          `json:"taskPath,omitempty"`
+	Goal        *initGoalReport `json:"goal,omitempty"`
+	TaskSource  string          `json:"taskSource"`  // stdin, file, inline
+	TaskBinding string          `json:"taskBinding"` // snapshot
+	Primary     initTarget      `json:"primary"`
+	// Routes is standard for a loop that follows the standard list (its
+	// fallbacks are that list as it resolves for the loop now), own for a
+	// loop with fallbacks of its own, and none.
+	Routes      string            `json:"routes"`
+	Fallbacks   []initFallbackRef `json:"fallbacks"`
+	Limits      initLimits        `json:"limits"`
+	Probes      *initProbePolicy  `json:"probes,omitempty"`
+	Next        initNextCommands  `json:"next"`
+	Limitations []string          `json:"limitations"`
+}
+
+type initTarget struct {
+	Agent   agentRef `json:"agent"`
+	Account string   `json:"account"` // inherited or explicit_directory
+	// CatalogAccount is the accounts catalog ID the person named for this
+	// route, written as its account; absent when none was named.
+	CatalogAccount string `json:"catalogAccount,omitempty"`
+}
+type initFallbackRef struct {
+	ID     string     `json:"id"`
+	Target initTarget `json:"target"`
+}
+type initLimits struct {
+	NoProgressTimeout string   `json:"noProgressTimeout,omitempty"`
+	MaxSends          int64    `json:"maxSends,omitempty"`
+	WakeEvery         string   `json:"wakeEvery"`
+	StallAfter        string   `json:"stallAfter"`
+	Interval          string   `json:"interval"`
+	Backoff           string   `json:"backoff"`
+	MaxNudges         int      `json:"maxNudges"`
+	MaxReprompts      int      `json:"maxReprompts"`
+	FailoverOn        []string `json:"failoverOn"`
+	Deadline          string   `json:"deadline,omitempty"`
+}
+type initProbePolicy struct {
+	Every                string `json:"every"`
+	TTL                  string `json:"ttl"`
+	DailyCapPerCandidate int    `json:"dailyCapPerCandidate"`
+	ExactOutsideCap      bool   `json:"exactOutsideCap"`
+	ManualOutsideCap     bool   `json:"manualOutsideCap"`
+}
+type initNextCommands struct {
+	Doctor          []string `json:"doctor"`
+	StartForeground []string `json:"startForeground"`
+	StartBackground []string `json:"startBackground"`
+	// Service is the recommended way to keep checks running, instead of
+	// start: it does not enable the loop, so `enable` comes first. On macOS and
+	// Linux: a service the operating system restarts. Absent elsewhere.
+	Service []string `json:"service,omitempty"`
+}
+
+func initTargetOf(a config.Agent) initTarget {
+	t := initTarget{Agent: refOf(a), Account: "inherited", CatalogAccount: a.Account}
+	if (a.Claude != nil && len(a.Claude.Env) > 0) || (a.Codex != nil && len(a.Codex.Env) > 0) {
+		t.Account = "explicit_directory"
+	}
+	return t
+}
+
+func printInitJSON(e env, o initOptions, cfg *config.Config, goal *control.Goal) int {
+	cfgPath := filepath.Join(o.directory, config.FileName)
+	r := initReport{
+		SchemaVersion: 1, Version: version, Outcome: "created", StartJSON: true, Loop: o.name,
+		Project: o.project, ConfigPath: cfgPath, StateDir: cfg.Loop.StateDir,
+		PromptPath: filepath.Join(o.directory, "prompt.md"), TaskSource: "inline", TaskBinding: "snapshot",
+		Primary: initTargetOf(cfg.Loop.Agent), Fallbacks: []initFallbackRef{},
+		Limits: initLimits{MaxSends: o.maxSends, WakeEvery: o.wake.String(), StallAfter: o.stall.String(), Interval: o.interval.String(), Backoff: o.backoff.String(), MaxNudges: o.nudges, MaxReprompts: o.reprompts, FailoverOn: []string{}, Deadline: o.deadline},
+		Next: initNextCommands{
+			Doctor:          []string{keepgoingExecutable(), "doctor", "--json", "-c", cfgPath},
+			StartForeground: []string{keepgoingExecutable(), "start", "--foreground", "-c", cfgPath},
+			StartBackground: []string{keepgoingExecutable(), "start", "--background", "-c", cfgPath},
+			Service:         serviceInstallCommand(cfgPath),
+		},
+		Limitations: []string{
+			initBindingNotice(o),
+			"Setup leaves supervision disabled; no agents, probes, logins, or schedulers are started.",
+			"Target identity, account access, quota independence, and provider health have not been verified.",
+			"Existing provider permissions are inherited; setup does not change models or logins on BB threads.",
+			"Review the task, target, and configuration before explicitly starting supervision. Other timers are not detected or changed.",
+		},
+	}
+	if o.agent == "cursor" {
+		r.Limitations = append(r.Limitations, initCursorNotice)
+	}
+	if o.agent == "antigravity" {
+		r.Limitations = append(r.Limitations, initAntigravityNotice)
+	}
+	if o.withGoal {
+		r.TaskPath = filepath.Join(o.directory, "task.md")
+		r.Goal = &initGoalReport{PromptContext: true, TitleSource: "loop_name", SpecificationSource: "task_snapshot"}
+		if goal != nil {
+			summary := goal.Summary()
+			r.Goal.Record = &summary
+		}
+	}
+	if o.noProgressTimeout != 0 {
+		r.Limits.NoProgressTimeout = o.noProgressTimeout.String()
+	}
+	if o.dryRun {
+		r.Outcome = "preview"
+	}
+	if o.taskFile == "-" {
+		r.TaskSource = "stdin"
+	} else if o.taskFile != "" {
+		r.TaskSource = "file"
+	}
+	r.Routes = "none"
+	if cfg.Loop.FollowsStandard() {
+		r.Routes = config.RoutesStandard
+	} else if cfg.FallbackSet != nil {
+		r.Routes = "own"
+	}
+	// What is written, whether or not any route applies yet.
+	r.Limits.FailoverOn = append([]string{}, cfg.Loop.Errors.FailoverOn...)
+	if fs := cfg.FallbackSet; fs != nil {
+		for _, c := range fs.Candidates {
+			r.Fallbacks = append(r.Fallbacks, initFallbackRef{ID: c.ID, Target: initTargetOf(c.Agent)})
+		}
+		r.Probes = &initProbePolicy{fs.Probe.Every.String(), fs.Probe.TTL.String(), fs.Probe.DailyCap, true, true}
+	}
+	if err := json.NewEncoder(e.stdout).Encode(r); err != nil {
+		e.errf("init: could not write JSON result; setup files may already exist")
+		return exitFailed
+	}
+	return exitOK
+}
+
+// serviceInstallCommand is `keepgoing service install` for the configuration, where
+// a managed service exists (macOS and Linux).
+func serviceInstallCommand(cfgPath string) []string {
+	if runtime.GOOS != "darwin" && runtime.GOOS != "linux" {
+		return nil
+	}
+	return []string{keepgoingExecutable(), "service", "install", "-c", cfgPath}
+}

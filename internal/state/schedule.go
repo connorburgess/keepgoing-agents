@@ -98,6 +98,11 @@ type Schedule struct {
 	// StartedBy is the identity the last check before this time was
 	// started with.
 	StartedBy *Routine
+	// Recent is the usual gap between the recent checks the record keeps,
+	// once CadenceMinGaps of them are seen, judged or not. It says how
+	// checks have run, not when the next one will: only the panel shows it,
+	// and the rule does not read it.
+	Recent time.Duration
 }
 
 // Gap is one stretch with no check, as a check_gap report describes it.
@@ -121,6 +126,9 @@ func ScheduleOf(f File, in ScheduleInput, now time.Time) Schedule {
 		gaps = nil // recorded under another window
 	}
 	s := Schedule{LastCheckAt: f.CheckedAt, From: f.CheckedAt, StartedBy: f.StartedBy, GapsSeen: len(gaps)}
+	if len(gaps) >= CadenceMinGaps {
+		s.Recent = usualGap(gaps)
+	}
 	// A change stamped later than now is a clock that moved: ignored.
 	if in.ControlChangedAt.After(s.From) && !in.ControlChangedAt.After(now) {
 		s.From = in.ControlChangedAt

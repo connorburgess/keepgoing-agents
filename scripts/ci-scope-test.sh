@@ -22,10 +22,10 @@ check docs integrations/macos/README.md "docs/café-项目.md"
 
 # Anything else runs everything.
 check full ""
-check full cmd/keepgoing/main.go
+check full cmd/looptender/main.go
 check full README.md internal/decide/decide.go
 check full internal/README.md
-check full cmd/keepgoing/testdata/example.md
+check full cmd/looptender/testdata/example.md
 check full integrations/bb-plugin-keepgoing/src/testdata/example.md
 check full integrations/bb-plugin-keepgoing/package.json
 check full integrations/macos/Package.swift
@@ -33,8 +33,8 @@ check full scripts/ci-scope.sh
 check full scripts/README.md
 check full .github/workflows/checks.yml
 check full .github/pull_request_template.md
-check full schema/keepgoing.schema.json
-check full examples/keepgoing.bb.yaml
+check full schema/looptender.schema.json
+check full examples/looptender.bb.yaml
 check full examples/README.md
 check full go.mod
 check full go.sum
@@ -47,7 +47,8 @@ check full '"docs/odd\nname.md"'
 check full README.md Makefile
 
 # The event decides before any file is looked at.
-for event in push schedule ""; do
+# A queued merge is checked in full: the queue runs every job on the tree that lands.
+for event in push schedule merge_group ""; do
 	got=$(EVENT=$event scripts/ci-scope.sh 2>/dev/null)
 	[ "$got" = "scope=full" ] || { echo "FAIL: event '$event' gave $got"; fail=1; }
 done

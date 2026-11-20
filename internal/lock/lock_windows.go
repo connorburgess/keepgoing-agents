@@ -20,9 +20,11 @@ const (
 	errorLockViolation      = syscall.Errno(33)
 )
 
-func lockFile(f *os.File) error {
+func lockFile(f *os.File) error       { return fileLock(f, lockfileExclusiveLock) }
+func lockFileShared(f *os.File) error { return fileLock(f, 0) }
+func fileLock(f *os.File, mode uintptr) error {
 	var ol syscall.Overlapped
-	r, _, err := procLockFileEx.Call(f.Fd(), lockfileExclusiveLock|lockfileFailImmediately, 0, 1, 0, uintptr(unsafe.Pointer(&ol)))
+	r, _, err := procLockFileEx.Call(f.Fd(), mode|lockfileFailImmediately, 0, 1, 0, uintptr(unsafe.Pointer(&ol)))
 	if r != 0 {
 		return nil
 	}

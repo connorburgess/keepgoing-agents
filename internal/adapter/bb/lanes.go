@@ -12,9 +12,9 @@ import (
 	"sort"
 	"strconv"
 
-	"github.com/connorburgess/keepgoing-agents/internal/adapter"
-	"github.com/connorburgess/keepgoing-agents/internal/decide"
-	"github.com/connorburgess/keepgoing-agents/internal/snapshot"
+	"github.com/looptender/looptender/internal/adapter"
+	"github.com/looptender/looptender/internal/decide"
+	"github.com/looptender/looptender/internal/snapshot"
 )
 
 // A lane is a direct child thread of the supervised thread. This file is
@@ -78,7 +78,7 @@ func (a *Adapter) loadLanes() map[string]laneSummary {
 	}
 	lanes := map[string]laneSummary{}
 	if p := a.lanesPath(); p != "" {
-		if b, err := snapshot.ReadFile(p); err == nil {
+		if b, err := snapshot.ReadRecord(p); err == nil {
 			var stored lanesFile
 			if json.Unmarshal(b, &stored) == nil && stored.Lanes != nil {
 				if key, err := hex.DecodeString(stored.Key); err == nil && len(key) == laneKeyBytes {
@@ -134,7 +134,7 @@ func (a *Adapter) saveLanes(lanes map[string]laneSummary) bool {
 func (a *Adapter) ForgetLanes() {
 	a.lanes, a.laneKey = nil, nil
 	if p := a.lanesPath(); p != "" {
-		os.Remove(p)
+		snapshot.Remove(p)
 		os.Remove(p + ".tmp")
 	}
 }

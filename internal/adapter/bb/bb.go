@@ -7,15 +7,16 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
 	"time"
 
-	"github.com/connorburgess/keepgoing-agents/internal/adapter"
-	"github.com/connorburgess/keepgoing-agents/internal/config"
-	"github.com/connorburgess/keepgoing-agents/internal/decide"
-	"github.com/connorburgess/keepgoing-agents/internal/evidence"
+	"github.com/looptender/looptender/internal/adapter"
+	"github.com/looptender/looptender/internal/config"
+	"github.com/looptender/looptender/internal/decide"
+	"github.com/looptender/looptender/internal/evidence"
 )
 
 // Adapter drives one BB thread.
@@ -30,6 +31,7 @@ type Adapter struct {
 	// activeChildIDs is the verified active children of the last childWork
 	// call, kept beside its count for the run graph.
 	activeChildIDs []string
+	directChildren *decide.DirectChildren
 	// childTitles is the title field of each verified direct child's show
 	// reply in the last childWork, by ID, for display only.
 	childTitles map[string]string
@@ -40,6 +42,8 @@ type Adapter struct {
 	// cliPath is the absolute path of the bb executable this adapter last
 	// started: where the system found the configured command.
 	cliPath string
+	// signalExits counts Unix signal exits outside adapter timeout/cancellation.
+	signalExits int
 }
 
 // CLIPath implements adapter.CLIPather: the absolute path of the bb
@@ -64,6 +68,9 @@ func (a *Adapter) WithStateDir(dir string) *Adapter {
 
 // Name implements adapter.Adapter.
 func (a *Adapter) Name() string { return "bb" }
+
+// ConversationKey implements adapter.ConversationKeyer: the configured thread.
+func (a *Adapter) ConversationKey() (string, bool) { return a.cfg.Thread, a.cfg.Thread != "" }
 
 type envelope struct {
 	OK    *bool `json:"ok"`
@@ -113,6 +120,7 @@ func (a *Adapter) Observe(ctx context.Context) (decide.Observation, error) {
 		return obs, nil
 	}
 	obs.ActiveChildren, obs.ChildrenUnverified, obs.AwaitingChildren, obs.ErroredChildren, obs.HealthyChildren = a.childWork(ctx)
+	obs.DirectChildren = a.directChildren
 	obs.ActiveChildIDs = a.activeChildIDs
 	obs.ChildTitles = a.childTitles
 	if len(obs.AwaitingChildren) > 0 {
@@ -124,6 +132,8 @@ func (a *Adapter) Observe(ctx context.Context) (decide.Observation, error) {
 	sig := a.signals(ctx)
 	if sig.ok {
 		obs.ModelFallback = sig.fallbackSeq
+		obs.ChildOutcome = sig.childOutcome
+		obs.Turns = &decide.TurnCounts{Requests: sig.turnRequests, Starts: sig.turnStarts}
 	}
 	if sig.ok && sig.hasError {
 		obs.Evidence = sig.evidence
@@ -251,6 +261,9 @@ type signals struct {
 	turnStartSeq  int64
 	toolsRunning  bool
 	fallbackSeq   int64
+	childOutcome  int64
+	turnRequests  int64
+	turnStarts    int64
 }
 
 // signals reads the thread's new log events and returns the current error,
@@ -259,7 +272,8 @@ type signals struct {
 func (a *Adapter) signals(ctx context.Context) signals {
 	c, ok := a.scan(ctx)
 	s := signals{class: decide.ErrUnknown, ok: ok, blocked: c.Blocked, resetsAt: c.ResetsAt, pending: len(c.Pending) > 0, lastEventAt: c.LastEventAt, turnStartedMs: c.TurnStartedMs,
-		turnStartSeq: c.TurnStartSeq, toolsRunning: c.ToolsUncertain || len(c.OpenTools) > 0, fallbackSeq: c.FallbackSeq}
+		turnStartSeq: c.TurnStartSeq, toolsRunning: c.ToolsUncertain || len(c.OpenTools) > 0, fallbackSeq: c.FallbackSeq, childOutcome: c.ChildOutcomeSeq,
+		turnRequests: c.TurnRequests, turnStarts: c.TurnStarts}
 	if c.Error != nil {
 		s.hasError = true
 		s.evidence = evidence.Clean(c.Error.Evidence)
@@ -479,6 +493,9 @@ func (a *Adapter) exec(ctx context.Context, stdin string, args ...string) ([]byt
 	ctx, cancel := context.WithTimeout(ctx, a.Timeout)
 	defer cancel()
 	cmd := exec.CommandContext(ctx, a.cfg.CLI, args...)
+	if len(args) >= 2 && args[0] == "thread" && args[1] == "tell" {
+		cmd.Env = sendEnv(os.Environ())
+	}
 	if stdin != "" {
 		cmd.Stdin = strings.NewReader(stdin)
 	}
@@ -496,6 +513,13 @@ func (a *Adapter) exec(ctx context.Context, stdin string, args ...string) ([]byt
 			a.cliPath = p
 		}
 	}
+	var exit *exec.ExitError
+	if errors.As(err, &exit) && exit.ExitCode() == -1 && ctx.Err() == nil {
+		// Unix signal termination outside this adapter's timeout/cancellation.
+		// This includes self-signals and crashes; source and cause are unknown.
+		// Go does not report Windows exits this way.
+		a.signalExits++
+	}
 	if err != nil && ctx.Err() != nil {
 		// Stopped at the limit: whatever it printed, the command did not end
 		// on its own.
@@ -503,6 +527,29 @@ func (a *Adapter) exec(ctx context.Context, stdin string, args ...string) ([]byt
 	}
 	return stdout.Bytes(), err
 }
+
+// threadIdentityVar is the variable bb reads to say which BB thread a command
+// comes from.
+const threadIdentityVar = "BB_THREAD_ID"
+
+// sendEnv is the environment of a message looptender sends: the supervisor's
+// own, without a BB thread identity. A supervisor started by hand inside a BB
+// thread inherits that thread's ID, and BB would show every wake as sent by
+// that thread, which did not write it. A service-started supervisor already
+// runs without one. Names are matched in any letter case, as Windows does.
+func sendEnv(environ []string) []string {
+	env := make([]string, 0, len(environ))
+	for _, kv := range environ {
+		if name, _, _ := strings.Cut(kv, "="); !strings.EqualFold(name, threadIdentityVar) {
+			env = append(env, kv)
+		}
+	}
+	return env
+}
+
+// SignalExits implements adapter.SignalExitReporter: the cumulative count
+// for this adapter, not a count scoped to a check or an observation.
+func (a *Adapter) SignalExits() int { return a.signalExits }
 
 // errStopped marks a bb command that was killed at its time limit or because
 // the check was cancelled.

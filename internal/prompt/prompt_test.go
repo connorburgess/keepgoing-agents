@@ -6,8 +6,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/connorburgess/keepgoing-agents/internal/config"
-	"github.com/connorburgess/keepgoing-agents/internal/control"
+	"github.com/looptender/looptender/internal/config"
+	"github.com/looptender/looptender/internal/control"
 )
 
 func TestCurrentGoalIsOptInAndReread(t *testing.T) {
@@ -107,5 +107,16 @@ func TestChildErrorsOnlyIsFixedWordingWithoutATaskPrompt(t *testing.T) {
 		"This notice is sent once when a child newly enters an error state.\n"
 	if got.Text != want || got.GoalID != "" || got.GoalRevision != 0 {
 		t.Fatalf("got %+v", got)
+	}
+}
+
+func TestWakeHeaderIsFixedWording(t *testing.T) {
+	const want = "Automatic looptender wake for loop example-loop: not a new instruction from a person and not an approval."
+	if got := WakeHeader("example-loop"); got != want {
+		t.Fatalf("%q", got)
+	}
+	m := WithWakeHeader("example-loop", Message{Text: "Continue the fictional task.", GoalID: "goal_example", GoalRevision: 2})
+	if m.Text != want+"\n\nContinue the fictional task." || m.GoalID != "goal_example" || m.GoalRevision != 2 {
+		t.Fatalf("%+v", m)
 	}
 }

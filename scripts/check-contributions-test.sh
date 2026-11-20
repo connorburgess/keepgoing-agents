@@ -14,6 +14,7 @@ fail=0
 repo="$tmp/repo"
 mkdir -p "$repo/scripts"
 cp "$root/scripts/check-contributions.sh" "$repo/scripts/"
+cp "$root/scripts/changelog-release.sh" "$repo/scripts/"
 printf '# test allowlist\nfixtures/allowed.bin\n' > "$repo/scripts/contribution-file-allowlist.txt"
 printf '# test allowlist\nfixtures/merge-example.txt\n' > "$repo/scripts/conflict-marker-allowlist.txt"
 cd "$repo" || exit 2
@@ -152,5 +153,151 @@ if [ "$code" != 1 ] || ! grep -qF "needs a sign-off matching its author" <<<"$ou
 fi
 git reset -q --hard "$base"
 
-[ "$fail" = 0 ] && echo "check-contributions: all file cases pass"
+# Unknown revisions must fail before an empty commit/file list can pass.
+for args in "missing-base HEAD" "HEAD missing-head" "--scan-tree missing-tree"; do
+	out=$(scripts/check-contributions.sh $args 2>&1); code=$?
+	if [ "$code" != 1 ] || ! grep -qF "is not a commit" <<<"$out"; then
+		echo "FAIL: unknown revision ($args): exit $code: $out"; fail=1
+	fi
+done
+
+unrelated=$(printf 'test: unrelated history\n' | git commit-tree "HEAD^{tree}")
+if scripts/check-contributions.sh "$unrelated" HEAD >/dev/null 2>&1; then
+	echo "FAIL: revisions without a common ancestor passed"; fail=1
+fi
+
+# The pull request title and body: BB thread IDs and home paths. Each case
+# checks the text alone (no commits), as the workflow passes it: title, a
+# literal backslash-n, then the body.
+text_case() { # text_case NAME WANT_EXIT WANT_TEXT PR_TEXT
+	local name=$1 want=$2 text=$3 out code
+	out=$(PR_TEXT=$4 scripts/check-contributions.sh "$base" "$base" 2>&1)
+	code=$?
+	if [ "$code" != "$want" ] || { [ -n "$text" ] && ! grep -qF -- "$text" <<<"$out"; }; then
+		echo "FAIL: $name: exit $code, want $want; output: $out"
+		fail=1
+	fi
+	if grep -qE "k3m9x2q7wz|0a1b2c3d4e|a1b2c3d4e5|alice|bob" <<<"$out"; then
+		echo "FAIL: $name: the message repeats the match: $out"; fail=1
+	fi
+}
+tid="name a BB thread ID"
+hp="absolute home path"
+text_case "a plain title and body pass" 0 "" 'fix(bb): read status\nThe body.'
+text_case "a thread ID in the body fails, with its line" 1 "$tid (thr_ and ten letters or digits) at line 3" 'fix: x\nIntro.\nSee thr_k3m9x2q7wz for context.'
+text_case "a thread ID in the title fails" 1 "$tid (thr_ and ten letters or digits) at line 1" 'fix: as asked in thr_0a1b2c3d4e'
+text_case "a thread ID first in the body, after the joining backslash-n, is its own line" 1 "at line 2" 'fix: x\nthr_k3m9x2q7wz asked for this'
+text_case "a thread link with a message anchor fails" 1 "$tid" 'fix: x\nSee @thread:thr_k3m9x2q7wz#msg=42.'
+text_case "a thread ID inside a branch or path fails" 1 "$tid" 'fix: x\nbranch bb/ci-fast-pushes-thr_k3m9x2q7wz'
+text_case "two lines are both named" 1 "at line 2,4" 'fix: x\nthr_k3m9x2q7wz\nok\nand thr_a1b2c3d4e5.'
+text_case "the docs' fictional ten-character ID passes" 0 "" 'fix: x\nfor example thr_example123 and thr_example456'
+text_case "a fictional ID beside a real one still fails" 1 "at line 2" 'fix: x\nthr_example123 then thr_k3m9x2q7wz'
+text_case "longer and shorter fictional IDs pass" 0 "" 'fix: x\nthr_example_owner thr_destination thr_example0001 thr_abc123 thr_example'
+text_case "eleven characters is not a thread ID" 0 "" 'fix: x\nthr_k3m9x2q7wza'
+text_case "a thread ID used as a file-name prefix fails" 1 "$tid" 'fix: x\nsaved as thr_k3m9x2q7wz_notes.md'
+text_case "a fictional ID as a file-name prefix passes" 0 "" 'fix: x\nsaved as thr_example123_notes.md'
+text_case "upper case is not a thread ID" 0 "" 'fix: x\nTHR_K3M9X2Q7WZ'
+text_case "a macOS home path fails, with its line" 1 "$hp (/Users/<name> or /home/<name>) at line 2" 'fix: x\nRan in /Users/alice/src/repo.'
+text_case "a Linux home path fails" 1 "$hp" 'fix: x\nlog at /home/bob/.cache/x'
+text_case "a home path in a file URL fails" 1 "$hp" 'fix: x\nfile:///Users/alice/notes.md'
+text_case "the docs' fictional home passes" 0 "" 'fix: x\n/Users/example/repo and /home/example/repo'
+text_case "a CI runner, Homebrew and the shared folder pass" 0 "" 'fix: x\n/home/runner/work/x /Users/runner/work /home/linuxbrew/.linuxbrew /Users/Shared/x'
+text_case "placeholders, ~ and a bare /Users pass" 0 "" 'fix: x\n/Users/<name>/ /home/$USER/ ~/src /Users/ /home/./x'
+text_case "a home path without a trailing slash fails" 1 "$hp" 'fix: x\nthe /Users/alice directory'
+text_case "a home path ending the text fails" 1 "$hp" 'fix: x\ncd /Users/alice'
+text_case "an allowed home without a trailing slash passes" 0 "" 'fix: x\ncd /home/example and /Users/runner'
+text_case "a home path in backticks or brackets fails" 1 "$hp" 'fix: x\nsee `/Users/alice/x` (/home/bob/y)'
+text_case "home inside a list of names is not a path" 0 "" 'fix: x\nfour entries (studio/home/lab/spare) and ~/home/notes/'
+text_case "a credit still fails beside the new rules" 1 "tool attribution credit" 'fix: x\nIntro.\nGenerated with Claude Code'
+text_case "a credit first in the body, after the joining backslash-n, fails" 1 "tool attribution credit" 'fix: x\nGenerated with Claude Code'
+
+# Changelog entries: a line under Unreleased is refused; a fragment in
+# changelog.d/ is the way, and must be well formed.
+mkdir -p changelog.d
+printf '# Changelog\n\n## Unreleased\n\n- An entry from before fragments.\n\n## 0.1.0 (2026-01-01)\n\n- The first release.\n' > CHANGELOG.md
+printf '# Fragments\n\nOne file per change.\n' > changelog.d/README.md
+git add -A && git commit -q -s -m "test: changelog on the base" && base=$(git rev-parse HEAD)
+mkdir -p docs fixtures bin changelog.d
+
+sed -i.bak 's/^## Unreleased$/## Unreleased\n\n- A new entry in the old place./' CHANGELOG.md && rm CHANGELOG.md.bak
+expect "a line added under Unreleased fails, with the way to move it" 1 "CHANGELOG.md gains an entry under Unreleased at line 5"
+sed -i.bak 's/^## Unreleased$/## Unreleased \n\n- A new entry behind a changed heading./' CHANGELOG.md && rm CHANGELOG.md.bak
+expect "a changed Unreleased heading fails" 1 "keep the exact ## Unreleased heading"
+sed -i.bak '/^## Unreleased$/d' CHANGELOG.md && rm CHANGELOG.md.bak
+expect "removing the Unreleased heading fails" 1 "keep the exact ## Unreleased heading"
+git rm -q CHANGELOG.md
+expect "removing the changelog fails" 1 "keep the exact ## Unreleased heading"
+sed -i.bak 's/^## Unreleased$/## Unreleased\n\n++ A new entry that resembles a diff header./' CHANGELOG.md && rm CHANGELOG.md.bak
+expect "added plus content alone fails" 1 "CHANGELOG.md gains an entry under Unreleased at line 5"
+sed -i.bak 's/^## Unreleased$/## Unreleased\n\n++ A new entry that resembles a diff header.\n- Another new entry./' CHANGELOG.md && rm CHANGELOG.md.bak
+expect "added plus content is checked and counted" 1 "CHANGELOG.md gains an entry under Unreleased at line 5,6"
+sed -i.bak 's/^- An entry from before fragments\.$/- An entry from before fragments, reworded./' CHANGELOG.md && rm CHANGELOG.md.bak
+expect "a reworded Unreleased line fails too" 1 "restore CHANGELOG.md to main's version"
+sed -i.bak '/^- An entry from before fragments\.$/d' CHANGELOG.md && rm CHANGELOG.md.bak
+expect "removing an Unreleased line passes" 0 ""
+sed -i.bak 's/^- The first release\.$/- The first release, with a typo fixed./' CHANGELOG.md && rm CHANGELOG.md.bak
+expect "a correction under a released version passes" 0 ""
+echo "- A new entry as a fragment." > changelog.d/new-entry.md
+expect "a fragment passes" 0 ""
+printf '#324 fixes an issue.\n' > changelog.d/issue-reference.md
+expect "a fragment starting with an issue reference passes" 0 ""
+ln -s ../README.md changelog.d/link.md
+expect "a symbolic link fragment fails" 1 "changelog.d/link.md: a changelog fragment must be a regular file with mode 100644"
+echo "- An executable fragment." > changelog.d/executable.md
+chmod +x changelog.d/executable.md
+expect "an executable fragment fails" 1 "changelog.d/executable.md: a changelog fragment must be a regular file with mode 100644"
+printf '## Added\n\n- An entry.\n' > changelog.d/with-heading.md
+expect "a fragment with a heading fails" 1 "changelog.d/with-heading.md: a changelog fragment has no heading"
+printf '\n  \n' > changelog.d/empty.md
+expect "an empty fragment fails" 1 "changelog.d/empty.md: the changelog fragment is empty"
+mkdir -p changelog.d/sub && echo "- x" > changelog.d/sub/x.md
+expect "a fragment in a subdirectory fails" 1 "changelog.d/sub/x.md: a changelog fragment is one lower-case .md file"
+echo "- x" > changelog.d/Entry.md
+expect "an upper-case fragment name fails" 1 "changelog.d/Entry.md"
+echo "- x" > changelog.d/entry.txt
+expect "a fragment that is not .md fails" 1 "changelog.d/entry.txt"
+printf '# Fragments\n\nChanged.\n' > changelog.d/README.md
+expect "the README is not a fragment" 0 ""
+
+# The release script gathers fragments, newest first, above the old entries,
+# and its result passes the check.
+echo "- Older fragment." > changelog.d/older.md
+git add -A && git commit -q -s -m "test: older fragment"
+echo "- Newer fragment." > changelog.d/newer.md
+GIT_COMMITTER_DATE="2030-01-01T00:00:00Z" git add -A
+GIT_COMMITTER_DATE="2030-01-01T00:00:00Z" git commit -q -s -m "test: newer fragment"
+pre=$(git rev-parse HEAD)
+# Use a non-default mode so restoring a hard-coded 0644 also fails.
+chmod 640 CHANGELOG.md
+scripts/changelog-release.sh 0.2.0 2026-02-02 >/dev/null || { echo "FAIL: the release script failed"; fail=1; }
+# -perm works with both BSD and GNU find.
+if [ "$(find CHANGELOG.md -perm 0640 -print)" != CHANGELOG.md ]; then
+	echo "FAIL: release script changed CHANGELOG.md permissions"; fail=1
+fi
+want='# Changelog
+
+## Unreleased
+
+## 0.2.0 (2026-02-02)
+
+- Newer fragment.
+
+- Older fragment.
+
+- An entry from before fragments.
+
+## 0.1.0 (2026-01-01)
+
+- The first release.'
+if [ "$(cat CHANGELOG.md)" != "$want" ]; then echo "FAIL: release script output:"; cat CHANGELOG.md; fail=1; fi
+if [ -e changelog.d/older.md ] || [ -e changelog.d/newer.md ] || [ ! -e changelog.d/README.md ]; then
+	echo "FAIL: the release script should delete the fragments and keep the README"; fail=1
+fi
+git add -A && git commit -q -s -m "chore: release 0.2.0"
+out=$(scripts/check-contributions.sh "$pre" HEAD 2>&1) || { echo "FAIL: a release-prep change was refused: $out"; fail=1; }
+if scripts/changelog-release.sh 0.2.0 2026-02-03 >/dev/null 2>&1; then echo "FAIL: releasing a version twice should fail"; fail=1; fi
+if scripts/changelog-release.sh 0.3.0 2026-02-03 >/dev/null 2>&1; then echo "FAIL: a release with nothing in it should fail"; fail=1; fi
+git reset -q --hard "$base"
+
+[ "$fail" = 0 ] && echo "check-contributions: all file, text and changelog cases pass"
 exit "$fail"

@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"github.com/looptender/looptender/internal/envvar"
 	"os"
 	"os/exec"
 	"slices"
@@ -15,33 +16,50 @@ import (
 	"strings"
 	"time"
 
-	"github.com/connorburgess/keepgoing-agents/internal/adapter"
-	"github.com/connorburgess/keepgoing-agents/internal/adapter/factory"
-	"github.com/connorburgess/keepgoing-agents/internal/config"
-	"github.com/connorburgess/keepgoing-agents/internal/control"
-	"github.com/connorburgess/keepgoing-agents/internal/decide"
-	"github.com/connorburgess/keepgoing-agents/internal/handoff"
-	"github.com/connorburgess/keepgoing-agents/internal/health"
-	"github.com/connorburgess/keepgoing-agents/internal/incident"
-	"github.com/connorburgess/keepgoing-agents/internal/netretry"
-	"github.com/connorburgess/keepgoing-agents/internal/probe"
-	"github.com/connorburgess/keepgoing-agents/internal/prompt"
-	"github.com/connorburgess/keepgoing-agents/internal/report"
-	rd "github.com/connorburgess/keepgoing-agents/internal/rundiscovery"
-	"github.com/connorburgess/keepgoing-agents/internal/session"
-	"github.com/connorburgess/keepgoing-agents/internal/state"
-	"github.com/connorburgess/keepgoing-agents/internal/window"
+	"github.com/looptender/looptender/internal/adapter"
+	"github.com/looptender/looptender/internal/adapter/factory"
+	"github.com/looptender/looptender/internal/config"
+	"github.com/looptender/looptender/internal/control"
+	"github.com/looptender/looptender/internal/decide"
+	"github.com/looptender/looptender/internal/handoff"
+	"github.com/looptender/looptender/internal/health"
+	"github.com/looptender/looptender/internal/incident"
+	"github.com/looptender/looptender/internal/netretry"
+	"github.com/looptender/looptender/internal/prbacklog"
+	"github.com/looptender/looptender/internal/probe"
+	"github.com/looptender/looptender/internal/prompt"
+	"github.com/looptender/looptender/internal/report"
+	rd "github.com/looptender/looptender/internal/rundiscovery"
+	"github.com/looptender/looptender/internal/session"
+	"github.com/looptender/looptender/internal/state"
+	"github.com/looptender/looptender/internal/window"
 )
 
 // ProbeFunc runs one probe.
 type ProbeFunc func(ctx context.Context, c config.Candidate, tier probe.Tier, timeout time.Duration) probe.Result
 
+// ErrLastConfigNotStop refuses a check from the last configuration a daemon
+// read that is not a stop-only check.
+var ErrLastConfigNotStop = errors.New("only a stop may be carried out from the last configuration read")
+
 // Options tune a tick. Zero values use the real implementations.
 type Options struct {
 	Version string // build label of the caller, for historical diagnostics
+	// Executable is the absolute path of the file running this check. Each
+	// real check records it privately (state.CheckExecutableName), so a
+	// panel allowed to make changes can offer to replace that file with its
+	// own build. Empty records nothing.
+	Executable      string
+	ExecutableImage *state.ExecutableImage
 	// StopOnly: the check is run by a command that carries out a stop at once
 	// (keepgoing stop --now). It does nothing unless a stop is requested.
 	StopOnly bool
+	// LastConfigReadAt, when set, says this check runs from the last
+	// configuration a daemon read, at that time, because a file it was read
+	// from can no longer be read. Only a stop-only check may: nothing that
+	// observes and sends uses a configuration it cannot verify. The check's
+	// record says so.
+	LastConfigReadAt time.Time
 	// Deadline, when set and sooner than the check's own hard limit, is the
 	// check's hard limit instead: a stop carried out for a caller that has
 	// less time than a check (the page and the menu).
@@ -52,14 +70,15 @@ type Options struct {
 	CallerThread string
 	// SessionDir is the private directory of session claims shared by every
 	// loop this user runs; empty means session.Dir().
-	SessionDir  string
-	Now         time.Time
-	DryRun      bool // decide and record; send nothing and run no probes
-	Fingerprint func([]string) (string, error)
-	NewAdapter  factory.Func
-	Probe       ProbeFunc
-	Reporter    report.Reporter
-	Busy        func(ctx context.Context, y config.Yield) (bool, error)
+	SessionDir   string
+	Now          time.Time
+	DryRun       bool            // decide and record; send nothing and run no probes
+	BacklogQuery prbacklog.Query // nil uses fixed read-only gh query when opted in
+	Fingerprint  func([]string) (string, error)
+	NewAdapter   factory.Func
+	Probe        ProbeFunc
+	Reporter     report.Reporter
+	Busy         func(ctx context.Context, y config.Yield) (bool, error)
 	// Online reports connectivity once. Nil uses the loop's network settings;
 	// a loop with the check off is never checked.
 	Online func(ctx context.Context) bool
@@ -80,6 +99,10 @@ type Options struct {
 	// Threads creates and finds BB threads for handoffs to candidates with
 	// bb.new_thread. Swapped in tests.
 	Threads func(cli string) ThreadCreator
+	// CommandPrefix runs this build of the command, quoted for the shell,
+	// for the session commands the supervision context lists
+	// (loop.prompt_context). Empty uses DefaultCommandPrefix.
+	CommandPrefix string
 }
 
 // ProbeNote summarises a probe that ran during the tick.
@@ -117,6 +140,8 @@ type HandoffNote struct {
 
 // Result is what a tick did, printed as JSON by the CLI.
 type Result struct {
+	// Timing is what usage-aware timing decided and what came of it.
+	Timing *TimingNote `json:"timing,omitempty"`
 	// RetrySignal says why a provider retry notice was not honoured, so that
 	// ordinary error or stall handling applied: "expired" when it had gone
 	// stale, "declined" when the provider's own retry service had recorded
@@ -177,6 +202,12 @@ type Result struct {
 }
 
 type tick struct {
+	assignment *assignmentDelivery
+	// ctl is the control record as this check loaded it.
+	ctl control.File
+	// contextBytes adds up the supervision context blocks this check's sends
+	// carried, for the incident record.
+	contextBytes int
 	// refusalMark is "refused" or "recovered" when this check counted a
 	// refused turn or the recovery that ended a streak, for the journal.
 	refusalMark string
@@ -203,6 +234,10 @@ type tick struct {
 	incidentControl     *incident.Controls
 	incidentProbes      incident.Probes
 	incidentLimitWait   decide.LimitWait // from the last engine decision, which sets the tick's reason
+	// idleFactsAfterWake is this check's digest of the idle spacing rule's
+	// facts as they will be once a wake sent now has started its turn; empty
+	// when the rule is off or the session is in error.
+	idleFactsAfterWake string
 	// incidentLimitWaitReport is set only by the check that detects a long limit wait.
 	incidentLimitWaitReport string
 	// incidentTurnRetry is set only by a check that asked the provider to retry a failed turn.
@@ -210,6 +245,15 @@ type tick struct {
 	// turnRetryAlreadyQueued: this check asked for a turn retry and was told
 	// one was already queued.
 	turnRetryAlreadyQueued bool
+	// resolvedMove: the check moved the loop because its route left the
+	// configuration, which counts as another move for timing.
+	resolvedMove bool
+	// afterSave runs once the check's state is saved: reports of what the
+	// state records.
+	afterSave []func()
+	// incidentTimingCause is the history's cause for a check in which
+	// usage-aware timing changed the thread.
+	incidentTimingCause string
 	// lanesRetried is how many of the errored lanes keepgoing has asked BB to
 	// retry and has not given up on, after this check's lane work. The
 	// notice to the session says so.
@@ -313,28 +357,30 @@ func (t *tick) warn(format string, a ...any) {
 }
 
 func (t *tick) report(typ, text string, data map[string]any) {
-	_ = t.reportSent(typ, text, data)
+	_, _ = t.reportSent(typ, text, data)
 }
 
-// reportSent sends a report and says whether it was delivered.
-func (t *tick) reportSent(typ, text string, data map[string]any) bool {
+// reportSent reports acceptance separately from a prohibition on retry.
+// Uncertain delivery stays unsent; it never becomes provider evidence.
+func (t *tick) reportSent(typ, text string, data map[string]any) (sent, retryStopped bool) {
 	if t.opts.DryRun {
-		return false
+		return false, false
 	}
 	ctx, cancel, ok := t.reportContext(typ, text)
 	if !ok {
-		return false
+		return false, false
 	}
 	defer cancel()
 	if err := t.opts.Reporter.Report(ctx, report.Event{Type: typ, Loop: t.loop.Name, Text: text, At: t.now, Data: data}); err != nil {
 		t.warn("report %s: %v", typ, err)
-		return false
+		return false, errors.Is(err, report.ErrNoRetry)
 	}
-	return true
+	return true, false
 }
 
 // reportOnce sends the report of an episode, named by key, until it has been
-// delivered, at most state.MaxOnceAttempts times. A new key starts again.
+// accepted, at most state.MaxOnceAttempts times, unless the reporter forbids
+// retry of an uncertain delivery. A new key starts again.
 func (t *tick) reportOnce(slot **state.OnceReport, key, typ, text string, data map[string]any) {
 	if t.opts.DryRun {
 		return
@@ -343,15 +389,18 @@ func (t *tick) reportOnce(slot **state.OnceReport, key, typ, text string, data m
 		*slot = &state.OnceReport{Key: key}
 	}
 	r := *slot
-	if r.Sent || r.Attempts >= state.MaxOnceAttempts {
+	if r.Sent || r.RetryStopped || r.Attempts >= state.MaxOnceAttempts {
 		return
 	}
 	r.Attempts++
-	r.Sent = t.reportSent(typ, text, data)
+	r.Sent, r.RetryStopped = t.reportSent(typ, text, data)
 }
 
 // Tick performs one supervision pass. The caller holds the lock.
 func Tick(ctx context.Context, cfg *config.Config, opts Options) (Result, error) {
+	if !opts.LastConfigReadAt.IsZero() && !opts.StopOnly {
+		return Result{Loop: cfg.Loop.Name, Action: string(decide.None), Reason: "refused: only a stop may be carried out from the last configuration read"}, ErrLastConfigNotStop
+	}
 	if opts.Now.IsZero() {
 		opts.Now = time.Now()
 	}
@@ -607,7 +656,9 @@ func (t *tick) resolveActive() (string, config.Agent) {
 	saved := t.st.Target()
 	target, agent, why := t.resolveWhy(saved)
 	if target != saved {
-		t.st.ActiveTarget = target
+		t.st.ActiveTarget, t.st.TargetSetBy = target, state.SetByConfiguration
+		t.st.ReapplyRoute = true
+		t.resolvedMove = true
 		if why != "" {
 			t.incidentReturn = &incident.Return{FromKey: incident.TargetKey(saved), Reason: why}
 		}
@@ -627,6 +678,7 @@ func (t *tick) run() error {
 		return err
 	}
 	res.Control = ctl.Summary()
+	t.ctl = ctl
 	t.briefHold, t.stopRequested = ctl.BriefHold, ctl.Stop
 	if ctl.Stop && ctl.StopLanesAt != nil {
 		t.stopLanesFor = ctl.StopLanesAt.UTC()
@@ -638,6 +690,9 @@ func (t *tick) run() error {
 		return err
 	}
 	t.incidentStateLoaded = true
+	if !loop.PromptContext {
+		t.st.ContextSent = nil // turning the key on again starts afresh
+	}
 	t.wakeAtStart = t.st.LastWakeAt
 	t.savedSends = t.st.SendsRecorded
 	// Whether a check was overdue is judged from the records as they were
@@ -780,6 +835,9 @@ func (t *tick) run() error {
 		return t.record(err)
 	}
 	res.State = string(obs.State)
+	// Past the holds, with the session claimed and observed: a thread that
+	// may not be on the route on record is set to it, between turns only.
+	t.reapplyRoute(target, obs)
 	t.noteRouteList()
 	t.sessionRecovered = obs.State == decide.Active || obs.State == decide.Idle
 	if obs.State == decide.Error {
@@ -967,6 +1025,8 @@ func (t *tick) run() error {
 		SinceLastReprompt: sinceReprompt, Backoff: loop.Errors.Backoff.Duration,
 		SwitchBackReady: t.switchBackReady(target),
 	}
+	in.AssignmentReady = t.assignmentObservation(a, obs)
+	in.IdleSpacing = t.idleSpacingInput(obs, ctl)
 	// A loop held for a restricted turn runs no check until a person resumes
 	// it. Reaching this point with that same turn still showing therefore
 	// means a person resumed: their request for one try.
@@ -1100,9 +1160,13 @@ func (t *tick) run() error {
 			actErr = t.act(a, d)
 		}
 	} else if d.Action == decide.Handoff {
+		setBy := t.st.TargetSetBy // what put the loop on the route it leaves
 		moved, err := t.handoff(target, agent, obs, summary)
-		if moved && err == nil && !t.opts.DryRun && target == state.Primary {
-			t.st.PrimaryResetsAt = obs.ResetsAt // switch-back waits for this
+		// Switch-back waits for the first route's limit. A step timing chose
+		// is on the first route's allowance, so its limit is that limit; any
+		// other route's handoff leaves the recorded reset as it was.
+		if moved && err == nil && !t.opts.DryRun && (target == state.Primary || setBy == state.SetByTiming) {
+			t.st.PrimaryResetsAt = obs.ResetsAt
 		}
 		if err != nil {
 			actErr = err
@@ -1163,8 +1227,18 @@ func (t *tick) run() error {
 				actErr = t.act(a, d)
 			}
 		}
-	} else if !t.opts.DryRun {
-		actErr = t.act(a, d)
+	} else {
+		// Usage-aware timing acts only when no other move was made in this
+		// check, and before a wake, so the next turn runs on its route. On a
+		// dry run it only says what it would do.
+		a = t.timingStep(a, d, obs, gate)
+		if d.Action == decide.Wake && t.routeNeedsRepair() {
+			// BB tell supplies no model/effort. A failed update may have
+			// changed the thread, so the old adapter cannot establish its route.
+			res.Action, res.Reason = string(decide.None), "timing route not established; waiting for repair before wake"
+		} else if !t.opts.DryRun {
+			actErr = t.act(a, d)
+		}
 	}
 	if t.opts.DryRun && res.Action == string(decide.Reprompt) {
 		// Preview the method only; a dry run asks the provider for nothing.
@@ -1187,6 +1261,13 @@ func (t *tick) run() error {
 		if err := t.reg.Save(loop.StateDir); err != nil && actErr == nil {
 			actErr = err
 		}
+	}
+	// After the decision and the action, so it can change neither; within
+	// what is left of the budget, and never for a lane.
+	t.readContext(a, target, d, obs, t.st.LastState)
+	t.readTurnUsage(a, target, d, obs)
+	if res.Action == string(d.Action) {
+		t.noteIdleSpacing(t.decisionInput, d)
 	}
 	t.reportLongLimitWait(target, obs)
 	t.reportChildErrors(target, obs)
@@ -1418,8 +1499,9 @@ func (t *tick) scheduledProbes(active, activeGroup string) (ran int) {
 // timingProbe runs the first route's usage-aware timing probe when it is due.
 // It is the one scheduled probe of a route in use: the owner turned timing on
 // to read that allowance. It runs under the same conditions as the other
-// scheduled probes, counts against the route's own daily cap, and only
-// collects a reading; nothing decides from it.
+// scheduled probes and counts against the route's own daily cap. The
+// probe records a reading; timing decides from recorded readings at a turn
+// boundary, not from this probe's result.
 func (t *tick) timingProbe() bool {
 	if !t.loop.TimingOn() || t.fb == nil || t.reg == nil {
 		return false
@@ -1613,6 +1695,8 @@ func (t *tick) handoff(from string, fromAgent config.Agent, obs decide.Observati
 		t.st.ClearChildErrors()
 		note.To = id
 		t.st.ActiveTarget, t.st.LastHandoffAt, t.st.LastWakeAt = id, t.now, t.now
+		t.st.TargetSetBy = state.SetByHandoff
+		t.routeApplied()
 		t.st.Handoffs++
 		t.st.Reprompts, t.st.LastRepromptAt = 0, time.Time{}
 		t.res.Target = id
@@ -1653,6 +1737,11 @@ func (t *tick) rejectSwitchBack(from string) {
 func (t *tick) switchBackReady(target string) bool {
 	sb := t.loop.SwitchBack
 	if !sb.Enabled || target == state.Primary || t.st.LastHandoffAt.IsZero() {
+		return false
+	}
+	// Switch-back returns from a route a handoff chose, never from one
+	// usage-aware timing chose: timing returns from its own steps.
+	if t.st.TargetSetBy == state.SetByTiming {
 		return false
 	}
 	earliest := t.st.LastHandoffAt.Add(sb.MinAfter.Duration)
@@ -1753,6 +1842,8 @@ func (t *tick) switchBack(from string) (bool, error) {
 	t.res.Handoff = &HandoffNote{From: from, To: state.Primary, Reason: "switch_back"}
 	t.res.Target = state.Primary
 	t.st.ActiveTarget, t.st.LastHandoffAt, t.st.LastWakeAt = state.Primary, t.now, t.now
+	t.st.TargetSetBy = state.SetBySwitchBack
+	t.routeApplied()
 	t.st.PrimaryResetsAt, t.st.LastSwitchBackTry = time.Time{}, time.Time{}
 	t.st.ClearBriefs()
 	t.st.ClearChildErrors()
@@ -1799,7 +1890,12 @@ func (t *tick) act(a adapter.Adapter, d decide.Decision) error {
 			// prompt, under the send already reserved for this recovery.
 			reserved = true
 		}
-		text, err := prompt.ComposeWake(loop)
+		text, err := prompt.ComposeWakeOnChange(loop, func(id string, revision uint64) bool {
+			conversation, known := conversationKey(a)
+			form, _ := prompt.ChooseGoalForm(prompt.GoalFacts{Last: t.st.GoalCopy, Target: t.res.Target,
+				Conversation: conversation, ConversationKnown: known, GoalID: id, GoalRevision: revision, Now: t.now})
+			return form == prompt.GoalShort
+		})
 		if err != nil {
 			return err
 		}
@@ -1814,6 +1910,20 @@ func (t *tick) act(a adapter.Adapter, d decide.Decision) error {
 		} else {
 			text = prompt.WithChildErrorsRetried(text, childErrors, t.lanesRetried)
 		}
+		var backlogNotice *backlogDelivery
+		if d.Action == decide.Wake && !d.AssignmentWake && !text.NoticeOnly && loop.PRBacklog != nil {
+			var allowed bool
+			text, backlogNotice, allowed = t.withBacklog(a, text)
+			if !allowed {
+				t.res.Action, t.res.Reason = string(decide.None), "controls changed during backlog consultation; no wake sent"
+				return nil
+			}
+		}
+		var assignmentAllowed bool
+		text, assignmentAllowed = t.prepareAssignment(a, d, text)
+		if !assignmentAllowed {
+			return nil
+		}
 		if !reserved {
 			action := string(d.Action)
 			if d.Reason == decide.RefusedContinueReason {
@@ -1823,11 +1933,15 @@ func (t *tick) act(a adapter.Adapter, d decide.Decision) error {
 				return err
 			}
 		}
+		if err := t.consumeAssignment(); err != nil {
+			return err
+		}
 		t.res.Recovery = ""
 		if d.Action == decide.Reprompt {
 			t.res.Recovery = string(decide.RecoverByPrompt)
 		}
 		err = t.send(a, text, mode, t.res.Target, string(d.Action))
+		t.noteBacklog(backlogNotice, err)
 		t.reserve = reserveReports + t.reserveNetwork // the send has been made
 		var refused adapter.ErrNotStarted
 		if errors.As(err, &refused) {
@@ -1857,6 +1971,9 @@ func (t *tick) act(a adapter.Adapter, d decide.Decision) error {
 			}
 		}
 		t.st.Nudges, t.st.Reprompts, t.st.LastWakeAt, t.st.LastRepromptAt = c.Nudges, c.Reprompts, c.LastSendAt, c.LastRepromptAt
+		if d.IdleWake && err == nil {
+			t.recordIdleWake(t.decisionInput, childErrors > 0)
+		}
 		if err != nil {
 			var unsupported adapter.ErrUnsupported
 			if errors.As(err, &unsupported) {
@@ -1995,7 +2112,18 @@ func (t *tick) childNoticeSent(childErrors int, err error) {
 // send records only a returned adapter call. It is persisted with the completed
 // tick, not a durable pre-send intent or an acknowledgement of agent execution.
 func (t *tick) send(a adapter.Adapter, message prompt.Message, mode adapter.Mode, target, action string) error {
+	var sentContext *state.ContextSent
+	if t.loop.PromptContext && !message.NoticeOnly {
+		// Appended at the end, so the wake header below stays first.
+		message, sentContext = t.withContext(message, target, action)
+	}
+	if a.Name() == "bb" {
+		// A BB thread cannot otherwise tell this from a person's message
+		// or a peer thread's.
+		message = prompt.WithWakeHeader(t.cfg.Loop.Name, message)
+	}
 	attempt := t.graphBegin(target, action, string(mode), message)
+	conversation, _ := conversationKey(a) // before the send, which may start one
 	err := a.Send(t.ctx, message.Text, mode)
 	outcome := "adapter_returned"
 	var refused adapter.ErrNotStarted
@@ -2015,9 +2143,60 @@ func (t *tick) send(a adapter.Adapter, message prompt.Message, mode adapter.Mode
 	t.graphFinish(attempt, graphOutcome)
 	t.st.LastPromptSend = &state.PromptSend{
 		Version: 1, CheckAt: t.now, Target: target, Action: action, Mode: string(mode), Outcome: outcome,
-		GoalID: message.GoalID, GoalRevision: message.GoalRevision,
+		GoalID: message.GoalID, GoalRevision: message.GoalRevision, ContextBytes: message.ContextBytes,
+		Bytes: len(message.Text), GoalForm: message.GoalForm,
 	}
+	t.sentContext(sentContext, message.ContextBytes, outcome, err)
+	t.noteGoalCopy(message, target, conversation, outcome == "adapter_returned")
 	return err
+}
+
+// sentContext records a send that carried the supervision context: its
+// length for the incident record unless the adapter refused to start, and
+// the record that stops it repeating only when the call returned no error.
+func (t *tick) sentContext(rec *state.ContextSent, n int, outcome string, err error) {
+	if rec == nil {
+		return
+	}
+	if outcome != "not_started" {
+		t.contextBytes += n
+	}
+	if err == nil {
+		t.st.ContextSent = rec
+	}
+}
+
+// conversationKey is the hashed conversation the next send to a goes to.
+func conversationKey(a adapter.Adapter) (string, bool) {
+	k, ok := a.(adapter.ConversationKeyer)
+	if !ok {
+		return "", false
+	}
+	key, known := k.ConversationKey()
+	return prompt.ConversationHash(key), known
+}
+
+// noteGoalCopy keeps the record that lets a later send name an unchanged
+// goal. A full copy that returned replaces it; a full copy that did not
+// clears it, so the next send is full; a short send that returned is
+// counted, and ties a copy that started a new conversation to that one.
+// The record never changes what is sent while prompt_goal_on_change is off.
+func (t *tick) noteGoalCopy(m prompt.Message, target, conversation string, returned bool) {
+	switch m.GoalForm {
+	case prompt.GoalFull:
+		t.st.GoalCopy = nil
+		if returned {
+			t.st.GoalCopy = &state.GoalCopy{Version: 1, At: t.now, Target: target, Conversation: conversation,
+				GoalID: m.GoalID, GoalRevision: m.GoalRevision}
+		}
+	case prompt.GoalShort:
+		if g := t.st.GoalCopy; returned && g != nil {
+			g.ShortSends++
+			if g.Conversation == "" {
+				g.Conversation = conversation
+			}
+		}
+	}
 }
 
 // failureReport is the error report a failed check sends, worded by the step
@@ -2066,6 +2245,11 @@ func (t *tick) record(actErr error) error {
 	t.st.LastCheck = &state.Check{At: t.now, Version: t.opts.Version,
 		Target: t.res.Target, ObservedTarget: t.observedTarget, ObservedState: t.res.State, AwaitingInput: t.awaitingInput, RetrySignal: t.res.RetrySignal, ErroredChildren: t.res.ErroredChildren, ErroredChildrenPartial: t.res.ErroredChildrenPartial, ChildErrorNoticeStopped: t.res.ChildErrorNoticeStopped,
 		Action: t.res.Action, Reason: t.res.Reason, Outcome: outcome, DryRun: t.opts.DryRun}
+	if at := t.opts.LastConfigReadAt; !at.IsZero() {
+		// The configuration could not be read; this stop came from the last
+		// one the daemon read.
+		t.st.LastCheck.ConfigUnavailable = &state.ConfigUnavailable{LastReadAt: at.UTC()}
+	}
 	// A dry run leaves the identity of the last real check: it is the one
 	// a later gap is about.
 	if r := t.opts.Routine; !t.opts.DryRun && r.Source != "" {
@@ -2083,6 +2267,10 @@ func (t *tick) record(actErr error) error {
 		// send it refused to make is the cause, and the save its symptom.
 		return errors.Join(actErr, err)
 	}
+	if t.opts.Executable != "" && !t.opts.DryRun {
+		// Best effort: the record only lets a panel offer a replacement.
+		_ = t.opts.ExecutableImage.Record(t.loop.StateDir, t.opts.Version, t.now)
+	}
 	// A return to the primary happened only once it is saved; the history
 	// records it from here, whatever the check's outcome.
 	t.returnSaved = t.incidentReturn != nil
@@ -2094,6 +2282,9 @@ func (t *tick) record(actErr error) error {
 		if err := state.Settle(t.loop.StateDir, t.st.SendsRecorded); err != nil {
 			t.warn("the send records were recorded in state.json but could not be marked settled in sends.json: %v", err)
 		}
+	}
+	for _, f := range t.afterSave {
+		f()
 	}
 	// After the state save, so graph work never delays it, and before the
 	// event is built, so a graph warning reaches runs.jsonl.
@@ -2131,6 +2322,9 @@ func (t *tick) record(actErr error) error {
 	if len(t.res.Warnings) > 0 {
 		extra["warnings"] = t.res.Warnings
 	}
+	if c := t.st.LastCheck.ConfigUnavailable; c != nil {
+		extra["configUnavailable"] = c
+	}
 	if len(extra) > 0 {
 		ev.Extra = extra
 	}
@@ -2147,7 +2341,8 @@ func runBusy(ctx context.Context, y config.Yield) (bool, error) {
 	ctx, cancel := context.WithTimeout(ctx, y.Timeout.Duration)
 	defer cancel()
 	cmd := exec.CommandContext(ctx, y.BusyCommand[0], y.BusyCommand[1:]...)
-	cmd.Env = os.Environ()
+	// A configured program: not the session the supervisor was started from.
+	cmd.Env = envvar.WithoutSupervisorSession(os.Environ())
 	err := cmd.Run()
 	if err == nil {
 		return true, nil
@@ -2312,7 +2507,7 @@ type DaemonInfo struct {
 // supervisor and for everything that reads a loop's status, so they judge
 // alike.
 func ScheduleInput(loop *config.Loop, ctl control.File, d DaemonInfo) state.ScheduleInput {
-	in := state.ScheduleInput{DaemonInterval: loop.Daemon.Interval.Duration, Enabled: ctl.Enabled,
+	in := state.ScheduleInput{DaemonInterval: loop.Daemon.Interval.Duration, Enabled: ctl.Gate().Enabled,
 		Held: ctl.Paused || ctl.AwaitingUser || ctl.Completed, StopRequested: ctl.Stop, ControlChangedAt: ctl.UpdatedAt,
 		DaemonStartedAt: d.StartedAt, DaemonLastPassAt: d.LastPassAt, DaemonLastPassStartedAt: d.LastPassStartedAt, DaemonNextCheckAt: d.NextCheckAt,
 		TurnedAwayAt: state.TurnedAwayAt(loop.StateDir)}
@@ -2656,10 +2851,15 @@ func (t *tick) newAdapter(a config.Agent, stateDir, target string) (adapter.Adap
 //	  spawn 30s, look the thread up by title 20s)
 //	essential reports    30s       the end (three of 10s each)
 //
-// Optional steps are scheduled probes, exact probes and routine reports.
+// Optional steps are scheduled probes, exact probes, routine reports, and
+// setting a thread to the route on record (repairRouteTime, one bb command),
+// which waits for the next check when it does not fit.
 const (
 	minProbeTime  = 10 * time.Second
 	minReportTime = 10 * time.Second
+	// repairRouteTime is one bb thread update, setting the thread to the
+	// route on record.
+	repairRouteTime = 30 * time.Second
 	// observeTimeout bounds one whole observation, however many commands it
 	// runs: a hung bb or an endless log cannot hold the check open.
 	observeTimeout = 90 * time.Second
@@ -2720,7 +2920,19 @@ func (t *tick) observe(a adapter.Adapter) (decide.Observation, error) {
 	limit := observeTimeout - t.observeSpent // less a lookup for an unsettled thread creation
 	ctx, cancel := context.WithTimeout(t.ctx, limit)
 	defer cancel()
+	// A factory may reuse an adapter across checks, and one check may observe
+	// more than once. Only exits during this observation belong in its warning.
+	var signals adapter.SignalExitReporter
+	before := 0
+	if k, ok := a.(adapter.SignalExitReporter); ok {
+		signals, before = k, k.SignalExits()
+	}
 	obs, err := a.Observe(ctx)
+	if signals != nil {
+		if n := signals.SignalExits() - before; n > 0 {
+			t.warn("%d provider command(s) during this observation terminated by a Unix signal outside the adapter timeout/cancellation; signal source and cause are unknown; affected reads remain unverified", n)
+		}
+	}
 	if err == nil && ctx.Err() != nil {
 		err = fmt.Errorf("observation exceeded %s", limit)
 	}
@@ -3024,6 +3236,7 @@ func (t *tick) noteNetwork() {
 var essentialReports = map[string]bool{
 	"await_user": true, "error": true, "stop": true, "handoff": true, "switch_back": true,
 	"complete": true, limitWaitEvent: true, childErrorEvent: true, laneRecoveryEvent: true, "network_wait": true, checkGapEvent: true, hungTurnEvent: true, refusalStreakEvent: true,
+	"timing": true,
 }
 
 // maxLateReports bounds how many reports a check may start after its budget
@@ -3141,4 +3354,13 @@ func (t *tick) stallSinceActive(obs decide.Observation, unchanged time.Duration)
 		unchanged = min(unchanged, max(time.Duration(0), t.now.Sub(since)))
 	}
 	return unchanged
+}
+
+// routeApplied: a handoff or switch-back set the thread to its new route, so
+// a step recorded and not settled, or a pending reapply, no longer applies.
+func (t *tick) routeApplied() {
+	t.st.ReapplyRoute = false
+	if t.st.Timing != nil {
+		t.st.Timing.Pending = nil
+	}
 }

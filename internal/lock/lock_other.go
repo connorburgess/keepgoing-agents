@@ -7,5 +7,6 @@ import (
 	"os"
 )
 
-func lockFile(*os.File) error   { return errors.New("locking is not supported on this platform") }
-func unlockFile(*os.File) error { return nil }
+func lockFile(*os.File) error       { return errors.New("locking is not supported on this platform") }
+func lockFileShared(*os.File) error { return errors.New("locking is not supported on this platform") }
+func unlockFile(*os.File) error     { return nil }

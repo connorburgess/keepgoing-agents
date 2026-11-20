@@ -1,17 +1,20 @@
 // bb-plugin-keepgoing: shows keepgoing's state beside the threads it
 // supervises, and offers pause, resume, and stop. It only calls the keepgoing
 // CLI; every decision stays in keepgoing.
+import { publicationSchema } from "./registry-contract.ts";
 import { checkSchema, runtimeSchema, daemonSchema, detailsSchema, goalDetails, scheduleSchema } from "./status-details.ts";
 import { execFile } from "node:child_process";
 import { defineRpcContract, type BbPluginApi } from "@get-bb/plugin-sdk";
 import { z } from "zod";
 import { hostContract } from "./host-contract.ts";
-import { recordSchema, setupInput, setupResult, targetSchema } from "./setup-contract.ts";
+import { targetOf, statusFollowsStandard, recordSchema, setupInput, setupResult, targetSchema } from "./setup-contract.ts";
 import { createTransferController } from "./transfer-controller.ts";
 import { transferInput, transferResult, moveIntentSchema } from "./transfer-contract.ts";
 import { createSetupController, MAX_SETUPS } from "./setup-controller.ts";
 import { createNewThreadController } from "./new-thread-controller.ts";
 import { newThreadInput, newThreadResult, startModeSchema, type Bounds } from "./new-thread-contract.ts";
+import { attachInput, attachResult } from "./attach-contract.ts";
+import { createAttachController } from "./attach-controller.ts";
 import { randomUUID } from "node:crypto";
 import { withClientFlag } from "./client-flag.ts";
 
@@ -27,6 +30,7 @@ const statusSchema = z.object({
   state: z
     .object({
       lastCheck: checkSchema.optional(),
+      failedChecks: z.number().int().nonnegative().optional(),
       lastState: z.string().optional(),
       lastWakeAt: z.string().optional(),
       checkedAt: z.string().optional(),
@@ -46,6 +50,9 @@ const loopSchema = z.object({
   details: detailsSchema.optional(),
   loop: z.string(),
   configPath: z.string(),
+  imported: z.boolean().optional(),
+  referenceSource: z.enum(["plugin_setting", "plugin_setup", "registry_attachment"]).optional(),
+  publication: publicationSchema.optional(),
   managedId: z.string().optional(),
   managedThreadId: z.string().optional(),
   controlState: z.string(),
@@ -62,7 +69,13 @@ export type LoopView = z.infer<typeof loopSchema>;
 
 const actionSchema = z.enum(["pause", "resume", "stop"]);
 
+// What the plugin says instead of resuming: where a person resumes the loop.
+export const resumeByPerson = (configPath: string) =>
+  "looptender does not resume a loop from this plugin, because it cannot tell a person's click from the supervised session. " +
+  `From an ordinary terminal, not one BB opened on this loop's thread, run keepgoing resume -c ${JSON.stringify(configPath)}, or start the looptender panel there with keepgoing panel --allow-changes.`;
+
 export const rpcContract = defineRpcContract({
+  attachment: { input: attachInput, output: attachResult },
   transfer: { input: transferInput, output: transferResult },
   setup: { input: setupInput, output: setupResult },
   newThread: { input: newThreadInput, output: newThreadResult },
@@ -103,7 +116,7 @@ export default async function plugin(bb: BbPluginApi) {
     configs: {
       type: "string",
       label: "Loop configs",
-      description: "One keepgoing.yaml path per line. Only these loops are shown and controlled.",
+      description: "One existing server-local loop configuration file (looptender.yaml or keepgoing.yaml) per line. Host-bound UI-created setups and explicitly attached registry loops are registered separately.",
       experimental_multiline: true,
       default: "",
     },
@@ -171,6 +184,7 @@ export default async function plugin(bb: BbPluginApi) {
       readAt: new Date().toISOString(), completed: s.control.completed ?? false,
       targetThread: s.targetAgent.bbThread ?? null, targetAdapter: s.targetAgent.adapter,
       targetConfigured: s.targetConfigured ?? null, runtime: s.runtime ?? null,
+      failedChecks: s.state.failedChecks ?? 0,
       daemon: s.daemon ?? null, lastCheck: s.state.lastCheck ?? null,
       schedule: s.schedule ?? null,
     },
@@ -187,6 +201,13 @@ export default async function plugin(bb: BbPluginApi) {
     fallbacks: s.redundancy ? `${s.redundancy.healthy.length} healthy, need ${s.redundancy.min}` : null,
   });
 
+  const verifyImported = async (bin: string, record: z.infer<typeof recordSchema>) => {
+    if (!record.registryId) return;
+    const target = await resolveTarget(record.threadId);
+    if (JSON.stringify(target) !== JSON.stringify(targetOf(record))) throw new Error("Imported target changed");
+    const result = await host.call("attachment", { bin, target, registryId: record.registryId }, { hostId: record.hostId, signal: AbortSignal.timeout(30_000) });
+    if (result.snapshot?.entry.configPath !== record.configPath || result.snapshot?.entry.stateDir !== record.registryStateDir || result.snapshot?.entry.loop !== record.loop) throw new Error("Imported binding changed");
+  };
   const allLoops = async (threadId: string | null) => {
     const { bin, paths } = await configured();
     const loops: LoopView[] = [];
@@ -195,9 +216,9 @@ export default async function plugin(bb: BbPluginApi) {
       try {
         const s = await status(bin, configPath);
         const matches = threadId === null || s.primaryAgent.bbThread === threadId || s.targetAgent.bbThread === threadId;
-        if (matches) loops.push(view(s, configPath, threadId));
-      } catch (error) {
-        errors.push(error instanceof Error ? error.message : String(error));
+        if (matches) loops.push({ ...view(s, configPath, threadId), referenceSource: "plugin_setting" });
+      } catch {
+        errors.push("A configured loop reference is unavailable; inspect the private Loop configs setting on its host.");
       }
     }
     const moving = await intents();
@@ -205,35 +226,33 @@ export default async function plugin(bb: BbPluginApi) {
       const move = moving.find(i => i.record.id === record.id);
       if (threadId !== null && record.threadId !== threadId && move?.destination.threadId !== threadId) continue;
       try {
+        await verifyImported(bin, record);
         const result = await hostCommand(bin, record, "status");
         if (result.code !== 0) throw new Error("status failed");
         const displayed = view(statusSchema.parse(result.data), record.configPath, threadId);
         // A partial move is not a normal Resume action, even if the host has
         // already committed but the plugin reference is not reconciled yet.
         if (move) { displayed.controlState = "move requires inspection"; displayed.note = `Move requested to ${move.destination.threadId}; check move status there before resuming.`; }
-        loops.push({ ...displayed, managedId: record.id, managedThreadId: record.threadId });
+        loops.push({ ...displayed, referenceSource: record.registryId ? "registry_attachment" : "plugin_setup", ...(record.publication ? { publication: record.publication } : {}), ...(record.registryId ? { imported: true } : {}), managedId: record.id, managedThreadId: record.threadId });
       } catch { errors.push(`${record.loop}: host status unavailable`); }
     }
     return { loops, errors };
   };
 
-  // Control only loops listed in settings: the path comes from the browser,
+  // Control only registered loops: the path comes from the browser,
   // so it must never choose an arbitrary config file.
   const control = async (configPath: string, action: z.infer<typeof actionSchema>, managedId?: string, expectedThreadId?: string) => {
+    // A Resume click, an agent's `bb plugin rpc call` and `bb keepgoing
+    // resume` all reach this plugin the same way, so it cannot tell a person
+    // from the session the loop supervises. Supervision never clears its own
+    // hold: the plugin never resumes and says where a person can.
+    if (action === "resume") return { ok: false, message: resumeByPerson(configPath) };
     const { bin, paths } = await configured();
-    if (action === "resume" && (await intents()).some(i => i.record.id === managedId || i.record.configPath === configPath)) return { ok: false, message: "A move requires inspection. Check move status from its destination before resuming." };
     if (managedId) {
       const record = (await records()).find(r => r.id === managedId && r.configPath === configPath);
       if (!record) return { ok: false, message: "That setup is not registered with this plugin." };
-      if (action === "resume" && expectedThreadId !== record.threadId) return { ok: false, message: "This setup moved or the view is stale. Open its current thread and refresh before resuming." };
       try {
-        if (action === "resume") {
-          const current = await resolveTarget(record.threadId);
-          const { id, configPath: ignored, loop, startJson: _json, startJsonBin: _jsonBin, ...saved } = record;
-          const status = await hostCommand(bin, record, "status");
-          const parsed = statusSchema.safeParse(status.data);
-          if (JSON.stringify(current) !== JSON.stringify(saved) || status.code !== 0 || !parsed.success || parsed.data.target !== "primary" || parsed.data.primaryAgent.bbThread !== record.threadId || parsed.data.targetAgent.bbThread !== record.threadId || parsed.data.primaryAgent.provider !== record.provider || parsed.data.targetAgent.provider !== record.provider) throw new Error("Target changed");
-        }
+        await verifyImported(bin, record);
         const result = await hostCommand(bin, record, action);
         bb.realtime.publish(CHANGED, { at: Date.now() });
         return { ok: result.code === 0, message: result.code === 0 ? `${action} done` : `looptender ${action} failed; inspect host status` };
@@ -247,6 +266,21 @@ export default async function plugin(bb: BbPluginApi) {
       : { ok: false, message: `looptender ${action} exited ${result.code}` };
   };
 
+  const attachment = createAttachController({
+    target: resolveTarget, binary: async () => (await configured()).bin, records,
+    save: async value => { await bb.storage.kv.set("setups.v1", value); },
+    list: async (bin, target) => (await host.call("attachment", { bin, target }, { hostId: target.hostId, signal: AbortSignal.timeout(30_000) })).candidates ?? [],
+    inspect: async (bin, target, registryId) => {
+      const r = await host.call("attachment", { bin, target, registryId }, { hostId: target.hostId, signal: AbortSignal.timeout(30_000) });
+      if (!r.snapshot) throw new Error("Attachment snapshot unavailable");
+      return r.snapshot;
+    },
+    guard: async (target, snapshot, record) => {
+      if ((await configured()).paths.includes(snapshot.entry.configPath)) return "This configuration is already listed in Loop configs. Remove that manual reference before importing; attachment does not edit settings.";
+      if ((await intents()).some(i => i.record.id === record?.id || i.record.configPath === snapshot.entry.configPath || i.destination.threadId === target.threadId || i.record.threadId === target.threadId)) return "A saved move requires recovery before attachment. Inspect the move on its host; nothing was attached.";
+    },
+    changed: () => bb.realtime.publish(CHANGED, { at: Date.now() }),
+  });
   const setup = createSetupController({
     target: resolveTarget,
     binary: async () => (await configured()).bin,
@@ -256,7 +290,8 @@ export default async function plugin(bb: BbPluginApi) {
       const result = await allLoops(threadId);
       if (result.loops.length || result.errors.length) throw new Error("Existing or unverified supervision");
     },
-    init: (bin, target, name, task, dryRun, withGoal, bounds) => host.call("init", { bin, target, name, task, dryRun, withGoal, ...(bounds ? { bounds } : {}) }, { hostId: target.hostId, signal: AbortSignal.timeout(30_000) }),
+    init: (bin, target, name, task, dryRun, withGoal, bounds, followStandard) => host.call("init", { bin, target, name, task, dryRun, withGoal, ...(bounds ? { bounds } : {}), ...(followStandard ? { followStandard: true as const } : {}) }, { hostId: target.hostId, signal: AbortSignal.timeout(30_000) }),
+    standardRoutes: async (bin, target) => (await host.call("standardRoutes", { bin, target }, { hostId: target.hostId, signal: AbortSignal.timeout(30_000) })).available,
     command: hostCommand,
     changed: () => bb.realtime.publish(CHANGED, { at: Date.now() }),
   });
@@ -349,8 +384,9 @@ export default async function plugin(bb: BbPluginApi) {
   bb.events.on("thread.failed", ({ thread }) => { void newThread.advance(thread.id); });
   bb.events.on("thread.archived", ({ thread }) => { newThread.forget(thread.id); });
   bb.events.on("thread.deleted", ({ thread }) => { newThread.forget(thread.id); });
-  bb.onDispose(() => { setup.dispose(); transfer.dispose(); newThread.dispose(); });
+  bb.onDispose(() => { setup.dispose(); transfer.dispose(); attachment.dispose(); newThread.dispose(); });
   bb.rpc.register(rpcContract, {
+    attachment: input => serialize(() => attachment.call(input)),
     transfer: input => serialize(() => transfer.call(input)),
     setup: input => setupCall(input),
     newThread: input => newThread.call(input),
@@ -364,15 +400,15 @@ export default async function plugin(bb: BbPluginApi) {
     commands: [
       { name: "status", summary: "List configured loops with their control state and target", usage: "bb keepgoing status" },
       { name: "pause", summary: "Pause a loop by name", usage: "bb keepgoing pause <loop>" },
-      { name: "resume", summary: "Resume a loop by name", usage: "bb keepgoing resume <loop>" },
+      { name: "resume", summary: "Refused: says where a person resumes the loop", usage: "bb keepgoing resume <loop>" },
       { name: "stop", summary: "Stop a loop's running session by name", usage: "bb keepgoing stop <loop>" },
     ],
     async run(argv) {
       const [command, name, ...rest] = argv;
       if (command === "status" && name === undefined) {
         const { loops, errors } = await allLoops(null);
-        const lines = loops.map((l) => `${l.loop}\t${l.controlState}\ttarget=${l.target}\tlast=${l.lastState ?? "never"}${l.note ? `\t(${l.note})` : ""}`);
-        return { exitCode: errors.length > 0 ? 1 : 0, stdout: `${lines.join("\n")}\n`, stderr: errors.join("\n") };
+        const lines = loops.map((l) => `${l.loop}\t${l.controlState}\treference=${l.referenceSource ?? "unavailable"}\ttarget=${l.target}\tlast=${l.lastState ?? "never"}${l.note ? `\t(${l.note})` : ""}`);
+        return { exitCode: errors.length > 0 ? 1 : 0, stdout: `${lines.join("\n")}\nReferences: explicit plugin settings and saved host references; CLI registry/menu coverage is separate. This is not a complete process inventory.\n`, stderr: errors.join("\n") };
       }
       const parsed = actionSchema.safeParse(command);
       if (!parsed.success || !name || rest.length > 0) return { exitCode: 2, stderr: "Usage: bb keepgoing status | pause <loop> | resume <loop> | stop <loop>" };

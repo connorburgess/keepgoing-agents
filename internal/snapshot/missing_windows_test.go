@@ -1,7 +1,6 @@
 package snapshot
 
 import (
-	"errors"
 	"io"
 	"os"
 	"path/filepath"
@@ -43,17 +42,17 @@ func TestWindowsControlSnapshotNeverMissingWhileReplaced(t *testing.T) {
 					defer wg.Done()
 					for !stop.Load() {
 						if open {
-							f, err := Open(path)
-							if errors.Is(err, os.ErrNotExist) {
-								t.Errorf("Open reported an existing record missing: %v", err)
+							f, err := OpenRecord(path)
+							if err != nil {
+								t.Errorf("OpenRecord failed during replacement: %v", err)
 								return
 							}
 							if err == nil {
 								_, _ = io.ReadAll(f)
 								f.Close()
 							}
-						} else if _, err := Lstat(path); errors.Is(err, os.ErrNotExist) {
-							t.Errorf("Lstat reported an existing record missing: %v", err)
+						} else if _, err := LstatRecord(path); err != nil {
+							t.Errorf("LstatRecord failed during replacement: %v", err)
 							return
 						}
 						lookups.Add(1)

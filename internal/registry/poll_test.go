@@ -5,7 +5,7 @@ import (
 	"path/filepath"
 	"testing"
 
-	"github.com/connorburgess/keepgoing-agents/internal/snapshot/snapshottest"
+	"github.com/looptender/looptender/internal/snapshot/snapshottest"
 )
 
 // Client commands list the registry while another registers a loop.

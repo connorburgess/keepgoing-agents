@@ -6,11 +6,11 @@ import (
 	"testing"
 	"time"
 
-	"github.com/connorburgess/keepgoing-agents/internal/adapter"
-	"github.com/connorburgess/keepgoing-agents/internal/config"
-	"github.com/connorburgess/keepgoing-agents/internal/control"
-	"github.com/connorburgess/keepgoing-agents/internal/decide"
-	"github.com/connorburgess/keepgoing-agents/internal/state"
+	"github.com/looptender/looptender/internal/adapter"
+	"github.com/looptender/looptender/internal/config"
+	"github.com/looptender/looptender/internal/control"
+	"github.com/looptender/looptender/internal/decide"
+	"github.com/looptender/looptender/internal/state"
 )
 
 type wakeAdapter struct {
@@ -29,6 +29,7 @@ func TestPollWakeGatesAndEligibility(t *testing.T) {
 		want bool
 	}{
 		{"idle", control.File{Enabled: true}, decide.Observation{State: decide.Idle}, true},
+		{"superseded", control.File{Enabled: true, SupersededBy: "thr_example_successor"}, decide.Observation{State: decide.Idle}, false},
 		{"disabled", control.File{}, decide.Observation{State: decide.Idle}, false},
 		{"paused", control.File{Enabled: true, Paused: true}, decide.Observation{State: decide.Idle}, false},
 		{"stopped", control.File{Enabled: true, Stop: true}, decide.Observation{State: decide.Idle}, false},
@@ -54,8 +55,8 @@ func TestPollWakeGatesAndEligibility(t *testing.T) {
 			if got := PollWake(context.Background(), w.cfg, makeAdapter); got != tc.want {
 				t.Fatalf("got %v", got)
 			}
-			held := !tc.ctl.Enabled || tc.ctl.Paused || tc.ctl.Stop || tc.ctl.Completed || tc.ctl.AwaitingUser
-			if held && (made != 0 || a.polls != 0) {
+			held := tc.ctl.SupersededBy != "" || !tc.ctl.Enabled || tc.ctl.Paused || tc.ctl.Stop || tc.ctl.Completed || tc.ctl.AwaitingUser
+			if held && (made != 0 || a.polls != 0 || a.observed != 0) {
 				t.Fatal("held loop queried adapter")
 			}
 			if len(a.sent) != 0 || a.stopped != 0 || a.activated != 0 {

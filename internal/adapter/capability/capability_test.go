@@ -15,13 +15,13 @@ import (
 	"testing"
 	"time"
 
-	"github.com/connorburgess/keepgoing-agents/internal/adapter"
-	"github.com/connorburgess/keepgoing-agents/internal/adapter/bb"
-	"github.com/connorburgess/keepgoing-agents/internal/adapter/factory"
-	"github.com/connorburgess/keepgoing-agents/internal/adapter/process"
-	"github.com/connorburgess/keepgoing-agents/internal/adapter/runner"
-	"github.com/connorburgess/keepgoing-agents/internal/config"
-	"github.com/connorburgess/keepgoing-agents/internal/decide"
+	"github.com/looptender/looptender/internal/adapter"
+	"github.com/looptender/looptender/internal/adapter/bb"
+	"github.com/looptender/looptender/internal/adapter/factory"
+	"github.com/looptender/looptender/internal/adapter/process"
+	"github.com/looptender/looptender/internal/adapter/runner"
+	"github.com/looptender/looptender/internal/config"
+	"github.com/looptender/looptender/internal/decide"
 )
 
 // root is the repository root, three directories above this package.
@@ -160,9 +160,6 @@ func TestRegisteredAdaptersMatchTheFactory(t *testing.T) {
 	if got := sorted(built); !reflect.DeepEqual(got, sorted(want)) {
 		t.Fatalf("the factory builds %v; the capability table registers %v. A new adapter needs a column in every row.", got, sorted(want))
 	}
-	if _, err := factory.New(config.Agent{Adapter: "antigravity"}, t.TempDir(), "primary"); err == nil {
-		t.Fatal("antigravity is listed as not registered but the factory built it")
-	}
 }
 
 func TestSessionEvidenceMatchesTheCheck(t *testing.T) {
@@ -206,12 +203,13 @@ func byID(id string) Behaviour {
 func TestOptionalInterfacesMatchTheAdapters(t *testing.T) {
 	dir := t.TempDir()
 	built := map[string]adapter.Adapter{
-		"bb":      bb.New(config.BB{Thread: "thr_example"}),
-		"claude":  runner.NewClaude(config.Claude{CLI: "absent"}, dir),
-		"codex":   runner.NewCodex(config.Codex{CLI: "absent"}, dir),
-		"cursor":  runner.NewCursor(config.Cursor{CLI: "absent"}, dir),
-		"custom":  definedRunner(t, "", dir),
-		"process": process.New(config.Process{}),
+		"antigravity": runner.NewAntigravity(runner.AntigravityConfig{Command: []string{"absent"}}, dir),
+		"bb":          bb.New(config.BB{Thread: "thr_example"}),
+		"claude":      runner.NewClaude(config.Claude{CLI: "absent"}, dir),
+		"codex":       runner.NewCodex(config.Codex{CLI: "absent"}, dir),
+		"cursor":      runner.NewCursor(config.Cursor{CLI: "absent"}, dir),
+		"custom":      definedRunner(t, "", dir),
+		"process":     process.New(config.Process{}),
 	}
 	for _, a := range Adapters {
 		impl, ok := built[a.ID]
@@ -238,6 +236,11 @@ func TestOptionalInterfacesMatchTheAdapters(t *testing.T) {
 		_, lanes := impl.(adapter.LaneRecoverer)
 		if listed := byID("child_recovery").Cells[a.ID].Status == Yes; lanes != a.LaneRecoverer || lanes != listed {
 			t.Errorf("%s: LaneRecoverer=%v; the capability table says %v and the child_recovery row says %v", a.ID, lanes, a.LaneRecoverer, listed)
+		}
+		// And the context row with whether it can read a context size.
+		_, reads := impl.(adapter.ContextReader)
+		if listed := byID("context").Cells[a.ID].Status == Yes; reads != a.ContextReader || reads != listed {
+			t.Errorf("%s: ContextReader=%v; the capability table says %v and the context row says %v", a.ID, reads, a.ContextReader, listed)
 		}
 		// And the stop_lanes row with whether it can stop lanes at all.
 		_, stops := impl.(adapter.LaneStopper)
@@ -350,7 +353,7 @@ func TestSharedRunnerInputsAreAllDeclarable(t *testing.T) {
 		}
 		return true
 	})
-	if got, want := sorted(used), []string{"DeferredInteraction", "ErrorClass", "Evidence", "Gone", "ResetsAt", "State"}; !reflect.DeepEqual(got, want) {
+	if got, want := sorted(used), []string{"DeferredInteraction", "ErrorClass", "Evidence", "ResetsAt", "SessionLost", "State"}; !reflect.DeepEqual(got, want) {
 		t.Fatalf("the shared runner refers to Observation fields %v, want %v", got, want)
 	}
 }
@@ -454,6 +457,10 @@ func TestPortedAgentsSetExactlyTheirInputs(t *testing.T) {
 		}
 		if listed := byID("error_classes").Cells[spec.Name].Status == Yes; listed != spec.Capabilities.StructuredErrors {
 			t.Errorf("%s: StructuredErrors=%v but the error_classes row is %s", spec.Name, spec.Capabilities.StructuredErrors, byID("error_classes").Cells[spec.Name].Status)
+		}
+		// It reports per-turn usage exactly when the matrix says so.
+		if listed := byID("turn_usage").Cells[spec.Name].Status == Yes; listed != spec.Capabilities.TurnUsage {
+			t.Errorf("%s: TurnUsage=%v but the turn_usage row is %s", spec.Name, spec.Capabilities.TurnUsage, byID("turn_usage").Cells[spec.Name].Status)
 		}
 		// Waiting on a person is structured exactly when permissions are.
 		if listed := byID("permissions").Cells[spec.Name].Status == Yes; listed != spec.Capabilities.StructuredWaiting {
@@ -562,7 +569,7 @@ func TestDefinedAgentsSetOnlyWhatTheyDeclare(t *testing.T) {
 		}
 		return sorted(set)
 	}
-	if got, want := observed(definedFull), []string{"DeferredInteraction", "ErrorClass", "Evidence", "Gone", "State"}; !reflect.DeepEqual(got, want) {
+	if got, want := observed(definedFull), []string{"DeferredInteraction", "ErrorClass", "Evidence", "SessionLost", "State"}; !reflect.DeepEqual(got, want) {
 		t.Errorf("a full definition's runner set %v, want %v", got, want)
 	}
 	if got, want := observed(""), []string{"ErrorClass", "Evidence", "State"}; !reflect.DeepEqual(got, want) {

@@ -171,10 +171,10 @@ final class ClientTests: XCTestCase {
         XCTAssertFalse(FileManager.default.fileExists(atPath: binary.path + ".args"))
         // A CLI that cannot be started did nothing.
         let missing = LocalClient(executable: URL(fileURLWithPath: "/nonexistent/keepgoing"))
-        XCTAssertEqual(missing.apply(command, review: r), ChangeResult(outcome: "refused", text: "keepgoing could not be started, so nothing was changed. Check the keepgoing executable this menu was started with."))
+        XCTAssertEqual(missing.apply(command, review: r), ChangeResult(outcome: "refused", text: "looptender could not be started, so nothing was changed. Check the looptender executable this menu was started with."))
         // A keepgoing that refuses the arguments (exit 2, no reply) ran nothing.
         let (_, usage) = try fixture("exit 2\n")
-        XCTAssertEqual(usage.apply(command, review: r), ChangeResult(outcome: "refused", text: "keepgoing did not accept this request, so nothing ran and nothing was changed. The menu and keepgoing may be different versions."))
+        XCTAssertEqual(usage.apply(command, review: r), ChangeResult(outcome: "refused", text: "looptender did not accept this request, so nothing ran and nothing was changed. The menu and looptender may be different versions."))
     }
 
     // Every command is given the panel server's environment and nothing

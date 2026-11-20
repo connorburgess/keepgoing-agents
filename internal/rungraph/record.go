@@ -3,7 +3,7 @@ package rungraph
 import (
 	"time"
 
-	rd "github.com/connorburgess/keepgoing-agents/internal/rundiscovery"
+	rd "github.com/looptender/looptender/internal/rundiscovery"
 )
 
 // Gate is the saved control state a run boundary is recorded from.
@@ -83,7 +83,7 @@ func (g *Graph) Begin(a Attempt) error {
 	for i, prior := range g.Attempts {
 		retained[i] = prior.contract()
 	}
-	if _, err := rd.BeginAttempt(g.state(), a.contract(), retained...); err != nil || a.Target == "" || len(a.Target) > maxTarget {
+	if _, err := rd.BeginAttempt(g.state(), a.contract(), retained...); err != nil || a.Target == "" || len(a.Target) > maxTarget || a.ContextBytes < 0 {
 		return rd.ErrInvalid
 	}
 	g.Attempts = append(g.Attempts, a)

@@ -12,8 +12,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/connorburgess/keepgoing-agents/internal/control"
-	rd "github.com/connorburgess/keepgoing-agents/internal/rundiscovery"
+	"github.com/looptender/looptender/internal/control"
+	rd "github.com/looptender/looptender/internal/rundiscovery"
 )
 
 var at = time.Date(2026, 1, 2, 3, 4, 5, 0, time.UTC)
@@ -930,7 +930,7 @@ func TestWaitingRecordIsReplacedWholeAndBelongsToTheOpenRun(t *testing.T) {
 	}
 	g := load(t, dir)
 	run, _ := g.Current()
-	if g.SchemaVersion != 2 || g.Waiting == nil || g.Waiting.Run != id("run_", 1) || g.Waiting.Source != SourceChildren || len(g.Waiting.Children) != 3 {
+	if g.SchemaVersion != SchemaVersion || g.Waiting == nil || g.Waiting.Run != id("run_", 1) || g.Waiting.Source != SourceChildren || len(g.Waiting.Children) != 3 {
 		t.Fatalf("%#v", g.Waiting)
 	}
 	var blockedBy, listed []string
@@ -1015,7 +1015,8 @@ func TestSchemaVersionOneIsReadAndUpgraded(t *testing.T) {
 	sync(t, dir, enabled, "start", 1)
 	path := filepath.Join(dir, FileName)
 	b, _ := os.ReadFile(path)
-	old := bytes.Replace(b, []byte(`"schemaVersion":2`), []byte(`"schemaVersion":1`), 1)
+	current := []byte(fmt.Sprintf(`"schemaVersion":%d`, SchemaVersion))
+	old := bytes.Replace(b, current, []byte(`"schemaVersion":1`), 1)
 	if bytes.Equal(old, b) {
 		t.Fatal("fixture did not change")
 	}
@@ -1032,14 +1033,66 @@ func TestSchemaVersionOneIsReadAndUpgraded(t *testing.T) {
 		t.Fatal("a version 1 graph was rewritten without a change")
 	}
 	update(t, dir, func(g *Graph) (bool, error) { return g.Wait("primary", ListingComplete, nil, at) })
-	if g = load(t, dir); g.SchemaVersion != 2 || g.Waiting == nil || g.CurrentRun != id("run_", 1) {
+	if g = load(t, dir); g.SchemaVersion != SchemaVersion || g.Waiting == nil || g.CurrentRun != id("run_", 1) {
 		t.Fatalf("%#v", g)
 	}
 	withWaiting, _ := os.ReadFile(path)
-	if err := os.WriteFile(path, bytes.Replace(withWaiting, []byte(`"schemaVersion":2`), []byte(`"schemaVersion":1`), 1), 0o600); err != nil {
+	if err := os.WriteFile(path, bytes.Replace(withWaiting, current, []byte(`"schemaVersion":1`), 1), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	if _, availability := Load(dir); availability != Corrupt {
 		t.Fatalf("a version 1 file with a waiting record is %s", availability)
+	}
+}
+
+// Version 3 adds an attempt's supervision context length. A version 3 file
+// is reported as unsupported, not corrupt, by a build that knows version 2
+// at most (as "newer schema" above checks for any later version). An older
+// file is upgraded by its next write, and one that claims a length is not
+// trusted.
+func TestSchemaVersionThreeAddsContextBytes(t *testing.T) {
+	dir := t.TempDir()
+	sync(t, dir, enabled, "start", 1)
+	update(t, dir, func(g *Graph) (bool, error) {
+		return true, g.Begin(Attempt{ID: id("attempt_", 1), Target: "primary", Action: "wake", Mode: "auto", ContextBytes: 2600, RecordedAt: at})
+	})
+	path := filepath.Join(dir, FileName)
+	b, _ := os.ReadFile(path)
+	current := []byte(fmt.Sprintf(`"schemaVersion":%d`, SchemaVersion))
+	if SchemaVersion != 3 || !bytes.Contains(b, current) || !bytes.Contains(b, []byte(`"contextBytes":2600`)) {
+		t.Fatalf("%s", b)
+	}
+	if g := load(t, dir); len(g.Attempts) != 1 || g.Attempts[0].ContextBytes != 2600 {
+		t.Fatalf("%#v", g.Attempts)
+	}
+	if err := os.WriteFile(path, bytes.Replace(b, current, []byte(`"schemaVersion":2`), 1), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, availability := Load(dir); availability != Corrupt {
+		t.Fatalf("a version 2 file with a context length is %s", availability)
+	}
+	if err := os.WriteFile(path, bytes.Replace(b, current, []byte(`"schemaVersion":4`), 1), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, availability := Load(dir); availability != Unsupported {
+		t.Fatalf("a version 4 file is %s", availability)
+	}
+
+	// A version 2 file without one is read and upgraded by its next write.
+	dir = t.TempDir()
+	sync(t, dir, enabled, "start", 1)
+	path = filepath.Join(dir, FileName)
+	b, _ = os.ReadFile(path)
+	if err := os.WriteFile(path, bytes.Replace(b, current, []byte(`"schemaVersion":2`), 1), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if g := load(t, dir); g.SchemaVersion != 2 {
+		t.Fatalf("%#v", g)
+	}
+	update(t, dir, func(g *Graph) (bool, error) {
+		return true, g.Begin(Attempt{ID: id("attempt_", 1), Target: "primary", Action: "wake", Mode: "auto", ContextBytes: 10, RecordedAt: at})
+	})
+	if g := load(t, dir); g.SchemaVersion != SchemaVersion || g.Attempts[0].ContextBytes != 10 {
+		t.Fatalf("%#v", g)
 	}
 }

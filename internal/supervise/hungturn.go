@@ -4,8 +4,8 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/connorburgess/keepgoing-agents/internal/decide"
-	"github.com/connorburgess/keepgoing-agents/internal/state"
+	"github.com/looptender/looptender/internal/decide"
+	"github.com/looptender/looptender/internal/state"
 )
 
 // hungTurnEvent is the report sent once when a hung-turn wait begins.

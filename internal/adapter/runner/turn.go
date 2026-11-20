@@ -4,13 +4,15 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"github.com/looptender/looptender/internal/envvar"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync"
 
-	"github.com/connorburgess/keepgoing-agents/internal/lock"
+	"github.com/looptender/looptender/internal/lock"
 )
 
 // Every turn runs through a detached copy of the executable. The live wrapper
@@ -68,16 +70,23 @@ func MaybeRunTurn() {
 	if os.WriteFile(filepath.Join(dir, startedName), []byte(key), 0o600) != nil {
 		os.Exit(2)
 	}
-	done := make(chan struct{})
-	go watchStop(Dir(dir), key, terminate, done)
-	var code int
-	if spec := os.Getenv(envTurnACP); spec != "" {
-		code = runAntigravityACPTurn(dir, argv, spec)
-	} else {
-		code = runTurn(dir, argv)
+	stopAll := func() error {
+		killOwnedChild()
+		return terminate()
 	}
-	close(done)
+	drainStopWatcher = startStopWatcher(Dir(dir), key, stopAll)
+	code := runOwnedTurn(dir, argv, os.Getenv(envTurnACP), drainStopWatcher)
 	os.Exit(code)
+}
+
+// runOwnedTurn joins the owned watcher even when setup of the agent's IO
+// fails before publishExit. Publication itself drains earlier, before unlock.
+func runOwnedTurn(dir string, argv []string, acp string, drain func() bool) int {
+	defer drain()
+	if acp != "" {
+		return runAntigravityACPTurn(dir, argv, acp)
+	}
+	return runTurn(dir, argv)
 }
 
 // runTurn executes argv with the prompt on stdin and records the exit code.
@@ -117,6 +126,7 @@ func runTurn(dir string, argv []string) int {
 	// Close the output files before the exit code is published. Once a reader
 	// can see the code, the next start may move these files, and on Windows
 	// a file that is still open cannot be moved.
+	stdin.Close()
 	stdout.Close()
 	stderr.Close()
 	tmp := filepath.Join(dir, "exit.tmp")
@@ -158,7 +168,11 @@ func wrapperCommand(argv []string, workdir, dir string, env []string, acp string
 	cmd := exec.Command(self)
 	configureWrapper(cmd)
 	cmd.Dir = workdir
-	for _, kv := range append(os.Environ(), env...) {
+	// The session a supervisor was started from is not this turn's: a turn
+	// started by a supervisor launched from a BB thread is not that thread
+	// or its agent session. An entry the loop's configuration sets in env
+	// comes after, so it is kept.
+	for _, kv := range append(envvar.WithoutSupervisorSession(os.Environ()), env...) {
 		if name, _, _ := strings.Cut(kv, "="); !strings.EqualFold(name, envTurnACP) {
 			cmd.Env = append(cmd.Env, kv)
 		}
@@ -170,7 +184,7 @@ func wrapperCommand(argv []string, workdir, dir string, env []string, acp string
 	return cmd, nil
 }
 
-// turnLockHeld keeps the lock referenced until the exit code is published.
+// turnLockHeld owns setup exclusion through publication and finishing cleanup.
 // turnKey is this wrapper's own turn key.
 var (
 	turnLockHeld *lock.Lock
@@ -181,33 +195,107 @@ var (
 // wrapper finds it is not wanted. Only tests set them.
 var afterPublish, onDecline func()
 
+// Initialized only in the owned wrapper, before the agent begins. It reports
+// whether the wrapper accepted a stop.
+var drainStopWatcher func() bool
+
+var (
+	ownedChildMu   sync.Mutex
+	ownedChildKill func()
+)
+
+// registerOwnedChildTerminator lets a worker that runs its child in a separate
+// process group or nested job ensure wrapper Stop ends that tree as well.
+func registerOwnedChildTerminator(fn func()) func() {
+	ownedChildMu.Lock()
+	ownedChildKill = fn
+	ownedChildMu.Unlock()
+	return func() {
+		ownedChildMu.Lock()
+		ownedChildKill = nil
+		ownedChildMu.Unlock()
+	}
+}
+
+func killOwnedChild() {
+	ownedChildMu.Lock()
+	fn := ownedChildKill
+	ownedChildMu.Unlock()
+	if fn != nil {
+		fn()
+	}
+}
+
+// errStoppedTurn refuses publication for a turn the wrapper was stopping.
+var errStoppedTurn = errors.New("runner: turn was stopped; no exit code is published")
+
+// Publication boundary hooks are set only by deterministic lifecycle tests.
+var beforeExitRename, afterExitRename, afterTurnRelease, afterFinishingRead func()
+
 func holdTurnLock(dir string) bool {
 	held, err := acquireTurnLock(dir)
 	turnLockHeld = held
 	return err == nil
 }
 
-// publishExit makes the recorded exit code visible, after letting go of the
-// turn lock. Once a reader can see the exit code the wrapper holds nothing
-// open in the directory that the lock added, so the directory can be removed
-// at once on every platform. The finishing marker covers the moment between
-// the two: a reader that finds the lock free and no exit code yet waits for
-// the code instead of calling the turn crashed.
-func publishExit(dir, tmp string) error {
-	finishing := filepath.Join(dir, finishingName)
-	os.WriteFile(finishing, []byte(turnKey), 0o600)
-	if turnLockHeld != nil {
-		turnLockHeld.Release()
+// publishExit owns turn.lock through exit publication and finishing cleanup.
+// After release it performs no shared-file IO: a later setup can immediately
+// own the directory. Status defers Finished until this publisher releases.
+func publishExit(dir, tmp string) (result error) {
+	held := turnLockHeld
+	if held == nil {
+		return errors.New("runner: exit publisher does not hold the turn lock")
+	}
+	defer func() {
+		releaseErr := held.Release()
 		turnLockHeld = nil
+		if result == nil {
+			result = releaseErr
+		}
+		if afterTurnRelease != nil {
+			afterTurnRelease()
+		}
+		if afterPublish != nil {
+			afterPublish()
+		}
+	}()
+	// A stop terminates the wrapper's whole process group (on Windows, its
+	// job), the wrapper included, but the members do not all end at the same
+	// moment: the wrapper can see its agent exit before its own termination
+	// arrives. Publishing then would make a stopped turn read as finished and
+	// its partial output be read as the turn's result, depending on which
+	// process the signal reached first. A stopped turn has no exit code: it
+	// reads as crashed every time. Joining the watcher first settles whether
+	// a stop was accepted.
+	if drainStopWatcher != nil && drainStopWatcher() {
+		// The watcher is settled and turn.lock still excludes the next setup.
+		_ = os.Remove(tmp)
+		return errStoppedTurn
 	}
-	err := os.Rename(tmp, filepath.Join(dir, "exit"))
-	// Remove only this turn's own marker: by now a later turn may have
-	// started and written its own.
-	if b, readErr := os.ReadFile(finishing); readErr == nil && string(b) == turnKey {
-		os.Remove(finishing)
+	rec, err := Dir(dir).record()
+	if err != nil || rec.StopKey != turnKey || rec.Abandoned {
+		return errors.New("runner: exit publisher no longer owns the turn")
 	}
-	if afterPublish != nil {
-		afterPublish()
+	finishing := filepath.Join(dir, finishingName)
+	if err := os.WriteFile(finishing, []byte(turnKey), 0o600); err != nil {
+		return err
 	}
-	return err
+	if beforeExitRename != nil {
+		beforeExitRename()
+	}
+	if err := os.Rename(tmp, filepath.Join(dir, "exit")); err != nil {
+		return err
+	}
+	if afterExitRename != nil {
+		afterExitRename()
+	}
+	if b, err := os.ReadFile(finishing); err == nil && string(b) == turnKey {
+		if afterFinishingRead != nil {
+			afterFinishingRead()
+		}
+		if err := os.Remove(finishing); err != nil && !errors.Is(err, os.ErrNotExist) {
+			return err
+		}
+	}
+	return nil
 }

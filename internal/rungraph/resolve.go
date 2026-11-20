@@ -4,7 +4,7 @@ import (
 	"strconv"
 	"time"
 
-	rd "github.com/connorburgess/keepgoing-agents/internal/rundiscovery"
+	rd "github.com/looptender/looptender/internal/rundiscovery"
 )
 
 // Node types.

@@ -8,12 +8,12 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/connorburgess/keepgoing-agents/internal/adapter"
-	"github.com/connorburgess/keepgoing-agents/internal/adapter/bb"
-	"github.com/connorburgess/keepgoing-agents/internal/config"
-	"github.com/connorburgess/keepgoing-agents/internal/decide"
-	"github.com/connorburgess/keepgoing-agents/internal/prompt"
-	"github.com/connorburgess/keepgoing-agents/internal/state"
+	"github.com/looptender/looptender/internal/adapter"
+	"github.com/looptender/looptender/internal/adapter/bb"
+	"github.com/looptender/looptender/internal/config"
+	"github.com/looptender/looptender/internal/decide"
+	"github.com/looptender/looptender/internal/prompt"
+	"github.com/looptender/looptender/internal/state"
 )
 
 // Creating a BB thread is the single exception to "keepgoing never creates a
@@ -150,6 +150,14 @@ func (t *tick) createThread(from string, fromAgent config.Agent, c config.Candid
 		text += "\n\nContinue from @thread:" + continues + ". keepgoing started this conversation for the handoff; the earlier one was left as it was.\n"
 	}
 	text += ownershipNote(t.loop.Name)
+	var sentContext *state.ContextSent
+	if t.loop.PromptContext {
+		// After everything else, as on any other send. A created thread has
+		// no wake header: the brief is its first message.
+		var m prompt.Message
+		m, sentContext = t.withContext(prompt.Message{Text: text}, c.ID, "handoff")
+		text, brief.ContextBytes = m.Text, m.ContextBytes
+	}
 	attempt := t.graphBegin(c.ID, "handoff", string(adapter.ModeAuto), brief)
 	ctx, cancel := context.WithTimeout(t.ctx, newThreadSpawnTime)
 	thread, err := creator.Spawn(ctx, bb.SpawnRequest{Place: place, Provider: c.Provider, Model: c.BB.Model, Reasoning: c.BB.Reasoning,
@@ -161,7 +169,13 @@ func (t *tick) createThread(from string, fromAgent config.Agent, c config.Candid
 	}
 	t.graphFinish(attempt, outcome)
 	t.st.LastPromptSend = &state.PromptSend{Version: 1, CheckAt: t.now, Target: c.ID, Action: "handoff", Mode: string(adapter.ModeAuto), Outcome: outcome,
-		GoalID: brief.GoalID, GoalRevision: brief.GoalRevision}
+		GoalID: brief.GoalID, GoalRevision: brief.GoalRevision, ContextBytes: brief.ContextBytes, Bytes: len(text), GoalForm: brief.GoalForm}
+	started := outcome
+	if errors.Is(err, bb.ErrSpawnNotStarted) {
+		started = "not_started" // recorded as adapter_error above, as before
+	}
+	t.sentContext(sentContext, brief.ContextBytes, started, err)
+	t.noteGoalCopy(brief, c.ID, prompt.ConversationHash(thread), err == nil)
 	if err == nil {
 		t.adoptThread(intent, thread)
 		return thread, nil
@@ -202,6 +216,8 @@ func (t *tick) moveToCreated(in *state.NewThreadIntent, thread string, note *Han
 	t.st.ClearChildErrors()
 	note.To, note.NewThread, note.Continues = in.Candidate, thread, in.Continues
 	t.st.ActiveTarget, t.st.LastHandoffAt, t.st.LastWakeAt = in.Candidate, t.now, t.now
+	t.st.TargetSetBy = state.SetByNewThread
+	t.routeApplied()
 	t.st.Handoffs++
 	t.st.Reprompts, t.st.LastRepromptAt = 0, time.Time{}
 	t.res.Target = in.Candidate

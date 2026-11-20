@@ -10,8 +10,8 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/connorburgess/keepgoing-agents/internal/config"
-	"github.com/connorburgess/keepgoing-agents/internal/decide"
+	"github.com/looptender/looptender/internal/config"
+	"github.com/looptender/looptender/internal/decide"
 )
 
 // Mode says how a prompt should be delivered.
@@ -34,6 +34,14 @@ type Adapter interface {
 	// Stop halts the running session. Adapters that cannot stop return
 	// ErrUnsupported.
 	Stop(ctx context.Context) error
+}
+
+// ConversationKeyer reports which conversation the next send goes to, so
+// a goal copy can be tied to it. known is false when the adapter cannot say;
+// an empty key with known true means the next turn starts a new
+// conversation. The key is an identity, never conversation content.
+type ConversationKeyer interface {
+	ConversationKey() (key string, known bool)
 }
 
 // WakePoller consumes structured notifications that can justify an early idle
@@ -93,6 +101,55 @@ type LaneRecoverer interface {
 	// ForgetLanes removes everything the adapter keeps about lanes. It is
 	// called when lane recovery is switched off.
 	ForgetLanes()
+}
+
+// SignalExitReporter exposes a cumulative count of Unix signal exits outside
+// adapter timeout/cancellation. The signal's source and cause are unknown.
+// Callers take a before/after difference to scope the count to their work.
+type SignalExitReporter interface {
+	SignalExits() int
+}
+
+// ContextReader is implemented by adapters whose provider reports how much
+// of the model's context window the supervised conversation uses. The reading
+// is diagnostic only: it is recorded and shown, and is never an input to a
+// decision, a send, an allowance or a hold. It reads only the supervised
+// conversation, never a lane, and never message text. An error means the
+// reading is unavailable; a caller does not retry it or warn about it.
+type ContextReader interface {
+	ReadContext(ctx context.Context) (ContextReading, error)
+}
+
+// ContextReading is one context-size reading. UsedTokens and WindowTokens are
+// as the provider reported them; Estimated says the provider marked them as
+// an estimate.
+type ContextReading struct {
+	UsedTokens   int64
+	WindowTokens int64
+	Estimated    bool
+}
+
+// TurnUsageReader is implemented by adapters whose agent reports, in a
+// structured form, how many tokens its latest finished turn used. The reading
+// is diagnostic only: it is recorded and shown, and is never an input to a
+// decision, a send, an allowance or a hold. ok is false when the agent
+// reported none, the turn is not finished, or its output was not read; a
+// figure the agent did not report is absent, never estimated.
+type TurnUsageReader interface {
+	LatestTurnUsage() (u TurnUsage, ok bool)
+}
+
+// TurnUsage is the token counts of one finished turn, as its agent reported
+// them. ID is an opaque identity of the turn, the same for every read of
+// the same turn, so a turn is counted once however many checks read it. A
+// nil count was not reported.
+type TurnUsage struct {
+	ID              string
+	Input           *int64
+	CachedInput     *int64
+	CacheWriteInput *int64
+	Output          *int64
+	ReasoningOutput *int64
 }
 
 // CLIPather is implemented by adapters that run a provider executable: the

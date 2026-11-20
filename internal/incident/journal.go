@@ -9,8 +9,8 @@ import (
 	"path/filepath"
 	"time"
 
-	"github.com/connorburgess/keepgoing-agents/internal/lock"
-	"github.com/connorburgess/keepgoing-agents/internal/snapshot"
+	"github.com/looptender/looptender/internal/lock"
+	"github.com/looptender/looptender/internal/snapshot"
 )
 
 const FileName = "incidents.json"
@@ -29,7 +29,9 @@ const FileName = "incidents.json"
 // and the question IDs on control records.
 // Version 13 (returns and manual probes) adds the return to the primary on
 // tick records and the probe records of a manual `fallbacks check`.
-const SchemaVersion = 13
+// Version 14 (supervision context in sends) adds the length of the
+// supervision context a check's sends carried on tick records.
+const SchemaVersion = 14
 
 // Retention bounds the journal at MaxRecords and MaxBytes. Each tier has
 // reserved room, and MaxRecords is the sum of the reservations. A tier may
@@ -118,14 +120,14 @@ func Reserved(tier string) int {
 // Corrupt, oversized, aliased or future-schema history is never silently reset.
 func Load(dir string) (Journal, error) {
 	path := filepath.Join(dir, FileName)
-	info, err := snapshot.Lstat(path)
+	info, err := snapshot.LstatRecord(path)
 	if errors.Is(err, os.ErrNotExist) {
 		return Journal{SchemaVersion: SchemaVersion, NextSequence: 1, Records: []Record{}}, nil
 	}
 	if err != nil || !info.Mode().IsRegular() || info.Size() > MaxBytes {
 		return Journal{}, ErrUnavailable
 	}
-	f, err := snapshot.Open(path)
+	f, err := snapshot.OpenRecord(path)
 	if err != nil {
 		return Journal{}, ErrUnavailable
 	}
@@ -195,6 +197,10 @@ func Load(dir string) (Journal, error) {
 		}
 		if j.SchemaVersion < 10 {
 			r.Lanes = LaneWork{}
+		}
+		if j.SchemaVersion < 14 {
+			// Older writers sent no supervision context.
+			r.ContextBytes = 0
 		}
 		if j.SchemaVersion < 13 {
 			// Older writers recorded no return and no manual probes.

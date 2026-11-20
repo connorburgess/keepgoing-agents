@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"github.com/looptender/looptender/internal/envvar"
 	"io"
 	"os"
 	"os/exec"
@@ -14,10 +15,10 @@ import (
 	"strings"
 	"time"
 
-	"github.com/connorburgess/keepgoing-agents/internal/adapter"
-	"github.com/connorburgess/keepgoing-agents/internal/config"
-	"github.com/connorburgess/keepgoing-agents/internal/decide"
-	"github.com/connorburgess/keepgoing-agents/internal/evidence"
+	"github.com/looptender/looptender/internal/adapter"
+	"github.com/looptender/looptender/internal/config"
+	"github.com/looptender/looptender/internal/decide"
+	"github.com/looptender/looptender/internal/evidence"
 )
 
 // An agent defined in configuration becomes a Spec like a built-in one, and
@@ -349,7 +350,9 @@ func readDefinedLimits(ctx context.Context, l config.CustomLimits, c config.Cust
 	defer cancel()
 	cmd := exec.CommandContext(ctx, argv[0], argv[1:]...)
 	cmd.Dir = c.Workdir
-	cmd.Env = append(os.Environ(), env...)
+	// A configured program: not the session the supervisor was started from;
+	// the definition's own entries come after, so they win.
+	cmd.Env = append(envvar.WithoutSupervisorSession(os.Environ()), env...)
 	cmd.Stdin = strings.NewReader("")
 	out := &boundedBuffer{limit: customLimitsOutput}
 	cmd.Stdout = out

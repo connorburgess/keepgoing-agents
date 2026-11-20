@@ -10,9 +10,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/connorburgess/keepgoing-agents/internal/adapter"
-	"github.com/connorburgess/keepgoing-agents/internal/config"
-	"github.com/connorburgess/keepgoing-agents/internal/decide"
+	"github.com/looptender/looptender/internal/adapter"
+	"github.com/looptender/looptender/internal/config"
+	"github.com/looptender/looptender/internal/decide"
 )
 
 var now = time.Date(2026, 11, 9, 12, 0, 0, 0, time.UTC)
@@ -202,6 +202,31 @@ func TestObserveModelFallbackAfterARefusal(t *testing.T) {
 		obs, _ := a.Observe(context.Background())
 		if obs.ModelFallback != tc.want || obs.State != decide.Idle || obs.ErrorClass != decide.ErrNone {
 			t.Errorf("%s: %+v", tc.name, obs)
+		}
+	}
+}
+
+// The idle spacing rule's turn facts: every turn request, whoever sent it,
+// and every turn start are counted from their event types alone; a
+// provider's retry of a request is not a new request. Message text is never
+// read.
+func TestObserveCountsTurnRequestsAndStarts(t *testing.T) {
+	person := `{"type":"client/turn/requested","data":{"initiator":"user","input":[{"type":"text","text":"PRIVATE_TEXT"}]}}`
+	retry := `{"type":"client/turn/requested","data":{"retryOfRequestId":"request_example"}}`
+	for _, tc := range []struct {
+		name string
+		log  string
+		want decide.TurnCounts
+	}{
+		{"empty", "[]", decide.TurnCounts{}},
+		{"one wake and its turn", "[" + person + "," + turnStarted + "]", decide.TurnCounts{Requests: 1, Starts: 1}},
+		{"a second message queued into the same turn", "[" + person + "," + turnStarted + "," + person + "]", decide.TurnCounts{Requests: 2, Starts: 1}},
+		{"a retry is not a new request", "[" + person + "," + turnStarted + "," + retry + "," + turnStarted + "]", decide.TurnCounts{Requests: 1, Starts: 2}},
+	} {
+		a, _ := newFake(`{"thread":{"status":"idle"}}`, tc.log, false)
+		obs, _ := a.Observe(context.Background())
+		if obs.Turns == nil || *obs.Turns != tc.want {
+			t.Errorf("%s: %+v", tc.name, obs.Turns)
 		}
 	}
 }
@@ -440,5 +465,14 @@ func TestCursorPersistsAndReadsOnlyNewEvents(t *testing.T) {
 	}
 	if len(after) < 2 || after[0] != "0" || after[len(after)-1] != "2" {
 		t.Errorf("--after-seq values = %v, want 0 then 2", after)
+	}
+}
+
+func TestConversationKeyIsTheConfiguredThread(t *testing.T) {
+	if key, known := (&Adapter{cfg: config.BB{Thread: "thr_example"}}).ConversationKey(); key != "thr_example" || !known {
+		t.Fatalf("%q %v", key, known)
+	}
+	if key, known := (&Adapter{}).ConversationKey(); key != "" || known {
+		t.Fatalf("no thread: %q %v", key, known)
 	}
 }

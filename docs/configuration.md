@@ -2,7 +2,19 @@
 
 Use [`keepgoing init`](setup.md) to generate a disabled configuration outside the checkout, or maintain the YAML directly as described below.
 
-`keepgoing.yaml` describes one loop. Relative paths resolve against the directory holding the file, and a leading `~/` expands to the home directory. This includes `state_dir`, prompt and handoff files, repositories, working directories, and commands written as a path such as `./status.sh`. A bare command name such as `bb` is looked up on `PATH`. Unknown fields are errors. Editors that support JSON Schema can use [schema/keepgoing.schema.json](../schema/keepgoing.schema.json). Fallbacks have their own file, described in [fallbacks.md](fallbacks.md).
+A loop's configuration file describes one loop. `init` names it `looptender.yaml`; a file named `keepgoing.yaml`, its name before the tool was renamed, is read the same way, and its contents do not change. Every command that reads a loop takes it with `-c`. Without `-c`, a command reads `looptender.yaml` in the working directory, or `keepgoing.yaml` when only that is there. When both are there as two different files it reads neither and says so (`both looptender.yaml and keepgoing.yaml are in this directory; choose one with -c`), before reading anything, and `doctor` reports the same. `-c` given an empty value, as from an unset shell variable, is not the same as leaving it out: it is refused (`-c was given an empty path`), so a script never acts on whichever loop's file happens to be in its working directory. Releases up to v0.2.0 default to `keepgoing.yaml` only and never look for `looptender.yaml`, so pass `-c` to them.
+
+**Working without `-c` under both releases.** If one directory must serve this release and one from before the rename without `-c`, keep the real file as `looptender.yaml` and make `keepgoing.yaml` a symbolic link to it (`ln -s looptender.yaml keepgoing.yaml`). Both names are then one configuration, read by the name that is the file itself. Do not use a hard link: the first command that changes the file (`fallbacks add`, `routes own`, and the like) writes a new file under the name it was given, which leaves the two names as two different files, and from then on every command run without `-c`, `stop` included, refuses with "both looptender.yaml and keepgoing.yaml are in this directory; choose one with -c". If that happens, remove the name that kept the old content.
+
+**Renaming an existing loop's file.** Nothing needs renaming: a `keepgoing.yaml` keeps working. If you rename one anyway, stop the loop first: a running daemon, and a service or scheduler, keep reading the old path. Until that path exists again, every check fails to read the configuration and does nothing, and that includes carrying out a `stop` you request (checked: a stop requested after the rename was carried out only once the old name existed again). Then change every place that records the full path:
+
+- the loop registry, which the panel, the macOS menu and the client controls read: `keepgoing registry remove --id <id>`, then `keepgoing registry add -c /path/to/looptender.yaml`. Leaving `keepgoing.yaml` as a link does not keep a registered loop: the registry needs the configuration to be a regular file, so the loop reads as unavailable until it is registered again;
+- the service: `keepgoing service remove`, then `keepgoing service install -c` the new path;
+- the BB plugin's `configs` setting, and any scheduler entry or script.
+
+A symbolic link from the old name does keep a daemon, a service, a scheduler entry and a script that name the old path working until you change them.
+
+Relative paths resolve against the directory holding the file, and a leading `~/` expands to the home directory. This includes `state_dir`, prompt and handoff files, repositories, working directories, and commands written as a path such as `./status.sh`. A bare command name such as `bb` is looked up on `PATH`. Unknown fields are errors. Editors that support JSON Schema can use [schema/looptender.schema.json](../schema/looptender.schema.json); `schema/keepgoing.schema.json`, its earlier name, is kept as an alias of it. Fallbacks have their own file, described in [fallbacks.md](fallbacks.md).
 
 ```yaml
 version: 1
@@ -32,14 +44,18 @@ loop:
 | `state_dir` | yes | Where control, state, health, log, lock, and turn files live. Keep it outside any repository. |
 | `adapter` | yes | `bb`, `process`, `claude`, `codex`, or (v0.2.0) `cursor` or `custom` ([an agent defined in configuration](#an-agent-defined-in-configuration)), with the matching block below. |
 | `provider`, `group` | no | `group` defaults to `provider`, then to `primary`. Set `group` so a limit on this account skips fallbacks that share it. |
+| `account` | no | The [accounts catalog](accounts.md#say-which-account-a-route-uses) ID of the account you state this route uses. Your statement only: never set or derived by looptender, and it changes nothing about how the loop runs. `validate` and `doctor` compare it with the catalog. A fallback in `fallbacks.yaml` and a route in the standard list take the same field. |
 | `prompt_goal` | `false` | Explicitly append the latest private goal specification and revision to automatic messages, including handoffs. A valid goal for this loop is required before sending. See [current goal context](goals.md#current-goal-context-in-wake-messages). |
+| `pr_backlog` | off | Unreleased. Explicit repository/WIP policy consulted only for an already-selected ordinary wake, using bounded cached GitHub reads. No extra wakes or branch-creation enforcement. See [PR backlog](pr-backlog.md). |
+| `prompt_context` | `false` | Append the loop's supervision context, as `context -c` prints it, at the end of wakes, nudges, re-prompts and handoff briefs: with every brief, and otherwise only on the first send after it is turned on, after a control save (enable, resume, a change of owner), when the context changes, or into a new headless conversation. Never to the notice-only lane-error wake. Unreleased. See [supervision context in sends](operations.md#supervision-context-in-sends). |
+| `prompt_goal_on_change` | `false` | Unreleased. With `prompt_goal`, send the goal in full only on the first send to a conversation, after a goal revision, a target change, a new conversation (such as after `session reset`), a failed full send, 12 short sends or 4 hours; otherwise send one fixed line naming the goal ID and revision as unchanged. Requires `prompt_goal: true`. Handoff and switch-back briefs always carry the goal in full. See [sending an unchanged goal once](goals.md#sending-an-unchanged-goal-once). |
 | `prompt` or `prompt_file` | one of them | The text sent on wake, nudge, and re-prompt. The file is read on every send, so you can edit it while the loop runs. |
 | `handoff_file` | no | Sent to a fallback when it takes over. When the file is missing, a brief is generated. |
 | `switch_back` | no | Returns the loop to the primary once its limit resets and an exact probe passes. Off by default. See [fallbacks.md](fallbacks.md#switching-back). |
 | `routes` | no | `standard`: follow the person's [standard route list](routes.md) instead of a `fallbacks` file. v0.2.0. Excludes `fallbacks`; for `bb`, `claude` and `codex` loops. |
 | `routes_allow` | no | With `routes: standard`: `[new_conversation]` lets a standard route that starts a new conversation apply to this loop. Off by default. |
 | `probe` | for switch-back and timing | How to probe the primary, with the same fields as a candidate's `probe`. The kind defaults from `provider`. |
-| `timing` | no | Usage-aware timing. Off by default. Today it only probes the first route on a schedule to collect usage readings of its allowance; it never changes routes. See [timing](#timing). |
+| `timing` | no | Usage-aware timing. Off by default. It probes the first route on a schedule to collect usage readings of its allowance and, with `steps`, moves a BB loop between routes on its own thread at turn boundaries. See [timing](#timing). |
 | `refusal` | no | Unreleased. `ask_after`: how many refused turns in a row ask a person (default 10, `0` never). See [refusal](#refusal). |
 
 ## bb
@@ -78,7 +94,7 @@ The status object looks like this:
 
 ## claude
 
-keepgoing runs `claude -p --output-format json` itself, one turn per send. Each turn after the first resumes the saved session.
+looptender runs `claude -p --output-format json` itself, one turn per send. Each turn after the first resumes the saved session.
 
 | Field | Default | Meaning |
 | --- | --- | --- |
@@ -91,7 +107,7 @@ keepgoing runs `claude -p --output-format json` itself, one turn per send. Each 
 
 ## codex
 
-keepgoing runs `codex exec --json` itself, one turn per send. Later turns resume the session with `codex exec resume`.
+looptender runs `codex exec --json` itself, one turn per send. Later turns resume the session with `codex exec resume`.
 
 | Field | Default | Meaning |
 | --- | --- | --- |
@@ -117,7 +133,7 @@ Only standalone primary loops are accepted: no `fallbacks`, enabled `switch_back
 
 ## An agent defined in configuration
 
-v0.2.0 (roadmap K2); **fixture-tested with stand-in agents only, no real agent has been run from a definition**. `adapter: custom` describes an agent keepgoing has no built-in runner for, from its documented command-line interface. It runs one turn per process through the same runner as headless Claude Code and Codex: a detached turn, a private prompt file, per-target session storage and the owned stop.
+v0.2.0 (roadmap K2); **fixture-tested with stand-in agents only, no real agent has been run from a definition**. `adapter: custom` describes an agent looptender has no built-in runner for, from its documented command-line interface. It runs one turn per process through the same runner as headless Claude Code and Codex: a detached turn, a private prompt file, per-target session storage and the owned stop.
 
 Three rules hold for every definition:
 
@@ -171,40 +187,40 @@ loop:
 | `finished` | The turn ended healthy: the exit code is one of `exit_codes` **and** `field` has one of `equals`, when a field is given. `exit_codes` defaults to `[0]`, also when a field is given: a field alone never makes a killed turn (exit 137) or one with an unreadable exit record healthy. |
 | `waiting` | The turn ended waiting on a person, with the same form and the same `exit_codes` default. It is read before `finished`, so a turn both rules match is a wait; a waiting rule that would leave `finished` nothing to match is refused. It raises one awaiting-user hold and one report; nothing is approved or answered. See [after a wait](#after-a-turn-that-waited-on-a-person). |
 | `errors` | Classifies a failed turn. `classes` maps the agent's codes in `field` to `rate_limit`, `auth`, `restricted`, `refused`, `overloaded`, `network` or `unknown`; `http_status_field` is read as an HTTP status; `exit_codes` maps failing exit codes. Anything unmatched is `unknown`. A `restricted` or `refused` result in any of the three outranks what the others say. |
-| `probe` | A real request that lets the agent be a [fallback](fallbacks.md): it receives the fixed probe prompt the way turns receive theirs, uses the probe's model for `{model}`, and is judged by `finished` and `errors`. Its output is bounded as it is read. **keepgoing cannot tell what your probe command does.** If it is the agent's ordinary turn command, every probe is a full paid turn with the agent's tools and side effects. A hand-written fallbacks file, the only kind a defined agent gets, probes each fallback every 4 hours by default, up to 6 times a day (`probe.every`, `probe.daily_cap`), and once more before each handoff: **up to six full paid turns a day per fallback, plus one per handoff, while the loop runs**. Use the agent's cheapest documented check, or raise `probe.every` and lower `probe.daily_cap`. `fallbacks check --dry-run` and `doctor` say this too. Without a probe a candidate needs a `command` probe. |
+| `probe` | A real request that lets the agent be a [fallback](fallbacks.md): it receives the fixed probe prompt the way turns receive theirs, uses the probe's model for `{model}`, and is judged by `finished` and `errors`. Its output is bounded as it is read. **looptender cannot tell what your probe command does.** If it is the agent's ordinary turn command, every probe is a full paid turn with the agent's tools and side effects. A hand-written fallbacks file, the only kind a defined agent gets, probes each fallback every 4 hours by default, up to 6 times a day (`probe.every`, `probe.daily_cap`), and once more before each handoff: **up to six full paid turns a day per fallback, plus one per handoff, while the loop runs**. Use the agent's cheapest documented check, or raise `probe.every` and lower `probe.daily_cap`. `fallbacks check --dry-run` and `doctor` say this too. Without a probe a candidate needs a `command` probe. |
 | `limits` | One command printing one JSON object, run only when a failed turn or probe is unclassified, in the same environment. `blocked` (a field and its values) says the account is blocked by a usage limit; `resets_at_field` is an RFC 3339 time or Unix seconds. |
 | `capabilities` | `exact_resume`, `can_be_stopped`, `structured_errors`, `structured_waiting`. |
 
-**Capabilities must be observable.** Validation refuses a capability with no rule behind it, and a rule without its capability, so a definition cannot claim more than keepgoing can check or carry rules that are silently ignored:
+**Capabilities must be observable.** Validation refuses a capability with no rule behind it, and a rule without its capability, so a definition cannot claim more than looptender can check or carry rules that are silently ignored:
 
 - `exact_resume` needs `session` and a `resume` command that refers to `{session}`. Without it every turn starts a new session.
 - `structured_errors` needs `errors`. Without it every failure is `unknown`.
 - `structured_waiting` needs `waiting`.
-- `can_be_stopped` needs nothing: the turn runs under keepgoing's own wrapper. Without it `stop` holds the loop but does not signal a running turn.
-- `retries_itself`, `fails_over_itself`, `schedules_itself` and `child_work` are refused for now: a definition has no way to let keepgoing observe them.
+- `can_be_stopped` needs nothing: the turn runs under looptender's own wrapper. Without it `stop` holds the loop but does not signal a running turn.
+- `retries_itself`, `fails_over_itself`, `schedules_itself` and `child_work` are refused for now: a definition has no way to let looptender observe them.
 
 ### What moves work to a fallback
 
 Your mapping decides it. A code, HTTP status or exit code that you map to a class in the loop's `errors.failover_on` (by default `rate_limit`) **moves work to a fallback**, and so does a `limits` lookup that reports the account blocked.
 
-**Map only a real provider limit to such a class.** A refusal, a policy block or an account restriction is not a limit. Map the agent's code for one to `refused` (the model or provider declined the turn) or `restricted` (the provider denied permission): a restricted turn holds for a person at once and a `resume` asks for one more try, and a refused turn is continued in the same session with growing spacing until `refusal.ask_after` asks a person; neither ever moves ([operations](operations.md#a-refused-or-restricted-turn)). A declared refusal or restriction also wins over a matching `finished` rule, so a turn the agent reports as finished but declined is not counted as done. Left unmapped it is `unknown`, which never moves work either: the loop re-prompts within its bounds and then holds. Validation refuses a definition that maps a code keepgoing itself reads as a restriction or a refusal (`refusal`, `refused`, `policy`, `permission_denied`, `permission_error`, `forbidden`, `restricted`, `oauth_org_not_allowed`, `cyberPolicy`, `misalignmentPolicyViolation`, `403`) to `rate_limit`, `auth`, `overloaded` or `network`. keepgoing is never a way around a provider's safeguards, and it cannot check that a code you mapped really means a limit, so it says every such mapping in words instead:
+**Map only a real provider limit to such a class.** A refusal, a policy block or an account restriction is not a limit. Map the agent's code for one to `refused` (the model or provider declined the turn) or `restricted` (the provider denied permission): a restricted turn holds for a person at once and a `resume` asks for one more try, and a refused turn is continued in the same session with growing spacing until `refusal.ask_after` asks a person; neither ever moves ([operations](operations.md#a-refused-or-restricted-turn)). A declared refusal or restriction also wins over a matching `finished` rule, so a turn the agent reports as finished but declined is not counted as done. Left unmapped it is `unknown`, which never moves work either: the loop re-prompts within its bounds and then holds. Validation refuses a definition that maps a code looptender itself reads as a restriction or a refusal (`refusal`, `refused`, `policy`, `permission_denied`, `permission_error`, `forbidden`, `restricted`, `oauth_org_not_allowed`, `cyberPolicy`, `misalignmentPolicyViolation`, `403`) to `rate_limit`, `auth`, `overloaded` or `network`. looptender is never a way around a provider's safeguards, and it cannot check that a code you mapped really means a limit, so it says every such mapping in words instead:
 
 ```text
 failover (primary, defined agent example-agent): exit code 75 is treated as a network failure and will move work to a fallback
 failover (primary, defined agent example-agent): a result whose error.code is "quota_exceeded" is treated as a rate limit and will move work to a fallback
 ```
 
-`keepgoing validate` prints one such line per mapping, for the primary and for each defined fallback, and `doctor` reports them as `agent.<target>.failover` with a warning. Read them when you write a definition. Note that `http_status_field` uses keepgoing's own table: 429 is a rate limit, 401 an authentication failure, 403 a restriction, 503 and 529 an overloaded provider. A 403 therefore never moves work, whatever `failover_on` lists.
+`keepgoing validate` prints one such line per mapping, for the primary and for each defined fallback, and `doctor` reports them as `agent.<target>.failover` with a warning. Read them when you write a definition. Note that `http_status_field` uses looptender's own table: 429 is a rate limit, 401 an authentication failure, 403 a restriction, 503 and 529 an overloaded provider. A 403 therefore never moves work, whatever `failover_on` lists.
 
 ### After a turn that waited on a person
 
-The hold's note is the fixed text keepgoing uses for any interaction it cannot answer. Deal with what the agent asked for in the agent itself, then run `keepgoing resume`. What happens next is not a continuation of the answer you gave: the waiting turn's output is still the latest turn, and a turn that matched `waiting` is never read as finished, even if it also matches `finished`. With the wait set aside it is a failed turn of `unknown` class, so the next check **sends the loop's task prompt again into the same session** as a re-prompt, which counts toward `errors.max_reprompts`. A later turn that ends waiting raises a new hold.
+The hold's note is the fixed text looptender uses for any interaction it cannot answer. Deal with what the agent asked for in the agent itself, then run `keepgoing resume`. What happens next is not a continuation of the answer you gave: the waiting turn's output is still the latest turn, and a turn that matched `waiting` is never read as finished, even if it also matches `finished`. With the wait set aside it is a failed turn of `unknown` class, so the next check **sends the loop's task prompt again into the same session** as a re-prompt, which counts toward `errors.max_reprompts`. A later turn that ends waiting raises a new hold.
 
 ### Saved session
 
-A saved session identity is checked again each time it is read. A value that is not a token (for example after the file was edited or damaged) is never passed to the agent. If the last turn reported its session, that is saved again and used. Otherwise keepgoing cannot name the conversation to continue, and it does not start a new one in its place, because that would lose the agent's context without anyone deciding to: the loop is held for a person with the reason `target gone (archived, deleted, or not found)`. Restore the identifier in `targets/<target>/session` under the state directory, or remove that file to start a new conversation on purpose, then `resume`.
+A saved session identity is checked again each time it is read. A value that is not a token (for example after the file was edited or damaged) is never passed to the agent. If the last turn reported its session, that is saved again and used. Otherwise looptender cannot name the conversation to continue, and it does not start a new one in its place, because that would lose the agent's context without anyone deciding to: the loop is held for a person, and the hold's reason names the way out. Run [`looptender session reset`](operations.md#starting-a-new-conversation-on-purpose) to start a new conversation on purpose, then `looptender resume`. No file needs editing.
 
-`keepgoing doctor` checks that the working directory exists, resolves the executable of every command the definition names (start, resume, probe, limits) without running any, and lists what the definition lets keepgoing do and what it cannot (`agent.<target>.capabilities` and `agent.<target>.limits`). It queries no version, login or account for a defined agent. The [capability matrix](adapters.md) has a column for defined agents. Guided `init` and `fallbacks add` do not create one; write the entry by hand. The saved session identifier is used to resume but is not shown by `status` or `keepgoing runs`.
+`keepgoing doctor` checks that the working directory exists, resolves the executable of every command the definition names (start, resume, probe, limits) without running any, and lists what the definition lets looptender do and what it cannot (`agent.<target>.capabilities` and `agent.<target>.limits`). It queries no version, login or account for a defined agent. The [capability matrix](adapters.md) has a column for defined agents. Guided `init` and `fallbacks add` do not create one; write the entry by hand. The saved session identifier is used to resume but is not shown by `status` or `keepgoing runs`.
 
 ## progress
 
@@ -216,12 +232,54 @@ A saved session identity is checked again each time it is read. A value that is 
 | `min_wake_interval` | `60m` | Minimum gap between a nudge and anything sent before it: a wake, nudge, re-prompt, or handoff. |
 | `flag_after_sends` | `6` | Messages sent with no recorded change to the repositories that raise the [no-progress flag](dock.md#the-no-progress-flag): wakes, nudges, re-prompts, notices about failed lanes, and briefs sent on a move to another route or back, each by the send's own result, and turn retries the provider accepted. `0` turns this fact off. A whole number from 0 to 1000. The flag only informs: it never holds, pauses, moves or stops anything. A binary from before this key refuses a configuration that sets it. |
 | `flag_after_errors` | `4` | Checks that found an error or retried the turn, with no recorded change to the repositories, that raise the same flag; `0` turns this fact off. A whole number from 0 to 1000. A binary from before this key refuses a configuration that sets it. |
+| `idle_spacing` | off | Opt-in. Spaces idle wakes after which nothing changed that looptender can see: `{first: 10m, max: 2h}`, with `idle_spacing: {}` taking those defaults. See [spacing idle wakes that changed nothing](#spacing-idle-wakes-that-changed-nothing). Unreleased; a binary from before this key refuses a configuration that sets it. |
 
 The fingerprint covers every worktree of each repository. It includes `HEAD`, `git status --porcelain` for tracked files, and the size and modification time of tracked files that differ from `HEAD`. Untracked files, file contents, and transcripts are never read.
 
 Without `repositories` the no-progress flag is not available: it reads "not available: no progress source is configured", never "no progress".
 
-Idle wakes follow the supervisor's check cadence, subject to other gates. `min_wake_interval` spaces stall nudges; it does not throttle idle wakes. `max_nudges` resets when a turn ends and is not a loop-wide work budget.
+Idle wakes follow the supervisor's check cadence, subject to other gates. `min_wake_interval` spaces stall nudges; it does not throttle idle wakes. `max_nudges` resets when a turn ends and is not a loop-wide work budget. Without `idle_spacing`, which is the default, an idle session is woken at every eligible check.
+
+### Spacing idle wakes that changed nothing
+
+Unreleased, fixture-tested only. With `progress.idle_spacing` set, an idle session whose previous idle wake changed nothing looptender can see is not woken at every check. After one such wake the next waits `first` (default `10m`, at least `1m`) from it; each further one in a row doubles the wait, up to `max` (default `2h`, at least `first`, at most `24h`). At the defaults: 10m, 20m, 40m, 80m, then 2h.
+
+```yaml
+loop:
+  progress:
+    idle_spacing: {first: 10m, max: 2h}
+```
+
+"Changed" means only these structured facts, compared between the last idle wake and the current check. Any one of them starts the spacing over, and the next check wakes at once:
+
+- the Git progress fingerprint (only with `repositories`);
+- a new child outcome notice in the session's log (BB only);
+- a turn looptender did not ask for (BB only): a person typing in the thread, a message from another agent or a `bb thread tell`, or a notice. Read from the log's typed events only: the count of turn requests (a provider's retry of a request excluded) and of turn starts. After an idle wake the count must have grown by exactly the wake's own request and its one turn; any other request or turn starts the spacing over, including a message queued into the wake's own turn;
+- the goal revision;
+- any change to `control.json`, which includes `resume`, `pause`, `enable` and a person's answer to a hold;
+- the target or what set it: a handoff, a switch-back, a `retarget`, a timing step;
+- the session seen in error: the error and the recovery that follows;
+- a direct lane (child) in error, from BB's child listing status (BB only): while one is, idle wakes are not spaced.
+
+A loop with no `repositories` still has every other fact. The rule never reads transcript or message text, and never infers that there is nothing to do: it only notices that none of these facts moved.
+
+An idle wake counts as having changed nothing only once the adapter accepted it and the turn it started has ended. A send that failed is not recorded: the next check wakes again, as it would without the key, and the attempt still counts toward `max_sends` and the other per-attempt caps as before. On BB the turn has ended when the log holds the wake's request and its turn start and the thread is idle again; until then the next idle check is not spaced. An adapter that cannot count turns (every adapter other than BB) treats any later idle check as the turn having ended. If the clock is set back so that the last idle wake appears to be in the future, the wait counts as passed and the session is woken.
+
+It only spaces. It adds no hold, never shortens any other wait, and never overrides a stop, pause, hold, the operating window, child-work suppression, a limit wait or the error rules, all of which come first. A switch-back and a child-error notice are not idle wakes and are never spaced. A spaced check sends nothing, so it spends no `max_sends` and refunds none. The daemon keeps its usual interval; a check that comes before the next idle wake is due records `idle; previous idle wakes changed nothing looptender can see; next idle wake spaced` (cause `idle_unchanged`) and does nothing else.
+
+`status` prints an `idle spacing:` line with the next idle wake's due time and the fixed reason code `idle_unchanged`; `status --json` has `idleSpacing` with `nextIdleWakeAt`, `wait`, `unchanged`, `spacedTotal` and `days`, the count of spaced wakes per UTC day and reason code, kept for 31 days. That history is diagnostic only and never a decision input. The record lives in `state.json` and survives a restart.
+
+**Known limits.** Anything that is not one of the facts above is invisible to the rule, and a wake can be late by up to `max` unless something else changes. Choose `max` with that in mind. What does not start the spacing over:
+
+- a CI result or a review: a coordinator idle and waiting on CI is the typical case;
+- work that makes no Git change, or any Git change when the loop has no `repositories`;
+- a person's activity the adapter cannot see: on any adapter other than BB a person's message is not a fact, and on BB a person's work outside the thread (in a lane, in a terminal, on GitHub) is not one either;
+- a lane that ends without a child outcome notice in the parent's log;
+- a lane parked with a pending provider retry, for example on a rate limit: BB lists it as idle, not in error, and seeing the retry would take a further `bb provider-retry status` call per lane, which looptender does not make for this rule (a follow-up);
+- an edit to the configuration file, other than turning the key off, which clears the record;
+- a daemon restart: the record persists in `state.json`, by design.
+
+The cap is not derived from any provider's prompt-cache lifetime, which this project does not know.
 
 ## limits
 
@@ -262,7 +320,9 @@ Released in v0.2.0; before, a span's times on a day the clock changed were count
 
 ## timing
 
-v0.2.0, and the first part of the planned [usage-aware timing](roadmap.md#usage-aware-timing-planned) (U3). Off by default. Turned on, it probes the loop's first route on a schedule, including while the loop runs on it, so that its allowance has usage readings to [project](fallbacks.md#reading-history-and-projection). **It does not change routes yet**: nothing decides from the readings until the step decision (U4) exists. `validate`, `status` and `doctor` say so: `timing: collecting usage readings for the first route (…); it does not change routes yet`.
+Collection was released in v0.2.0 (U3); step decisions and applying BB steps are unreleased source (U4/U5), part of the planned [usage-aware timing](roadmap.md#usage-aware-timing-planned). Off by default. Turned on, it probes the loop's first route on a schedule, including while the loop runs on it, so that its allowance has usage readings to [project](fallbacks.md#reading-history-and-projection). With `steps` configured, it moves the loop between them at turn boundaries: up to the ceiling near a reset that would otherwise leave much of the allowance unused, down a step when the readings project it running out before its reset, and back to `primary` when that reason passes. Without steps it only collects readings and changes no route; `validate`, `status` and `doctor` say which: `timing: collecting usage readings for the first route (…) and moving between its steps (…) up to … at turn boundaries`.
+
+The preview is withheld when `control.json` or `state.json` cannot be read, or the followed standard route list cannot supply the configured steps. The existing unreadable-record evidence and route-list warnings remain; an absent preview means no conclusion, not a stay decision or healthy route. Restoring valid records and routes restores the preview on the next status read. Invalid explicit timing fields still fail validation.
 
 ```yaml
 loop:
@@ -274,6 +334,11 @@ loop:
     windows: [seven_day]         # the provider's window keys timing acts on
     near_reset: 6h               # default
     probe_every: 12h             # default
+    steps: [example-small, primary, example-large]  # cheapest to strongest
+    ceiling: example-large       # default: the last step
+    unused_at_least: 0.25        # default
+    down_at: 0.95                # default
+    min_on_step: 2h              # default
 ```
 
 | Field | Default | Meaning |
@@ -282,8 +347,15 @@ loop:
 | `windows` | required when on | The usage windows timing acts on, by the provider's own keys as `fallbacks list` shows them (for example `seven_day`). Keys are not interpreted. |
 | `near_reset` | `6h` | How close to a named window's reported reset counts as near, between 1m and 168h. |
 | `probe_every` | `12h` | The interval between timing probes of the first route; at least 1h. |
+| `steps` | none | The routes timing may move between, cheapest to strongest, by ID: `primary` and fallbacks in the first route's group, switched on, each on the loop's own BB thread with its own `bb.model` or `bb.reasoning`. The order is yours; looptender never ranks models or effort levels. Without steps timing only collects readings. |
+| `ceiling` | the last step | The strongest step timing may use, at or above `primary`. |
+| `unused_at_least` | `0.25` | The unused share near a reset that makes timing step up, finite, above 0 and below 1. |
+| `down_at` | `0.95` | The projected use at reset that makes timing step down, finite, above 0 and at most 1. |
+| `min_on_step` | `2h` | The least time between timing moves, except the return at a reset; between 1m and 168h. |
 
-Timing needs `loop.fallbacks` (its `probe.daily_cap` and `probe.timeout` apply) and a way to probe the first route (`loop.provider` of `claude-code` or `codex`, or `loop.probe`); `validate` refuses it otherwise and names what is missing. It is not available for Cursor loops.
+Timing needs `loop.fallbacks` or `loop.routes: standard` (the resolved list's `probe.daily_cap` and `probe.timeout` apply) and a way to probe the first route (`loop.provider` of `claude-code` or `codex`, or `loop.probe`); `validate` refuses it otherwise and names what is missing. It is not available for Cursor loops.
+
+Multi-step previews currently need the loop's own `fallbacks.yaml`: the standard route list deliberately excludes routes on the first route's quota group. A followed standard list with unresolved or ineligible step references keeps loading with a `timing preview unavailable` warning and omits `timingWould`. A readable primary-only or no-step standard configuration may preview; support for same-allowance standard steps remains U7. Malformed explicit steps, ceilings, thresholds and durations still fail validation.
 
 When timing probes run:
 
@@ -293,9 +365,59 @@ When timing probes run:
 
 **What it costs.** `validate`, `status`, `doctor` and `fallbacks check --dry-run` state it, for example: `about 14 small paid probes a week for this allowance at a 12h cadence, plus one as each named window (seven_day) nears its reset, never above probe.daily_cap (6 a day); on example-small, the probe model`. The probes use `loop.probe.model` when set, otherwise the route's own model.
 
-**What the readings cover.** A probe reports the windows its model reports. A window for one model alone is reported only on a probe that uses that model, so it is read only when the probe's model is the route's own model; a cheaper probe model does not report it. The cost line says which applies. Probing on the route's own model to read such a window is a decision for the step design (U4), with its cost stated.
+**What the readings cover.** A probe reports the windows its model reports. A window for one model alone is reported only on a probe that uses that model, so it is read only when the probe's model is the route's own model; a cheaper probe model does not report it. The cost line says which applies. Probing on the route's own model to read such a window is not offered yet; it would be a separate choice with its cost stated.
 
 **Where the readings come from.** A probe runs the CLI on this computer with its sign-in, or `loop.probe.env`. For a loop on a BB thread that may not be the account BB uses for the thread; `validate` and `doctor` warn whenever timing is on for a BB loop.
+
+**What it decides.** At each check timing decides, from recorded facts only, with the rules below, and `status` (text, and `timingWould` in JSON) says what it would decide at the next turn boundary. The rules are tried in order and the first that applies decides, even when it decides to stay. Each decision names its rule and a reason code, both stable:
+
+1. `gate`: timing stays when no steps are configured (`no_steps`), the loop is held (`held`), the session is in error (`in_error`), another move was decided in the same check (`other_move`), the session's last observed state is unknown (`unknown_state`), the check is not at a turn boundary (`turn_not_ended`), the failover rules moved the loop to the route it is on (`on_fallback_by_failover`), a person moved it and the window it was moved in has not reset (`retargeted`), or it is on a route that is not a step (`not_on_step`). Timing never moves a loop off a route the failover rules chose.
+2. `return_at_reset`: after a timing move, once the reset that move was for has passed, back to `primary` (`reset_passed`), however long ago the move was.
+3. `step_back_early`: after a step up, when the readings taken since then project the window running out before its reset, back to `primary` (`runs_out_since_step_up`).
+4. `step_down`: when a named window, from readings taken since the last timing move with the newest within the fallbacks' `probe.ttl`, is projected at `down_at` or more with more than `near_reset` left, down one step (`projected_over_down_at`), never below the cheapest (`at_floor`).
+5. `step_up`: when a named window resets within `near_reset`, a reading no older than 1h shows at least `unused_at_least` unused and no other named window is at or projected at `down_at`, straight to the ceiling (`near_reset_unused`); once per window instance, even after a step back in between (`already_stepped_up`), not above the ceiling (`at_ceiling`), not while another named window is high (`other_window_high`), and not after timing gave up on that step up for the window instance (`gave_up`).
+6. `nothing_due`: no reading (`no_reading`), none of the named windows reported (`no_named_window`), a reading too old to step up on (`reading_too_old`), projected under `down_at` (`projected_under_down_at`), or not projectable (`cannot_project`).
+
+Rules 3 to 5 wait `min_on_step` after the last timing move (`too_soon`). A missing, stale or malformed reading never leads to a move. `status` cannot see a turn end, so it decides as if the next check found one; the gates it can read from records still apply. Disabled supervision gives a held gate; missing, empty, unknown or unrecognized observation evidence gives the conservative `refusal_or_unknown` gate. Only known idle/active observations allow the next-boundary move preview; error, pending, stopping and awaiting-input observations remain gated. Without steps, the collection-only message still applies.
+
+**Steps are BB routes on the loop's own thread, for now.** A step changes the model and effort of the conversation the loop is in; it never starts a new one. So every step must be a fallback naming the loop's own BB thread, with its own `bb.model` or `bb.reasoning`, and the loop must set `bb.model` (and `bb.reasoning`, when a step sets one), so that returning to `primary` sets the thread back. A step that sets only its model takes the first route's effort, and one that sets only its effort takes the first route's model, so an effort never carries over from the step before. `validate` refuses anything else and says why. Headless Claude Code and Codex loops keep a separate session per route, so they cannot have steps yet.
+
+**How a step is made.**
+
+- Only at a turn boundary: when the engine wakes an idle session whose turn ended, and before that wake, so the next turn runs on the new route. An idle session the engine does not wake (a retry or child scan it could not verify, children working, an interaction or queued messages pending, background jobs, outside the window, the network down) is not stepped either. Never in a check that made another move (a handoff, a switch-back, a route that left the configuration). A step sends no message of its own and uses no send allowance.
+- It is recorded in `state.json` before the thread is changed. Then the thread's model and effort are set as for a handoff to a route on the same thread (`bb thread update`), and the route, the move and what put the loop there (`targetSetBy: timing`) are recorded.
+- The control record is read again just before the thread is changed: a stop or pause written during the check wins, and nothing is changed.
+- If the update fails, the route on record stays unchanged and the step intent is kept: the thread may already have changed. BB's send command does not restore a model or effort, so the ordinary wake is withheld until repair succeeds. Failed or skipped repair (including unavailable route inputs, uncertain observation or insufficient time) retains the intent and withholds the wake without spending its send allowance. A later check sets the thread back to the route on record: past stop, pause and the other holds, with its session claimed, only between turns (the session observed idle, with no interaction, child input, queued messages, lanes or background jobs waiting and no unverified child, retry or turn evidence), and only with 30 seconds free. A check that ended between recording a step and settling it is repaired the same way. A held, stopped or switched-off loop is not touched.
+- Only a step up gives up: after `errors.max_reprompts` failures for one window instance (readings a few minutes apart in their reported reset count as one instance), timing stops trying that step up until the window resets (`gave_up`), whatever other moves are made in between, and reports once. A return to `primary` and a step down are tried again at every turn boundary; the first failure is reported, and again at `errors.max_reprompts` failures.
+- Each step applied, each step up given up and each first failure of a return or step down is reported as `timing`, an essential report, on by default; a step applied is reported once the check's state is saved. `status` shows the last move, with its window's reset as it stands now. The check's output carries `timing` with the decision and what came of it. `keepgoing timeline` gives the check its own cause, `timing_step_up`, `timing_step_down` or `timing_return` (kind `timing_move`), and a repair `timing_repair`, each with the decision's rule and reason codes in the record's decisions; the panel words them. These are new values in existing fields of `incidents.json`: a build that supports incident schema 13 but predates these values shows them as unavailable and writes them back that way when it next saves the history. Released v0.2.0 refuses a schema 13 journal; follow the [journal downgrade instructions](diagnostics.md#offline-incident-timeline) before downgrading.
+
+**Leaving a step through configuration.** When the loop is on a step timing chose and timing is turned off, or the step is dropped from `steps`, the next turn boundary returns it to `primary`, recorded as `targetSetBy: configuration`, and `status` says so. When a route the loop is on is removed from its own fallbacks file, or switched off, the loop is moved to `primary` at once as before, and now a later check, between turns, also sets the thread's model and effort to the first route's, as switch-back does. This holds with or without timing, including a fallback a handoff chose. A followed standard list retains its saved current route as before; unresolved or ineligible timing references withhold preview and step authority. A readable primary-only configuration needs no model change.
+
+**Failover, switch-back and a person's choice.**
+
+- Timing never moves a loop off a route a handoff chose (`on_fallback_by_failover`). Steps share the first route's group, so on a step a usage limit hands off to another account, never to another step, as on the first route, and the reset the provider reported is recorded for switch-back as for the first route. A handoff from any other route records it as before.
+- A step is not confirmed by an exact probe before timing relies on it, unlike a fallback before a handoff. Timing judges the account's windows, which the first route's timing probes read, and a step is on the same account. A window for the step's model alone is not probed. If a step hits a limit, the failover rules apply as on `primary`.
+- Switch-back returns only from a route a handoff chose, never from a step timing chose. After a handoff from a step and a switch-back to `primary`, timing does not step up again for the same window instance.
+- `keepgoing retarget` is a person's choice, recorded whether or not timing is on: timing waits until the first named window resets, as the latest reading reports it then. With no reading of it at the time of the retarget, the first reset a reading shows after it is saved, and the wait is never moved after that.
+
+**Before going back to an older binary.** A binary from before U4 refuses the step fields, and one from before `loop.timing` refuses the whole block. A U4 build can preview steps but does not apply them. An older binary also drops `targetSetBy` and the timing record from `state.json`, after which its switch-back can pull a loop off a timing step. So first run `keepgoing retarget primary -c <config>`, so the loop is on its first route, then remove `steps`, `ceiling`, `unused_at_least`, `down_at` and `min_on_step` from `loop.timing` (for a binary from before `loop.timing`, remove the whole `loop.timing` block).
+
+## context_window
+
+Unreleased source, previewed only. The [context-threshold reset](roadmap.md) is not built: this build never resets, compacts, sends or asks for a checkpoint because of this key. `status` shows what it would do at the next turn boundary; see [context window reset preview](operations.md#context-window-reset-preview).
+
+```yaml
+loop:
+  adapter: bb
+  context_window:
+    reset_at: 0.8   # share of the context window; no default
+```
+
+| Field | Default | Meaning |
+| --- | --- | --- |
+| `reset_at` | none | The share of the conversation's context window at or above which a reset would be due. Between `0.5` and `0.95`. |
+
+It has no default: without `reset_at` the feature is off, and a `context_window` block without it is refused. Below half a reset would give up a conversation with room left in it; above 95% the provider's own compaction or limit is likely to act first. Only a loop on a BB thread may set it, because only BB reports a [context window reading](adapters.md#context-window-reading); any other adapter is refused, naming the rule `context_window_reading`. While the loop is on a fallback that reports none, the preview says `not_supported`. The rule's other limits are fixed, not configured: a reading counts only while no turn is known to have run since it was taken, with a 24-hour safety limit on its age; 6 hours between resets; and at most 2 resets per UTC day.
 
 ## errors
 
@@ -349,12 +471,12 @@ See [operations.md](operations.md).
 
 | Field | Default |
 | --- | --- |
-| `report.url_env`, `report.secret_env` | `LOOPTENDER_WEBHOOK_URL`, `LOOPTENDER_WEBHOOK_SECRET`; each is also read under its [earlier name](#environment-variables) |
+| `report.url_env`, `report.secret_env` | `LOOPTENDER_WEBHOOK_URL`, `LOOPTENDER_WEBHOOK_SECRET`; each is also read under its [earlier name](#environment-variables). With `format: telegram`, defaults to `LOOPTENDER_TELEGRAM_API_URL` (optional, defaults to `https://api.telegram.org`) and `LOOPTENDER_TELEGRAM_BOT_TOKEN` (or the paired `token.env` from `telegram setup`). |
 | `report.secret_file` | none |
 | `report.source` | the loop name |
-| `report.scheme` | `standard-webhooks` (or `bearer`) |
-| `report.format` | `standard` (or `text`) |
-| `report.events` | `handoff, switch_back, degraded, recovered, await_user, limit_wait, network_wait, child_error, child_recovery, refusal_streak, complete, stop, error` (the `complete` event requires v0.1.3 or newer; `limit_wait`, `network_wait`, `child_error` and `child_recovery` are v0.2.0; `child_recovery` is sent only by a loop with `bb.children.retry_errored`; `refusal_streak`, unreleased, is sent when a streak of refused turns reaches 3, 10 and every 10 after; `check_gap`, also v0.2.0, is not a default and must be named) |
+| `report.scheme` | `standard-webhooks` (or `bearer`; `telegram-bot` when `format: telegram`) |
+| `report.format` | `standard` (or `text`; unreleased `sessionpipe` requires `scheme: bearer`, see [Sessionpipe setup](sessionpipe.md); unreleased `telegram` defaults to `scheme: telegram-bot`, see [Telegram remote channel](telegram.md)) |
+| `report.events` | `handoff, switch_back, timing, degraded, recovered, await_user, limit_wait, network_wait, child_error, child_recovery, refusal_streak, complete, stop, error` (the `complete` event requires v0.1.3 or newer; `limit_wait`, `network_wait`, `child_error` and `child_recovery` are v0.2.0; `child_recovery` is sent only by a loop with `bb.children.retry_errored`; `timing`, unreleased, reports applied steps and failures; `refusal_streak`, unreleased, is sent when a streak of refused turns reaches 3, 10 and every 10 after; `check_gap`, also v0.2.0, is not a default and must be named) |
 | `report.timeout` | `20s` |
 | `yield.busy_command`, `yield.timeout` | required, `10s` |
 | `daemon.interval`, `daemon.control_poll` | `5m`, `2s` |
@@ -491,3 +613,34 @@ Each tick prints one JSON line:
 ```
 
 `action` is one of `none`, `wake`, `nudge`, `reprompt`, `await_user`, `stop`, `handoff`, or `switch_back`. Optional fields include `resetsAt`, `redundancy`, `probes`, `yielded`, `dryRun`, `warnings`, `outcome` (`succeeded`, `failed` or `dry_run`; absent when the check could not be recorded) and `missingWorktrees`. A probe entry with `skipped` produced no result. With `--dry-run`, the tick decides and records but sends nothing and runs no probes.
+
+### Assignment lifecycle (unreleased)
+
+`loop.assignment_lifecycle: true` opts a BB coordinator into explicit assignment reviews,
+handoff imports/acknowledgements and an explicit `await-user` contradiction check. Default
+is false. A current private goal and existing BB ownership are required before writing.
+Older strict readers reject this key, so verify associated instances before activation.
+No new ordinary queries, automatic lane actions or hold clearing occur. See the full
+[initial review and handoff workflow](assignments.md), limits and remaining acceptance.
+
+### Independent assignment coordination (unreleased)
+
+`loop.assignment_coordination: {enabled: true, max_evidence_age: 30m}` requires
+`assignment_lifecycle: true` and a BB primary. Default absent/disabled preserves existing
+supervision/query behavior. Evidence age defaults to 30m and is bounded to 1m–24h;
+expiry withholds the exception without clearing holds or discarding work. Explicit
+`assignment ready` and `assignment reconcile-wake` govern one durable batch grant.
+See the [complete workflow and failure limits](assignments.md#opt-in-coordinator-wake-for-independent-work).
+One optional pre-send structured child scan is bounded to 20s within existing reserves;
+no additional wake cadence, automatic dispatch or new route is enabled.
+
+### Whole-objective completion review (unreleased)
+
+`loop.assignment_completion: true` separately opts a BB loop with
+`assignment_lifecycle: true` into the explicit `complete --review-file` safeguard.
+Default false preserves prior completion/query behavior. Strict older readers
+refuse the new key; no existing record is migrated. The typed declaration binds
+the current goal and assignment revisions and explicitly attests whole-objective
+completion, including zero-child objectives. It is not inferred authorization or
+proof of acceptance. See [completion review](assignments.md#whole-objective-completion-review-unreleased)
+for query bounds, historical completed-lane absence and hold/source checks.
