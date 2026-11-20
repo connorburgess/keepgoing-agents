@@ -14,6 +14,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/looptender/looptender/internal/lock"
 	"github.com/looptender/looptender/internal/registry"
 	"github.com/looptender/looptender/internal/telegram"
 	"github.com/looptender/looptender/internal/userdir"
@@ -483,6 +484,17 @@ func telegramTopicsCommand(e env, args []string) int {
 	if err != nil {
 		e.errf("telegram topics: %v", err)
 		return exitFailed
+	}
+	// Topic synchronization writes the complete pairing record. Serialize it
+	// with polling before reading so it cannot roll back an update offset or
+	// lose mappings created by another synchronization.
+	if *syncFlag {
+		l, err := lock.AcquireNamed(dir, telegramPollLock)
+		if err != nil {
+			e.errf("telegram topics: stop the poller or wait for topic synchronization to finish before syncing")
+			return exitSkipped
+		}
+		defer l.Release()
 	}
 	rec, ok, err := telegram.LoadPairing(dir)
 	if err != nil {

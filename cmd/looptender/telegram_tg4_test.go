@@ -15,6 +15,7 @@ import (
 
 	"github.com/looptender/looptender/internal/control"
 	"github.com/looptender/looptender/internal/incident"
+	"github.com/looptender/looptender/internal/lock"
 	"github.com/looptender/looptender/internal/telegram"
 )
 
@@ -490,5 +491,40 @@ loop:
 	mu.Unlock()
 	if afterCount != beforeCount {
 		t.Fatalf("expected zero createForumTopic calls when TopicsEnabled is false")
+	}
+}
+
+func TestTelegramTopicSyncRefusesWhilePollerOwnsOffsets(t *testing.T) {
+	dir := setupPairedTelegramDir(t, "123456789:EXAMPLE_TOPICS_LOCK_TOKEN", time.Now().UTC())
+	rec, ok, err := telegram.LoadPairing(dir)
+	if err != nil || !ok {
+		t.Fatalf("pairing: %v", err)
+	}
+	rec.TopicsEnabled = true
+	rec.LastUpdateOffset = 234
+	if err := telegram.SavePairing(dir, rec); err != nil {
+		t.Fatal(err)
+	}
+	before, err := os.ReadFile(filepath.Join(dir, telegram.PairingFile))
+	if err != nil {
+		t.Fatal(err)
+	}
+	held, err := lock.AcquireNamed(dir, telegramPollLock)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer held.Release()
+	var out, errs bytes.Buffer
+	e := env{ctx: context.Background(), stdout: &out, stderr: &errs}
+	if code := telegramTopicsCommand(e, []string{"--dir", dir, "--sync"}); code != exitSkipped {
+		t.Fatalf("sync while polling: code=%d stderr=%s", code, &errs)
+	}
+	after, err := os.ReadFile(filepath.Join(dir, telegram.PairingFile))
+	if err != nil || !bytes.Equal(before, after) {
+		t.Fatalf("sync changed pairing/offset: %v", err)
+	}
+	// Inspection remains available while polling and performs no writes.
+	if code := telegramTopicsCommand(e, []string{"--dir", dir, "--json"}); code != exitOK {
+		t.Fatalf("read-only topics blocked: code=%d stderr=%s", code, &errs)
 	}
 }
