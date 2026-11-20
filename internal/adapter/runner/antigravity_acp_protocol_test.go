@@ -337,24 +337,44 @@ func TestAntigravityACPTerminalAndBounds(t *testing.T) {
 			t.Fatal("permission bound or hold lost")
 		}
 	})
-	t.Run("frame count", func(t *testing.T) {
+	t.Run("long streaming turn allowed", func(t *testing.T) {
 		g := acpTestGate(t, "")
-		frame := fmt.Sprintf(`{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":%q,"update":{"sessionUpdate":"agent_message_chunk"}}}`, acpFixtureSession)
-		for g.frames < antigravityACPFrameCount {
-			acpTestReceive(t, g, frame)
+		chunk := fmt.Sprintf(`{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":%q,"update":{"sessionUpdate":"agent_message_chunk"}}}`, acpFixtureSession)
+		for i := 0; i < 5000; i++ {
+			acpTestReceive(t, g, chunk)
 		}
-		if _, err := g.Receive([]byte(frame)); err == nil {
-			t.Fatal("frame count unbounded")
+		big := fmt.Sprintf(`{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":%q,"update":{"sessionUpdate":"agent_message_chunk","content":%q}}}`, acpFixtureSession, strings.Repeat("x", antigravityACPFrameLimit/2))
+		for i := 0; i < 12; i++ {
+			acpTestReceive(t, g, big)
+		}
+		acpTestReceive(t, g, acpResult("end_turn"))
+		if got := g.End(); got.Failed || !got.TurnReturned {
+			t.Fatalf("long streaming turn failed: %+v", got)
 		}
 	})
-	t.Run("total bytes", func(t *testing.T) {
-		g := acpTestGate(t, "")
-		frame := fmt.Sprintf(`{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":%q,"update":{"sessionUpdate":"agent_message_chunk","content":%q}}}`, acpFixtureSession, strings.Repeat("x", antigravityACPFrameLimit/2))
-		for len(frame) <= antigravityACPTotalLimit-g.bytes {
+	t.Run("ready update count", func(t *testing.T) {
+		g, _ := NewAntigravityACPGate("")
+		_, _ = g.Initialize()
+		acpTestReceive(t, g, acpInitResponse)
+		_, _ = g.OpenSession(t.TempDir())
+		acpTestReceive(t, g, `{"jsonrpc":"2.0","id":"keepgoing-open","result":{"sessionId":"`+acpFixtureSession+`"}}`)
+		frame := fmt.Sprintf(`{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":%q,"update":{"sessionUpdate":"available_commands_update"}}}`, acpFixtureSession)
+		for i := 0; i < antigravityACPReadyUpdateLimit; i++ {
 			acpTestReceive(t, g, frame)
 		}
 		if _, err := g.Receive([]byte(frame)); err == nil {
-			t.Fatal("byte count unbounded")
+			t.Fatal("ready update count unbounded")
+		}
+	})
+	t.Run("cancel drain frame count", func(t *testing.T) {
+		g := acpTestGate(t, "")
+		acpTestReceive(t, g, acpPermission(`1`, acpFixtureSession))
+		frame := fmt.Sprintf(`{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":%q,"update":{"sessionUpdate":"agent_message_chunk"}}}`, acpFixtureSession)
+		for i := 0; i < antigravityACPCancelFrameLimit; i++ {
+			acpTestReceive(t, g, frame)
+		}
+		if _, err := g.Receive([]byte(frame)); err == nil || !g.Outcome().NeedsUser {
+			t.Fatal("cancel drain frame count unbounded or hold lost")
 		}
 	})
 	t.Run("encoded prompt", func(t *testing.T) {

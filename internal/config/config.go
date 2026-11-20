@@ -59,9 +59,13 @@ type Config struct {
 
 // Loop describes one supervised agent loop.
 type Loop struct {
-	Name     string `yaml:"name"`
-	StateDir string `yaml:"state_dir"`
-	Agent    `yaml:",inline"`
+	// AssignmentLifecycle enables explicit coordinator assignment reconciliation and await-user checks.
+	AssignmentLifecycle    bool                    `yaml:"assignment_lifecycle,omitempty"`
+	AssignmentCompletion   bool                    `yaml:"assignment_completion,omitempty"`
+	AssignmentCoordination *AssignmentCoordination `yaml:"assignment_coordination,omitempty"`
+	Name                   string                  `yaml:"name"`
+	StateDir               string                  `yaml:"state_dir"`
+	Agent                  `yaml:",inline"`
 
 	Prompt     string `yaml:"prompt,omitempty"`
 	PromptFile string `yaml:"prompt_file,omitempty"`
@@ -70,6 +74,8 @@ type Loop struct {
 	// the conversation, and otherwise one line naming its ID and revision.
 	// It requires PromptGoal.
 	PromptGoalOnChange bool `yaml:"prompt_goal_on_change,omitempty"`
+	// PRBacklog is opt-in GitHub evidence on ordinary wakes, never a decision gate.
+	PRBacklog *PRBacklog `yaml:"pr_backlog,omitempty"`
 	// PromptContext appends the loop's supervision context (see
 	// internal/loopcontext) to wakes, re-prompts and handoff briefs, when it
 	// is new to the conversation or has changed. Off by default.
@@ -672,25 +678,43 @@ func (c *Config) applyDefaults() {
 			l.Probe.Kind = "codex"
 		}
 	}
+	if l.AssignmentCoordination != nil && l.AssignmentCoordination.MaxEvidenceAge.Duration == 0 {
+		l.AssignmentCoordination.MaxEvidenceAge.Duration = 30 * time.Minute
+	}
+	if l.PRBacklog != nil {
+		l.PRBacklog.defaults()
+	}
 	setDur(&l.Daemon.Interval, DefaultDaemonInterval)
 	l.tickTimeoutDefaulted = l.TickTimeout.Duration == 0
 	setDur(&l.TickTimeout, DefaultTickTimeout)
 	setDur(&l.Daemon.ControlPoll, DefaultControlPoll)
 	if r := l.Report; r != nil {
-		if r.URLEnv == "" {
-			r.URLEnv = envvar.WebhookURL.Name() // report also reads the earlier name
+		if r.Format == "" {
+			r.Format = "standard"
 		}
-		if r.SecretEnv == "" {
-			r.SecretEnv = envvar.WebhookSecret.Name()
+		if r.Format == "telegram" {
+			if r.URLEnv == "" {
+				r.URLEnv = "LOOPTENDER_TELEGRAM_API_URL"
+			}
+			if r.SecretEnv == "" {
+				r.SecretEnv = "LOOPTENDER_TELEGRAM_BOT_TOKEN"
+			}
+			if r.Scheme == "" {
+				r.Scheme = "telegram-bot"
+			}
+		} else {
+			if r.URLEnv == "" {
+				r.URLEnv = envvar.WebhookURL.Name() // report also reads the earlier name
+			}
+			if r.SecretEnv == "" {
+				r.SecretEnv = envvar.WebhookSecret.Name()
+			}
+			if r.Scheme == "" {
+				r.Scheme = "standard-webhooks"
+			}
 		}
 		if r.Source == "" {
 			r.Source = l.Name
-		}
-		if r.Scheme == "" {
-			r.Scheme = "standard-webhooks"
-		}
-		if r.Format == "" {
-			r.Format = "standard"
 		}
 		if len(r.Events) == 0 {
 			r.Events = DefaultReportEvents
@@ -767,6 +791,22 @@ func (c *Config) Validate() error {
 	if l.Prompt != "" && l.PromptFile != "" {
 		add("set only one of loop.prompt and loop.prompt_file")
 	}
+	if l.AssignmentCompletion && (!l.AssignmentLifecycle || l.Adapter != "bb" || l.BB == nil) {
+		add("loop.assignment_completion requires assignment_lifecycle and a BB primary")
+	}
+	if l.AssignmentLifecycle && (l.Adapter != "bb" || l.BB == nil) {
+		add("loop.assignment_lifecycle requires a BB primary")
+	}
+	if p := l.AssignmentCoordination; p != nil {
+		if !l.AssignmentLifecycle || l.Adapter != "bb" || l.BB == nil || p.MaxEvidenceAge.Duration < time.Minute || p.MaxEvidenceAge.Duration > 24*time.Hour {
+			add("loop.assignment_coordination requires assignment_lifecycle, a BB primary, and max_evidence_age between 1m and 24h")
+		}
+	}
+	if l.PRBacklog != nil {
+		if err := l.PRBacklog.Policy().Validate(); err != nil {
+			add("loop.pr_backlog: %v", err)
+		}
+	}
 	if l.PromptGoalOnChange && !l.PromptGoal {
 		add("loop.prompt_goal_on_change needs loop.prompt_goal: true")
 	}
@@ -839,14 +879,20 @@ func (c *Config) Validate() error {
 		}
 	}
 	if r := l.Report; r != nil {
-		if r.Scheme != "standard-webhooks" && r.Scheme != "bearer" {
-			add("loop.report.scheme must be standard-webhooks or bearer")
+		if r.Scheme != "standard-webhooks" && r.Scheme != "bearer" && r.Scheme != "telegram-bot" {
+			add("loop.report.scheme must be standard-webhooks, bearer or telegram-bot")
 		}
-		if r.Format != "standard" && r.Format != "text" && r.Format != "sessionpipe" {
-			add("loop.report.format must be standard, text or sessionpipe")
+		if r.Format != "standard" && r.Format != "text" && r.Format != "sessionpipe" && r.Format != "telegram" {
+			add("loop.report.format must be standard, text, sessionpipe or telegram")
 		}
 		if r.Format == "sessionpipe" && r.Scheme != "bearer" {
 			add("loop.report: sessionpipe format requires bearer scheme")
+		}
+		if r.Format == "telegram" && r.Scheme != "telegram-bot" {
+			add("loop.report: telegram format requires telegram-bot scheme")
+		}
+		if r.Scheme == "telegram-bot" && r.Format != "telegram" {
+			add("loop.report: telegram-bot scheme requires telegram format")
 		}
 		for _, e := range r.Events {
 			if e != "all" && !contains(ReportEvents, e) {
@@ -877,6 +923,9 @@ func (c *Config) Validate() error {
 	if l.Adapter == "cursor" && (l.HasRouteList() || l.SwitchBack.Enabled) {
 		add("Cursor currently supports standalone primary loops only; fallbacks and switch-back are unverified")
 	}
+	if l.Adapter == "antigravity" && (l.HasRouteList() || l.SwitchBack.Enabled) {
+		add("Antigravity currently supports standalone primary loops only; fallbacks and switch-back are unverified")
+	}
 	if l.SwitchBack.Enabled {
 		switch l.Probe.Kind {
 		case "claude", "codex":
@@ -897,6 +946,9 @@ func (c *Config) Validate() error {
 		tm := l.Timing
 		if l.Adapter == "cursor" {
 			add("loop.timing is not supported for Cursor loops")
+		}
+		if l.Adapter == "antigravity" {
+			add("loop.timing is not supported for Antigravity loops")
 		}
 		switch l.Probe.Kind {
 		case "claude", "codex":

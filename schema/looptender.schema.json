@@ -28,6 +28,7 @@
             "claude",
             "codex",
             "cursor",
+            "antigravity",
             "custom"
           ]
         },
@@ -56,6 +57,9 @@
         "codex": {
           "$ref": "#/$defs/codex"
         },
+        "assignment_coordination": {"type": "object", "additionalProperties": false, "properties": {"enabled": {"type": "boolean", "default": false}, "max_evidence_age": {"type": "string", "default": "30m", "description": "Evidence age between 1m and 24h; stale evidence cannot authorize assignment coordination."}}},
+        "assignment_completion": {"type": "boolean", "description": "Require explicit whole-objective attestation and bound assignment review before completion; no automatic completion or hold-clear authority"},
+        "assignment_lifecycle": {"type": "boolean", "description": "Opt-in explicit coordinator assignment review and await-user contradiction check; no automatic lane dispatch or hold clearing"},
         "name": {
           "type": "string",
           "pattern": "^[a-z0-9][a-z0-9-]{0,63}$"
@@ -91,6 +95,42 @@
         "prompt_goal": {
           "type": "boolean",
           "description": "Explicitly include the latest private goal revision in automatic prompts and handoff briefs. Missing or invalid goals prevent sending."
+        },
+        "pr_backlog": {
+          "type": "object",
+          "additionalProperties": false,
+          "description": "Opt-in bounded GitHub PR evidence on ordinary wakes; no extra wakes or branch/merge authority.",
+          "required": [
+            "repo",
+            "max_open"
+          ],
+          "properties": {
+            "repo": {
+              "type": "string",
+              "pattern": "^[A-Za-z0-9][A-Za-z0-9_.-]{0,99}/[A-Za-z0-9_.-]{1,100}$"
+            },
+            "max_open": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 5000
+            },
+            "refresh_interval": {
+              "$ref": "#/$defs/duration",
+              "description": "Default 15m; 5m to 24h."
+            },
+            "max_age": {
+              "$ref": "#/$defs/duration",
+              "description": "Default 1h; at least refresh_interval, at most 24h."
+            },
+            "held_label": {
+              "type": "string",
+              "maxLength": 100
+            },
+            "superseded_label": {
+              "type": "string",
+              "maxLength": 100
+            }
+          }
         },
         "prompt_context": {
           "type": "boolean",
@@ -239,7 +279,11 @@
         "report": {
           "type": "object",
           "additionalProperties": false,
-          "allOf": [{"if": {"properties": {"format": {"const": "sessionpipe"}}, "required": ["format"]}, "then": {"properties": {"scheme": {"const": "bearer"}}, "required": ["scheme"]}}],
+          "allOf": [
+            {"if": {"properties": {"format": {"const": "sessionpipe"}}, "required": ["format"]}, "then": {"properties": {"scheme": {"const": "bearer"}}, "required": ["scheme"]}},
+            {"if": {"properties": {"format": {"const": "telegram"}}, "required": ["format"]}, "then": {"properties": {"scheme": {"const": "telegram-bot"}}}},
+            {"if": {"properties": {"scheme": {"const": "telegram-bot"}}, "required": ["scheme"]}, "then": {"properties": {"format": {"const": "telegram"}}, "required": ["format"]}}
+          ],
           "properties": {
             "url_env": {
               "type": "string",
@@ -258,14 +302,16 @@
             "scheme": {
               "enum": [
                 "standard-webhooks",
-                "bearer"
+                "bearer",
+                "telegram-bot"
               ]
             },
             "format": {
               "enum": [
                 "standard",
                 "text",
-                "sessionpipe"
+                "sessionpipe",
+                "telegram"
               ]
             },
             "events": {
@@ -508,6 +554,9 @@
         "cursor": {
           "$ref": "#/$defs/cursor"
         },
+        "antigravity": {
+          "$ref": "#/$defs/antigravity"
+        },
         "custom": {
           "$ref": "#/$defs/custom"
         }
@@ -524,6 +573,39 @@
           "then": {
             "required": [
               "cursor"
+            ],
+            "properties": {
+              "fallbacks": {
+                "const": ""
+              },
+              "switch_back": {
+                "properties": {
+                  "enabled": {
+                    "const": false
+                  }
+                }
+              },
+              "timing": {
+                "properties": {
+                  "enabled": {
+                    "const": false
+                  }
+                }
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "adapter": {
+                "const": "antigravity"
+              }
+            }
+          },
+          "then": {
+            "required": [
+              "antigravity"
             ],
             "properties": {
               "fallbacks": {
@@ -776,6 +858,42 @@
           "items": {
             "type": "string",
             "pattern": "^[0-9]{4}\\.[0-9]{2}\\.[0-9]{2}-[0-9a-f]{7,40}$"
+          }
+        }
+      }
+    },
+    "antigravity": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "workdir"
+      ],
+      "properties": {
+        "cli": {
+          "type": "string",
+          "default": "agy"
+        },
+        "workdir": {
+          "type": "string"
+        },
+        "agent": {
+          "type": "string"
+        },
+        "sandbox": {
+          "type": "boolean"
+        },
+        "add_dir": {
+          "type": "array",
+          "maxItems": 16,
+          "items": {
+            "type": "string",
+            "minLength": 1
+          }
+        },
+        "env": {
+          "type": "object",
+          "additionalProperties": {
+            "type": "string"
           }
         }
       }

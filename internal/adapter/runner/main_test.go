@@ -44,6 +44,16 @@ func TestMain(m *testing.M) {
 	switch os.Getenv("KEEPGOING_TEST_HELPER") {
 	case "antigravity-acp":
 		antigravityStandIn()
+	case "antigravity-sleeper":
+		marker := os.Getenv("KEEPGOING_AGY_CHILD_MARKER")
+		if marker != "" {
+			_ = os.WriteFile(marker+".ready", nil, 0o600)
+		}
+		time.Sleep(3000 * time.Millisecond)
+		if marker != "" {
+			_ = os.WriteFile(marker+".survived", nil, 0o600)
+		}
+		os.Exit(0)
 	case "cursor-crash":
 		// The fixture exits on release or its own deadline even if the wrapper
 		// dies. No surviving child writes to a later turn's stdout file.

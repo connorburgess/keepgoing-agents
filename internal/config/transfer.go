@@ -49,54 +49,12 @@ type BBTransferRoute struct {
 // removes account, probe and timing settings when the provider changes.
 func (c *Config) PrepareBBProviderTransfer(thread string, route *BBTransferRoute) (*BBTransferEdit, error) {
 	bad := errors.New("configuration cannot be safely rewritten for transfer")
-	if c.source.path == "" || c.Loop.Adapter != "bb" || c.Loop.BB == nil || c.Loop.HasRouteList() || c.source.size > 1<<20 || c.CheckSources() != nil {
+	if c.Loop.Adapter != "bb" || c.Loop.BB == nil || c.Loop.HasRouteList() {
 		return nil, bad
 	}
-	info, err := os.Lstat(c.source.path)
-	if err != nil || !info.Mode().IsRegular() {
-		return nil, bad
-	}
-	f, err := os.Open(c.source.path)
+	doc, err := c.sourceDoc()
 	if err != nil {
 		return nil, bad
-	}
-	defer f.Close()
-	raw, err := io.ReadAll(io.LimitReader(f, (1<<20)+1))
-	if err != nil || len(raw) > 1<<20 || snapshot(c.source.path, raw) != c.source {
-		return nil, bad
-	}
-	var doc yaml.Node
-	d := yaml.NewDecoder(bytes.NewReader(raw))
-	if d.Decode(&doc) != nil || d.Decode(new(any)) != io.EOF || len(doc.Content) != 1 {
-		return nil, bad
-	}
-	// Refuse YAML indirection anywhere: a rewritten anchor could affect more
-	// than the one target, and retaining an alias could preserve the old target.
-	var plain func(*yaml.Node) bool
-	plain = func(n *yaml.Node) bool {
-		if n.Kind == yaml.AliasNode || n.Anchor != "" || n.Tag == "!!merge" {
-			return false
-		}
-		for _, child := range n.Content {
-			if !plain(child) {
-				return false
-			}
-		}
-		return true
-	}
-	if !plain(&doc) {
-		return nil, bad
-	}
-	field := func(n *yaml.Node, key string) *yaml.Node {
-		if n == nil || n.Kind != yaml.MappingNode {
-			return nil
-		}
-		for i := 0; i+1 < len(n.Content); i += 2 {
-			if n.Content[i].Value == key {
-				return n.Content[i+1]
-			}
-		}
-		return nil
 	}
 	n := field(field(field(doc.Content[0], "loop"), "bb"), "thread")
 	if n == nil || n.Kind != yaml.ScalarNode || n.Tag != "!!str" || n.Value != c.Loop.BB.Thread {
@@ -134,7 +92,7 @@ func (c *Config) PrepareBBProviderTransfer(thread string, route *BBTransferRoute
 			remove(loop, key)
 		}
 	}
-	after, err := yaml.Marshal(&doc)
+	after, err := yaml.Marshal(doc)
 	if err != nil || len(after) > 1<<20 {
 		return nil, bad
 	}
@@ -169,4 +127,74 @@ func (e *BBTransferEdit) Commit() error {
 		return bad
 	}
 	return nil
+}
+
+// field is the value of key in mapping n, or nil.
+func field(n *yaml.Node, key string) *yaml.Node {
+	if n == nil || n.Kind != yaml.MappingNode {
+		return nil
+	}
+	for i := 0; i+1 < len(n.Content); i += 2 {
+		if n.Content[i].Value == key {
+			return n.Content[i+1]
+		}
+	}
+	return nil
+}
+
+// sourceDoc rereads the loaded configuration file and parses it as one plain
+// YAML document. It fails when the file changed since loading, is not regular,
+// is over 1 MiB, or uses anchors, aliases or merges anywhere.
+func (c *Config) sourceDoc() (*yaml.Node, error) {
+	bad := errors.New("configuration source unavailable")
+	if c.source.path == "" || c.source.size > 1<<20 || c.CheckSources() != nil {
+		return nil, bad
+	}
+	info, err := os.Lstat(c.source.path)
+	if err != nil || !info.Mode().IsRegular() {
+		return nil, bad
+	}
+	f, err := os.Open(c.source.path)
+	if err != nil {
+		return nil, bad
+	}
+	defer f.Close()
+	raw, err := io.ReadAll(io.LimitReader(f, (1<<20)+1))
+	if err != nil || len(raw) > 1<<20 || snapshot(c.source.path, raw) != c.source {
+		return nil, bad
+	}
+	var doc yaml.Node
+	d := yaml.NewDecoder(bytes.NewReader(raw))
+	if d.Decode(&doc) != nil || d.Decode(new(any)) != io.EOF || len(doc.Content) != 1 {
+		return nil, bad
+	}
+	// Refuse YAML indirection anywhere: a rewritten anchor could affect more
+	// than the one target, and retaining an alias could preserve the old target.
+	var plain func(*yaml.Node) bool
+	plain = func(n *yaml.Node) bool {
+		if n.Kind == yaml.AliasNode || n.Anchor != "" || n.Tag == "!!merge" {
+			return false
+		}
+		for _, child := range n.Content {
+			if !plain(child) {
+				return false
+			}
+		}
+		return true
+	}
+	if !plain(&doc) {
+		return nil, bad
+	}
+	return &doc, nil
+}
+
+// WritesProbe reports whether the configuration file itself has a loop.probe
+// section, as opposed to the probe kind derived from the provider label. A
+// provider change would leave a written probe naming the old provider.
+func (c *Config) WritesProbe() (bool, error) {
+	doc, err := c.sourceDoc()
+	if err != nil {
+		return false, err
+	}
+	return field(field(doc.Content[0], "loop"), "probe") != nil, nil
 }

@@ -1,3 +1,4 @@
+import { publicationMessage, type Publication } from "./registry-contract.ts";
 import { createHash, randomUUID } from "node:crypto";
 import { z } from "zod";
 import { goalDetails } from "./status-details.ts";
@@ -10,10 +11,10 @@ export interface SetupDependencies {
   records(): Promise<SetupRecord[]>;
   save(records: SetupRecord[]): Promise<void>;
   guard(threadId: string): Promise<void>;
-  init(bin: string, target: SetupTarget, name: string, task: string, dryRun: boolean, withGoal: boolean, bounds?: Bounds, followStandard?: boolean): Promise<{ plan: SetupPlan } | { refused: Refusal } | { noRoutes: true }>;
+  init(bin: string, target: SetupTarget, name: string, task: string, dryRun: boolean, withGoal: boolean, bounds?: Bounds, followStandard?: boolean): Promise<{ plan: SetupPlan; registration?: Publication } | { refused: Refusal } | { noRoutes: true }>;
   // Whether the host's looptender has a standard route list with routes.
   standardRoutes(bin: string, target: SetupTarget): Promise<boolean>;
-  command(bin: string, record: SetupRecord, operation: "status" | "doctor" | "start", json?: true): Promise<{ code: number; data: unknown }>;
+  command(bin: string, record: SetupRecord, operation: "status" | "doctor" | "start", json?: true): Promise<{ code: number; data: unknown; registration?: Publication }>;
   changed(): void;
 }
 const agent = z.object({ adapter: z.literal("bb"), bbThread: z.string(), provider: z.string() });
@@ -88,7 +89,19 @@ export function createSetupController(d: SetupDependencies) {
       d.changed();
       // With --json, a start is confirmed by its own report as well as its exit code.
       const confirmed = start.code === 0 && (!json || startedReport.safeParse(start.data).success);
-      return { ...result, canStart: false, ok: confirmed, started: confirmed, message: confirmed ? "Background supervision started. Existing timers were not changed." : "Start could not be confirmed. Check loop status before retrying; no holds were cleared." };
+      let publicationSaved = true;
+      if (confirmed) {
+        try {
+          await sameTarget(existing);
+          const current = await d.records();
+          const saved = current.find(r => r.id === existing.id);
+          if (!saved || !equal(targetOf(saved), targetOf(existing)) || saved.configPath !== existing.configPath) throw new Error("Reference changed");
+          const updated = { ...saved, publication: start.registration ?? { state: "repair_needed" as const, source: "cli_registry" as const } };
+          await d.save(current.map(r => r.id === updated.id ? updated : r));
+          result = { ...result, record: updated };
+        } catch { publicationSaved = false; }
+      }
+      return { ...result, canStart: false, ok: confirmed, started: confirmed, message: confirmed ? "Background supervision started. Existing timers were not changed." + publicationMessage(start.registration) + (publicationSaved ? "" : " The plugin could not record this publication result; inspect references separately before retrying anything.") : "Start could not be confirmed. Check loop status before retrying; no holds were cleared." };
     }
     if (existing) throw new SetupPolicyError("This thread already has a saved setup. Use its diagnostics and controls.");
     await d.guard(input.threadId);
@@ -129,12 +142,12 @@ export function createSetupController(d: SetupDependencies) {
     // before it writes anything, so nothing was created.
     if ("refused" in created) return { ok: false, refused: created.refused, message: refusalMessage(created.refused, "init") };
     if (!equal(created.plan, preview.plan)) throw new SetupPolicyError("Setup result changed. A disabled configuration may exist; inspect the destination before retrying.");
-    const record = { ...target, id: randomUUID(), configPath: created.plan.configPath, loop: created.plan.loop, ...(created.plan.startJson === true ? { startJson: true as const, startJsonBin: bin } : {}), ...(created.plan.routes ? { followsStandard: true as const } : {}) };
+    const record = { ...target, ...(created.registration ? { publication: created.registration } : {}), id: randomUUID(), configPath: created.plan.configPath, loop: created.plan.loop, ...(created.plan.startJson === true ? { startJson: true as const, startJsonBin: bin } : {}), ...(created.plan.routes ? { followsStandard: true as const } : {}) };
     try { await d.save([...records, record]); }
-    catch { return { ok: false, record, message: "A disabled setup was created, but the plugin could not save its reference. Keep the displayed config path for recovery; do not recreate or start it automatically." }; }
+    catch { return { ok: false, record, message: "A disabled setup was created, but the plugin could not save its reference. Keep the displayed config path for recovery; do not recreate or start it automatically." + publicationMessage(created.registration) }; }
     d.changed();
-    try { return await inspect(bin, record); }
-    catch { return { ok: true, record, canStart: false, message: "Setup was saved, but target diagnostics are unavailable. Retry diagnostics before starting." }; }
+    try { const result = await inspect(bin, record); return { ...result, message: result.message + publicationMessage(created.registration) }; }
+    catch { return { ok: true, record, canStart: false, message: "Setup was saved, but target diagnostics are unavailable. Retry diagnostics before starting." + publicationMessage(created.registration) }; }
   };
   return {
     // Serialize mutations and previews so concurrent clients cannot create two

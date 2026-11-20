@@ -180,6 +180,9 @@ func (f *Fallbacks) Validate() error {
 		if c.Adapter == "cursor" {
 			add("%sCursor fallback candidates are not supported; exact account/model probes are unverified", where)
 		}
+		if c.Adapter == "antigravity" {
+			add("%sAntigravity fallback candidates are not supported; exact account/model probes are unverified", where)
+		}
 		switch c.Probe.Kind {
 		case "claude", "codex":
 		case CustomAdapter:
