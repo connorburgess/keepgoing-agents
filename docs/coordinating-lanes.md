@@ -42,20 +42,19 @@ How to choose, also a convention that looptender does not enforce:
 
 ### Antigravity and Gemini 4 model tiers
 
-As of November 2026, when running coordinators and lanes on Antigravity or the Gemini 4 API (also a convention looptender does not enforce; check live limits in the provider's console or status because plans and pricing change):
+As of November 2026, when running coordinators and lanes on Antigravity or the Gemini 4 API (also a convention looptender does not enforce; check live limits in the provider's console or status because plans and pricing change). **Hard cap: no `gemini-4-hydrogen`, and keep thinking/effort at `medium` max across all models (never `high` or `xhigh`).**
 
-- **Default baseline (coordinator and code/design-heavy lanes):** `gemini-4-neon` at `medium` (or **Orchestrator (Neon)** inside Antigravity, which pairs Neon planning with `gemini-4-hydrogen` edits/tests). Keep routine PRs, multi-file refactors and code reviews at `gemini-4-neon` `medium` to preserve the shared 5-hour/weekly compute pool.
-- **Escalation only (hardest architecture, root-cause debugging or stuck after two attempts):** `gemini-4-neon` at `high` (or `xhigh`), or `gemini-4-carbon` / **Orchestrator (Carbon)** on Google AI Ultra or paid API.
-- **Routine implementation, mechanical edits, docs, wording and simple reviews:** `gemini-4-hydrogen` at `medium` or `high`. Prefer `gemini-4-neon` at `medium` over pushing `gemini-4-hydrogen` to `xhigh`: Neon `medium` scores higher, finishes faster and costs less per task.
-- **Lookups, status checks, PR summaries and triage:** `gemini-3.5-flash-lite` (or `gemini-4-hydrogen` at `low`).
-- **`gemini-4-argon`:** Superseded by Neon for general coding and PR work; reserve for tasks that specifically need its lower hallucination rate.
+- **Multi-file feature PRs & refactors (daily driver — coordinator and coding lanes):** `gemini-4-neon` at `medium` (max). Handles planning, file edits, test loops and code reviews directly; do not use `gemini-4-hydrogen` or Orchestrator modes that delegate edits to Hydrogen.
+- **Hard debugging / system design (escalation only, when stuck after two attempts or for hardest architecture/root-cause debugging):** `gemini-4-carbon` at `medium` (max) on Google AI Ultra or paid API. Do not raise `gemini-4-neon` or `gemini-4-carbon` to `high` or `xhigh`.
+- **High-volume PR chores (summaries, release notes, lint/triage, lookups and status checks):** `gemini-3.5-flash-lite` (or `gemini-3.8-flash` where available), at `medium` max.
+- **`gemini-4-argon`:** Superseded by Neon for general coding and PR work; reserve for tasks that specifically need its lower hallucination rate (capped at `medium`).
 
-Quota habits for Antigravity loops and lanes:
+Quota-saving habits for Antigravity loops and lanes:
 
-- Google AI Pro and Ultra meter Antigravity from a shared compute pool across Gemini models (5-hour refresh up to a weekly cap; partner Claude and GPT models draw from a separate pool). Heavier models, higher thinking levels (`xhigh` > `high` > `medium` > `low`) and long conversation histories drain the pool fastest.
-- Start a fresh lane per scoped PR or task rather than carrying long history across unrelated work.
-- Set thinking/effort explicitly in API calls: `gemini-4-neon` and `gemini-4-hydrogen` default to `high`, whereas `gemini-4-carbon` and `gemini-4-argon` default to `medium`.
-- Avoid the free Gemini API tier for private repositories (free-tier content may be used to improve provider products, and free projects have tight per-project rate caps).
+- Google AI Pro and Ultra meter Antigravity from a shared compute pool across Gemini models (5-hour refresh up to a weekly cap; partner Claude and GPT models draw from a separate pool). Heavier models, thinking levels above `medium`, and long conversation histories drain the pool fastest.
+- Start a fresh thread/lane per PR or ticket rather than re-sending huge chat contexts across unrelated work.
+- Explicitly set `thinking_level` (capped at `medium`) in API calls so model swaps do not silently spike output tokens (`gemini-4-neon` defaults to `high` when unset, whereas `gemini-4-carbon` and `gemini-4-argon` default to `medium`).
+- Avoid the free Gemini API tier for private or work repositories (free-tier content may be used to improve provider products, and free projects have tight per-project rate caps).
 
 ## Keep nesting shallow
 
