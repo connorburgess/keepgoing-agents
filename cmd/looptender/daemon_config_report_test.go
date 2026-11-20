@@ -145,14 +145,25 @@ func TestConfigurationErrorCrashWindowAndFailedPersistence(t *testing.T) {
 func TestMissingConfigurationIsShownByStatusDoctorAndPanel(t *testing.T) {
 	f, _, raw, _ := configReportFixture(t)
 	g := startGoneDaemonFixture(t, f)
-	calls := f.read("calls")
 	if _, err := registry.Add(filepath.Join(f.dir, "registry"), "example-loop", f.cfg, filepath.Join(f.dir, "state")); err != nil {
 		t.Fatal(err)
 	}
+	// A wake poll may run after the first check while this fixture is still
+	// enabled. Hold the tick lock while taking the baseline and pausing so
+	// those legitimate pre-pause calls cannot race this assertion.
+	held, err := acquireWithin(context.Background(), filepath.Join(f.dir, "state"), 5*time.Second)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer held.Release()
+	calls := f.read("calls")
 	if err := os.Rename(f.cfg, g.moved); err != nil {
 		t.Fatal(err)
 	}
 	g.control(t, "pause")
+	if err := held.Release(); err != nil {
+		t.Fatal(err)
+	}
 	waitFor(t, func() bool {
 		return inspectDaemon(context.Background(), filepath.Join(f.dir, "state"), version, false).ConfigUnavailableSince != nil
 	}, "live configuration diagnostic")
