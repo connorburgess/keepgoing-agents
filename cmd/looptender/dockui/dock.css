@@ -612,3 +612,14 @@ details[open] > .how-summary::before { transform: rotate(45deg); }
 @media (min-width: 761px) {
  .account-summary { grid-template-columns: minmax(0, 1.2fr) minmax(0, 1fr) minmax(0, .7fr) minmax(0, 1.1fr); }
 }
+
+/* Person-started account connections use the existing account row. */
+.account-connect { margin-block: 1.2rem; padding-block-end: 1rem; border-bottom: 1px solid var(--line); overflow-wrap: anywhere; }
+.account-connect h3 { font-size: 1rem; margin: 0 0 .6rem; }
+.account-connect p, .account-connect-another p { max-width: 72ch; }
+.account-connect .btn, .account-connect-another .btn, .quota-compact .btn { white-space: normal; min-height: 2.75rem; max-width: 100%; }
+.account-connect-another { display: grid; gap: .6rem; max-width: 36rem; margin-block: 1.5rem; }
+.account-connect-another label { font-weight: 600; }
+.account-connect-another input { width: 100%; min-width: 0; box-sizing: border-box; font: inherit; color: var(--ink); background: var(--surface); border: 1px solid var(--line-2); border-radius: 5px; padding: .65rem; caret-color: var(--focus); }
+.account-connect-another input:focus-visible { outline: 2px solid var(--focus); outline-offset: 3px; }
+.account-connect-another .btn { justify-self: start; }

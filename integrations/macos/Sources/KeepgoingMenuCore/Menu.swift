@@ -119,6 +119,10 @@ public enum MenuCommand: Equatable {
     case readStatus
     /// Runs `keepgoing panel`: the page opens on what needs a person.
     case openPanel
+    /// Opens this account in the panel; no sign-in or provider read.
+    case openAccount(id: String)
+    case connectAccount(id: String)
+    case openAccountWithChanges(id: String)
     /// Runs `keepgoing panel --loop <key>`.
     case openLoop(key: String)
     /// Runs `keepgoing panel --allow-changes`, after a confirmation.
@@ -375,6 +379,8 @@ public enum MenuBuilder {
         case .readList: return ["panel", "list", "--json"]
         case .readStatus: return ["panel", "status", "--json"]
         case .openPanel: return ["panel"]
+        case .openAccountWithChanges(let id): return id.count == 32 && id.allSatisfy { "0123456789abcdef".contains($0) } ? ["panel", "--allow-changes", "--account", id] : nil
+        case .connectAccount(let id), .openAccount(let id): return id.count == 32 && id.allSatisfy { "0123456789abcdef".contains($0) } ? ["panel", "--account", id] : nil
         case .openLoop(let key): return Contract.validKey(key) ? ["panel", "--loop", key] : nil
         case .openPanelWithChanges: return ["panel", "--allow-changes"]
         case .stopPanel: return ["panel", "stop"]

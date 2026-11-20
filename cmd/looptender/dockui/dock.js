@@ -135,7 +135,8 @@
     var h = location.hash.replace(/^#\/?/, "");
     var m = /^routes(?:\/(r[0-9a-f]+))?$/.exec(h);
     if (m) return { view: "routes", key: m[1] || "" };
-    if (h === "accounts") return { view: "accounts" };
+    m = /^accounts(?:\/([a-f0-9]{32}))?$/.exec(h);
+    if (m) return { view: "accounts", key: m[1] || "" };
     if (h === "versions") return { view: "versions" };
     if (h === "usage") return { view: "usage" };
     m = /^loop\/([a-z0-9]+)$/.exec(h);
@@ -1424,6 +1425,126 @@
       timeout: "The quota read timed out.", cancelled: "The quota read was cancelled.", status_unavailable: "Codex could not provide a quota reading.", schema_unavailable: "The quota response was not recognized.",
       no_windows: "Codex reported no subscription windows.", unknown_bucket: "Codex did not report the supported subscription bucket.", unknown_windows: "Codex reported an unsupported quota window shape." })[reason] || "Subscription quota is unavailable.";
   }
+  // Connecting is a person-started provider sign-in, never a consequence of
+  // polling saved quota. Each attempt stays bound to one selected account.
+  var accountConnections = Object.create(null), accountConnectionLabels = Object.create(null);
+  function connectProvider(c) { return c.provider === "claude-code" ? "Claude" : "Codex"; }
+  function accountConnectSupported(c) {
+    return changesOn() && list(state.server.accountConnectProviders).indexOf(c.provider) >= 0;
+  }
+  function accountConnectReply(d, c, step, attempt) {
+    function text(v) { return typeof v === "string" && v.trim().length > 0 && v.length <= 16384; }
+    if (!d || d.schemaVersion !== 1 || [d.preview, d.result, d.connect].filter(Boolean).length !== 1) throw new Error("connection reply");
+    if (d.preview) {
+      var p = d.preview;
+      if (step !== "prepare" || p.action !== "connect_account" || p.key !== c.id || !text(p.title) || !text(p.confirm) || !text(p.lost) || !text(p.refused) ||
+          typeof p.attemptId !== "string" || !/^[a-f0-9]{32}$/.test(p.attemptId) || typeof p.form !== "string" || !/^[a-f0-9]{64}$/.test(p.form) || !isFinite(Date.parse(p.expiresAt)) ||
+          !Array.isArray(p.lines) || !p.lines.length || p.lines.length > 32 || !p.lines.every(function (line) { return Array.isArray(line) && line.length > 0 && line.length <= 32 && line.every(function (part) { return part && text(part.t) && !part.at; }); })) throw new Error("connection preview");
+    } else if (d.result) {
+      if (["refused", "review_again"].indexOf(d.result.outcome) < 0 || !text(d.result.text)) throw new Error("connection refusal");
+    } else {
+      var a = d.connect;
+      if (step === "prepare" || !/^[a-f0-9]{32}$/.test(a.id) || (attempt && a.id !== attempt) || a.accountId !== c.id || a.provider !== c.provider ||
+          ["waiting", "connected", "failed", "cancelled", "expired", "selection_changed"].indexOf(a.state) < 0 || !isFinite(Date.parse(a.expiresAt)) || (a.reason != null && (!text(a.reason) || a.reason.length > 160))) throw new Error("connection attempt");
+      if (a.connectedAccountId != null && (a.state !== "connected" || typeof a.connectedAccountId !== "string" || !/^[a-f0-9]{32}$/.test(a.connectedAccountId))) throw new Error("connected account");
+      if (a.authorizationUrl) {
+        var u = new URL(a.authorizationUrl);
+        if (a.provider !== "codex" || a.state !== "waiting" || u.protocol !== "https:" || u.hostname !== "auth.openai.com" || u.port || u.username || u.password || u.hash || u.pathname !== "/oauth/authorize" || a.authorizationUrl.length > 8192) throw new Error("connection URL");
+      }
+    }
+    return d;
+  }
+  function accountConnectPost(c, step, form, attempt) {
+    var ctl = new AbortController(), timer = setTimeout(function () { ctl.abort(); }, 15000);
+    var choice = accountConnections[c.id], body = step === "prepare" && choice && choice.newLabel ? { action: "connect_another_account", label: choice.newLabel } : { action: "connect_account" };
+    if (attempt && (step === "status" || step === "cancel")) body.attemptId = attempt;
+    return fetch("api/v1/account-connect/" + encodeURIComponent(c.id) + "/" + step, {
+      method: "POST", cache: "no-store", credentials: "same-origin", signal: ctl.signal,
+      headers: { "Content-Type": "application/json", Accept: "application/json", "X-Keepgoing-Form": form }, body: JSON.stringify(body)
+    }).then(function (r) {
+      if (!r.ok) throw new Error("connection status");
+      return r.text();
+    }).then(function (raw) {
+      if (raw.length > 65536) throw new Error("connection size");
+      return accountConnectReply(JSON.parse(raw), c, step, attempt);
+    }).finally(function () { clearTimeout(timer); });
+  }
+  function accountConnectRequest(c, step) {
+    var old = accountConnections[c.id];
+    if (!accountConnectSupported(c) || (old && old.busy)) return;
+    var preview = old && old.preview, attempt = old && old.connect && old.connect.id;
+    if (old && old.sessionForm && old.sessionForm !== state.server.form) { clearTimeout(old.timer); delete accountConnections[c.id]; return; }
+    if ((step === "start" && !preview) || ((step === "status" || step === "cancel") && !attempt)) return;
+    if (old) clearTimeout(old.timer);
+    var request = { card: c, busy: true, sessionForm: state.server.form, newLabel: old && old.newLabel, preview: step === "start" ? preview : null, connect: old && old.connect, timer: 0 };
+    if (step === "start") request.connect = { id: preview.attemptId, accountId: c.id, provider: c.provider, state: "waiting", expiresAt: preview.expiresAt };
+    accountConnections[c.id] = request;
+    state.accountOpen[c.id] = true;
+    render(false, true);
+    accountConnectPost(c, step, step === "start" ? preview.form : state.server.form, step === "start" ? preview.attemptId : step === "status" || step === "cancel" ? attempt : null)
+      .then(function (reply) { request.preview = reply.preview; request.connect = reply.connect; request.result = reply.result; })
+      .catch(function () {
+        request.preview = null;
+        request.result = { text: step === "prepare" ? "The connection review could not be prepared. No sign-in was started." : "The connection reply was lost or could not be verified. Sign-in may still be running. Check its status; do not start another sign-in." };
+      }).then(function () {
+        if (accountConnections[c.id] !== request) return;
+        if (state.server.form !== request.sessionForm) { delete accountConnections[c.id]; render(false, true); return; }
+        request.busy = false;
+        render(false, true);
+        if (step !== "status") focusOn(request.preview ? "connect-cancel-" + c.id : "connect-result-" + c.id);
+        if (request.result) announce(request.result.text);
+        if (request.connect && request.connect.state === "connected") { clearTimeout(state.timer); load(true); }
+        if (!request.result && request.connect && request.connect.state === "waiting") request.timer = setTimeout(function () {
+          if (accountConnections[c.id] === request && !document.hidden && !state.paused && route().view === "accounts" && Date.now() < Date.parse(request.connect.expiresAt)) accountConnectRequest(c, "status");
+        }, 2000);
+      });
+  }
+  function accountConnectOpen(c) {
+    state.accountOpen[c.id] = true;
+    var current = accountConnections[c.id];
+    if (current && (current.busy || (current.connect && current.connect.state === "waiting"))) { render(false, true); focusOn("connect-result-" + c.id); return; }
+    if (accountConnectSupported(c)) accountConnectRequest(c, "prepare");
+    else { accountConnections[c.id] = { card: c, result: { text: "Open the panel with controls to connect this account. The native menu provides Open Panel with Controls…. If Connect is still unavailable, update looptender on this device." } }; render(false, true); focusOn("connect-result-" + c.id); }
+  }
+  function accountConnectBox(c) {
+    var current = accountConnections[c.id];
+    if (!current) return null;
+    if (current.sessionForm && current.sessionForm !== state.server.form) { clearTimeout(current.timer); delete accountConnections[c.id]; return null; }
+    var box = el("section", "account-connect"), title = el("h3", null, "Connect " + connectProvider(c) + " · " + (current.newLabel || c.label));
+    box.appendChild(title);
+    var controls = el("div", "account-quota-actions");
+    function close() { clearTimeout(current.timer); delete accountConnections[c.id]; render(false, true); focusOn("account-connect-" + c.id); }
+    if (current.preview) {
+      list(current.preview.lines).forEach(function (line) { box.appendChild(el("p", null, say(line))); });
+      controls.appendChild(button("Cancel", "connect-cancel-" + c.id, "", close, current.busy));
+      controls.appendChild(button(current.busy ? "Opening sign-in…" : current.preview.confirm, "connect-start-" + c.id, "is-primary", function () { accountConnectRequest(c, "start"); }, current.busy));
+    } else if (current.connect || current.result) {
+      var a = current.connect || {}, texts = {
+        waiting: current.newLabel ? "Finish signing in in your browser. This adds a separate account; your existing accounts and routes stay unchanged." : "Finish signing in in your browser. This connects only this selected account; other saved accounts stay unchanged.",
+        connected: "Connected. You can now retrieve usage for this account.",
+        failed: "Sign-in did not complete. Other accounts were not changed. Review a new connection when you are ready.",
+        cancelled: "Sign-in cancelled. Other accounts were not changed.",
+        expired: "Sign-in expired. Review a new connection when you are ready.",
+        selection_changed: "This account selection changed during sign-in. The connection was not applied. Read the saved state before trying again."
+      };
+      var result = el("p", null, current.result ? current.result.text : texts[a.state]);
+      result.tabIndex = -1; result.setAttribute("data-focus", "connect-result-" + c.id); box.appendChild(result);
+      if (a.state === "waiting") {
+        if (a.authorizationUrl && !current.result) {
+          var authLink = link(a.authorizationUrl, "Continue to " + connectProvider(c), "btn is-primary");
+          authLink.target = "_blank"; authLink.rel = "noopener noreferrer"; authLink.referrerPolicy = "no-referrer"; box.appendChild(authLink);
+        }
+        controls.appendChild(button(current.busy ? "Checking…" : "Check connection", "connect-check-" + c.id, "", function () { accountConnectRequest(c, "status"); }, current.busy));
+        controls.appendChild(button("Cancel sign-in", "connect-cancel-" + c.id, "", function () { accountConnectRequest(c, "cancel"); }, current.busy));
+      } else {
+        if (a.state === "connected" && a.connectedAccountId && a.connectedAccountId !== c.id) controls.appendChild(link("#/accounts/" + a.connectedAccountId, "View connected account", "btn is-primary"));
+        controls.appendChild(button("Close", "connect-close-" + c.id, "", close, current.busy));
+      }
+    } else box.appendChild(el("p", "sub", "Preparing connection…"));
+    box.appendChild(controls);
+    return box;
+  }
+
   function accountQuotaBox(c) {
     var q = c.quota || {}, box = el("div", "account-quota");
     box.appendChild(el("h3", null, "Account quota"));
@@ -1502,6 +1623,14 @@
         feedback.tabIndex = -1; feedback.setAttribute("data-focus", "quota-result-" + outcome.id);
         pane.appendChild(feedback);
       }
+      Object.keys(accountConnections).forEach(function (id) {
+        var connection = accountConnections[id];
+        if (connection.sessionForm && connection.sessionForm !== state.server.form) return;
+        if (connection.result || (connection.connect && connection.connect.state === "connected")) {
+          var message = el("p", null, connection.result ? connection.result.text : "Account connected. Reading the saved account list…");
+          message.tabIndex = -1; message.setAttribute("data-focus", "connect-result-" + id); pane.appendChild(message);
+        }
+      });
       return;
     }
     if (!a.complete || a.state !== "available") {
@@ -1517,12 +1646,23 @@
       return;
     }
     pane.appendChild(el("p", "account-count", cards.length + (cards.length === 1 ? " selected account" : " selected accounts")));
-    pane.appendChild(addAccountBox(!cards.length));
+    var templates = cards.filter(accountConnectSupported);
+    if (templates.length) {
+      var add = el("div", "account-quota-actions");
+      ["claude-code", "codex"].forEach(function (provider) {
+        var template = templates.find(function (c) { return c.provider === provider; });
+        if (!template) return;
+        add.appendChild(button("Connect another " + connectProvider(template) + " account", "connect-another-" + provider, "", function () {
+          state.accountOpen[template.id] = true; render(false, true); focusOn("connect-label-" + template.id);
+        }));
+      });
+      pane.appendChild(add);
+    } else pane.appendChild(addAccountBox(!cards.length));
     if (!d.complete || (d.registry || {}).availability !== "available") pane.appendChild(el("p", "sub", "Not every loop could be read, so some routes may be missing here."));
     var ul = el("ul", "accounts-list"), retained = Object.create(null);
     cards.forEach(function (c) {
       var li = el("li", "account-card" + (c.needsPerson ? " is-attention" : "")), details = el("details");
-      details.open = !!state.accountOpen[c.id]; retained[c.id] = details.open;
+      details.open = Object.prototype.hasOwnProperty.call(state.accountOpen, c.id) ? !!state.accountOpen[c.id] : route().key === c.id; retained[c.id] = details.open;
       var summary = el("summary", "account-summary");
       summary.setAttribute("data-focus", "account-" + c.id);
       var name = el("span", "account-name", c.label);
@@ -1557,10 +1697,39 @@
         if (!compact.childNodes.length) compact.appendChild(el("span", "sub", qs.partial ? "Partial quota evidence" : "Quota details recorded"));
         compact.appendChild(el("span", "sub", qs.freshness === "provider_unknown" ? "Provider freshness unknown" : qs.freshness === "stale" ? "Older quota reading" : "Saved quota reading"));
         compact.title = "Saved account quota; expand for all recorded detail";
-      } else if (c.provider === "codex" || c.provider === "claude-code" || c.provider === "antigravity") compact.appendChild(el("span", "sub", "Account quota unavailable"));
+      } else if (c.provider === "codex" || c.provider === "claude-code") {
+        var connect = button("Connect " + connectProvider(c), "account-connect-" + c.id, "", function (event) { event.preventDefault(); event.stopPropagation(); accountConnectOpen(c); });
+        connect.setAttribute("aria-label", "Connect " + connectProvider(c) + " for " + c.label);
+        compact.appendChild(connect);
+        if (c.auth && c.auth.state === "reported_absent") compact.appendChild(el("span", "sub", "Sign-in required"));
+      } else if (c.provider === "antigravity") {
+        compact.appendChild(el("span", "sub", "Account quota unavailable"));
+      }
       summary.appendChild(compact);
       details.appendChild(summary);
       var body = el("div", "account-body");
+      var connection = accountConnectBox(c);
+      if (connection) body.appendChild(connection);
+      if (accountConnectSupported(c)) {
+        var another = el("form", "account-connect-another"), nameID = "connect-label-" + c.id;
+        another.setAttribute("aria-label", "Connect another " + connectProvider(c) + " account"); another.method = "post";
+        var label = el("label", null, "Name for another " + connectProvider(c) + " account (required)"); label.htmlFor = nameID;
+        var input = el("input"); input.id = nameID; input.name = "accountLabel"; input.type = "text"; input.maxLength = 120; input.required = true; input.autocomplete = "off"; input.value = accountConnectionLabels[c.id] || ""; input.setAttribute("data-focus", "connect-label-" + c.id);
+        var submit = el("button", "btn", "Connect another " + connectProvider(c) + " account"); submit.type = "submit";
+        var ongoing = accountConnections[c.id];
+        input.disabled = submit.disabled = !!(ongoing && (ongoing.busy || (ongoing.connect && ongoing.connect.state === "waiting")));
+        another.appendChild(label); another.appendChild(input); another.appendChild(submit);
+        another.appendChild(el("p", "sub", "Uses this account’s CLI and working directory with a new private login. This account and its routes stay unchanged."));
+        another.addEventListener("submit", function (event) {
+          event.preventDefault();
+          var name = input.value.trim(), active = accountConnections[c.id];
+          if (!name || new TextEncoder().encode(name).length > 120 || /[\x00-\x1f\x7f]/.test(name)) { input.setCustomValidity("Enter a name of at most 120 bytes, without control characters."); input.reportValidity(); return; }
+          if (active && (active.busy || (active.connect && active.connect.state === "waiting"))) { focusOn("connect-result-" + c.id); return; }
+          accountConnections[c.id] = { newLabel: name }; accountConnectRequest(c, "prepare");
+        });
+        input.addEventListener("input", function () { accountConnectionLabels[c.id] = input.value; input.setCustomValidity(""); });
+        body.appendChild(another);
+      }
       var facts = el("dl", "work-facts");
       if (state.identifiers) facts.appendChild(fact("Connection ID", c.id));
       facts.appendChild(fact("Account identity", "Not verified. The name is your selected label."));

@@ -64,6 +64,20 @@ final class QuotaTests: XCTestCase {
         let mixedTimes = q.replacingOccurrences(of: #""freshness":"provider_unknown""#, with: #""observedAt":"2030-03-04T11:00:00Z","freshness":"provider_unknown""#)
         XCTAssertThrowsError(try Contract.panelList(claude(mixedTimes), exit: 0))
     }
+    func testConnectOpensOnlyTheSelectedAccountAndOldCLIRemainsReadable() throws {
+        let id = String(repeating: "a", count: 32)
+        let no = #"{"state":"unavailable","text":"Usage could not be read.","freshness":"unavailable","rows":[]}"#
+        let raw = String(decoding: payload(no), as: UTF8.self).replacingOccurrences(of: #""label":"Example Codex""#, with: #""id":""# + id + #"","label":"Example Codex""#)
+        let list = try Contract.panelList(Data(raw.utf8), exit: 0)
+        let row = try XCTUnwrap(MenuBuilder.build(.read(list, at: Date()), now: Date()).rows.first { $0.title == "Example Codex" })
+        XCTAssertEqual(row.detail, "Connect Codex")
+        XCTAssertEqual(row.command, .connectAccount(id: id))
+        XCTAssertEqual(MenuBuilder.arguments(.openAccount(id: id)), ["panel", "--account", id])
+        XCTAssertNil(MenuBuilder.arguments(.openAccount(id: "../other")))
+        XCTAssertThrowsError(try Contract.panelList(Data(raw.replacingOccurrences(of: id, with: "../other").utf8), exit: 0))
+        XCTAssertEqual(list.accountQuotas?.accounts.first?.summary.state, "unavailable") // Connect is an action, not an auth diagnosis.
+    }
+
     func testAntigravityRetrievalNeverBecomesFreshProviderEvidence() throws {
         let q = #"{"state":"reported","text":"Provider freshness unknown; may be cached or seeded.","source":"agy:/usage","retrievedAt":"2030-03-04T12:00:00Z","freshness":"provider_unknown","rows":[{"name":"Gemini · 5-hour","text":"0% used · 100% remaining","usedPercent":0,"remainingPercent":100}]}"#
         func antigravity(_ value: String) -> Data {

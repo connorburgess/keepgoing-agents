@@ -291,6 +291,9 @@ final class MenuApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
         case .reviewAll(let action):
             reviewAll(action)
             return
+        case .connectAccount(let id):
+            openWithControls(accountID: id)
+            return
         case .openPanelWithChanges:
             openWithControls()
             return
@@ -409,7 +412,7 @@ final class MenuApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
     /// statement of who can then make changes. Whether the panel runs, and in
     /// which mode, is read again first, off the main thread: the menu's last
     /// read can be minutes old, and a panel may have stopped by itself since.
-    func openWithControls() {
+    func openWithControls(accountID: String? = nil) {
         DispatchQueue.global(qos: .userInitiated).async { [self] in
             let fresh = try? client.panelStatus()
             DispatchQueue.main.async { [self] in
@@ -432,7 +435,7 @@ final class MenuApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
                         }
                         return
                     }
-                    DispatchQueue.main.async { [self] in run(.openPanelWithChanges) }
+                    DispatchQueue.main.async { [self] in run(accountID.map { .openAccountWithChanges(id: $0) } ?? .openPanelWithChanges) }
                 }
             }
         }

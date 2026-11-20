@@ -52,6 +52,29 @@ Unchecked items below have unfinished acceptance criteria; some contain an imple
 
 Every capability/release PR and roadmap check-off includes the [capability and documentation review](testing.md#capability-and-documentation-review). Compare the final implementation with the README and affected setup/operations/integration guides, verify command and release guidance, and record corrections or why no edit is needed in the PR. Revisit the review when implementation or release scope changes; include availability, evidence and remaining gaps in the milestone check-in. Documentation must stay in step with capabilities throughout delivery. Updating docs or passing CI alone never closes an unfinished live acceptance criterion.
 
+### Productivity priorities: finish verified work
+
+The product direction is to help people turn ongoing agent activity into finished, verified work. The coordinator chooses product goals, judges usefulness and performs authorized repository work; looptender supplies structured evidence, bounded supervision and controls. It does not infer approval from a plan or transcript, decide product quality, or merge repositories. These priorities complement the reliability and installation work below; every acceptance item remains open.
+
+1. **Show what needs attention next.**
+   - [ ] Bring actionable work, dependencies, blockers, pending owner decisions and evidence freshness into one understandable panel view. Distinguish unknown evidence from no work, and historical observations from current state.
+   - Existing status, diagnostics, runs and historical migration-review counts are foundations, not a complete task/dependency view. Verify missing, stale and contradictory evidence before claiming this journey complete.
+2. **Track delivery through verification.**
+   - [ ] Distinguish implemented, reviewed, checked, merged, installed and verified outcomes with explicit evidence and scope. A green PR is not deployed software; a completion declaration is not independent acceptance.
+   - [ ] Surface aging PRs and integration dependencies so coordinators finish authorized work before opening more branches. The proposed opt-in backlog safeguard in [PR #347](https://github.com/looptender/looptender/pull/347) supplies ordinary-wake guidance, not branch enforcement, merge permission or proof of coordinator compliance. Its landing, installation and live acceptance remain separate.
+3. **Keep blockers scoped to the affected action.**
+   - [ ] Represent which action needs a person and which independent work remains authorized. Example: a fictional release awaits publication approval while an independent regression review can continue. Hold publication, continue the review, and do not repeat the approval question without material new information or a changed decision.
+   - [ ] Verify that the coordinator requests awaiting-user only when all remaining authorized work requires a person. This is a coordination acceptance case, not a runtime guarantee supplied by backlog consultation.
+   - [ ] Design explicit, auditable handling of an owner answer bound to the pending decision and current hold. An automatic wake, agent message or inferred transcript meaning is never approval; preserve the self-resume guard and the separate scopes of publication, merge and spending permission. No automatic hold clearing is authorized by this roadmap.
+4. **Measure useful progress.**
+   - [ ] Report completed outcomes, aging unfinished work and repeated failures with dated evidence. Wakes, commits, active lanes and successful checks are activity signals, not proof of useful delivery.
+   - [ ] Evaluate a fictional workflow from implementation through verified delivery, including a blocked action with independent work, a stale result and an unsuccessful acceptance check. Product-specific quality judgments stay with the coordinator and the person's acceptance criteria.
+5. **Make remote supervision useful before adding remote control.**
+   - [ ] Present the same concise attention, progress and evidence state on an explicitly connected phone, watch or Sessionpipe interface. Verify freshness, disconnected/unavailable states, privacy and notification repetition before a demo is treated as acceptance.
+   - Merged [Sessionpipe OUT reporting](sessionpipe.md) is partial outbound transport, not a live-certified receiver, remote command channel or approval mechanism. Remote controls need a separate authenticated authority design and explicit acceptance; the existing BACK/design hold remains intact. No particular hardware or remote control implementation is selected here.
+
+The [coordinating-lanes convention](coordinating-lanes.md), [goals](goals.md), [panel](dock.md), [run discovery](run-discovery.md) and [operations](operations.md) describe the existing pieces. Future focused changes must identify which acceptance case they close and retain the remaining gaps. Documentation alone closes none of these items.
+
 ### Delivery priorities after roadmap reassessment
 
 The project is source-available under the **Sustainable Use License 1.0**; releases through v0.1.5 and earlier commits on `main` remain under Apache-2.0. See the [licensing guide](../LICENSING.md). Personal and internal-company use of the local supervisor stays free of charge; optional paid products or support remain business hypotheses, not prerequisites for it.

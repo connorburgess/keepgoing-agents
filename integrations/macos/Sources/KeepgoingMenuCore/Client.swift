@@ -108,7 +108,7 @@ public struct LocalClient {
     /// Nothing but the fixed arguments and a validated page key is passed.
     public func open(_ command: MenuCommand) throws {
         switch command {
-        case .openPanel, .openLoop, .openPanelWithChanges, .stopPanel: break
+        case .openPanel, .openAccount, .openAccountWithChanges, .openLoop, .openPanelWithChanges, .stopPanel: break
         default: throw ClientFailure.unavailable
         }
         guard var arguments = MenuBuilder.arguments(command) else { throw ClientFailure.unavailable }

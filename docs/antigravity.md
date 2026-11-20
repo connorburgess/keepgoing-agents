@@ -4,6 +4,8 @@
 
 **Live CLI evidence (`agy 1.5.13`, macOS arm64):** `agy --version`, `agy acp --stdio` `initialize` (`sessionCapabilities.resume: {}`), a two-turn scratch-dir `session/new` → `session/resume` check (`stopReason: "end_turn"`, exit `0`), and `agy --print /usage --mode plan --output-format json` were verified on macOS arm64. Installed end-to-end `looptender tick` walkthroughs remain open; see [Installed testing and debugging](#installed-testing-and-debugging).
 
+For coordinator and lane model choices and quota habits on Antigravity and Gemini 4, see [Coordinating lanes — Antigravity and Gemini 4 model tiers](coordinating-lanes.md#antigravity-and-gemini-4-model-tiers).
+
 ## Protocol contract
 
 The official [headless guide](https://antigravity.google/docs/cli/headless/) documents NDJSON input/output and lifecycle envelopes. The encoder prepares one user message for stdin. A future caller must select both streaming formats, omit `-p`, and close stdin after that message. Task text stays out of arguments.
@@ -174,5 +176,7 @@ After building and installing `looptender` from `main` (for example `go install 
 `go test -race ./internal/adapter/runner -run '^TestAntigravityACPHold'`, `go test -race ./internal/decide -run '^TestDeferredInteraction'` and `go test -race ./internal/supervise -run '^TestDeferredInteraction'` cover the saved hold, concurrent reservations, adoption, and restart resilience.
 
 `go test -race ./internal/adapter/runner -run '^TestAntigravityRunner'` runs the detached runner against a stand-in ACP agent across two-turn exact resume, permission holds, `CancelTimeout`, `WriteTimeout`, descendant process-group/job termination, 64 KiB stderr cap, `acp-turns/` pruning, `ClearUnconfirmed` recovery, and malformed record rejection on macOS, Linux, and Windows CI.
+
+`go test -race ./internal/supervise -run '^TestAntigravityRunnerSupervise'` and `go test -race ./internal/adapter/conformance -run '^TestAntigravityRunnerKeepsTheContract'` run full supervisor ticks and the shared adapter conformance suite directly against `runner.Antigravity` with a stand-in ACP agent: two-turn exact resume across rebuilt adapters, permission-request hold/adoption/resume, unknown error non-failover, owned stop, and all applicable adapter conformance contracts (with zero known gaps, including `bounded-output`).
 
 `go test -race ./internal/config -run '^TestAntigravity'` and `go test -race ./internal/adapter/factory -run '^TestFactoryBuildsAntigravityRunner'` verify YAML defaults, path resolution, primary-only constraints, JSON schema definitions, and factory wiring.

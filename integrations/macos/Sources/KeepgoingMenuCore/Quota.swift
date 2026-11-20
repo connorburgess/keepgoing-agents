@@ -8,6 +8,7 @@ public struct AccountQuotaList: Decodable, Equatable {
     public let omitted: Int
 }
 public struct AccountQuota: Decodable, Equatable {
+    public let id: String?
     public let label: String
     public let provider: String
     public let summary: AccountQuotaSummary
@@ -42,7 +43,7 @@ extension Contract {
               value.omitted >= 0, value.omitted <= 64 else { return false }
         for a in value.accounts {
             let q = a.summary
-            guard quotaText(a.label), ["codex", "claude-code", "antigravity"].contains(a.provider),
+            guard a.id == nil || (a.id!.count == 32 && a.id!.allSatisfy { "0123456789abcdef".contains($0) }), quotaText(a.label), ["codex", "claude-code", "antigravity"].contains(a.provider),
                   ["reported", "unavailable"].contains(q.state), quotaText(q.text),
                   ["fresh", "stale", "unavailable", "provider_unknown"].contains(q.freshness), q.rows.count <= 41,
                   (q.omitted ?? 0) >= 0, (q.omitted ?? 0) <= 256,
@@ -93,7 +94,12 @@ extension MenuBuilder {
             if q.partial == true || (q.omitted ?? 0) > 0 { children.append(quotaStatus("Partial quota evidence; missing values are not zero.")) }
             if let source = q.source { children.append(quotaStatus("Source: \(source)")) }
             if let failed = q.failedRefreshAt { children.append(quotaStatus("Refresh failed \(failed). \(q.failedRefreshText ?? "Earlier evidence retains its time.")")) }
-            children.append(MenuRow(kind: .action, title: "Open Panel", detail: "", symbol: "macwindow", accessibilityLabel: "Open panel for quota details", accessibilityHelp: "Choose Accounts for saved quota details; explicit refresh is reviewed there.", toolTip: "", command: .openPanel))
+            children.append(MenuRow(kind: .action, title: "Open Panel", detail: "", symbol: "macwindow", accessibilityLabel: "Open panel for quota details", accessibilityHelp: "Choose Accounts for saved quota details; explicit refresh is reviewed there.", toolTip: "", command: a.id.map { .openAccount(id: $0) } ?? .openPanel))
+            if q.state != "reported", let id = a.id {
+                let connect = a.provider == "claude-code" ? "Connect Claude" : "Connect Codex"
+                result.append(MenuRow(kind: .action, title: shortened(a.label, to: maxName), detail: connect, symbol: "person.crop.circle.badge.plus", accessibilityLabel: "\(connect) for \(a.label)", accessibilityHelp: "Opens this account in the panel. Sign-in starts only after your review.", toolTip: q.text, command: .connectAccount(id: id)))
+                continue
+            }
             let first = q.rows.first(where: { $0.usedPercent != nil })
             var detail = q.state == "reported" ? (first.map { $0.ended == true ? "Window ended" : "\($0.usedPercent!)% used" } ?? "Quota details recorded") : "Quota unavailable"
             if q.freshness == "provider_unknown" { detail += " · freshness unknown" }
