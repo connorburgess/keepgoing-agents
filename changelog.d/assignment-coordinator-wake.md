@@ -1,1 +1,0 @@
-- Add opt-in coordinator wakes for explicitly declared independent assignments while healthy lanes stay busy, with bounded structured revalidation, durable attempt consumption and explicit reconciliation. Preserve ordinary task prompts, controls, cadence and allowances; no child dispatch or hold clearing.

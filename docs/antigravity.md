@@ -151,7 +151,7 @@ After building and installing `looptender` from `main` (for example `go install 
    - Enable the loop (`looptender enable -c loop.yaml`), run `looptender tick -c loop.yaml` for turn 1, wait for the worker to exit, and run `looptender tick -c loop.yaml` for turn 2; confirm `acp-session.json` holds the exact conversation ID and turn 2 resumes it.
    - Test a turn that requires a tool permission: confirm the loop enters `AwaitingUser` hold (`DeferredInteractionReason`) and does not send again until `looptender resume -c loop.yaml`.
    - Test `looptender stop -c loop.yaml -immediately` during an active turn and confirm the `agy acp --stdio` process group exits cleanly.
-   - **Live installed walkthrough (2026-11-20, `agy 1.5.13`, macOS arm64):** verified `looptender accounts add`/`usage` (all 4 buckets reported), `looptender doctor -c`, `looptender enable -c`, turn 1 `wake` → `active` (no duplicate send) → `idle` with `0600` `acp-session.json` and zero stderr, and turn 2 `wake` resuming the saved session. Live permission-hold and owned-stop walkthroughs remain open.
+   - **Live installed walkthrough (2026-11-20, `agy 1.5.13`, macOS arm64):** verified `looptender accounts add`/`usage` (all 4 buckets reported), `looptender init --non-interactive --agent antigravity`, `looptender doctor -c` (`0600` config/task, CLI version `1.5.13`), `looptender enable -c`, turn 1 `wake` → `active` (no duplicate send) → `idle` with `0600` `acp-session.json` and zero stderr, turn 2 `wake` resuming the saved session, and `looptender stop -c -immediately` stopping an active turn cleanly (`decision: stop; outcome succeeded`). Live permission-hold walkthrough and Linux/Windows installed checks remain open.
 5. **Debugging turn state on disk** (under `<state_dir>/targets/primary/`):
    - `acp-turn.json` — current turn identity.
    - `acp-session.json` — exact opaque conversation ID written once on the first prompt reservation.
@@ -166,7 +166,7 @@ After building and installing `looptender` from `main` (for example `go install 
 
 ## Remaining acceptance gates
 
-- Complete the remaining installed scratch-project checks (live tool permission hold + `looptender resume`, and live `looptender stop -immediately`) and test on Linux and Windows.
+- Complete the remaining installed scratch-project checks (live tool permission hold + `looptender resume`) and test on Linux and Windows.
 - Resolve chat-only questions without ACP elicitation (currently indistinguishable from a returned `end_turn`) and permission rules that allow/deny without emitting a request.
 - Establish typed authentication, exact account/model probe evidence, and separate-account isolation before enabling fallbacks or switch-back. Existing graphical IDE-chat attachment remains a separate investigation.
 

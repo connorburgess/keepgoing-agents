@@ -1,1 +1,0 @@
-- Accounts in a panel with changes allowed can review an unchanged Codex selection for that panel's environment, retaining its paths and caller provenance. The single-use revision update invalidates old evidence without querying a provider; quota refresh remains a separate reviewed action. Read-only panels and native-menu summaries explain the recovery path.
