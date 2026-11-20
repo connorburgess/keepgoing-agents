@@ -35,6 +35,7 @@ public struct PanelLoop: Decodable, Equatable {
 }
 
 public struct PanelList: Decodable, Equatable {
+    public var accountQuotas: AccountQuotaList? = nil
     let schemaVersion: Int
     public let registry: String
     public let complete: Bool
@@ -100,6 +101,7 @@ extension Contract {
               result.loops.count <= 128, result.needsYou >= 0, result.unread >= 0, result.unread <= result.needsYou, result.omitted >= 0,
               Set(result.loops.map(\.key)).count == result.loops.count,
               // Checked on what will be shown: a name of control characters only is empty.
+              (result.accountQuotas == nil || validQuotas(result.accountQuotas!)),
               result.loops.allSatisfy({ validKey($0.key) && !text($0.name).isEmpty && !text($0.phrase).isEmpty }) else {
             throw ClientFailure.invalidResponse
         }
@@ -285,6 +287,10 @@ public enum MenuBuilder {
                 // read that was cut off is not "nothing needs you".
                 badge = "?"
                 iconLabel = list.registry == "available" ? "looptender, not every loop was read" : "looptender, the list of loops can't be read"
+            }
+            if let quota = list.accountQuotas {
+                rows.append(separator)
+                rows.append(contentsOf: quotaRows(quota))
             }
             if !list.loops.isEmpty { rows.append(separator) }
             for loop in list.loops.prefix(maxLoops) {

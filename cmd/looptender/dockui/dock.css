@@ -190,6 +190,26 @@ body.has-banner { padding-bottom: 8rem; }
 .pick .dot { grid-row: 1 / 3; }
 .pick-name { font-weight: 600; font-size: 0.925rem; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .pick-state { grid-column: 2; font-size: 0.8125rem; color: var(--ink-2); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+/* A picker line cut with an ellipsis (single-line-overflow): the row's own
+   scroll timeline flags the cut, and while the row is hovered or has keyboard
+   focus the text slides into view. Where the browser lacks scroll timelines
+   or style queries, or motion is reduced, the ellipsis stays and the row
+   opens the page whose heading shows the whole name. */
+@property --truncated { syntax: "<integer>"; inherits: false; initial-value: 0; }
+@keyframes truncated { from, to { --truncated: 1; } }
+@supports (animation-timeline: scroll(self inline)) {
+  .pick-name, .pick-state { animation: truncated linear both; animation-timeline: scroll(self inline); }
+}
+@media (prefers-reduced-motion: no-preference) {
+  @container style(--truncated: 1) {
+    .pick:is(:hover, :focus-visible) :is(.pick-name, .pick-state) > span {
+      display: inline-block;
+      margin-inline-start: 100%;
+      translate: calc(1px - 100%);
+      transition: margin-inline-start 2s ease-in, translate 2s ease-in;
+    }
+  }
+}
 .pick svg.go { grid-row: 1 / 3; grid-column: 3; color: var(--ink-3); }
 .pick-needs { grid-template-columns: auto minmax(0, 1fr) auto; min-height: 2.75rem; background: var(--attn-soft); border-color: var(--attn-line); font-weight: 600; }
 .pick-needs:hover, .pick-needs[aria-current="page"]:not(.is-clear) { background: var(--attn-soft); border-color: var(--attn); }
@@ -281,6 +301,7 @@ html:not(.has-script) .needs-script { visibility: hidden; }
 
 /* The route component: a loop's preferred routes, and the view across loops */
 .chain-ready { font-size: 0.8125rem; font-weight: 600; color: var(--good); }
+.chain-ready.is-calm { color: var(--ink-2); font-size: 0.875rem; }
 .chain-ready.is-short { color: var(--warn); font-size: 0.875rem; }
 .chain-how { margin: 0.3rem 0 0; font-size: 0.8125rem; max-width: 70ch; }
 .route-list { list-style: none; margin: 0.75rem 0 0; padding: 0; }
@@ -325,7 +346,7 @@ html:not(.has-script) .needs-script { visibility: hidden; }
 .route-summary .sub { font-weight: 500; }
 .route-summary a { text-underline-offset: 0.2em; }
 
-/* Allowances: one line per account group */
+/* Allowances: explicit assignments, otherwise each route separately. */
 .allow-list { list-style: none; margin: 0.6rem 0 0; padding: 0; }
 .allow { display: grid; grid-template-columns: 14rem minmax(0, 1fr); gap: 0.5rem 1.25rem; padding: 0.75rem 0; }
 .allow + .allow { border-top: 1px dashed var(--line); }
@@ -335,6 +356,19 @@ html:not(.has-script) .needs-script { visibility: hidden; }
 .allow-body .route-note { margin: 0 0 0.4rem; }
 .allow-body .route-usage { margin-top: 0; }
 .allow-next { margin-top: 0.3rem; font-size: 0.8125rem; }
+/* A catalog entry's block: each route on a line of its own, as on the Accounts page. */
+.allow-body .allow-routes { margin-top: 0; }
+.allow-head { min-width: 0; overflow-wrap: anywhere; }
+.allow-routes .account-route { display: block; overflow-wrap: anywhere; }
+.allow-reading { font-size: 0.875rem; }
+.allow-routes .route-usage { margin-top: 0.1rem; }
+/* Where the strip itself is narrow (a narrow window beside the picker), the
+   account's name sits above its routes, so route names keep their width.
+   Browsers without size container queries keep the viewport rule below. */
+.allow-list { container-type: inline-size; }
+@container (max-width: 38rem) {
+  .allow { grid-template-columns: minmax(0, 1fr); }
+}
 
 /* One loop: last decision, hold and route; each lane; recent history */
 .now { margin: 1.25rem 0 0; display: grid; grid-template-columns: repeat(auto-fit, minmax(13rem, 1fr)); gap: 0.75rem; }
@@ -564,3 +598,17 @@ details[open] > .how-summary::before { transform: rotate(45deg); }
 .unknown-account-routes { margin-top: 2rem; }
 .unknown-route-context { padding-block: 1rem; border-top: 1px solid var(--line); overflow-wrap: anywhere; min-width: 0; }
 .unknown-route-context > p { margin: 0 0 .5rem; }
+
+/* Saved account quota uses its provider's windows; it is never route evidence. */
+.quota-compact { display: flex; flex-wrap: wrap; gap: .5rem 1rem; min-width: 0; overflow-wrap: anywhere; }
+.quota-chip { display: grid; gap: .15rem; font-size: .875rem; font-variant-numeric: tabular-nums; }
+.quota-windows { list-style: none; padding: 0; margin: .8rem 0; display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 15rem), 1fr)); gap: 1rem; }
+.quota-window { min-width: 0; overflow-wrap: anywhere; padding-block: .75rem; border-top: 1px solid var(--line); }
+.quota-window h4 { font-size: .875rem; margin: 0 0 .35rem; font-weight: 600; }
+.quota-window p { margin: .3rem 0; }
+.quota-value { font-variant-numeric: tabular-nums; font-size: .95rem; }
+.quota-meter { width: 100%; height: .7rem; }
+.quota-stamp, .quota-incomplete { font-size: .8125rem; color: var(--ink-2); }
+@media (min-width: 761px) {
+ .account-summary { grid-template-columns: minmax(0, 1.2fr) minmax(0, 1fr) minmax(0, .7fr) minmax(0, 1.1fr); }
+}

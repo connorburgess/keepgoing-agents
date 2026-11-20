@@ -44,7 +44,7 @@ const (
 	panelChangeOrigin   = "panel"
 	panelPrepareContext = "keepgoing-panel-prepare\x00"
 	// panelExposure is said wherever changes are turned on.
-	panelExposure = "While changes are allowed, anyone using this window can pause, stop or resume loops, replace their check builds with this panel's build, edit routes within the startup caller's authority, and read selected Codex subscription quota."
+	panelExposure = "While changes are allowed, anyone using this window can pause, stop or resume loops, replace their check builds with this panel's build, edit routes within the startup caller's authority, review unchanged account selections in this panel's environment, and read selected Codex subscription quota or retrieve supported Claude usage (provider freshness unknown)."
 )
 
 // panelChanges is the change half of a panel server started with changes
@@ -76,10 +76,11 @@ type panelForm struct {
 	stop                           *stopChoices // the stop's options the review offered
 	// group: for a change to every loop, each loop it changes and the
 	// record reviewed for it; names, for the result.
-	group []panelGroupTarget
-	names map[string]string
-	route *panelRouteReview
-	quota *accountQuotaSelection
+	group     []panelGroupTarget
+	names     map[string]string
+	route     *panelRouteReview
+	quota     *accountQuotaSelection
+	selection *panelAccountSelectionReview
 }
 
 func newPanelChanges(ctx context.Context, registryDir string, reader *dockReader, since time.Time, now func() time.Time) (*panelChanges, error) {
@@ -186,7 +187,7 @@ func panelReadAction(body io.Reader) (panelChangeRequest, bool) {
 	if (req.Action != "stop" && (req.Lanes || req.Immediately || req.DropQueued)) || (req.DropQueued && !req.Lanes) {
 		return req, false
 	}
-	return req, panelActions[req.Action] != "" || panelBuildActions[req.Action] != "" || req.Action == panelAccountQuotaAction
+	return req, panelActions[req.Action] != "" || panelBuildActions[req.Action] != "" || req.Action == panelAccountQuotaAction || req.Action == panelAccountSelectionAction
 }
 
 // panelPreview is what the page shows before the person confirms. Every
@@ -240,6 +241,10 @@ func (c *panelChanges) serve(w http.ResponseWriter, r *http.Request, rest, sessi
 		c.serveRoutes(w, r, rest, session)
 		return
 	}
+	if strings.HasPrefix(rest, panelAccountSelectionPrefix) {
+		c.serveAccountSelection(w, r, rest, session)
+		return
+	}
 	if strings.HasPrefix(rest, panelAccountQuotaPrefix) {
 		c.serveAccountQuota(w, r, rest, session)
 		return
@@ -251,7 +256,7 @@ func (c *panelChanges) serve(w http.ResponseWriter, r *http.Request, rest, sessi
 	}
 	req, ok := panelReadAction(http.MaxBytesReader(w, r.Body, panelMaxBody))
 	// A build change is for one loop only, never for every loop at once.
-	if !ok || req.Action == panelAccountQuotaAction || (step == "prepare" && (req.Lanes || req.Immediately || req.DropQueued)) || (key == panelGroupKey && panelBuildActions[req.Action] != "") {
+	if !ok || req.Action == panelAccountQuotaAction || req.Action == panelAccountSelectionAction || (step == "prepare" && (req.Lanes || req.Immediately || req.DropQueued)) || (key == panelGroupKey && panelBuildActions[req.Action] != "") {
 		http.Error(w, "refused", http.StatusBadRequest)
 		return
 	}

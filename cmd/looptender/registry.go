@@ -23,19 +23,24 @@ type registrySummary struct {
 }
 type registryOutput struct {
 	SchemaVersion int               `json:"schemaVersion"`
+	Source        string            `json:"source"`
+	Coverage      string            `json:"coverage"`
 	Operation     string            `json:"operation"`
 	Entries       []registrySummary `json:"entries"`
 	RemovedID     string            `json:"removedId,omitempty"`
 }
 
 func registryCommand(e env, args []string) int {
+	if len(args) > 0 && args[0] == "reconcile" {
+		return registryReconcile(e, args[1:])
+	}
 	if len(args) == 0 {
-		e.errf("registry needs add, list, or remove")
+		e.errf("registry needs add, list, remove, or reconcile")
 		return exitUsage
 	}
 	op := args[0]
 	if op != "add" && op != "list" && op != "remove" {
-		e.errf("registry needs add, list, or remove")
+		e.errf("registry needs add, list, remove, or reconcile")
 		return exitUsage
 	}
 	fs := flag.NewFlagSet("registry "+op, flag.ContinueOnError)
@@ -63,7 +68,7 @@ func registryCommand(e env, args []string) int {
 	if err != nil {
 		return fail(err)
 	}
-	output := registryOutput{SchemaVersion: 1, Operation: op, Entries: []registrySummary{}}
+	output := registryOutput{SchemaVersion: 1, Source: "cli_registry", Coverage: "explicit_references", Operation: op, Entries: []registrySummary{}}
 	switch op {
 	case "list":
 		f, err := registry.Load(dir)

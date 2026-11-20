@@ -84,3 +84,18 @@ test("responsive imported startup with no recorded first check stays unverified"
   const ui=renderSlot(app.threadContextCardRows[0]!,{threadId:"thr_imported_first_check",projectId:"proj_example",environment:null},{rpc:{forThread:()=>({loops:[waiting],errors:[]})}});
   try{await ui.findByText("looptender: no check recorded");assert.equal(ui.queryByText("looptender: enabled"),null);}finally{ui.lifecycle.unmount();cleanup();}
 });
+
+test("reference provenance does not imply CLI coverage or provider health", async () => {
+  const segment = app.threadContextSegments[0]!;
+  for (const referenceSource of ["plugin_setting", "plugin_setup", "registry_attachment"] as const) {
+    const props = { threadId: `thr_provenance_${referenceSource}`, projectId: "proj_example", environment: null, segments: [], isExpanded: true, onToggle() {} };
+    const data = { ...loop, referenceSource, ...(referenceSource === "plugin_setup" ? { publication: { state: "repair_needed", source: "cli_registry" } } : {}) };
+    const ui = renderSlot({ component: segment.details! }, props, { rpc: { forThread: () => ({ loops: [data], errors: [] }) } });
+    try {
+      await ui.findByText(referenceSource === "plugin_setting" ? /Reference: plugin setting; CLI menu registration checked separately/ : referenceSource === "plugin_setup" ? /Reference: saved BB setup/ : /Reference: explicitly attached from CLI registry/);
+      if (referenceSource === "plugin_setup") assert.ok(ui.getByText(/CLI menu publication: unverified; use explicit registry reconcile/));
+      assert.ok(ui.getByText(/running supervisor not confirmed/));
+      assert.equal(ui.queryByRole("button", { name: "Resume" }), null);
+    } finally { ui.lifecycle.unmount(); cleanup(); }
+  }
+});

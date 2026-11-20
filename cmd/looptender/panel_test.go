@@ -1431,7 +1431,7 @@ func TestPanelAndDockSayWhichCommandServesThePage(t *testing.T) {
 	resp, body := dockRequest(t, http.MethodGet, page+dockServerPath, withCookie(c))
 	var got dockServed
 	if resp.StatusCode != http.StatusOK || json.Unmarshal([]byte(body), &got) != nil || got.SchemaVersion != 1 || got.ServedBy != "panel" || got.IdleSeconds != 2700 ||
-		got.Changes != "off" || got.Form != "" || got.ChangesSince != nil || !strings.HasPrefix(got.ChangesText.render(time.Now()), "Read-only: started without --allow-changes.") {
+		got.Changes != "off" || got.Form != "" || got.ChangesSince != nil || !strings.HasPrefix(got.ChangesText.render(time.Now()), "Read-only: this page cannot pause, resume, stop or start anything.") {
 		t.Fatalf("panel: %d %s", resp.StatusCode, body)
 	}
 	if resp, _ := dockRequest(t, http.MethodGet, page+dockServerPath, nil); resp.StatusCode != http.StatusForbidden {
@@ -1441,7 +1441,7 @@ func TestPanelAndDockSayWhichCommandServesThePage(t *testing.T) {
 	resp, body = dockRequest(t, http.MethodGet, base+dockServerPath, nil)
 	got = dockServed{}
 	if resp.StatusCode != http.StatusOK || json.Unmarshal([]byte(body), &got) != nil || got.ServedBy != "dock" || got.Changes != "" || got.Form != "" ||
-		!strings.HasPrefix(got.ChangesText.render(time.Now()), "Read-only. keepgoing dock never pauses") {
+		!strings.HasPrefix(got.ChangesText.render(time.Now()), "Read-only: this page cannot pause, resume, stop or start anything.") {
 		t.Fatalf("dock: %d %s", resp.StatusCode, body)
 	}
 	// The expired page shows no button until its script runs, and that

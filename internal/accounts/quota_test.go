@@ -174,7 +174,7 @@ func TestQuotaDoesNotJoinChangedContext(t *testing.T) {
 	}
 	f, _ := Load(dir)
 	v := QuotaViews(dir, f, []string{"HOME=/other"}, at)[e.ID]
-	if v.State != "unavailable" || v.Reason != "context_changed" || len(v.Windows) != 0 {
+	if v.State != "unavailable" || v.Reason != "selection_review_required" || len(v.Windows) != 0 {
 		t.Fatal(v)
 	}
 	v = QuotaViews(dir, f, env, at.Add(-time.Second))[e.ID]

@@ -150,7 +150,7 @@ func TestBoundAcceptsAnEarlierDefinitionOnce(t *testing.T) {
 		if ok != tc.accepted {
 			t.Errorf("%s: accepted=%t, want %t", tc.name, ok, tc.accepted)
 		}
-		if got != Context(f, e, tc.env) || !currentDefinition(f, got) {
+		if got != Context(f, e, tc.env) || !protectedDefinition(f, got) {
 			t.Errorf("%s: recorded context is not the current definition", tc.name)
 		}
 		// After rebinding, the same entry compares exactly.
@@ -183,7 +183,7 @@ func TestEarlierCatalogLoadsAndKeepsItsObservation(t *testing.T) {
 	if err != nil {
 		t.Fatal("an earlier catalog no longer loads")
 	}
-	if currentDefinition(f, f.Entries[0].Context) {
+	if protectedDefinition(f, f.Entries[0].Context) {
 		t.Fatal("earlier digest read as current")
 	}
 	c := Project(f, now).Cards[0]

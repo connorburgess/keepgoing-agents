@@ -1,5 +1,5 @@
 "use strict";
-// keepgoing panel page. Reads one versioned JSON endpoint relative to this
+// keepgoing panel page. Reads bounded versioned JSON relative to this
 // page and renders it with DOM text nodes only; no data is parsed as HTML.
 // Ages come from the report's read time, never this browser's clock, so the
 // page reads the same wherever it is opened. Every sentence about a loop or a
@@ -14,6 +14,12 @@
   var FAIL_LONG_MS = 120000;
   var API = "api/v1/dock";
   var SERVER = "api/v1/server";
+  var SAVED_ACCOUNTS = "api/v1/saved-accounts";
+  var savedAccounts = { reference: "", status: "", data: null, serial: 0, abort: null };
+  // The end of the route brief that says a missing standby does not touch the
+  // route in use; the line is then a plain notice, not a warning. Kept in step
+  // with dockCurrentUnaffected in dock_view.go (a test checks).
+  var CURRENT_UNAFFECTED = "its current route is unaffected";
   // What looptender did: worded by the same read as API, served on its own
   // for its size, and read only for the Usage page and a loop's page.
   var USAGE = "api/v1/usage";
@@ -326,11 +332,15 @@
     a.href = href;
     if (current) a.setAttribute("aria-current", "page");
     a.appendChild(el("span", "dot " + dotClass));
-    var n = el("span", "pick-name", name);
-    n.title = name;
+    // The full text stays in the link, so it is the accessible name and what
+    // find and copy see; the ellipsis is only how it is drawn. A cut name is
+    // read in full by focusing or hovering the row (see dock.css), and by
+    // opening it: the page heading shows it whole.
+    var n = el("span", "pick-name");
+    n.appendChild(el("span", null, name));
     a.appendChild(n);
-    var s = el("span", "pick-state", sub);
-    s.title = sub;
+    var s = el("span", "pick-state");
+    s.appendChild(el("span", null, sub));
     a.appendChild(s);
     var go = icon("chevron");
     go.setAttribute("class", "go");
@@ -358,7 +368,7 @@
     var rs = d.routesSummary || {};
     fixed.appendChild(pickRow("#/routes", rs.trouble ? "dot-limit" : "dot-calm", "Routes", rs.picker || "", r.view === "routes"));
     var ac = d.accounts || {};
-    fixed.appendChild(pickRow("#/accounts", "dot-calm", "Accounts", ac.complete ? list(ac.cards).length + " selected" : "Unavailable", r.view === "accounts"));
+    fixed.appendChild(pickRow("#/accounts", "dot-calm", "Accounts", ac.complete ? (d.accountsReference ? d.selectedAccounts || 0 : list(ac.cards).length) + " selected" : "Unavailable", r.view === "accounts"));
     var vs = d.versions || {};
     fixed.appendChild(pickRow("#/versions", vs.behind ? "dot-limit" : "dot-calm", "Versions", vs.summary || "", r.view === "versions"));
     fixed.appendChild(pickRow("#/usage", "dot-calm", "Usage", d.usagePicker || "", r.view === "usage"));
@@ -488,9 +498,6 @@
   // parent's observation. No relationship is inferred from names or order.
   function workTree(d) {
     var p = panel("Loops and lanes");
-    p.appendChild(el("p", "sub", "Only conversations that looptender supervises are shown here, with their lanes. To see another coordinator here, create a loop for it."));
-    p.appendChild(el("p", "sub", "Supervision and agent observations are separate. Expand a loop to see its recorded direct lanes."));
-    p.appendChild(el("p", "sub work-evidence", "Active does not prove progress or connectivity. Only direct lanes are listed; absent lanes do not establish completion. Finished means declared, not verified."));
     var ul = el("ul", "work-tree");
     var retainedOpen = Object.create(null);
     list(d.loops).forEach(function (l) {
@@ -543,6 +550,7 @@
     });
     state.treeOpen = retainedOpen;
     p.appendChild(ul);
+    p.appendChild(el("p", "sub work-evidence", "Each loop and its own lanes, as of its last check."));
     if (!d.complete || d.registry.omitted) p.appendChild(el("p", "more", "This read does not include every registered loop. Missing loops are not assumed stopped or clear."));
     return p;
   }
@@ -551,7 +559,8 @@
   // sample, not a complete chronology or a persisted "while away" cursor.
   function recentAcrossLoops(d) {
     var p = panel("Recent activity across loops");
-    p.appendChild(el("p", "sub", "Newest recorded events from up to five retained entries per loop. This is a bounded sample, not a complete history."));
+    var intro = el("p", "sub", "The newest few events from each loop.");
+    p.appendChild(intro);
     var rows = [], missing = false, pruned = false;
     list(d.loops).forEach(function (l) {
       if (!l.events || l.events.availability === "unknown") missing = true;
@@ -579,9 +588,9 @@
     });
     if (rows.length) p.appendChild(ol);
     else p.appendChild(el("p", "sub", missing ? "Recent activity is unavailable for one or more loops." : "No recent activity is recorded in this read."));
-    if (rows.length > 8) p.appendChild(el("p", "more", "Showing the newest 8 of " + rows.length + " entries supplied by this read. Inspect a loop for its retained history."));
-    if (pruned) p.appendChild(el("p", "more history-pruned", "Older history has been pruned for at least one loop. This sample cannot reconstruct it and is not a complete chronology."));
-    if ((rows.length && missing) || !d.complete || d.registry.omitted) p.appendChild(el("p", "more", "Activity is incomplete: some loop history or registered loops could not be included."));
+    if (rows.length > 8) p.appendChild(el("p", "more", "Showing the newest 8 of " + rows.length + ". Open a loop for more."));
+    if (pruned) intro.textContent = "The newest few events from each loop; older ones are no longer kept.";
+    if ((rows.length && missing) || !d.complete || d.registry.omitted) p.appendChild(el("p", "more", "Some loops or their history could not be read, so this list is missing events."));
     return p;
   }
 
@@ -686,10 +695,7 @@
       ol.appendChild(li);
     });
     p.appendChild(ol);
-    var more = el("p", "more", (ev.footer ? ev.footer + " " : "") + "More with ");
-    more.appendChild(el("code", null, "keepgoing timeline"));
-    more.appendChild(document.createTextNode("."));
-    p.appendChild(more);
+    if (ev.footer) p.appendChild(el("p", "more", ev.footer));
     return p;
   }
 
@@ -726,11 +732,12 @@
     var change = changeBox(l);
     if (change) pane.appendChild(change);
     pane.appendChild(migrationReviewPanel(l.migrationReview));
+    pane.appendChild(assignmentPanel(l.assignments));
 
     // The ordered preferred routes are the main structure.
     var c = l.chain, entries = list(c.entries);
     var brief = !c.brief ? null : c.availability !== "none_configured" && c.brief.indexOf("unknown") >= 0 ? unknown(c.brief) :
-      el("span", c.availability === "none_configured" ? "sub" : "chain-ready" + (c.short ? " is-short" : ""), c.brief);
+      el("span", c.availability === "none_configured" ? "sub" : "chain-ready" + (c.brief.indexOf(CURRENT_UNAFFECTED) >= 0 ? " is-calm" : c.short ? " is-short" : ""), c.brief);
     var routing = panel("Preferred routes", [brief]);
     routing.appendChild(el("p", "sub chain-how", c.how || "Unknown."));
     var ol = el("ol", "route-list is-ordered");
@@ -804,6 +811,24 @@
     }
     pane.appendChild(checks);
     pane.appendChild(usageBrief(key));
+  }
+
+  function assignmentPanel(review) {
+    var p = panel("Assignment handoffs");
+    p.classList.add("assignment-review");
+    p.appendChild(el("p", null, review ? review.text : "Assignment evidence unavailable. Outcomes are unknown."));
+    if (review && review.availability === "available" && review.counts) {
+      var c = review.counts, dl = el("dl", "facts");
+      dl.appendChild(fact("Evidence read", fmt(dayTimeYearFmt, review.observedAt)));
+      dl.appendChild(fact("Review recorded", fmt(dayTimeYearFmt, review.recordedAt)));
+      dl.appendChild(fact("Coverage", review.coverage === "observed_direct_children" ? "Observed direct children" : "Partial — coverage unknown"));
+      dl.appendChild(fact("Unknown / unacknowledged", c.unknown + " / " + c.unacknowledged));
+      dl.appendChild(fact("Unfinished assignments", String(c.unfinished)));
+      dl.appendChild(fact("Person-blocked / dependency-waiting", c.personBlocked + " / " + c.dependencyWaiting));
+      p.appendChild(dl);
+    }
+    p.appendChild(el("p", "sub", "Dated direct-lane evidence; descendants are excluded. BB running or idle is separate from declared outcome and availability. Missing handoffs need explicit coordinator reconciliation. This view does not dispatch work, grant permission or clear holds."));
+    return p;
   }
 
   function migrationReviewPanel(review) {
@@ -1126,28 +1151,65 @@
   }
 
   // ---- Routes across loops ----
-  // One line per account: the newest recorded reading and its resets.
+  // Only consistent explicit catalog assignments combine headings. Each
+  // route retains its own reading and windows; other routes remain separate
+  // under their configured group, with no inferred account identity.
   function allowancesPanel(d) {
     var items = list(d.allowances);
-    var p = panel("Allowances", [el("span", "sub", "recorded readings for configured route groups; not live or linked to Accounts cards")]);
-    if (!items.length) { p.appendChild(el("p", "sub chain-how", "No accounts to show.")); return p; }
+    var p = panel("Allowances", [el("span", "sub", "route readings; grouped by your assignments · not live")]);
+    if (!items.length) { p.appendChild(el("p", "sub chain-how", "No route readings to show.")); return p; }
     var ul = el("ul", "allow-list");
     items.forEach(function (a) {
-      var li = el("li", "allow");
+      var li = el("li", "allow" + (a.assigned ? " is-account" : ""));
       var head = el("div", "allow-head");
       head.appendChild(el("h3", "allow-name", a.title));
+      var lines = list(a.lines);
+      // Said once per block: for BB threads in its own words when every
+      // route is one, else as for a headless route.
+      var bbOnly = lines.length > 0 && lines.every(function (r) { return r.bbThread; });
+      if (a.assigned) head.appendChild(el("span", "sub", bbOnly ? ASSIGNED_BB : ASSIGNED));
       head.appendChild(el("span", "sub", a.sub));
+      if (a.assignment) head.appendChild(el("span", "sub", a.assignment));
       li.appendChild(head);
       var body = el("div", "allow-body");
-      notesOf(a.notes).forEach(function (n) { body.appendChild(el("p", "route-note is-" + n.tone, n.text)); });
-      var blk = usageBlock(a.usage);
-      if (list(a.next).length) blk.appendChild(el("div", "sub allow-next", say(a.next)));
-      body.appendChild(blk);
+      if (a.assigned) {
+        var routes = el("ul", "account-routes allow-routes");
+        lines.forEach(function (r) {
+          var rl = el("li", "account-route");
+          var name = el("p", "account-route-name");
+          name.appendChild(link("#/routes/" + r.route, r.title));
+          rl.appendChild(name);
+          if (r.bbThread && !bbOnly) rl.appendChild(el("p", "sub", ASSIGNED_BB));
+          notesOf(r.notes).forEach(function (n) { rl.appendChild(el("p", "route-note is-" + n.tone, n.text)); });
+          // The route's own reading: one plain sentence with its age, then
+          // its windows. Being out is information here, not a warning.
+          var reading = el("p", "allow-reading", say(r.reading));
+          var u = routeUsage(d, r.route);
+          if (u && u.observedAt) reading.title = fmt(dayTimeFmt, u.observedAt);
+          rl.appendChild(reading);
+          if (u && u.observedAt) rl.appendChild(el("p", "sub", "Source: recorded route probe · " + fmt(dayTimeFmt, u.observedAt)));
+          if (u && u.availability !== "unavailable") {
+            var box = el("div", "route-usage");
+            if (u.needsPerson && u.ageNote) box.appendChild(el("p", "route-note is-attn usage-age", u.ageNote));
+            box.appendChild(meters(u));
+            rl.appendChild(box);
+          }
+          routes.appendChild(rl);
+        });
+        body.appendChild(routes);
+        if (a.linesOmitted) body.appendChild(el("p", "more", a.linesOmitted + (a.linesOmitted === 1 ? " more route is" : " more routes are") + " not shown."));
+      } else {
+        notesOf(a.notes).forEach(function (n) { body.appendChild(el("p", "route-note is-" + n.tone, n.text)); });
+        if (a.usage && a.usage.observedAt) body.appendChild(el("p", "sub", "Source: recorded route probe · " + fmt(dayTimeFmt, a.usage.observedAt)));
+        var blk = usageBlock(a.usage);
+        if (list(a.next).length) blk.appendChild(el("div", "sub allow-next", say(a.next)));
+        body.appendChild(blk);
+      }
       li.appendChild(body);
       ul.appendChild(li);
     });
     p.appendChild(ul);
-    if (d.allowancesOmitted) p.appendChild(el("p", "more", d.allowancesOmitted + (d.allowancesOmitted === 1 ? " more account is" : " more accounts are") + " not shown."));
+    if (d.allowancesOmitted) p.appendChild(el("p", "more", d.allowancesOmitted + (d.allowancesOmitted === 1 ? " more block is" : " more blocks are") + " not shown."));
     return p;
   }
 
@@ -1292,31 +1354,61 @@
   }
   // Explicit subscription-quota reads have their own review and never run from
   // a page poll. This state cannot be mistaken for a loop or route action.
-  function accountQuotaPost(id, step, form) {
+  function accountQuotaReply(d, id, step, recovery) {
+    function text(v) { return typeof v === "string" && v.trim().length > 0 && v.length <= 16384; }
+    if (!d || d.schemaVersion !== 1 || (!!d.preview === !!d.result)) throw new Error("quota reply");
+    if (d.result) {
+      var outcomes = step === "prepare" ? ["refused", "review_again"] : ["done", "refused", "review_again"];
+      if (outcomes.indexOf(d.result.outcome) < 0 || !text(d.result.text)) throw new Error("quota outcome");
+      return d;
+    }
+    var p = d.preview;
+    if (step !== "prepare" || p.action !== (recovery ? "review_selection" : "subscription_quota") || p.key !== id ||
+        !text(p.title) || !text(p.confirm) || !text(p.lost) || !text(p.refused) ||
+        typeof p.form !== "string" || !/^[a-f0-9]{64}$/.test(p.form) ||
+        typeof p.expiresAt !== "string" || !isFinite(Date.parse(p.expiresAt)) ||
+        !Array.isArray(p.lines) || !p.lines.length || p.lines.length > 32 ||
+        !p.lines.every(function (line) { return Array.isArray(line) && line.length > 0 && line.length <= 32 && line.every(function (part) { return part && text(part.t) && !part.at; }); })) throw new Error("quota review");
+    return d;
+  }
+  function accountQuotaPost(id, step, form, recovery) {
     var abort = new AbortController(), timer = setTimeout(function () { abort.abort(); }, 15000);
-    return fetch("api/v1/accounts/" + encodeURIComponent(id) + "/" + step, {
+    return fetch((recovery ? "api/v1/account-selections/" : "api/v1/accounts/") + encodeURIComponent(id) + "/" + step, {
       method: "POST", cache: "no-store", credentials: "same-origin", signal: abort.signal,
       headers: { "Content-Type": "application/json", Accept: "application/json", "X-Keepgoing-Form": form },
-      body: JSON.stringify({ action: "subscription_quota" })
+      body: JSON.stringify({ action: recovery ? "review_selection" : "subscription_quota" })
     }).then(function (r) {
       if (!r.ok) { var e = new Error("status " + r.status); e.status = r.status; throw e; }
       return r.json();
-    }).then(function (d) { if (!d || d.schemaVersion !== 1) throw new Error("schema"); return d; })
+    }).then(function (d) { return accountQuotaReply(d, id, step, recovery); })
       .finally(function () { clearTimeout(timer); });
   }
-  function accountQuotaRequest(c, confirm) {
-    if (!changesOn() || !state.server.accountQuota) return;
-    var old = state.accountQuotaChange, p = confirm && old && old.id === c.id && old.preview;
+  function accountQuotaSupported(c) {
+    var providers = state.server.accountQuotaProviders;
+    return !!state.server.accountQuota && (Array.isArray(providers) ? providers.indexOf(c.provider) >= 0 : c.provider === "codex");
+  }
+  function accountQuotaSummary(c) {
+    var s = c.quota && c.quota.summary;
+    if (!s || s.state !== "reported") return null;
+    function date(v) { return typeof v === "string" && isFinite(Date.parse(v)); }
+    if (c.provider === "codex" && s.source === "codex account/rateLimits/read" && date(s.observedAt) && !s.retrievedAt && (s.freshness === "fresh" || s.freshness === "stale")) return s;
+    if (c.provider === "claude-code" && s.source === "claude:get_usage" && date(s.retrievedAt) && !s.observedAt && s.freshness === "provider_unknown") return s;
+    if (c.provider === "antigravity" && s.source === "agy:/usage" && date(s.retrievedAt) && !s.observedAt && s.freshness === "provider_unknown") return s;
+    return null;
+  }
+  function accountQuotaRequest(c, confirm, recovery) {
+    if (!changesOn() || !(recovery ? state.server.accountSelectionReview : accountQuotaSupported(c))) return;
+    var old = state.accountQuotaChange, p = confirm && old && old.id === c.id && !!old.recovery === !!recovery && old.preview;
     if (confirm && !p) return;
-    var request = { id: c.id, busy: true, preview: p || null };
+    var request = { id: c.id, recovery: !!recovery, busy: true, preview: p || null };
     state.accountQuotaChange = request;
     render(false, true);
-    accountQuotaPost(c.id, confirm ? "confirm" : "prepare", confirm ? p.form : state.server.form)
+    accountQuotaPost(c.id, confirm ? "confirm" : "prepare", confirm ? p.form : state.server.form, recovery)
       .then(function (d) { request.preview = d.preview; request.result = d.result; })
       .catch(function (err) {
         var refused = err && err.status >= 400 && err.status < 500;
         request.preview = null;
-        request.result = { text: !confirm ? "The quota review could not be prepared. Nothing was refreshed." : refused ? p.refused : p.lost };
+        request.result = { text: !confirm ? (recovery ? "The selection review could not be prepared. Nothing was updated." : "The quota review could not be prepared. Nothing was refreshed.") : refused ? p.refused : p.lost };
       }).then(function () {
         if (state.accountQuotaChange !== request) return;
         request.busy = false;
@@ -1327,29 +1419,38 @@
       });
   }
   function accountQuotaReason(reason) {
-    return ({ not_checked: "No subscription quota reading is saved for this selection.", context_changed: "The selected context changed. Review it before refreshing quota.", cache_unavailable: "Private quota evidence could not be read. No usage is assumed.",
+    return ({ not_checked: "No subscription quota reading is saved for this selection.", selection_review_required: "Review this unchanged selection for the panel, then refresh quota. Saved quota was not reused.", context_changed: "The selected context changed. Review it before refreshing quota.", cache_unavailable: "Private quota evidence could not be read. No usage is assumed.",
       time_unavailable: "The reading's time cannot be established.", unsupported_provider: "Subscription quota reads are available for selected Codex contexts only.", unsupported: "This Codex CLI does not support subscription quota reads.",
       timeout: "The quota read timed out.", cancelled: "The quota read was cancelled.", status_unavailable: "Codex could not provide a quota reading.", schema_unavailable: "The quota response was not recognized.",
       no_windows: "Codex reported no subscription windows.", unknown_bucket: "Codex did not report the supported subscription bucket.", unknown_windows: "Codex reported an unsupported quota window shape." })[reason] || "Subscription quota is unavailable.";
   }
   function accountQuotaBox(c) {
     var q = c.quota || {}, box = el("div", "account-quota");
-    box.appendChild(el("h3", null, "Subscription quota"));
-    box.appendChild(el("p", "sub", "For this selected Codex context. Separate from route-probe readings and token totals."));
-    if (q.state === "reported" && q.observedAt && list(q.windows).length) {
-      box.appendChild(el("p", "sub", "Read " + when({ at: q.observedAt }) + (q.freshness === "stale" ? " · Older reading; refresh before relying on it." : " · Recorded snapshot.")));
-      var windows = el("dl", "work-facts");
-      list(q.windows).forEach(function (w) {
-        var ended = w.resetsAt && Date.parse(w.resetsAt) <= readTime();
-        var name = w.name === "primary" ? "Primary window" : "Secondary window";
-        var value = w.usedPercent + "% used" + (w.durationMinutes ? " · " + w.durationMinutes + " minutes" : "");
-        value += ended ? " · Window ended; refresh needed." : w.resetsAt ? " · Resets " + when({ at: w.resetsAt }) : " · Reset time unavailable.";
-        windows.appendChild(fact(name, value));
+    box.appendChild(el("h3", null, "Account quota"));
+    box.appendChild(el("p", "sub", "Saved for this selection; separate from route readings. Live thread account binding is not verified."));
+    var saved = accountQuotaSummary(c) || {};
+    if (saved.state === "reported") {
+      box.appendChild(el("p", "quota-stamp", saved.retrievedAt ? "Retrieved " + when({ at: saved.retrievedAt }) + " · Provider freshness unknown" : "Read " + when({ at: saved.observedAt }) + (saved.freshness === "stale" ? " · Older reading" : " · Saved snapshot")));
+      if (saved.retrievedAt) box.appendChild(el("p", "sub", "Retrieval may return cached or seeded usage. The provider's observation time is unavailable."));
+      var rows = el("ul", "quota-windows");
+      list(saved.rows).forEach(function (w) {
+        var row = el("li", "quota-window" + (w.ended ? " is-ended" : ""));
+        row.appendChild(el("h4", null, w.name));
+        row.appendChild(el("p", "quota-value", w.text));
+        if (typeof w.usedPercent === "number" && !w.ended) {
+          var meter = el("meter", "quota-meter"); meter.min = 0; meter.max = 100; meter.value = w.usedPercent;
+          meter.setAttribute("aria-label", w.name + ": " + w.text); meter.textContent = w.text; row.appendChild(meter);
+        }
+        if (w.resetsAt) row.appendChild(el("p", "sub", (w.ended ? "Ended " : "Resets ") + when({ at: w.resetsAt })));
+        else if (typeof w.usedPercent === "number" || typeof w.remainingPercent === "number") row.appendChild(el("p", "sub", "Reset time unavailable."));
+        rows.appendChild(row);
       });
-      box.appendChild(windows);
-      box.appendChild(el("p", "sub", "Source: " + q.source));
-    } else box.appendChild(el("p", "sub", accountQuotaReason(q.reason || "not_checked")));
-    if (q.failedRefreshAt) box.appendChild(el("p", "sub", "Refresh failed " + when({ at: q.failedRefreshAt }) + ". " + accountQuotaReason(q.failedRefreshReason) + (q.state === "reported" ? " The earlier reading retains its original time." : "")));
+      box.appendChild(rows);
+      if (saved.partial || saved.omitted) box.appendChild(el("p", "sub quota-incomplete", "Partial evidence: some quota detail is unavailable" + (saved.omitted ? "; " + saved.omitted + " additional buckets not shown" : "") + ". Missing values are not zero."));
+      box.appendChild(el("p", "sub", "Source: " + saved.source));
+    } else box.appendChild(el("p", "sub", (q.summary && q.summary.state !== "reported" && q.summary.text) || accountQuotaReason(q.reason || "schema_unavailable")));
+    if (saved.failedRefreshAt) box.appendChild(el("p", "sub", "Refresh failed " + when({ at: saved.failedRefreshAt }) + ". " + saved.failedRefreshText + " Any earlier reading retains its original time."));
+    if (c.provider !== "codex" && c.provider !== "claude-code" && c.provider !== "antigravity") return box;
     var change = state.accountQuotaChange, current = change && change.id === c.id ? change : null;
     if (current) {
       var review = el("div", "account-quota-review");
@@ -1357,18 +1458,25 @@
         review.appendChild(el("h4", null, current.preview.title));
         list(current.preview.lines).forEach(function (line) { review.appendChild(el("p", null, say(line))); });
         var controls = el("div", "account-quota-actions");
-        controls.appendChild(button("Cancel", "quota-cancel-" + c.id, "", function () { state.accountQuotaChange = null; render(false, true); focusOn("quota-refresh-" + c.id); }, current.busy));
-        controls.appendChild(button(current.busy ? "Reading…" : current.preview.confirm, "quota-confirm-" + c.id, "is-primary", function () { accountQuotaRequest(c, true); }, current.busy));
+        controls.appendChild(button("Cancel", "quota-cancel-" + c.id, "", function () { state.accountQuotaChange = null; render(false, true); focusOn(current.recovery ? "selection-review-" + c.id : "quota-refresh-" + c.id); }, current.busy));
+        controls.appendChild(button(current.busy ? (current.recovery ? "Updating…" : "Reading…") : current.preview.confirm, "quota-confirm-" + c.id, "is-primary", function () { accountQuotaRequest(c, true, current.recovery); }, current.busy));
         review.appendChild(controls);
       } else if (current.result) {
         var result = el("p", null, current.result.text); result.tabIndex = -1; result.setAttribute("data-focus", "quota-result-" + c.id); review.appendChild(result);
-        review.appendChild(button("Close", "quota-close-" + c.id, "", function () { state.accountQuotaChange = null; render(false, true); focusOn("quota-refresh-" + c.id); }));
-      } else review.appendChild(el("p", "sub", "Preparing quota review…"));
+        review.appendChild(button("Close", "quota-close-" + c.id, "", function () { state.accountQuotaChange = null; render(false, true); focusOn("account-" + c.id); }));
+      } else review.appendChild(el("p", "sub", current.recovery ? "Preparing selection review…" : "Preparing quota review…"));
       box.appendChild(review);
     }
-    if (changesOn() && state.server.accountQuota) {
-      if (!current) box.appendChild(button("Refresh subscription quota…", "quota-refresh-" + c.id, "", function () { accountQuotaRequest(c, false); }));
-    } else box.appendChild(el("p", "sub", "Refresh explicitly with looptender accounts usage --id ACCOUNT_ID, or review a refresh in a panel started with changes allowed."));
+    var needsSelectionReview = q.reason === "selection_review_required";
+    if (needsSelectionReview) {
+      if (changesOn() && state.server.accountSelectionReview) {
+        if (!current) box.appendChild(button("Review selection for this panel…", "selection-review-" + c.id, "", function () { accountQuotaRequest(c, false, true); }));
+      } else box.appendChild(el("p", "sub", "Open a panel with changes allowed, then return to Accounts to review this selection. The native menu's Open Panel with Controls… provides that entry point."));
+      return box;
+    }
+    if (changesOn() && accountQuotaSupported(c)) {
+      if (!current) box.appendChild(button((c.provider === "claude-code" || c.provider === "antigravity") ? "Retrieve usage…" : "Refresh subscription quota…", "quota-refresh-" + c.id, "", function () { accountQuotaRequest(c, false); }));
+    } else box.appendChild(el("p", "sub", c.provider === "claude-code" ? "Claude usage retrieval requires a panel with changes allowed on Darwin arm64 and the inspected native Claude Code 2.1.326 image. Each selection is checked before a request; other images remain unavailable." : c.provider === "antigravity" ? "Antigravity usage retrieval requires a panel with changes allowed. It runs agy /usage in read-only plan mode without an ordinary model turn." : "Review a refresh in a panel with changes allowed."));
     return box;
   }
   function renderAccounts(d, pane) {
@@ -1381,6 +1489,21 @@
     usage.appendChild(link("#/routes", "View recorded usage", "work-inspect"));
     usage.appendChild(el("span", "sub", ". Readings come from configured routes and are not live. Each account shows the readings of the routes that use it."));
     pane.appendChild(usage);
+    if (d.accountsReference && (savedAccounts.reference !== d.accountsReference || savedAccounts.status !== "ready")) {
+      var failed = savedAccounts.reference === d.accountsReference && savedAccounts.status === "failed";
+      var pending = emptyBox(failed ? "Saved accounts unavailable" : "Reading saved accounts", failed ? "This saved snapshot could not be read. Use Read now to try the current panel snapshot. Missing quota is not zero; no provider refresh was made." : "Reading the saved selections and quota evidence for this panel snapshot. No provider is queried.");
+      pending.setAttribute("role", "status"); pane.appendChild(pending);
+      // A saved-only read after confirmation temporarily replaces the cards.
+      // Keep its non-sensitive outcome and focus target through that gap;
+      // old selection fields and quota rows remain withheld.
+      var outcome = state.accountQuotaChange;
+      if (outcome && outcome.result) {
+        var feedback = el("p", null, outcome.result.text);
+        feedback.tabIndex = -1; feedback.setAttribute("data-focus", "quota-result-" + outcome.id);
+        pane.appendChild(feedback);
+      }
+      return;
+    }
     if (!a.complete || a.state !== "available") {
       pane.appendChild(emptyBox("Accounts unavailable", "The private account catalog could not be read completely. This does not mean no accounts are selected."));
       return;
@@ -1403,7 +1526,7 @@
       var summary = el("summary", "account-summary");
       summary.setAttribute("data-focus", "account-" + c.id);
       var name = el("span", "account-name", c.label);
-      var provider = el("span", "sub", c.provider === "claude-code" ? "Claude Code" : c.provider === "codex" ? "Codex" : c.provider);
+      var provider = el("span", "sub", c.provider === "claude-code" ? "Claude Code" : c.provider === "codex" ? "Codex" : c.provider === "antigravity" ? "Antigravity" : c.provider);
       var identity = el("span", "account-title"); identity.appendChild(name); identity.appendChild(provider);
       identity.appendChild(el("span", "sub", c.selection === "inherited" ? "Inherited context" : c.selection === "explicit_directory" ? "Selected context" : "External context"));
       summary.appendChild(identity);
@@ -1424,6 +1547,18 @@
       plan.appendChild(el("span", "sub", "Reported plan"));
       var auth = c.auth || {}, sameCheck = !!(c.plan && c.plan.observedAt && c.plan.observedAt === auth.observedAt && c.plan.source === auth.source);
       plan.appendChild(accountEvidence(c.plan, sameCheck)); summary.appendChild(plan);
+      var qs = accountQuotaSummary(c);
+      var compact = el("span", "quota-compact");
+      if (qs && qs.state === "reported") {
+        list(qs.rows).filter(function (w) { return typeof w.usedPercent === "number"; }).slice(0, 2).forEach(function (w) {
+          var item = el("span", "quota-chip"); item.appendChild(el("span", "sub", w.name));
+          item.appendChild(el("strong", null, w.ended ? "Window ended" : w.usedPercent + "% used")); compact.appendChild(item);
+        });
+        if (!compact.childNodes.length) compact.appendChild(el("span", "sub", qs.partial ? "Partial quota evidence" : "Quota details recorded"));
+        compact.appendChild(el("span", "sub", qs.freshness === "provider_unknown" ? "Provider freshness unknown" : qs.freshness === "stale" ? "Older quota reading" : "Saved quota reading"));
+        compact.title = "Saved account quota; expand for all recorded detail";
+      } else if (c.provider === "codex" || c.provider === "claude-code" || c.provider === "antigravity") compact.appendChild(el("span", "sub", "Account quota unavailable"));
+      summary.appendChild(compact);
       details.appendChild(summary);
       var body = el("div", "account-body");
       var facts = el("dl", "work-facts");
@@ -1432,7 +1567,7 @@
       var use = byCard[c.id];
       facts.appendChild(fact("Routes", use && list(use.routes).length ? accountRouteList(d, use, true) : accountRoutes(c)));
       body.appendChild(facts);
-      if (c.provider === "codex") body.appendChild(accountQuotaBox(c));
+      if (c.provider === "codex" || c.provider === "claude-code" || c.provider === "antigravity") body.appendChild(accountQuotaBox(c));
       // The catalog records no model: a route chooses it, and a check never
       // calls one. Said once, quietly, in place of two empty rows.
       if (c.configuredModel && c.configuredModel.missing === "not_recorded" && c.observedModel && c.observedModel.missing === "not_recorded") body.appendChild(el("p", "sub", "Models are not recorded here: a route chooses the model, and a check never calls one."));
@@ -2011,34 +2146,14 @@
   // Which command serves this page: "dock" until the server says otherwise.
   function served() { return state.server && state.server.servedBy === "panel" ? "panel" : "dock"; }
 
-  function idleSpan(seconds) {
-    if (seconds % 3600 === 0) return seconds === 3600 ? "1 hour" : seconds / 3600 + " hours";
-    if (seconds % 60 === 0) return seconds === 60 ? "1 minute" : seconds / 60 + " minutes";
-    return seconds + " seconds";
-  }
-
   function put(node, parts) {
     parts.forEach(function (part) { node.appendChild(typeof part === "string" ? document.createTextNode(part) : part); });
   }
 
-  // One sentence under the footer: what serves the page and when it stops.
+  // The footer's first line: whether this page can change anything.
   function renderServed() {
     var m = $("changes");
     if (m && state.server && list(state.server.changesText).length) m.textContent = say(state.server.changesText);
-    var vt = $("version");
-    if (vt && state.server && state.server.versionText) {
-      vt.textContent = "";
-      put(vt, [state.server.versionText + " ", link("#/versions", "Where each build runs")]);
-    }
-    var p = $("served");
-    if (!p) return;
-    p.textContent = "";
-    if (!state.server) return;
-    if (served() === "panel") {
-      put(p, ["Served to this computer only by ", el("code", null, "keepgoing panel"), ", which stops by itself after " + idleSpan(state.server.idleSeconds || 1800) + " with no page reading from it. ", el("code", null, "keepgoing panel stop"), " ends it now."]);
-    } else {
-      put(p, ["Served to this computer only by ", el("code", null, "keepgoing dock"), ", until Ctrl-C in its terminal."]);
-    }
   }
 
   // How long one read may take: a little under the refresh interval, from 4
@@ -2051,6 +2166,38 @@
     return fetch(url, { cache: "no-store", credentials: "same-origin", headers: { Accept: "application/json" }, signal: ctl.signal })
       .then(function (r) { if (!r.ok) throw new Error("status " + r.status); return r.json(); })
       .finally(function () { clearTimeout(timer); });
+  }
+
+  // A bounded companion to the current main read, only on Accounts. No
+  // independent timer or provider refresh. A new snapshot or privacy view
+  // invalidates both successful and delayed replies from the previous read.
+  function loadSavedAccounts(retry) {
+    var d = state.data;
+    if (!d || !d.accountsReference || route().view !== "accounts") return;
+    var ref = d.accountsReference, asked = state.identifiers;
+    if (savedAccounts.reference === ref && savedAccounts.status === "ready") { d.accounts = savedAccounts.data; return; }
+    if (savedAccounts.reference === ref && (savedAccounts.status === "loading" || (!retry && savedAccounts.status === "failed"))) return;
+    if (savedAccounts.abort) savedAccounts.abort.abort();
+    var ctl = new AbortController(), seq = ++savedAccounts.serial;
+    savedAccounts.reference = ref; savedAccounts.status = "loading"; savedAccounts.data = null; savedAccounts.abort = ctl;
+    var timer = setTimeout(function () { ctl.abort(); }, readTimeoutMs());
+    function current() { return seq === savedAccounts.serial && state.data && state.data.accountsReference === ref && state.identifiers === asked; }
+    fetch(SAVED_ACCOUNTS + "?reference=" + encodeURIComponent(ref), { cache: "no-store", credentials: "same-origin", headers: { Accept: "application/json" }, signal: ctl.signal })
+      .then(function (r) { if (!r.ok) throw new Error("saved accounts unavailable"); return r.text(); })
+      .then(function (text) {
+        if (new TextEncoder().encode(text).length > 1048576) throw new Error("saved accounts bound");
+        var result = JSON.parse(text);
+        if (!result || result.schemaVersion !== SCHEMA || result.reference !== ref || !result.accounts || !Array.isArray(result.accounts.cards) || result.accounts.cards.length > 64) throw new Error("saved accounts schema");
+        if (!current()) return;
+        savedAccounts.status = "ready"; savedAccounts.data = result.accounts; state.data.accounts = result.accounts;
+      })
+      .catch(function () { if (current()) savedAccounts.status = "failed"; })
+      .finally(function () {
+        clearTimeout(timer);
+        if (!current()) return;
+        savedAccounts.abort = null;
+        if (route().view === "accounts") render(false, true);
+      });
   }
 
   function loadServer() {
@@ -2091,9 +2238,12 @@
         // Identifiers were turned on or off while this read was out: the
         // reply is for the other view, so it is dropped and read again.
         if (asked !== state.identifiers) { state.again = true; return; }
+        if (savedAccounts.reference !== d.accountsReference && savedAccounts.abort) { savedAccounts.abort.abort(); ++savedAccounts.serial; }
+        if (d.accountsReference && savedAccounts.reference === d.accountsReference && savedAccounts.status === "ready") d.accounts = savedAccounts.data;
         state.data = d; state.lastOk = Date.now(); state.failed = false; state.failedSince = 0; state.failedLong = false;
         if (wantsUsage(route())) loadUsage();
         if (render(false) !== false) notice("cut", d.complete === false ? "This read was cut off before every loop was read. Loops that were not read are listed as could not be read; it reads again shortly." : "");
+        loadSavedAccounts(true);
       })
       .catch(function (err) {
         state.failed = true;
@@ -2147,6 +2297,7 @@
     });
     window.addEventListener("hashchange", function () {
       render(true);
+      loadSavedAccounts(false);
       if (wantsUsage(route())) loadUsage();
     });
     document.addEventListener("keydown", function (ev) {

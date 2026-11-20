@@ -283,7 +283,7 @@ func TestPanelRoutesAndQuotaServedTogether(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			for _, capability := range []string{"pause", "stop", "resume", "this panel's build", "edit routes", "startup caller's authority", "Codex subscription quota"} {
+			for _, capability := range []string{"pause", "stop", "resume", "this panel's build", "edit routes", "startup caller's authority", "Codex subscription quota", "Claude usage", "provider freshness unknown"} {
 				if !strings.Contains(string(text), capability) {
 					t.Fatalf("missing disclosure %q: %s", capability, text)
 				}

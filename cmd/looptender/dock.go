@@ -204,18 +204,20 @@ type dockServed struct {
 	// --allow-changes, otherwise "off". keepgoing dock never allows them.
 	// ChangesText says so in the footer's words. Form is the session's
 	// anti-forgery value for preparing a change, only when changes are on.
-	Changes      string     `json:"changes,omitempty"`
-	ChangesSince *time.Time `json:"changesSince,omitempty"`
-	ChangesText  dockText   `json:"changesText,omitempty"`
-	Form         string     `json:"form,omitempty"`
-	RouteChanges string     `json:"routeChanges,omitempty"`
-	AccountQuota bool       `json:"accountQuota,omitempty"` // explicit reviewed account-scoped refresh
+	Changes                string     `json:"changes,omitempty"`
+	ChangesSince           *time.Time `json:"changesSince,omitempty"`
+	ChangesText            dockText   `json:"changesText,omitempty"`
+	Form                   string     `json:"form,omitempty"`
+	RouteChanges           string     `json:"routeChanges,omitempty"`
+	AccountQuotaProviders  []string   `json:"accountQuotaProviders,omitempty"` // explicit provider allowlist; absent means legacy Codex only
+	AccountQuota           bool       `json:"accountQuota,omitempty"`          // explicit reviewed account-scoped refresh
+	AccountSelectionReview bool       `json:"accountSelectionReview,omitempty"`
 }
 
 func newDockServer(port int, auth dockAuth, reader *dockReader) *dockServer {
 	return &dockServer{port: port, guard: newDockGuard(port), auth: auth, reader: reader, served: dockServed{SchemaVersion: 1, ServedBy: "dock",
 		Version: dockBuildLabel(version), VersionText: dockPanelVersionText(version),
-		ChangesText: txt("Read-only. keepgoing dock never pauses, resumes, stops or starts anything; keepgoing panel --allow-changes can.")}}
+		ChangesText: txt("Read-only: this page cannot pause, resume, stop or start anything.")}}
 }
 
 func (s *dockServer) url(token string) string {
@@ -282,6 +284,14 @@ func (s *dockServer) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	case dockServerPath:
 		w.Header().Set("Content-Type", "application/json")
 		_ = json.NewEncoder(w).Encode(s.served)
+	case dockAccountsPath:
+		body, err := s.reader.accountsJSON(r.URL.Query().Get("reference"))
+		if err != nil {
+			http.Error(w, "saved accounts changed or expired; read the panel again", http.StatusConflict)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write(body)
 	case dockAPIPath, dockUsagePath:
 		identifiers := r.URL.Query().Get("identifiers") == "1"
 		var body []byte
@@ -330,8 +340,10 @@ type dockReader struct {
 	hostOnce sync.Once
 	host     string
 
-	mu    sync.Mutex
-	cache map[bool]dockCached
+	mu            sync.Mutex
+	cache         map[bool]dockCached
+	accountsMu    sync.Mutex
+	accountBodies map[bool]dockAccountCached
 
 	// versions asks for the Versions view: the page's endpoint does, while
 	// panel list and client review/apply, which never show it, do not, so
@@ -410,8 +422,16 @@ func (d *dockReader) bodies(identifiers bool) (dockCached, error) {
 	if base.Err() != nil {
 		return dockCached{}, base.Err()
 	}
+	reference, err := panelRandom(16)
+	if err != nil {
+		return dockCached{}, err
+	}
+	web, accountBody, err := dockSplitAccounts(report, reference)
+	if err != nil {
+		return dockCached{}, err
+	}
 	var buf, usage bytes.Buffer
-	if err := json.NewEncoder(&buf).Encode(report); err != nil {
+	if err := json.NewEncoder(&buf).Encode(web); err != nil {
 		return dockCached{}, err
 	}
 	if buf.Len() > dockMaxResponse {
@@ -424,6 +444,12 @@ func (d *dockReader) bodies(identifiers bool) (dockCached, error) {
 		return dockCached{}, errors.New("usage page exceeds its bound")
 	}
 	out := dockCached{at: time.Now(), body: buf.Bytes(), usage: usage.Bytes()}
+	d.accountsMu.Lock()
+	if d.accountBodies == nil {
+		d.accountBodies = map[bool]dockAccountCached{}
+	}
+	d.accountBodies[identifiers] = dockAccountCached{at: out.at, reference: reference, body: accountBody}
+	d.accountsMu.Unlock()
 	if report.Complete {
 		if d.cache == nil {
 			d.cache = map[bool]dockCached{}
