@@ -1,1 +1,0 @@
-Register `adapter: antigravity` (`agy acp --stdio`) as a standalone primary-only ACP loop adapter in configuration, schema, adapter factory, and `doctor`, with live `agy 1.5.13` verification and an installed testing/debugging runbook.

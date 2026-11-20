@@ -1,1 +1,0 @@
-- Publish CLI menu references after confirmed BB plugin setup, start and transfer operations, with explicit identity-bound repair for existing references. Report publication failure separately without repeating lifecycle operations, and distinguish plugin reference provenance from CLI registry coverage.

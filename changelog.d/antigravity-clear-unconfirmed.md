@@ -1,1 +1,0 @@
-- Add `looptender session clear-unconfirmed` to clear an unconfirmed Antigravity turn record after a supervisor crash while preserving any saved session and active holds.

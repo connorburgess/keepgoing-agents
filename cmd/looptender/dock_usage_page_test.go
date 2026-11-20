@@ -508,9 +508,9 @@ func dockUsageScratch(t *testing.T, stateDir string, now time.Time) {
 func TestDockUsagePageScript(t *testing.T) {
 	js, css := dockUIText(t, "dock.js"), dockUIText(t, "dock.css")
 	versions := strings.Index(js, `pickRow("#/versions"`)
-	usage := strings.Index(js, `pickRow("#/usage", "dot-calm", "Usage", d.usagePicker`)
+	usage := strings.Index(js, `pickRow("#/usage", "dot-calm", "Activity", d.usagePicker`)
 	if versions < 0 || usage < versions {
-		t.Error("the Usage row is not after Versions with a neutral dot")
+		t.Error("the Activity row is not after Versions with a neutral dot")
 	}
 	for _, want := range []string{
 		`var USAGE = "api/v1/usage";`,

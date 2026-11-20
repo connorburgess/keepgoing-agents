@@ -1,1 +1,0 @@
-- Add opt-in explicit BB coordinator assignment reviews, lane handoff import/acknowledgement, dated read-only status/panel counts and a contradiction check on explicit awaiting-user declarations. Missing evidence remains unknown; no lane is dispatched and no hold is cleared automatically.

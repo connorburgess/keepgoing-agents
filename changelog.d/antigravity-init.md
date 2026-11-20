@@ -1,1 +1,0 @@
-- Support `looptender init --agent antigravity` (discovering `agy` on `PATH` and creating standalone primary-only ACP loops), refuse `fallbacks add` for Antigravity primary or fallback targets, and update `README.md`, `docs/antigravity.md`, and `docs/roadmap.md` with the installed macOS `agy 1.5.13` two-turn verification and `-c` runbook commands.

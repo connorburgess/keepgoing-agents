@@ -267,14 +267,22 @@ func (r recorded) Dropped(e Event) error {
 
 // DeliveryStatus is historical evidence, never endpoint health or send authority.
 type DeliveryStatus struct {
-	State    string     `json:"state"`
-	Dropped  uint64     `json:"dropped"`
-	Latest   *Delivery  `json:"latest,omitempty"`
-	Warnings []Delivery `json:"warnings"`
+	SessionpipeGate string     `json:"sessionpipeGate,omitempty"`
+	State           string     `json:"state"`
+	Dropped         uint64     `json:"dropped"`
+	Latest          *Delivery  `json:"latest,omitempty"`
+	Warnings        []Delivery `json:"warnings"`
 }
 
 func InspectDeliveries(dir string) DeliveryStatus {
 	s := DeliveryStatus{State: "not_recorded", Warnings: []Delivery{}}
+	if _, err := snapshot.LstatRecord(filepath.Join(dir, SessionpipeGateFile)); !errors.Is(err, os.ErrNotExist) {
+		if gate, err := LoadSessionpipeGate(dir); err != nil {
+			s.SessionpipeGate = "unavailable"
+		} else {
+			s.SessionpipeGate = gate.Status
+		}
+	}
 	h, err := LoadDeliveries(dir)
 	if err != nil {
 		s.State = "unavailable"

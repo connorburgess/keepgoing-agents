@@ -471,7 +471,7 @@ What the kit does not check:
 - `writes-stay-inside` watches the project, the home directory and the temporary directory. A write to some other absolute path is not seen.
 - `state-unwritable` and the file-mode part of `send-once` do not run on Windows or as root.
 - A send that times out is not exercised.
-- The four declarations about what an agent does for itself (retries, provider failover, scheduling, child work) are not yet compared with behaviour.
+- The four declarations about what an agent does for itself (retries, provider failover, scheduling, lane work) are not yet compared with behaviour.
 
 ### Checking your own wrapper
 
@@ -547,4 +547,4 @@ What this means for looptender: the dated review found no documented way to supe
 
 ## Sessionpipe reporting boundary (unreleased)
 
-[Sessionpipe reporting](sessionpipe.md) is an OUT report format, not a registered supervision adapter or a capability-matrix column. `adapter: sessionpipe` is rejected. No Observe, Send, Stop, activation, retry, session ownership or remote control capability is exposed. IN needs typed event intake and an observe-only-loop decision; BACK is held by #233.
+[Sessionpipe reporting](sessionpipe.md) is an OUT report format, not a registered supervision adapter or a capability-matrix column. `adapter: sessionpipe` is rejected. No Observe, Send, Stop, activation, retry, session ownership or remote control capability is exposed. A persistent POST-401 report pause and explicit `report resume` affect future reports only; they grant no agent or loop resume capability. IN needs typed event intake and an observe-only-loop decision; BACK is held by #233.

@@ -1,1 +1,0 @@
-The Routes page's Allowances strip groups routes only when they consistently state the same catalog account. Each route keeps its own dated probe reading and windows; no combined allowance is shown. Unassigned or mismatched routes keep their configured group and route labels without inferred account identities. Selected-context subscription quota remains separate on Accounts.

@@ -208,16 +208,14 @@
     u = u || { availability: "unavailable" };
     var box = el("div", "route-usage");
     if (u.availability === "unavailable") {
-      box.appendChild(el("div", "sub unknown usage-none", (u.readLine || "No usage reading") + (u.reason ? ": " + u.reason : "")));
+      box.appendChild(el("div", "sub usage-none", (u.readLine || "No recent reading") + (u.reason ? " · " + u.reason : "")));
+      return box;
+    }
+    if (u.availability === "stale") {
+      box.appendChild(el("div", "sub usage-none", "Window ended" + (u.readLine ? " · " + u.readLine : "")));
       return box;
     }
     var uh = el("div", "sub usage-read", u.readLine || "Usage reading");
-    // Age is said in the read line and is not a warning. Availability
-    // "stale" is that every window it describes has ended since it was
-    // taken: a neutral label. Only an old reading that was near its limit
-    // (needsPerson) gets one amber line, as only then may its age change a
-    // decision.
-    if (u.availability === "stale") uh.appendChild(tag("calm", "Windows ended"));
     box.appendChild(uh);
     if (u.needsPerson && u.ageNote) box.appendChild(el("p", "route-note is-attn usage-age", u.ageNote));
     box.appendChild(meters(u));
@@ -256,11 +254,32 @@
       body.appendChild(st);
     }
     list(o.after).forEach(function (t) { body.appendChild(el("p", "route-note is-plain", t)); });
-    var meta = el("div", "sub route-meta");
-    meta.appendChild(joinParts(list(o.meta).concat(state.identifiers && o.named ? [o.named] : [])));
-    body.appendChild(meta);
-    body.appendChild(usageBlock(o.usage));
-    list(o.boxes).forEach(function (b) { body.appendChild(b); });
+    var metaItems = list(o.meta).concat(state.identifiers && o.named ? [o.named] : []);
+    if (o.compact) {
+      if (o.usage && o.usage.availability !== "unavailable") body.appendChild(usageBlock(o.usage));
+      list(o.boxes).forEach(function (b) { body.appendChild(b); });
+      var extraNotes = list(o.extraNotes);
+      if (metaItems.length || extraNotes.length || (o.usage && o.usage.availability === "unavailable")) {
+        var more = el("details", "route-more");
+        more.appendChild(el("summary", null, "Details"));
+        var mb = el("div", "route-more-body");
+        if (metaItems.length) {
+          var m = el("div", "sub route-meta");
+          m.appendChild(joinParts(metaItems));
+          mb.appendChild(m);
+        }
+        extraNotes.forEach(function (n) { mb.appendChild(el("p", "route-note is-" + (n.tone || "plain"), n.text)); });
+        if (o.usage && o.usage.availability === "unavailable") mb.appendChild(usageBlock(o.usage));
+        more.appendChild(mb);
+        body.appendChild(more);
+      }
+    } else {
+      var meta = el("div", "sub route-meta");
+      meta.appendChild(joinParts(metaItems));
+      body.appendChild(meta);
+      body.appendChild(usageBlock(o.usage));
+      list(o.boxes).forEach(function (b) { body.appendChild(b); });
+    }
     li.appendChild(body);
     return li;
   }
@@ -370,9 +389,6 @@
     fixed.appendChild(pickRow("#/routes", rs.trouble ? "dot-limit" : "dot-calm", "Routes", rs.picker || "", r.view === "routes"));
     var ac = d.accounts || {};
     fixed.appendChild(pickRow("#/accounts", "dot-calm", "Accounts", ac.complete ? (d.accountsReference ? d.selectedAccounts || 0 : list(ac.cards).length) + " selected" : "Unavailable", r.view === "accounts"));
-    var vs = d.versions || {};
-    fixed.appendChild(pickRow("#/versions", vs.behind ? "dot-limit" : "dot-calm", "Versions", vs.summary || "", r.view === "versions"));
-    fixed.appendChild(pickRow("#/usage", "dot-calm", "Usage", d.usagePicker || "", r.view === "usage"));
     nav.appendChild(fixed);
 
     var label = el("p", "pick-label", "Loops");
@@ -383,7 +399,9 @@
     ul.setAttribute("aria-labelledby", "pick-loops");
     list(d.loops).forEach(function (l) {
       var li = el("li");
-      li.appendChild(pickRow("#/loop/" + l.key, "dot-" + (TONES[l.state] || "unknown"), l.name, l.pickerState, r.view === "loop" && r.key === l.key));
+      var row = pickRow("#/loop/" + l.key, "dot-" + (TONES[l.state] || "unknown"), l.name, l.pickerState, r.view === "loop" && r.key === l.key);
+      if (l.state === "paused" || l.state === "stopped" || l.state === "finished" || l.state === "off") row.classList.add("is-quiet");
+      li.appendChild(row);
       ul.appendChild(li);
     });
     if (!list(d.loops).length) ul.appendChild(el("li", "sub pick-empty", d.registry.availability === "available" ? "No loops registered yet" : "Unknown"));
@@ -391,6 +409,12 @@
     if (d.registry.omitted) scroll.appendChild(el("p", "sub pick-label", d.registry.omitted + " more not shown"));
     nav.appendChild(scroll);
     scroll.scrollTop = scrollTop;
+
+    var foot = el("div", "pick-foot");
+    var vs = d.versions || {};
+    foot.appendChild(pickRow("#/versions", vs.behind ? "dot-limit" : "dot-calm", "Versions", vs.summary || "", r.view === "versions"));
+    foot.appendChild(pickRow("#/usage", "dot-calm", "Activity", d.usagePicker || "", r.view === "usage"));
+    nav.appendChild(foot);
   }
 
   function paneHead(title, pill) {
@@ -469,28 +493,6 @@
     }
     pane.appendChild(workTree(d));
     pane.appendChild(recentAcrossLoops(d));
-    // Loops that do not need a person but are not routine either: waiting on
-    // something, not checked, or on a later route.
-    var worth = list(d.worth);
-    if (worth.length) {
-      var sec = panel("Worth knowing", [el("span", "sub", "not waiting on you")]);
-      var ul = el("ul", "worth");
-      worth.forEach(function (w) {
-        var li = el("li");
-        // A failed lane is said in words; its dot is not the green of a
-        // loop with nothing to say.
-        var wl = loopByKey(w.key), tone = TONES[w.state] || "unknown";
-        if (wl && wl.lanesFailed && tone === "good") tone = "warn";
-        li.appendChild(el("span", "dot dot-" + tone));
-        var t = el("div");
-        t.appendChild(link("#/loop/" + w.key, w.loop));
-        t.appendChild(el("span", "sub", say(w.text)));
-        li.appendChild(t);
-        ul.appendChild(li);
-      });
-      sec.appendChild(ul);
-      pane.appendChild(sec);
-    }
   }
 
   // The existing feed verifies direct lanes at a check, not an entire live
@@ -498,11 +500,12 @@
   // when a lane links to it: its own control state may differ from the
   // parent's observation. No relationship is inferred from names or order.
   function workTree(d) {
-    var p = panel("Loops and lanes");
+    var p = panel("Loops");
     var ul = el("ul", "work-tree");
     var retainedOpen = Object.create(null);
     list(d.loops).forEach(function (l) {
-      var li = el("li", "work-branch"), details = el("details");
+      var quiet = l.state === "paused" || l.state === "stopped" || l.state === "finished" || l.state === "off";
+      var li = el("li", "work-branch" + (quiet ? " is-quiet" : "")), details = el("details");
       details.dataset.loop = l.key;
       details.open = Object.prototype.hasOwnProperty.call(state.treeOpen, l.key) ? state.treeOpen[l.key] : !!needFor(l.key);
       retainedOpen[l.key] = details.open;
@@ -513,17 +516,19 @@
       if (l.lanes && l.lanes.role === "coordinator") name.appendChild(el("span", "work-role", "coordinator"));
       summary.appendChild(name);
       var status = el("span", "work-status");
-      status.appendChild(el("span", "dot dot-" + (TONES[l.state] || "unknown")));
-      status.appendChild(el("span", null, "Supervision: " + l.phrase));
-      if (l.state === "finished") status.appendChild(tag("stale", "Unverified declaration"));
+      var tone = TONES[l.state] || "unknown";
+      if (l.lanesFailed && tone === "good") tone = "warn";
+      status.appendChild(el("span", "dot dot-" + tone));
+      status.appendChild(el("span", null, l.phrase));
+      if (l.state === "finished") status.appendChild(tag("calm", "Unverified"));
       if (l.lanesFailed) status.appendChild(tag("needs", l.lanesFailed));
       summary.appendChild(status);
-      summary.appendChild(el("span", "sub work-observation", l.lanes && l.lanes.summary ? "Lanes: " + l.lanes.summary : "Lane evidence: " + ((l.children && l.children.phrase) || "Unknown")));
+      if (l.lanes && l.lanes.summary) summary.appendChild(el("span", "sub work-observation", "Lanes: " + l.lanes.summary));
       // Age in plain words, as for usage readings; see lastCheck().
       summary.appendChild(el("span", "sub work-age", (l.lastCheck && l.lastCheck.text) || "Last check unknown"));
       var mr = l.migrationReview;
-      if (mr && mr.availability !== "not_recorded" && (!mr.counts || mr.counts.unfinished > 0)) {
-        summary.appendChild(el("span", "sub work-migration", "Migration review: " + mr.text + (mr.observedAt ? " · historical evidence from " + fmt(dayTimeYearFmt, mr.observedAt) : "")));
+      if (mr && mr.availability === "available" && mr.counts && mr.counts.unfinished > 0) {
+        summary.appendChild(el("span", "sub work-migration", "Migration review: " + mr.text));
       }
       details.appendChild(summary);
       var body = el("div", "work-body");
@@ -551,7 +556,6 @@
     });
     state.treeOpen = retainedOpen;
     p.appendChild(ul);
-    p.appendChild(el("p", "sub work-evidence", "Each loop and its own lanes, as of its last check."));
     if (!d.complete || d.registry.omitted) p.appendChild(el("p", "more", "This read does not include every registered loop. Missing loops are not assumed stopped or clear."));
     return p;
   }
@@ -559,7 +563,7 @@
   // Merge only the bounded, already-projected events. This is a recent
   // sample, not a complete chronology or a persisted "while away" cursor.
   function recentAcrossLoops(d) {
-    var p = panel("Recent activity across loops");
+    var p = panel("Recent activity");
     var intro = el("p", "sub", "The newest few events from each loop.");
     p.appendChild(intro);
     var rows = [], missing = false, pruned = false;
@@ -732,8 +736,12 @@
     pane.appendChild(nowRow(l));
     var change = changeBox(l);
     if (change) pane.appendChild(change);
-    pane.appendChild(migrationReviewPanel(l.migrationReview));
-    pane.appendChild(assignmentPanel(l.assignments));
+    if (l.migrationReview && l.migrationReview.availability === "available" && l.migrationReview.counts && l.migrationReview.counts.unfinished > 0) {
+      pane.appendChild(migrationReviewPanel(l.migrationReview));
+    }
+    if (l.assignments && l.assignments.availability === "available" && l.assignments.counts && (l.assignments.counts.unfinished > 0 || l.assignments.counts.unknown > 0 || l.assignments.counts.unacknowledged > 0 || l.assignments.counts.personBlocked > 0)) {
+      pane.appendChild(assignmentPanel(l.assignments));
+    }
 
     // The ordered preferred routes are the main structure.
     var c = l.chain, entries = list(c.entries);
@@ -747,8 +755,8 @@
       var item = routeItem({
         route: e.route, position: e.position, badge: String(e.position + 1), title: e.title, titleAccount: bound || e.titleAccount, active: e.inUse, use: e.use, off: e.disabled,
         readiness: e.position > 0 && e.readiness !== "current" ? e.readiness : "", phrase: e.phrase, notes: notesOf(e.notes),
-        after: list(e.after).concat(e.catalogAccount && e.catalogAccount.assigned === "none" ? ["Not assigned to an account."] : []),
-        meta: e.meta, named: e.named, usage: e.usage, boxes: e.current ? [laneBox(l)] : []
+        after: list(e.after),
+        meta: e.meta, named: e.named, usage: e.usage, boxes: e.current ? [laneBox(l)] : [], compact: true
       });
       item.setAttribute("aria-label", "Choice " + (e.position + 1) + ": " + e.title + (e.use ? ", " + e.use : ""));
       ol.appendChild(item);
@@ -768,7 +776,11 @@
 
     pane.appendChild(eventsPanel(l.events));
 
-    var checks = panel("Checks and limits");
+    var checks = el("details", "panel panel-fold");
+    if (list(l.issues).length || state.identifiers) checks.open = true;
+    var checksSum = el("summary", "panel-fold-summary", "Checks and diagnostics");
+    checks.appendChild(checksSum);
+    var checksBody = el("div", "panel-fold-body");
     var dl = el("dl", "facts"), dev = l.device || {};
     dl.appendChild(fact("Last check", lastCheck(l.lastCheck)));
     dl.appendChild(fact("Next check", nextCheck(l.nextCheck)));
@@ -788,12 +800,12 @@
       dl.appendChild(fact("Refusals", rf));
     }
     dl.appendChild(fact("Device", (state.identifiers && dev.hostText) || dev.text || unknown()));
-    checks.appendChild(dl);
+    checksBody.appendChild(dl);
     if (list(l.issues).length) {
       var ul = el("ul", "issues");
       ul.setAttribute("aria-label", "Missing evidence");
       l.issues.forEach(function (i) { ul.appendChild(el("li", null, i)); });
-      checks.appendChild(ul);
+      checksBody.appendChild(ul);
     }
     if (state.identifiers && l.identifiers) {
       var ids = el("dl", "ids");
@@ -808,8 +820,9 @@
           ids.appendChild(open);
         }
       }
-      checks.appendChild(ids);
+      checksBody.appendChild(ids);
     }
+    checks.appendChild(checksBody);
     pane.appendChild(checks);
     pane.appendChild(usageBrief(key));
   }
@@ -1987,14 +2000,16 @@
   }
   function routeEditorBox() {
     if (retainedRouteEditor) return retainedRouteEditor;
+    if (!changesOn() || !state.server || state.server.routeChanges !== "person") {
+      var bar = el("p", "route-readonly-bar sub");
+      bar.appendChild(document.createTextNode(changesOn() && state.server && state.server.routeChanges === "bb_caller" ?
+        "Read-only for route edits (opened from BB). " :
+        "Read-only window for route edits. "));
+      bar.appendChild(link(ROUTE_DOCS, "How to open an owner panel"));
+      return bar;
+    }
     var box = panel("Configure preferred routes"); box.classList.add("route-editor");
     box.appendChild(el("p", "sub", "One standard order for loops that follow it. Saving a list does not enroll other loops."));
-    if (!changesOn() || !state.server || state.server.routeChanges !== "person") {
-      box.appendChild(el("p", null, changesOn() && state.server.routeChanges === "bb_caller" ?
-        "This panel was started by a BB thread. Only a person can edit the standard list. Stop it and open a panel outside BB with changes allowed; reopening this window keeps its original caller." :
-        "Route editing requires a panel started outside BB with changes allowed. This window is read-only for route configuration."));
-      box.appendChild(link(ROUTE_DOCS, "How to open an owner panel")); return box;
-    }
     var reviewing = routeReview(box);
     box.appendChild(routeButton("Read current configuration", "route-edit-refresh", function () { routeEdit.reply = null; routeRequest("read", { op: "read" }); }));
     var data = routeEdit.data;
@@ -2123,11 +2138,20 @@
     pane.appendChild(wrap);
   }
 
+  function routeDisplayTitle(n) {
+    if (n.title !== "BB thread · model not configured") return n.title;
+    var group = "";
+    list(n.meta).forEach(function (m) {
+      if (!group && typeof m === "string" && m.indexOf("account group ") === 0) group = m.slice(14);
+    });
+    return group ? "BB thread (" + group + ")" : "BB thread · default";
+  }
   function renderRoutes(d, pane) {
     pane.appendChild(back());
     pane.appendChild(paneHead("Routes"));
-    pane.appendChild(el("p", "lede", "Each model on an account that a loop runs on or keeps on standby, as configured. looptender does not verify which account a thread is using."));
+    pane.appendChild(el("p", "lede", "Configured failover routes and which loops are using them."));
     var routes = list(d.routes), rs = d.routesSummary || {};
+    var editable = changesOn() && state.server && state.server.routeChanges === "person";
     if (!routes.length) {
       pane.appendChild(emptyBox(d.registry.availability === "available" ? "No routes to show." : "Unknown: the registry could not be read.", ""));
       if (d.registry.availability === "available") pane.appendChild(routeEditorBox());
@@ -2135,15 +2159,12 @@
     }
     var sum = el("p", "route-summary");
     sum.appendChild(el("span", null, rs.total || routes.length + " routes"));
-    if (rs.inUseText) sum.appendChild(el("span", "", rs.inUseText));
+    if (rs.inUseText) sum.appendChild(el("span", "sub", rs.inUseText));
     if (rs.trouble && rs.first) sum.appendChild(link("#/routes/" + rs.first, rs.problem, "c-warn"));
     else if (rs.problem) sum.appendChild(el("span", "sub", rs.problem));
     pane.appendChild(sum);
-    pane.appendChild(routeEditorBox());
-    pane.appendChild(allowancesPanel(d));
+    if (editable) pane.appendChild(routeEditorBox());
 
-    var wrap = panel("All routes", [el("span", "sub", "those at a limit or not ready first")]);
-    var ul = el("ul", "route-list");
     // Loops on the route, one per line with their state.
     function loopLines(items) {
       var u = el("ul");
@@ -2169,23 +2190,57 @@
       });
       return w;
     }
-    routes.forEach(function (n) {
+    function buildRouteCard(n) {
       var running = list(n.runningNow), recorded = list(n.recordedFor), standby = list(n.standby), unk = list(n.unknown);
       var boxes = [];
-      if (running.length) boxes.push(box("Running on it now", loopLines(running)));
-      if (recorded.length) boxes.push(box("Their current route, but not running now", loopLines(recorded)));
-      if (standby.length) boxes.push(box("On standby", byChoice(standby)));
-      if (unk.length) boxes.push(box("Listed by loops whose current route could not be read", byChoice(unk)));
+      if (running.length) boxes.push(box("Running now", loopLines(running)));
+      if (recorded.length) boxes.push(box("Current", loopLines(recorded)));
+      if (standby.length) boxes.push(box("Standby", byChoice(standby)));
+      if (unk.length) boxes.push(box("Listed (current route unread)", byChoice(unk)));
       if (n.more) boxes.push(el("p", "sub", n.more));
       var hide = n.readiness === "current" || n.readiness === "main" || (n.readiness === "unknown" && n.probeAgeSeconds == null);
-      ul.appendChild(routeItem({
-        anchor: "route-" + n.key, route: n.key, title: n.title, titleAccount: n.titleAccount, active: running.length > 0, use: n.useText,
-        readiness: hide ? "" : n.readiness, phrase: n.phrase, notes: notesOf(n.notes), meta: n.meta, usage: n.usage, boxes: boxes
-      }));
+      var allNotes = notesOf(n.notes);
+      var primaryNotes = allNotes.filter(function (x) { return x.tone === "limit" || x.tone === "attn"; }).slice(0, 1);
+      var extraNotes = allNotes.filter(function (x) { return primaryNotes.indexOf(x) < 0; });
+      return routeItem({
+        anchor: "route-" + n.key, route: n.key, title: routeDisplayTitle(n), titleAccount: n.titleAccount, active: running.length > 0, use: n.useText,
+        readiness: hide ? "" : n.readiness, phrase: n.phrase, notes: primaryNotes, extraNotes: extraNotes, meta: n.meta, usage: n.usage, boxes: boxes, compact: true
+      });
+    }
+
+    var configured = [], defaults = [];
+    routes.forEach(function (n) {
+      if (n.title === "BB thread · model not configured") defaults.push(n);
+      else configured.push(n);
     });
-    wrap.appendChild(ul);
-    if (d.routesOmitted) wrap.appendChild(el("p", "more", d.routesOmitted + (d.routesOmitted === 1 ? " more route is" : " more routes are") + " not shown."));
-    pane.appendChild(wrap);
+
+    if (configured.length) {
+      var wrap = panel("Configured routes", rs.trouble ? [el("span", "sub", "at a limit first")] : []);
+      var ul = el("ul", "route-list");
+      configured.forEach(function (n) { ul.appendChild(buildRouteCard(n)); });
+      wrap.appendChild(ul);
+      if (d.routesOmitted) wrap.appendChild(el("p", "more", d.routesOmitted + (d.routesOmitted === 1 ? " more route is" : " more routes are") + " not shown."));
+      pane.appendChild(wrap);
+    }
+
+    if (defaults.length) {
+      var targetKey = route().view === "routes" ? route().key : "";
+      var hasTarget = targetKey && defaults.some(function (n) { return n.key === targetKey; });
+      var defLoopCount = 0;
+      defaults.forEach(function (n) { defLoopCount += list(n.runningNow).length + list(n.recordedFor).length; });
+      var fold = el("details", "panel panel-fold");
+      if (hasTarget || !configured.length) fold.open = true;
+      var label = "Default BB threads (" + defaults.length + ")" + (defLoopCount ? " · " + defLoopCount + (defLoopCount === 1 ? " loop" : " loops") + " without a configured model" : "");
+      fold.appendChild(el("summary", "panel-fold-summary", label));
+      var foldBody = el("div", "panel-fold-body");
+      var dul = el("ul", "route-list");
+      defaults.forEach(function (n) { dul.appendChild(buildRouteCard(n)); });
+      foldBody.appendChild(dul);
+      fold.appendChild(foldBody);
+      pane.appendChild(fold);
+    }
+
+    if (!editable) pane.appendChild(routeEditorBox());
   }
 
   // ---- Reading, rendering, and what a screen reader is told ----
