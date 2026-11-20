@@ -35,7 +35,7 @@ func accountQuotaCapture(dir, id string, env []string) (accountQuotaSelection, e
 		return accountQuotaSelection{}, accounts.ErrChanged
 	}
 	s := accountQuotaSelection{Entry: *e, Bound: bound}
-	if e.Provider != "codex" && e.Provider != "claude-code" {
+	if e.Provider != "codex" && e.Provider != "claude-code" && e.Provider != "antigravity" {
 		return s, nil
 	}
 	// Selection paths must remain canonical: a replacement symlink is not the
@@ -82,13 +82,16 @@ func (s accountQuotaSelection) same(t accountQuotaSelection) bool {
 	return s.CLI == nil || (s.CLI.Size() == t.CLI.Size() && s.CLI.ModTime().Equal(t.CLI.ModTime()) && s.CLI.Mode() == t.CLI.Mode())
 }
 func accountQuotaRead(ctx context.Context, provider, cli string, env []string, workdir string) ([]byte, error) {
-	if provider == "claude-code" {
+	switch provider {
+	case "claude-code":
 		return accountClaudeQuotaRead(ctx, cli, env, workdir)
-	}
-	if provider != "codex" {
+	case "antigravity":
+		return accountAntigravityQuotaRead(ctx, cli, env, workdir)
+	case "codex":
+		return accountCodexRPC(ctx, cli, env, workdir, "account/rateLimits/read", map[string]bool{"excludeResetCreditDetails": true})
+	default:
 		return nil, errors.New("unsupported")
 	}
-	return accountCodexRPC(ctx, cli, env, workdir, "account/rateLimits/read", map[string]bool{"excludeResetCreditDetails": true})
 }
 
 // accountQuotaRefresh never runs a route probe. CheckGuard prevents parallel
@@ -108,22 +111,32 @@ func accountQuotaRefresh(ctx context.Context, dir, id string, expected *accountQ
 		return unavailable, accounts.ErrChanged
 	}
 	load, publish := accounts.LoadQuota, accounts.PublishQuota
-	if s.Entry.Provider == "claude-code" {
+	switch s.Entry.Provider {
+	case "claude-code":
 		load, publish = accounts.LoadClaudeQuota, accounts.PublishClaudeQuota
+	case "antigravity":
+		load, publish = accounts.LoadAntigravityQuota, accounts.PublishAntigravityQuota
 	}
 	if _, err := load(dir); err != nil {
 		return unavailable, err
 	}
 	a := accounts.QuotaAttempt{}
-	if s.Entry.Provider != "codex" && s.Entry.Provider != "claude-code" {
+	if s.Entry.Provider != "codex" && s.Entry.Provider != "claude-code" && s.Entry.Provider != "antigravity" {
 		a.Reason = "unsupported_provider"
 	} else {
-		c, cancel := context.WithTimeout(ctx, 5*time.Second)
+		timeout := 5 * time.Second
+		if s.Entry.Provider == "antigravity" {
+			timeout = 10 * time.Second
+		}
+		c, cancel := context.WithTimeout(ctx, timeout)
 		raw, err := run(c, s.Entry.Provider, s.Entry.CLI, accountQuotaExecutionEnvironment(s.Entry, env), s.Entry.Workdir)
 		cancel()
-		if s.Entry.Provider == "claude-code" {
+		switch s.Entry.Provider {
+		case "claude-code":
 			a.Details, a.Reason = accountClaudeQuotaParse(raw, err)
-		} else {
+		case "antigravity":
+			a.Details, a.Reason = accountAntigravityQuotaParse(raw, err)
+		default:
 			a.Details, a.Reason = accountQuotaDetailsParse(raw, err)
 			if a.Reason == "" {
 				a.Windows, _ = accountQuotaParse(raw, nil)

@@ -30,7 +30,7 @@ func accountSelectionForReview(dir, id string, env []string) (accountQuotaSelect
 		return accountQuotaSelection{}, err
 	}
 	e := accounts.Find(&f, id)
-	if e == nil || (e.Provider != "codex" && e.Provider != "claude-code") {
+	if e == nil || (e.Provider != "codex" && e.Provider != "claude-code" && e.Provider != "antigravity") {
 		return accountQuotaSelection{}, accounts.ErrChanged
 	}
 	s := accountQuotaSelection{Entry: *e, Bound: accounts.Context(f, *e, env)}
@@ -105,8 +105,11 @@ func (c *panelChanges) prepareAccountSelection(session, id string) panelChangeRe
 	expires := c.now().UTC().Add(panelHoldFormTTL)
 	c.keep(value, panelForm{session: session, key: id, action: panelAccountSelectionAction, expires: expires, selection: &panelAccountSelectionReview{selection: s, caller: c.caller}})
 	provider := "Codex"
-	if s.Entry.Provider == "claude-code" {
+	switch s.Entry.Provider {
+	case "claude-code":
 		provider = "Claude Code"
+	case "antigravity":
+		provider = "Antigravity"
 	}
 	lines := []dockText{txt("Rebinds this unchanged selection to this panel's startup environment. That environment may authenticate differently from another terminal; account identity is not verified."),
 		txt("Provider and label stay: " + provider + " · " + s.Entry.Label), txt("Executable stays: " + s.Entry.CLI), txt("Working directory stays: " + s.Entry.Workdir)}

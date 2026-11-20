@@ -4,6 +4,8 @@
 
 **Supported-version evidence: none; Antigravity is not installed where this was built.** No `agy` executable, ACP server command, flag, version or platform has been examined or run. Every test uses a stand-in executable with fictional data.
 
+For coordinator and lane model choices and quota habits on Antigravity and Gemini 4, see [Coordinating lanes — Antigravity and Gemini 4 model tiers](coordinating-lanes.md#antigravity-and-gemini-4-model-tiers).
+
 ## Protocol contract
 
 The official [headless guide](https://antigravity.google/docs/cli/headless/) documents NDJSON input/output and lifecycle envelopes. The encoder prepares one user message for stdin. A future caller must select both streaming formats, omit `-p`, and close stdin after that message. Task text stays out of arguments.

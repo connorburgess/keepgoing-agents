@@ -58,7 +58,7 @@ func TestPanelAccountQuotaClaudeConsumerFixture(t *testing.T) {
 
 func TestPanelAccountQuotaProviderCapability(t *testing.T) {
 	for _, platform := range [][2]string{{"darwin", "arm64"}, {"darwin", "amd64"}, {"linux", "arm64"}, {"linux", "amd64"}, {"windows", "arm64"}, {"windows", "amd64"}} {
-		want := []string{"codex"}
+		want := []string{"codex", "antigravity"}
 		if platform == [2]string{"darwin", "arm64"} {
 			want = append(want, "claude-code")
 		}
