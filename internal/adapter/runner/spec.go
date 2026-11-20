@@ -568,7 +568,7 @@ func (h *Headless) Send(ctx context.Context, prompt string, mode adapter.Mode) e
 	if afterSessionCommit != nil {
 		afterSessionCommit()
 	}
-	_, err = h.dir.startTurnGuarded(argv, h.set.Workdir, prompt, envList(h.set.Env), "", h.spec.Prompt == PromptFile, guard)
+	_, err = h.dir.startTurnGuarded(argv, h.set.Workdir, prompt, envList(h.set.Env), "", h.spec.Prompt == PromptFile, guard, "")
 	return err
 }
 

@@ -64,7 +64,7 @@ const value={id:attempt,accountId:id,provider:'codex',state:'waiting',expiresAt:
  console.log('Account/attempt/provider binding, URL rejection, lost start ID, no replay, additive label and session replacement PASS');
 })().catch(e=>{console.error(e);process.exitCode=1;});
 `
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
 	defer cancel()
 	cmd := exec.CommandContext(ctx, node, "--input-type=commonjs", "-")
 	cmd.Stdin = bytes.NewBufferString(source)

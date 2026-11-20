@@ -18,7 +18,7 @@ import (
 )
 
 func TestPanelAccountSelectionRecoveryAndSeparateQuota(t *testing.T) {
-	for _, provider := range []string{"codex", "claude-code"} {
+	for _, provider := range []string{"codex", "claude-code", "antigravity"} {
 		t.Run(provider, func(t *testing.T) { testPanelSelectionRecovery(t, provider) })
 	}
 }
@@ -26,11 +26,18 @@ func testPanelSelectionRecovery(t *testing.T, provider string) {
 	if provider == "claude-code" && (runtime.GOOS != "darwin" || runtime.GOARCH != "arm64") {
 		t.Skip("Claude quota acquisition capability requires Darwin arm64; local recovery negatives run independently")
 	}
-	for _, mode := range []string{"inherited", "explicit_directory"} {
+	modes := []string{"inherited", "explicit_directory"}
+	if provider == "antigravity" {
+		modes = []string{"inherited"}
+	}
+	for _, mode := range modes {
 		t.Run(mode, func(t *testing.T) {
 			key := "CODEX_SESSION_ID"
-			if provider == "claude-code" {
+			switch provider {
+			case "claude-code":
 				key = "CLAUDE_CODE_OAUTH_TOKEN"
+			case "antigravity":
+				key = "AGY_PROFILE"
 			}
 			t.Setenv(key, "fictional-terminal-session")
 			t.Setenv("BB_THREAD_ID", "thr_example_panel_owner")
@@ -48,17 +55,24 @@ func testPanelSelectionRecovery(t *testing.T, provider string) {
 			calls := 0
 			run := func(context.Context, string, string, []string, string) ([]byte, error) {
 				calls++
-				if provider == "claude-code" {
+				switch provider {
+				case "claude-code":
 					return []byte(claudeQuotaUsage), nil
+				case "antigravity":
+					return []byte(antigravityUsageFixture), nil
+				default:
+					return []byte(quotaResponse), nil
 				}
-				return []byte(quotaResponse), nil
 			}
 			if _, err := accountQuotaRefresh(context.Background(), dir, e.ID, nil, run, os.Environ(), time.Now); err != nil {
 				t.Fatal(err)
 			}
 			cacheName := accounts.QuotaName
-			if provider == "claude-code" {
+			switch provider {
+			case "claude-code":
 				cacheName = accounts.ClaudeQuotaName
+			case "antigravity":
+				cacheName = accounts.AntigravityQuotaName
 			}
 			cached, err := os.ReadFile(filepath.Join(dir, cacheName))
 			if err != nil {
@@ -121,7 +135,7 @@ func testPanelSelectionRecovery(t *testing.T, provider string) {
 				t.Fatal(r, calls)
 			}
 			v = accounts.QuotaViews(dir, f, c.quotaEnv, time.Now())[e.ID]
-			if v.State != "reported" || (provider == "claude-code" && (v.Freshness != "provider_unknown" || v.RetrievedAt == nil || v.ObservedAt != nil)) {
+			if v.State != "reported" || ((provider == "claude-code" || provider == "antigravity") && (v.Freshness != "provider_unknown" || v.RetrievedAt == nil || v.ObservedAt != nil)) {
 				t.Fatal(v)
 			}
 		})
@@ -129,7 +143,7 @@ func testPanelSelectionRecovery(t *testing.T, provider string) {
 }
 
 func TestPanelAccountSelectionReviewDriftAndSpentForms(t *testing.T) {
-	for _, provider := range []string{"codex", "claude-code"} {
+	for _, provider := range []string{"codex", "claude-code", "antigravity"} {
 		t.Run(provider, func(t *testing.T) { testPanelSelectionDrift(t, provider) })
 	}
 }

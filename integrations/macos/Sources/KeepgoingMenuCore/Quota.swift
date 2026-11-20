@@ -43,7 +43,7 @@ extension Contract {
               value.omitted >= 0, value.omitted <= 64 else { return false }
         for a in value.accounts {
             let q = a.summary
-            guard a.id == nil || (a.id!.count == 32 && a.id!.allSatisfy { "0123456789abcdef".contains($0) }), quotaText(a.label), ["codex", "claude-code"].contains(a.provider),
+            guard a.id == nil || (a.id!.count == 32 && a.id!.allSatisfy { "0123456789abcdef".contains($0) }), quotaText(a.label), ["codex", "claude-code", "antigravity"].contains(a.provider),
                   ["reported", "unavailable"].contains(q.state), quotaText(q.text),
                   ["fresh", "stale", "unavailable", "provider_unknown"].contains(q.freshness), q.rows.count <= 41,
                   (q.omitted ?? 0) >= 0, (q.omitted ?? 0) <= 256,
@@ -51,11 +51,12 @@ extension Contract {
                   q.retrievedAt == nil || date(q.retrievedAt) != nil,
                   q.failedRefreshAt == nil || date(q.failedRefreshAt) != nil,
                   q.failedRefreshText == nil || quotaText(q.failedRefreshText!),
-                  q.source == nil || ["codex account/rateLimits/read", "claude:get_usage"].contains(q.source!) else { return false }
+                  q.source == nil || ["codex account/rateLimits/read", "claude:get_usage", "agy:/usage"].contains(q.source!) else { return false }
             if q.state == "reported" {
                 let codex = a.provider == "codex" && q.source == "codex account/rateLimits/read" && q.observedAt != nil && q.retrievedAt == nil && ["fresh", "stale"].contains(q.freshness)
                 let claude = a.provider == "claude-code" && q.source == "claude:get_usage" && q.retrievedAt != nil && q.observedAt == nil && q.freshness == "provider_unknown"
-                guard codex || claude else { return false }
+                let antigravity = a.provider == "antigravity" && q.source == "agy:/usage" && q.retrievedAt != nil && q.observedAt == nil && q.freshness == "provider_unknown"
+                guard codex || claude || antigravity else { return false }
             } else if !q.rows.isEmpty || q.observedAt != nil || q.retrievedAt != nil || q.source != nil || q.freshness != "unavailable" { return false }
             for r in q.rows {
                 guard quotaText(r.name, bytes: 160), quotaText(r.text),
@@ -76,7 +77,7 @@ extension MenuBuilder {
             return [quotaStatus("Account quota is not reported by this CLI.")]
         }
         guard list.state == "available" else { return [quotaStatus("Account quota evidence unavailable.")] }
-        if list.accounts.isEmpty { return [quotaStatus("No selected Claude or Codex accounts.")] }
+        if list.accounts.isEmpty { return [quotaStatus("No selected Claude, Codex or Antigravity accounts.")] }
         var result = [quotaStatus("Account quota · saved selections, not live thread identity")]
         for a in list.accounts.prefix(6) {
             let q = a.summary

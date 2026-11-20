@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync"
 
 	"github.com/looptender/looptender/internal/lock"
 )
@@ -69,7 +70,11 @@ func MaybeRunTurn() {
 	if os.WriteFile(filepath.Join(dir, startedName), []byte(key), 0o600) != nil {
 		os.Exit(2)
 	}
-	drainStopWatcher = startStopWatcher(Dir(dir), key, terminate)
+	stopAll := func() error {
+		killOwnedChild()
+		return terminate()
+	}
+	drainStopWatcher = startStopWatcher(Dir(dir), key, stopAll)
 	code := runOwnedTurn(dir, argv, os.Getenv(envTurnACP), drainStopWatcher)
 	os.Exit(code)
 }
@@ -193,6 +198,33 @@ var afterPublish, onDecline func()
 // Initialized only in the owned wrapper, before the agent begins. It reports
 // whether the wrapper accepted a stop.
 var drainStopWatcher func() bool
+
+var (
+	ownedChildMu   sync.Mutex
+	ownedChildKill func()
+)
+
+// registerOwnedChildTerminator lets a worker that runs its child in a separate
+// process group or nested job ensure wrapper Stop ends that tree as well.
+func registerOwnedChildTerminator(fn func()) func() {
+	ownedChildMu.Lock()
+	ownedChildKill = fn
+	ownedChildMu.Unlock()
+	return func() {
+		ownedChildMu.Lock()
+		ownedChildKill = nil
+		ownedChildMu.Unlock()
+	}
+}
+
+func killOwnedChild() {
+	ownedChildMu.Lock()
+	fn := ownedChildKill
+	ownedChildMu.Unlock()
+	if fn != nil {
+		fn()
+	}
+}
 
 // errStoppedTurn refuses publication for a turn the wrapper was stopping.
 var errStoppedTurn = errors.New("runner: turn was stopped; no exit code is published")

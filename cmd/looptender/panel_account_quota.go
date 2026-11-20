@@ -19,7 +19,7 @@ const panelAccountQuotaAction = "subscription_quota"
 // The inspected native Claude image is Darwin arm64 only. Capability is a
 // platform prerequisite; the acquisition layer still admits each exact image.
 func panelQuotaProvidersFor(goos, goarch string) []string {
-	providers := []string{"codex"}
+	providers := []string{"codex", "antigravity"}
 	if goos == "darwin" && goarch == "arm64" {
 		providers = append(providers, "claude-code")
 	}
@@ -77,12 +77,19 @@ func (c *panelChanges) prepareAccountQuota(session, id string) panelChangeReply 
 	if err != nil || !panelQuotaProviderSupported(s.Entry.Provider) {
 		return refuse()
 	}
-	if s.Entry.Provider == "claude-code" {
+	switch s.Entry.Provider {
+	case "claude-code":
 		if _, err := accounts.LoadClaudeQuota(dir); err != nil {
 			return refuse()
 		}
-	} else if _, err := accounts.LoadQuota(dir); err != nil {
-		return refuse()
+	case "antigravity":
+		if _, err := accounts.LoadAntigravityQuota(dir); err != nil {
+			return refuse()
+		}
+	default:
+		if _, err := accounts.LoadQuota(dir); err != nil {
+			return refuse()
+		}
 	}
 	value, err := panelRandom(32)
 	if err != nil {
@@ -95,6 +102,10 @@ func (c *panelChanges) prepareAccountQuota(session, id string) panelChangeReply 
 	if s.Entry.Provider == "claude-code" {
 		title, confirm = "Retrieve usage for "+s.Entry.Label+"?", "Retrieve usage"
 		lines = []dockText{txt("Retrieves usage through an inspected native Claude Code 2.1.326 image on Darwin arm64. Unverified images or unavailable isolation refuse before a usage request."), txt("The parked exchange disables hooks and sends no model request, user message, session claim or transcript scan. No login is started."), txt("Provider freshness is unknown: retrieval may return cached or seeded usage. Retrieval time is not the provider's observation time. Route observations remain separate.")}
+	}
+	if s.Entry.Provider == "antigravity" {
+		title, confirm = "Retrieve Antigravity usage for "+s.Entry.Label+"?", "Retrieve usage"
+		lines = []dockText{txt("Retrieves Antigravity /usage through the selected agy CLI in read-only plan mode. This is a model-free slash command: no ordinary turn is started and no login is started."), txt("Provider freshness is unknown: retrieval may return cached usage. Retrieval time is not the provider's observation time. Route observations remain separate.")}
 	}
 	return panelChangeReply{Preview: &panelPreview{Action: panelAccountQuotaAction, Key: id, Title: title, Confirm: confirm, Form: value, ExpiresAt: expires,
 		Lines: lines,
@@ -123,7 +134,7 @@ func (c *panelChanges) confirmAccountQuota(session, id, value string) panelChang
 		}
 	} else if v.FailedRefreshAt != nil {
 		result.Text = "Quota refresh unavailable. Any earlier reading retains its original timestamp."
-	} else if f.quota.Entry.Provider == "claude-code" {
+	} else if f.quota.Entry.Provider == "claude-code" || f.quota.Entry.Provider == "antigravity" {
 		result.Text = "Usage retrieved for this selected context. Provider freshness remains unknown; the reply may contain cached or seeded usage."
 	}
 	return panelChangeReply{Result: &result}
