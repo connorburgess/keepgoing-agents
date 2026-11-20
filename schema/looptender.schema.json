@@ -278,7 +278,11 @@
         "report": {
           "type": "object",
           "additionalProperties": false,
-          "allOf": [{"if": {"properties": {"format": {"const": "sessionpipe"}}, "required": ["format"]}, "then": {"properties": {"scheme": {"const": "bearer"}}, "required": ["scheme"]}}],
+          "allOf": [
+            {"if": {"properties": {"format": {"const": "sessionpipe"}}, "required": ["format"]}, "then": {"properties": {"scheme": {"const": "bearer"}}, "required": ["scheme"]}},
+            {"if": {"properties": {"format": {"const": "telegram"}}, "required": ["format"]}, "then": {"properties": {"scheme": {"const": "telegram-bot"}}}},
+            {"if": {"properties": {"scheme": {"const": "telegram-bot"}}, "required": ["scheme"]}, "then": {"properties": {"format": {"const": "telegram"}}, "required": ["format"]}}
+          ],
           "properties": {
             "url_env": {
               "type": "string",
@@ -297,14 +301,16 @@
             "scheme": {
               "enum": [
                 "standard-webhooks",
-                "bearer"
+                "bearer",
+                "telegram-bot"
               ]
             },
             "format": {
               "enum": [
                 "standard",
                 "text",
-                "sessionpipe"
+                "sessionpipe",
+                "telegram"
               ]
             },
             "events": {

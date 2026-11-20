@@ -689,20 +689,32 @@ func (c *Config) applyDefaults() {
 	setDur(&l.TickTimeout, DefaultTickTimeout)
 	setDur(&l.Daemon.ControlPoll, DefaultControlPoll)
 	if r := l.Report; r != nil {
-		if r.URLEnv == "" {
-			r.URLEnv = envvar.WebhookURL.Name() // report also reads the earlier name
+		if r.Format == "" {
+			r.Format = "standard"
 		}
-		if r.SecretEnv == "" {
-			r.SecretEnv = envvar.WebhookSecret.Name()
+		if r.Format == "telegram" {
+			if r.URLEnv == "" {
+				r.URLEnv = "LOOPTENDER_TELEGRAM_API_URL"
+			}
+			if r.SecretEnv == "" {
+				r.SecretEnv = "LOOPTENDER_TELEGRAM_BOT_TOKEN"
+			}
+			if r.Scheme == "" {
+				r.Scheme = "telegram-bot"
+			}
+		} else {
+			if r.URLEnv == "" {
+				r.URLEnv = envvar.WebhookURL.Name() // report also reads the earlier name
+			}
+			if r.SecretEnv == "" {
+				r.SecretEnv = envvar.WebhookSecret.Name()
+			}
+			if r.Scheme == "" {
+				r.Scheme = "standard-webhooks"
+			}
 		}
 		if r.Source == "" {
 			r.Source = l.Name
-		}
-		if r.Scheme == "" {
-			r.Scheme = "standard-webhooks"
-		}
-		if r.Format == "" {
-			r.Format = "standard"
 		}
 		if len(r.Events) == 0 {
 			r.Events = DefaultReportEvents
@@ -867,14 +879,20 @@ func (c *Config) Validate() error {
 		}
 	}
 	if r := l.Report; r != nil {
-		if r.Scheme != "standard-webhooks" && r.Scheme != "bearer" {
-			add("loop.report.scheme must be standard-webhooks or bearer")
+		if r.Scheme != "standard-webhooks" && r.Scheme != "bearer" && r.Scheme != "telegram-bot" {
+			add("loop.report.scheme must be standard-webhooks, bearer or telegram-bot")
 		}
-		if r.Format != "standard" && r.Format != "text" && r.Format != "sessionpipe" {
-			add("loop.report.format must be standard, text or sessionpipe")
+		if r.Format != "standard" && r.Format != "text" && r.Format != "sessionpipe" && r.Format != "telegram" {
+			add("loop.report.format must be standard, text, sessionpipe or telegram")
 		}
 		if r.Format == "sessionpipe" && r.Scheme != "bearer" {
 			add("loop.report: sessionpipe format requires bearer scheme")
+		}
+		if r.Format == "telegram" && r.Scheme != "telegram-bot" {
+			add("loop.report: telegram format requires telegram-bot scheme")
+		}
+		if r.Scheme == "telegram-bot" && r.Format != "telegram" {
+			add("loop.report: telegram-bot scheme requires telegram format")
 		}
 		for _, e := range r.Events {
 			if e != "all" && !contains(ReportEvents, e) {
