@@ -79,9 +79,12 @@ func standInAntigravity(dir string, situation Situation, args []string, generati
 			case Idle:
 				writeFrame(map[string]any{"jsonrpc": "2.0", "id": msg.ID, "result": map[string]any{"stopReason": "end_turn"}})
 				return 0
-			case Active, Crashed:
+			case Active:
 				work(dir, generation)
 				writeFrame(map[string]any{"jsonrpc": "2.0", "id": msg.ID, "result": map[string]any{"stopReason": "end_turn"}})
+				return 0
+			case Crashed:
+				work(dir, generation)
 				return 0
 			case Hanging:
 				time.Sleep(10 * time.Minute)
@@ -118,6 +121,9 @@ func standInAntigravity(dir string, situation Situation, args []string, generati
 			}
 			return 0
 		}
+	}
+	if situation == Crashed {
+		work(dir, generation)
 	}
 	return 0
 }
