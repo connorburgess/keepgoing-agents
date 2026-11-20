@@ -554,8 +554,8 @@ func clean(r Record) Record {
 			c.Operation = oneOf(c.Operation, "unavailable", "enable", "disable", "pause", "resume", "stop", "complete", "await-user", "start", "daemon_takeover", "transfer_begin", "transfer_finish", "supersede",
 				// The same three changes made from the keepgoing panel.
 				"panel_pause", "panel_stop", "panel_resume",
-				// Restrictive holds saved from the paired Telegram remote channel.
-				"telegram_pause", "telegram_stop",
+				// Controls saved from the paired Telegram remote channel.
+				"telegram_pause", "telegram_stop", "telegram_resume",
 				// A question the loop raised for a person, and its end.
 				"question_raised", "question_answered", "question_withdrawn",
 				// The file that runs a loop's checks, replaced with the panel's

@@ -39,7 +39,7 @@ internal/timing             usage-aware timing: the step decision (pure) and its
 internal/contextwindow      context-threshold reset: the decision (pure), previewed by status only; nothing acts on it
 internal/handoff            the brief a fallback receives
 internal/report             signed webhook and Telegram Bot API reports plus diagnostic delivery history
-internal/telegram           outbound-only Telegram Bot API client, one-time pairing primitives, atomic 0600 pairing/token state, redacted alert/status formatting, and compact Pause/Stop callback codec
+internal/telegram           outbound-only Telegram Bot API client, one-time pairing primitives, atomic 0600 pairing/token state, redacted alert/status/resume-review formatting, compact Pause/Stop/ticketed-Resume callback codec, and per-loop private-chat topic helpers
 internal/incident           bounded typed tick/control/retarget history; diagnostic only
 internal/evidence           pure, allowlisted diagnostic source/code metadata
 internal/registry           explicit private local loop references; independent of loop controls

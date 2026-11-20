@@ -302,8 +302,11 @@ func TestTelegramPollStatusPauseStopAndGuards(t *testing.T) {
 		},
 	})
 	mu.Lock()
-	if len(sent) != 1 || sent[0].ReplyMarkup == nil || len(sent[0].ReplyMarkup.InlineKeyboard) != 1 || len(sent[0].ReplyMarkup.InlineKeyboard[0]) != 1 {
-		t.Fatalf("expected single Stop button when already paused, got %+v", sent)
+	if len(sent) != 1 || sent[0].ReplyMarkup == nil || len(sent[0].ReplyMarkup.InlineKeyboard) != 2 || len(sent[0].ReplyMarkup.InlineKeyboard[0]) != 1 || len(sent[0].ReplyMarkup.InlineKeyboard[1]) != 1 {
+		t.Fatalf("expected Stop row and Prepare resume row when already paused, got %+v", sent)
+	}
+	if !strings.HasPrefix(sent[0].ReplyMarkup.InlineKeyboard[0][0].Text, "Stop ") || !strings.HasPrefix(sent[0].ReplyMarkup.InlineKeyboard[1][0].Text, "Prepare resume ") {
+		t.Fatalf("unexpected paused keyboard buttons: %+v", sent[0].ReplyMarkup.InlineKeyboard)
 	}
 	freshStopData := sent[0].ReplyMarkup.InlineKeyboard[0][0].CallbackData
 	sent = nil

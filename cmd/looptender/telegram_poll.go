@@ -160,6 +160,12 @@ func runTelegramPoller(e env, cfg telegramPollConfig) int {
 	if pollSec < 1 {
 		pollSec = 1
 	}
+	if initialRec, ok, err := telegram.LoadPairing(cfg.Dir); err == nil && ok && initialRec.TopicsEnabled {
+		if names := registeredLoopNames(cfg.RegistryDir); len(names) > 0 {
+			_, _, _ = telegram.EnsureLoopTopics(e.ctx, cfg.Client, cfg.Dir, initialRec, names, cfg.Now().UTC())
+		}
+	}
+
 	backoff := telegramMinBackoff
 
 	for {
@@ -242,7 +248,8 @@ func handleTelegramUpdate(e env, cfg telegramPollConfig, prior, current telegram
 		threadID := u.Message.MessageThreadID
 		switch cmd {
 		case "status":
-			text, markup := buildTelegramStatus(e.ctx, cfg, now)
+			onlyLoop, _ := telegram.LookupLoopByThreadID(current, threadID)
+			text, markup := buildTelegramStatus(e.ctx, cfg, now, onlyLoop)
 			_, _ = cfg.Client.SendMessage(e.ctx, telegram.SendMessageRequest{
 				ChatID:             current.AllowedChatID,
 				MessageThreadID:    threadID,
@@ -262,6 +269,13 @@ func handleTelegramUpdate(e env, cfg telegramPollConfig, prior, current telegram
 				ChatID:             current.AllowedChatID,
 				MessageThreadID:    threadID,
 				Text:               "Send /status and tap Pause or Stop on the loop you want to hold.",
+				LinkPreviewOptions: &telegram.LinkPreviewOptions{IsDisabled: true},
+			})
+		case "resume":
+			_, _ = cfg.Client.SendMessage(e.ctx, telegram.SendMessageRequest{
+				ChatID:             current.AllowedChatID,
+				MessageThreadID:    threadID,
+				Text:               "Send /status and tap Prepare resume on the held loop you want to review.",
 				LinkPreviewOptions: &telegram.LinkPreviewOptions{IsDisabled: true},
 			})
 		}
@@ -289,24 +303,127 @@ func handleTelegramUpdate(e env, cfg telegramPollConfig, prior, current telegram
 			})
 			return
 		}
+		var threadID int64
+		if u.CallbackQuery.Message != nil {
+			threadID = u.CallbackQuery.Message.MessageThreadID
+		}
+		loopName := action.RegistrationID
+		if entry, found := clientEntry(cfg.RegistryDir, action.RegistrationID); found && entry.Loop != "" {
+			loopName = entry.Loop
+		}
+		if threadID == 0 && current.TopicsEnabled && current.LoopTopics != nil {
+			if tid := current.LoopTopics[loopName]; tid > 0 {
+				threadID = tid
+			}
+		}
+
+		switch action.Action {
+		case telegram.ActionPrepareResume:
+			expect := ""
+			if action.ExpectPrefix != "" {
+				expect = controlExpectPrefixTag + action.ExpectPrefix
+			}
+			report, code := clientResume(e.ctx, cfg.RegistryDir, action.RegistrationID, "prepare-resume", "", false, "", "telegram", expect, cfg.Now, nil)
+			if code != exitOK || report.Ticket == "" {
+				toast, summary := formatTelegramPrepareResumeFailure(report, code)
+				_ = cfg.Client.AnswerCallbackQuery(e.ctx, telegram.AnswerCallbackQueryRequest{
+					CallbackQueryID: cbID,
+					Text:            toast,
+				})
+				text := telegram.FormatAlert(telegram.AlertSummary{
+					Device:  cfg.Host,
+					Loop:    loopName,
+					Event:   "control_prepare_resume",
+					Summary: summary,
+					At:      now,
+				})
+				_, _ = cfg.Client.SendMessage(e.ctx, telegram.SendMessageRequest{
+					ChatID:             current.AllowedChatID,
+					MessageThreadID:    threadID,
+					Text:               text,
+					LinkPreviewOptions: &telegram.LinkPreviewOptions{IsDisabled: true},
+				})
+				return
+			}
+			rev := telegram.ResumeReview{
+				Device:         cfg.Host,
+				Loop:           loopName,
+				RegistrationID: action.RegistrationID,
+				TicketID:       report.Ticket,
+			}
+			if report.ExpiresAt != nil {
+				rev.ExpiresAt = *report.ExpiresAt
+			}
+			if report.Snapshot != nil {
+				rev.ControlState = report.Snapshot.ControlState
+				if report.Snapshot.Controls != nil {
+					rev.Paused = report.Snapshot.Controls.Paused
+					rev.Stop = report.Snapshot.Controls.Stop
+					rev.AwaitingUser = report.Snapshot.Controls.AwaitingUser
+					rev.Completed = report.Snapshot.Controls.Completed
+				}
+				if report.Snapshot.Runtime != nil {
+					rev.Freshness = report.Snapshot.Runtime.Freshness
+				}
+				if report.Snapshot.LastCheck != nil {
+					rev.LastAction = report.Snapshot.LastCheck.Action
+					rev.LastOutcome = report.Snapshot.LastCheck.Outcome
+				}
+			}
+			text, markup, err := telegram.FormatResumeReviewMessage(rev)
+			if err != nil {
+				_ = cfg.Client.AnswerCallbackQuery(e.ctx, telegram.AnswerCallbackQueryRequest{
+					CallbackQueryID: cbID,
+					Text:            "Resume unavailable",
+				})
+				return
+			}
+			_ = cfg.Client.AnswerCallbackQuery(e.ctx, telegram.AnswerCallbackQueryRequest{
+				CallbackQueryID: cbID,
+				Text:            "Review resume",
+			})
+			_, _ = cfg.Client.SendMessage(e.ctx, telegram.SendMessageRequest{
+				ChatID:             current.AllowedChatID,
+				MessageThreadID:    threadID,
+				Text:               text,
+				LinkPreviewOptions: &telegram.LinkPreviewOptions{IsDisabled: true},
+				ReplyMarkup:        markup,
+			})
+			return
+
+		case telegram.ActionResume:
+			report, code := clientResume(e.ctx, cfg.RegistryDir, action.RegistrationID, "resume", action.TicketID, false, "", "telegram", "", cfg.Now, nil)
+			toast, summary := formatTelegramResumeOutcome(report, code)
+			_ = cfg.Client.AnswerCallbackQuery(e.ctx, telegram.AnswerCallbackQueryRequest{
+				CallbackQueryID: cbID,
+				Text:            toast,
+			})
+			text := telegram.FormatAlert(telegram.AlertSummary{
+				Device:  cfg.Host,
+				Loop:    loopName,
+				Event:   "control_resume",
+				Summary: summary,
+				At:      now,
+			})
+			_, _ = cfg.Client.SendMessage(e.ctx, telegram.SendMessageRequest{
+				ChatID:             current.AllowedChatID,
+				MessageThreadID:    threadID,
+				Text:               text,
+				LinkPreviewOptions: &telegram.LinkPreviewOptions{IsDisabled: true},
+			})
+			return
+		}
+
 		expect := ""
 		if action.ExpectPrefix != "" {
 			expect = controlExpectPrefixTag + action.ExpectPrefix
 		}
 		report, code := applyClientHoldFrom(e.ctx, cfg.RegistryDir, action.RegistrationID, action.Action, "telegram", expect)
-		loopName := action.RegistrationID
-		if entry, found := clientEntry(cfg.RegistryDir, action.RegistrationID); found && entry.Loop != "" {
-			loopName = entry.Loop
-		}
 		toast, summary := formatTelegramHoldOutcome(action.Action, report, code)
 		_ = cfg.Client.AnswerCallbackQuery(e.ctx, telegram.AnswerCallbackQueryRequest{
 			CallbackQueryID: cbID,
 			Text:            toast,
 		})
-		var threadID int64
-		if u.CallbackQuery.Message != nil {
-			threadID = u.CallbackQuery.Message.MessageThreadID
-		}
 		text := telegram.FormatAlert(telegram.AlertSummary{
 			Device:  cfg.Host,
 			Loop:    loopName,
@@ -323,7 +440,7 @@ func handleTelegramUpdate(e env, cfg telegramPollConfig, prior, current telegram
 	}
 }
 
-func buildTelegramStatus(ctx context.Context, cfg telegramPollConfig, now time.Time) (string, *telegram.InlineKeyboardMarkup) {
+func buildTelegramStatus(ctx context.Context, cfg telegramPollConfig, now time.Time, onlyLoop string) (string, *telegram.InlineKeyboardMarkup) {
 	f, err := registry.Load(cfg.RegistryDir)
 	if err != nil {
 		if errors.Is(err, os.ErrNotExist) {
@@ -346,6 +463,9 @@ func buildTelegramStatus(ctx context.Context, cfg telegramPollConfig, now time.T
 	})
 	items := make([]telegram.LoopStatusItem, 0, len(entries))
 	for _, entry := range entries {
+		if onlyLoop != "" && entry.Loop != onlyLoop {
+			continue
+		}
 		st := readClientStatus(ctx, cfg.RegistryDir, entry.ID, false, cfg.Offline, defaultStaleAfter, now, cfg.DaemonQuery)
 		item := telegram.LoopStatusItem{
 			RegistrationID: entry.ID,
@@ -380,6 +500,9 @@ func buildTelegramStatus(ctx context.Context, cfg telegramPollConfig, now time.T
 					item.CanPause = true
 				}
 			}
+			if ctl.Paused || ctl.Stop || ctl.AwaitingUser || ctl.Completed {
+				item.CanResume = true
+			}
 		}
 		items = append(items, item)
 	}
@@ -407,4 +530,43 @@ func formatTelegramHoldOutcome(action string, r clientHoldReport, code int) (toa
 		return "Loop busy; retry shortly", "Hold not saved because the loop control lock is busy."
 	}
 	return "Control unavailable", "Hold could not be saved; inspect loop status locally."
+}
+
+func formatTelegramPrepareResumeFailure(r clientResumeReport, code int) (toast, summary string) {
+	for _, issue := range r.Issues {
+		switch issue {
+		case "observation_changed":
+			return "State changed; send /status", "Resume review refused because loop controls changed since this status message was sent. Send /status to review fresh controls."
+		case "busy":
+			return "Loop busy; retry shortly", "Resume review unavailable because another command holds the loop lock. Retry shortly."
+		case "supervised_session":
+			return "Resume refused", "Resume refused because a supervised session cannot clear its own hold."
+		}
+	}
+	if code == exitSkipped {
+		return "Loop busy; retry shortly", "Resume review unavailable because the loop lock is busy."
+	}
+	return "Resume unavailable", "Could not prepare a single-use resume ticket; inspect loop status locally."
+}
+
+func formatTelegramResumeOutcome(r clientResumeReport, code int) (toast, summary string) {
+	if r.ControlSave == "confirmed" {
+		return "Resumed", "Resume saved from Telegram using the single-use ticket. Loop-wide limits are unchanged; send /status to inspect."
+	}
+	for _, issue := range r.Issues {
+		switch issue {
+		case "ticket_unavailable_or_expired":
+			return "Ticket expired; prepare again", "Resume refused because the single-use ticket is expired, already used, or superseded. Send /status and tap Prepare resume again."
+		case "observation_changed":
+			return "State changed; prepare again", "Resume refused because loop state changed after the ticket was prepared. Send /status and tap Prepare resume again."
+		case "busy":
+			return "Loop busy; retry shortly", "Resume not saved because another command holds the loop lock. Retry shortly."
+		case "supervised_session":
+			return "Resume refused", "Resume refused because a supervised session cannot clear its own hold."
+		}
+	}
+	if code == exitSkipped {
+		return "Loop busy; retry shortly", "Resume not saved because the loop lock is busy."
+	}
+	return "Resume refused", "Resume could not be saved; inspect loop status locally."
 }
