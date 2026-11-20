@@ -610,13 +610,18 @@ func (e notSpawned) Unwrap() error { return e.error }
 // start is Start with an optional ACP worker specification. It returns the
 // new turn's stop key, which identifies the worker that was started.
 func (d Dir) start(argv []string, workdir, prompt string, env []string, acp string) (string, error) {
-	return d.startTurn(argv, workdir, prompt, env, acp, false)
+	return d.startTurnGuarded(argv, workdir, prompt, env, acp, false, nil, "")
+}
+
+// startWithKey is start with a caller-generated stop key recorded before spawn.
+func (d Dir) startWithKey(argv []string, workdir, prompt string, env []string, acp, key string) (string, error) {
+	return d.startTurnGuarded(argv, workdir, prompt, env, acp, false, nil, key)
 }
 
 // StartWithPromptFile is Start for an agent that reads its prompt from the
 // private prompt file it was pointed at: its standard input is empty.
 func (d Dir) StartWithPromptFile(argv []string, workdir, prompt string, env []string) error {
-	_, err := d.startTurn(argv, workdir, prompt, env, "", true)
+	_, err := d.startTurnGuarded(argv, workdir, prompt, env, "", true, nil, "")
 	return err
 }
 
@@ -624,13 +629,13 @@ func (d Dir) StartWithPromptFile(argv []string, workdir, prompt string, env []st
 // the variable that carries it from the loop's own entries, so a value set
 // anywhere else can never take a prompt away from a turn.
 func (d Dir) startTurn(argv []string, workdir, prompt string, env []string, acp string, emptyStdin bool) (string, error) {
-	return d.startTurnGuarded(argv, workdir, prompt, env, acp, emptyStdin, nil)
+	return d.startTurnGuarded(argv, workdir, prompt, env, acp, emptyStdin, nil, "")
 }
 
 // startTurnGuarded consumes an optional exclusive setup guard. A headless send
 // retains this guard from session-derived argv through record publication.
 // It is released at the existing protocol 3 boundary, before wrapper wait.
-func (d Dir) startTurnGuarded(argv []string, workdir, prompt string, env []string, acp string, emptyStdin bool, setup *lock.Lock) (string, error) {
+func (d Dir) startTurnGuarded(argv []string, workdir, prompt string, env []string, acp string, emptyStdin bool, setup *lock.Lock, key string) (string, error) {
 	if setup != nil {
 		defer setup.Release()
 	}
@@ -685,9 +690,14 @@ func (d Dir) startTurnGuarded(argv []string, workdir, prompt string, env []strin
 	if err := os.WriteFile(d.path("prompt"), []byte(prompt), 0o600); err != nil {
 		return fail(errors.New("runner: the prompt could not be written" + errnoText(err)))
 	}
-	key, err := randomStopID()
-	if err != nil {
-		return fail(err)
+	if key == "" {
+		var err error
+		key, err = randomStopID()
+		if err != nil {
+			return fail(err)
+		}
+	} else if !validStopID(key) {
+		return fail(errors.New("runner: invalid stop key"))
 	}
 	pid, err := spawn(argv, workdir, string(d), append(env, envTurnKey+"="+key), acp)
 	if err != nil {
