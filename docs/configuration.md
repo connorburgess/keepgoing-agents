@@ -475,7 +475,7 @@ See [operations.md](operations.md).
 | `report.secret_file` | none |
 | `report.source` | the loop name |
 | `report.scheme` | `standard-webhooks` (or `bearer`; `telegram-bot` when `format: telegram`) |
-| `report.format` | `standard` (or `text`; unreleased `sessionpipe` requires `scheme: bearer`, see [Sessionpipe setup](sessionpipe.md); unreleased `telegram` defaults to `scheme: telegram-bot`, see [Telegram remote channel](telegram.md)) |
+| `report.format` | `standard` (or `text`; unreleased `sessionpipe` requires `scheme: bearer`, see [Sessionpipe setup and report-only authentication resume](sessionpipe.md); unreleased `telegram` defaults to `scheme: telegram-bot`, see [Telegram remote channel](telegram.md)) |
 | `report.events` | `handoff, switch_back, timing, degraded, recovered, await_user, limit_wait, network_wait, child_error, child_recovery, refusal_streak, complete, stop, error` (the `complete` event requires v0.1.3 or newer; `limit_wait`, `network_wait`, `child_error` and `child_recovery` are v0.2.0; `child_recovery` is sent only by a loop with `bb.children.retry_errored`; `timing`, unreleased, reports applied steps and failures; `refusal_streak`, unreleased, is sent when a streak of refused turns reaches 3, 10 and every 10 after; `check_gap`, also v0.2.0, is not a default and must be named) |
 | `report.timeout` | `20s` |
 | `yield.busy_command`, `yield.timeout` | required, `10s` |

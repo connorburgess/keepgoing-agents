@@ -15,6 +15,7 @@ import (
 	"github.com/looptender/looptender/internal/envvar"
 	"github.com/looptender/looptender/internal/lock"
 	"github.com/looptender/looptender/internal/registry"
+	"github.com/looptender/looptender/internal/report"
 	"github.com/looptender/looptender/internal/session"
 	"github.com/looptender/looptender/internal/userdir"
 )
@@ -233,6 +234,13 @@ func TestMigrateRefusesWhileInUse(t *testing.T) {
 		code  string
 		says  string
 	}{
+		{"Sessionpipe reporting is in flight", func(t *testing.T, h migrateHome) func() {
+			l, err := lock.AcquireNamed(h.inside.StateDir, report.SessionpipeLock)
+			if err != nil {
+				t.Fatal(err)
+			}
+			return func() { l.Release() }
+		}, "in_use", "a process holds this lock"},
 		{"a check holds a session claim", func(t *testing.T, h migrateHome) func() {
 			l, err := lock.AcquireNamed(filepath.Join(h.state, "keepgoing", "sessions"), "0123456789abcdef0123456789abcdef")
 			if err != nil {

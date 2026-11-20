@@ -547,4 +547,4 @@ What this means for looptender: the dated review found no documented way to supe
 
 ## Sessionpipe reporting boundary (unreleased)
 
-[Sessionpipe reporting](sessionpipe.md) is an OUT report format, not a registered supervision adapter or a capability-matrix column. `adapter: sessionpipe` is rejected. No Observe, Send, Stop, activation, retry, session ownership or remote control capability is exposed. IN needs typed event intake and an observe-only-loop decision; BACK is held by #233.
+[Sessionpipe reporting](sessionpipe.md) is an OUT report format, not a registered supervision adapter or a capability-matrix column. `adapter: sessionpipe` is rejected. No Observe, Send, Stop, activation, retry, session ownership or remote control capability is exposed. A persistent POST-401 report pause and explicit `report resume` affect future reports only; they grant no agent or loop resume capability. IN needs typed event intake and an observe-only-loop decision; BACK is held by #233.
