@@ -101,11 +101,14 @@ test("duplicate names have stable visible references and explicit path disclosur
     const first = { ...fixture("same-example"), configPath: "/example/first/looptender.yaml", managedId: "first-record" };
     const second = { ...first, configPath: "/example/second/looptender.yaml", managedId: "second-record" };
     let loops = [first, second]; const calls: unknown[] = [];
-    const slot = surface === "card" ? app.threadContextCardRows[0]! : { component: app.threadContextSegments[0]!.details! };
-    const ui = renderSlot(slot, { threadId, projectId: "proj_example", environment: null, isExpanded: true }, { rpc: {
+    const rpc = {
       forThread: () => ({ loops, errors: [] }),
       control: (input: unknown) => { calls.push(input); return { ok: true }; },
-    } });
+    };
+    const props = { threadId, projectId: "proj_example", environment: null };
+    const ui = surface === "card"
+      ? renderSlot(app.threadContextCardRows[0]!, props, { rpc })
+      : renderSlot({ component: app.threadContextSegments[0]!.details! }, { ...props, segments: [], isExpanded: true, onToggle() {} }, { rpc });
     try {
       const name = "Loop same-example · reference 2";
       await ui.findByRole("region", { name });
