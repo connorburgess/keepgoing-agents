@@ -131,10 +131,13 @@ func (a *Adapter) run(ctx context.Context, argv []string, stdin string, extra ma
 	if stdin != "" {
 		cmd.Stdin = strings.NewReader(stdin)
 	}
-	var stdout bytes.Buffer
+	var stdout boundedOutput
 	cmd.Stdout = &stdout
 	cmd.Stderr = nil // never captured: it may contain prose we must not interpret
 	err := cmd.Run()
+	if stdout.over {
+		return nil, -1, errors.New("command stdout exceeds 1 MiB limit; outcome unknown")
+	}
 	if err == nil {
 		return stdout.Bytes(), 0, nil
 	}
@@ -147,3 +150,26 @@ func (a *Adapter) run(ctx context.Context, argv []string, stdin string, extra ma
 	}
 	return stdout.Bytes(), -1, err
 }
+
+// Keep storage bounded without changing command execution or retry semantics.
+// Excess output is drained and discarded until the command exits or times out.
+// Do not embed bytes.Buffer: its ReadFrom method would bypass Write.
+const maxOutput = 1 << 20
+
+type boundedOutput struct {
+	buf  bytes.Buffer
+	over bool
+}
+
+func (b *boundedOutput) Write(p []byte) (int, error) {
+	n := len(p)
+	room := maxOutput - b.buf.Len()
+	if n > room {
+		b.over = true
+		p = p[:room]
+	}
+	_, _ = b.buf.Write(p)
+	return n, nil
+}
+
+func (b *boundedOutput) Bytes() []byte { return b.buf.Bytes() }
