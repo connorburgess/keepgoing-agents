@@ -2,7 +2,7 @@
 
 Design specification and delivery plan, 2026-11-20. This document specifies how a person reaches a device's loops through a personal Telegram bot—starting with redacted alerts and safe remote controls, and optionally extending to threaded chat steering as a lightweight mobile interface.
 
-**Current status:** **TG1** (`internal/telegram` plus `loop.report.format: telegram` in `internal/report`, `internal/config`, and `schema/looptender.schema.json`), **TG2** (`looptender telegram setup|status|test|disconnect`), **TG3** (`looptender telegram poll` outbound `getUpdates` long polling for `/status`, `Pause`, and `Stop` with persisted offsets, staleness cutoffs, and `telegram_pause`/`telegram_stop` incident attribution), and **TG4** (two-step ticketed `Prepare resume` / `Confirm resume` bound to `client prepare-resume` / `client resume` single-use tickets with `telegram_resume` attribution, plus `looptender telegram topics` and automatic per-loop private-chat topic creation with single-DM fallback) are implemented on unreleased source and verified with offline HTTP stand-ins and unit tests. Terminal QR rendering, `doctor` integration, background service wiring for `telegram poll`, **TG5** (opt-in `chat` steering and unified `onboard`), and live Telegram Bot API verification remain **planned, not built**.
+**Current status:** **TG1** (`internal/telegram` plus `loop.report.format: telegram` in `internal/report`, `internal/config`, and `schema/looptender.schema.json`), **TG2** (`looptender telegram setup|status|test|disconnect`), **TG3** (`looptender telegram poll` outbound `getUpdates` long polling for `/status`, `Pause`, and `Stop` with persisted offsets, staleness cutoffs, and `telegram_pause`/`telegram_stop` incident attribution), and **TG4** (two-step ticketed `Prepare resume` / `Confirm resume` bound to `client prepare-resume` / `client resume` single-use tickets with `telegram_resume` attribution, plus `looptender telegram topics` and automatic per-loop private-chat topic creation with single-DM fallback) are implemented on unreleased source and verified with offline HTTP stand-ins and unit tests. Opt-in `doctor --telegram` checks saved pairing validity and token-file presence locally without reading token contents or making network requests; delivery and polling health remain unverified. Terminal QR rendering, delivery/poller diagnostics, background service wiring for `telegram poll`, **TG5** (opt-in `chat` steering and unified `onboard`), and live Telegram Bot API verification remain **planned, not built**.
 
 ## Where the architectural line sits
 
@@ -42,13 +42,13 @@ Rules that hold in **both** modes:
 
 ## User setup and onboarding
 
-### Option A — Local zero-infrastructure pairing (default, planned in TG2)
+### Option A — Local zero-infrastructure pairing (implemented in TG2; live verification open)
 
 No third-party setup service is involved; only the person and their device ever hold the bot token:
 
 1. Create a bot via `@BotFather` (`/newbot`), choose a name and username, and copy the token.
-2. Run `looptender telegram setup` (or open **Telegram** in `looptender panel`), paste the token (hidden input, written with `0600` permissions to a private secret file outside any repository), and choose `alerts` (default) or `chat`.
-3. looptender validates the token with `getMe`, calls `setMyCommands` to register the slash menu, and prints a one-time deep link and QR code:
+2. Run `looptender telegram setup` with the token supplied through its configured environment variable or standard input (`--token-stdin`). Standard input is not a hidden-input prompt. Setup writes the token with `0600` permissions to private state outside the repository. Use the default `alerts` mode; although setup can record `--mode chat --accept-non-e2e`, chat steering remains planned in TG5.
+3. looptender validates the token with `getMe`, attempts to register the slash menu with `setMyCommands`, and prints a one-time deep link. Terminal QR rendering remains planned:
    ```text
    https://t.me/example_looptender_bot?start=pair_<nonce>
    ```
