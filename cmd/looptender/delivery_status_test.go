@@ -163,7 +163,7 @@ func TestReportTestRecordsAcceptanceButDryRunDoesNot(t *testing.T) {
 	if s := report.InspectDeliveries(cfg.Loop.StateDir); s.State != "not_recorded" {
 		t.Fatal(s)
 	}
-	if code, out, errs := f.run("report", "test"); code != 0 || !strings.Contains(out, "HTTP accepted; receipt unverified") {
+	if code, out, errs := f.run("report", "test"); code != 0 || !strings.Contains(out, "accepted by transport; receipt unverified") {
 		t.Fatalf("%d %s %s", code, out, errs)
 	}
 	s := report.InspectDeliveries(cfg.Loop.StateDir)

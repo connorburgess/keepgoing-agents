@@ -75,17 +75,17 @@ func LoadDeliveries(dir string) (DeliveryHistory, error) {
 	}
 	defer f.Close()
 	b, err := io.ReadAll(io.LimitReader(f, MaxDeliveryBytes+1))
-	if err != nil || len(b) > MaxDeliveryBytes {
+	if err != nil || len(b) > MaxDeliveryBytes || !validDeliveryJSON(b) {
 		return DeliveryHistory{}, ErrDeliveryHistory
 	}
 	var h DeliveryHistory
 	dec := json.NewDecoder(bytes.NewReader(b))
 	dec.DisallowUnknownFields()
-	if dec.Decode(&h) != nil || dec.Decode(new(any)) != io.EOF || h.SchemaVersion != 1 || h.NextSequence == 0 || len(h.Records) > MaxDeliveries || h.Dropped > h.NextSequence-1 || h.NextSequence-1-h.Dropped != uint64(len(h.Records)) {
+	if dec.Decode(&h) != nil || dec.Decode(new(any)) != io.EOF || (h.SchemaVersion != 1 && h.SchemaVersion != 2) || h.NextSequence == 0 || len(h.Records) > MaxDeliveries || h.Dropped > h.NextSequence-1 || h.NextSequence-1-h.Dropped != uint64(len(h.Records)) {
 		return DeliveryHistory{}, ErrDeliveryHistory
 	}
 	for i, d := range h.Records {
-		if d.Sequence != h.Dropped+uint64(i)+1 || !validDelivery(d) {
+		if d.Sequence != h.Dropped+uint64(i)+1 || !validDelivery(d) || (h.SchemaVersion == 1 && processDelivery(d)) {
 			return DeliveryHistory{}, ErrDeliveryHistory
 		}
 	}
@@ -97,7 +97,7 @@ func validDelivery(d Delivery) bool {
 		return false
 	}
 	switch d.Outcome {
-	case "prepared", "setup_failed", "body_failed", "sign_failed", "request_failed", "attempt_started", "transport_failed", "http_rejected", "http_accepted", "protocol_failed", "not_sent":
+	case "prepared", "setup_failed", "body_failed", "sign_failed", "request_failed", "attempt_started", "transport_failed", "http_rejected", "http_accepted", "protocol_failed", "not_sent", "process_accepted", "process_failed", "process_protocol_failed":
 	default:
 		return false
 	}
@@ -110,7 +110,7 @@ func validDelivery(d Delivery) bool {
 			if !a.FinishedAt.IsZero() || a.HTTPStatus != 0 {
 				return false
 			}
-		case "transport_failed":
+		case "transport_failed", "process_accepted", "process_failed", "process_protocol_failed":
 			if a.FinishedAt.IsZero() || a.HTTPStatus != 0 {
 				return false
 			}
@@ -127,6 +127,11 @@ func validDelivery(d Delivery) bool {
 				return false
 			}
 		default:
+			return false
+		}
+	}
+	if processDelivery(d) {
+		if len(d.Attempts) != 1 || d.Attempts[0].Outcome != d.Outcome {
 			return false
 		}
 	}
@@ -171,6 +176,9 @@ func saveDelivery(dir string, d Delivery) (uint64, error) {
 			return 0, ErrDeliveryHistory
 		}
 		h.Records[i] = d
+	}
+	if processDelivery(d) {
+		h.SchemaVersion = 2
 	}
 	b, err := json.Marshal(h)
 	if err != nil || len(b)+1 > MaxDeliveryBytes {
@@ -295,9 +303,29 @@ func InspectDeliveries(dir string) DeliveryStatus {
 	s.State = "recorded"
 	s.Latest = &h.Records[len(h.Records)-1]
 	for _, d := range h.Records {
-		if d.Outcome != "http_accepted" {
+		if !DeliveryAccepted(d) {
 			s.Warnings = append(s.Warnings, d)
 		}
 	}
 	return s
+}
+
+// DeliveryAccepted is transport acceptance only, never proof of receipt.
+func DeliveryAccepted(d Delivery) bool {
+	return d.Outcome == "http_accepted" || d.Outcome == "process_accepted"
+}
+
+func processDelivery(d Delivery) bool {
+	isProcess := func(s string) bool {
+		return s == "process_accepted" || s == "process_failed" || s == "process_protocol_failed"
+	}
+	if isProcess(d.Outcome) {
+		return true
+	}
+	for _, a := range d.Attempts {
+		if isProcess(a.Outcome) {
+			return true
+		}
+	}
+	return false
 }

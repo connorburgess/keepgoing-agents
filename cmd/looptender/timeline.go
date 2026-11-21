@@ -522,7 +522,7 @@ func readTimeline(dir string, now time.Time, stale time.Duration, limit int, fil
 	for _, d := range deliveries.Records {
 		entry := timelineEntry{At: d.UpdatedAt, TimeBasis: "delivery_last_updated_at", Source: report.DeliveryFile, Sequence: d.Sequence, Freshness: timelineFreshness(d.UpdatedAt, now, stale), Description: describeDelivery(d), Kinds: []string{"notification"}, Delivery: &d}
 		r.Events = append(r.Events, entry)
-		if d.Outcome != "http_accepted" {
+		if !report.DeliveryAccepted(d) {
 			r.Summary.NotificationWarnings++
 		}
 	}
@@ -874,7 +874,7 @@ func describeProbes(p incident.Probes) string {
 }
 
 func describeDelivery(d report.Delivery) string {
-	s := fmt.Sprintf("notification %s: %s; %d request attempts begun", d.Event, d.Outcome, len(d.Attempts))
+	s := fmt.Sprintf("notification %s: %s; %d delivery attempts begun", d.Event, d.Outcome, len(d.Attempts))
 	if len(d.Attempts) > 0 && d.Attempts[len(d.Attempts)-1].HTTPStatus != 0 {
 		s += fmt.Sprintf("; webhook HTTP %d", d.Attempts[len(d.Attempts)-1].HTTPStatus)
 	}

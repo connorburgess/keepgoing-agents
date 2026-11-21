@@ -357,3 +357,5 @@ lane stays busy. [Readiness and attempt reconciliation](docs/assignments.md#opt-
 remain explicit. Missing/stale evidence withholds this exception; failed/unknown attempts
 never automatically rearm. Ordinary task prompts, gates, cadence and send allowances remain.
 This does not dispatch children, clear a saved hold or enforce handoffs at turn end.
+
+Unreleased delivery-history groundwork distinguishes HTTP acceptance from notification-command acceptance. Process outcomes promote the private history to schema 2; older readers refuse it. This does not yet enable a BB notification sender. See [delivery history compatibility](docs/operations.md#process-delivery-history-compatibility-unreleased).
