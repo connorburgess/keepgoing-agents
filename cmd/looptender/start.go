@@ -180,6 +180,7 @@ func startForeground(e env, cfg *config.Config, path string, ready startReady, a
 		return ownershipError(e, err)
 	}
 	noteSupervisor(cfg)
+	publishEnabledLoop(e, cfg)
 	// Nothing can run a tick until setup and the owner claim are committed.
 	_ = tick.Release()
 	if ready != nil {

@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Successful explicit CLI enable/start publishes a local discovery reference so open dock/panel readers can find the loop. Publication failures warn separately without replaying control operations; reads never import loops.
+
 ## 0.2.1 (2026-11-20)
 
 - Unreleased CLI: explicitly supersede an obsolete BB loop after a manual move; durable resume/start fencing preserves holds and stop without changing the successor.

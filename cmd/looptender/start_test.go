@@ -39,6 +39,9 @@ func TestStartPreservesHoldsAndClaimsOwner(t *testing.T) {
 			ready := false
 			code := startCommand(env{ctx, io.Discard, &errs}, []string{"--foreground", "-c", f.cfg}, func(got control.File) error {
 				ready = true
+				if _, err := os.Stat(filepath.Join(os.Getenv(registryDirEnv), "registry.json")); err != nil {
+					t.Fatalf("start did not publish reference: %v", err)
+				}
 				j := controlHistory(t, f)
 				if len(j.Records) != 1 || j.Records[0].Kind != "control" || j.Records[0].ControlChange.Operation != "start" || j.Records[0].ControlBefore.Enabled || !j.Records[0].ControlAfter.Enabled {
 					t.Fatal(j)

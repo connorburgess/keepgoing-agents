@@ -5,6 +5,7 @@ import (
 	"errors"
 	"flag"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 
@@ -209,4 +210,12 @@ func registriesUnderBothNames() []string {
 		}
 	}
 	return dirs
+}
+
+// publishEnabledLoop records discovery metadata only after an explicit enable
+// or start succeeds. Failure must not undo or replay that lifecycle operation.
+func publishEnabledLoop(e env, cfg *config.Config) {
+	if cfg.CheckSources() != nil || registryCommand(env{e.ctx, io.Discard, io.Discard}, []string{"add", "-c", cfg.Path()}) != exitOK {
+		e.errf("warning: supervision changed, but its dock/panel reference could not be saved; use registry add with this configuration to repair visibility")
+	}
 }
