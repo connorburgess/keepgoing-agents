@@ -212,3 +212,30 @@ func TestPanelSendAllowanceHTTPGuards(t *testing.T) {
 		})
 	}
 }
+
+func TestPanelSendAllowanceRefusesReplacedConfigurationAfterReview(t *testing.T) {
+	c, e := allowanceFixture(t)
+	key := dockKey(e.ID)
+	reply := c.prepareSendAllowance("page", key, 500)
+	if reply.Preview == nil {
+		t.Fatalf("prepare: %+v", reply)
+	}
+	before, err := os.ReadFile(e.ConfigPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Rename(e.ConfigPath, e.ConfigPath+".reviewed"); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(e.ConfigPath, before, 0600); err != nil {
+		t.Fatal(err)
+	}
+	result := c.confirmSendAllowance("page", key, reply.Preview.Form)
+	if result.Result == nil || result.Result.Outcome != "review_again" {
+		t.Fatalf("replaced configuration accepted: %+v", result)
+	}
+	after, err := os.ReadFile(e.ConfigPath)
+	if err != nil || !bytes.Equal(before, after) {
+		t.Fatalf("refusal changed replacement: %v", err)
+	}
+}

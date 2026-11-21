@@ -12,6 +12,7 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/looptender/looptender/internal/config"
 	"github.com/looptender/looptender/internal/control"
 	"github.com/looptender/looptender/internal/lock"
 	"github.com/looptender/looptender/internal/registry"
@@ -23,6 +24,7 @@ import (
 // The panel form will bind it to one session, key and single-use confirmation.
 type panelSendAllowanceReview struct {
 	entry                     registry.Entry
+	edit                      *config.SendAllowanceEdit
 	sources, controls, ledger string
 	current, proposed, used   int64
 }
@@ -86,6 +88,7 @@ func (c *panelChanges) sendAllowanceChange(key string, proposed int64, expected 
 		return nil, errPanelSendAllowance
 	}
 	if expected == nil {
+		review.edit = edit
 		return review, nil
 	}
 	if review.entry.ID != expected.entry.ID || review.entry.ConfigPath != expected.entry.ConfigPath || review.entry.StateDir != expected.entry.StateDir || review.entry.Loop != expected.entry.Loop || review.sources != expected.sources || review.controls != expected.controls || review.ledger != expected.ledger || review.current != expected.current || review.proposed != expected.proposed || review.used != expected.used {
@@ -98,7 +101,9 @@ func (c *panelChanges) sendAllowanceChange(key string, proposed int64, expected 
 	if !ok || fresh.ID != entry.ID || fresh.ConfigPath != entry.ConfigPath || fresh.StateDir != entry.StateDir || fresh.Loop != entry.Loop {
 		return nil, errPanelSendAllowance
 	}
-	if edit.Commit() != nil {
+	// Commit the originally reviewed edit, retaining its eagerly captured file
+	// identity across the separate HTTP requests, even for identical bytes.
+	if expected.edit == nil || expected.edit.Commit() != nil {
 		return nil, errPanelSendAllowance
 	}
 	return review, nil

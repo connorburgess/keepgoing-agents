@@ -8,6 +8,8 @@ import (
 	"path/filepath"
 	"strconv"
 
+	filesnapshot "github.com/looptender/looptender/internal/snapshot"
+
 	"gopkg.in/yaml.v3"
 )
 
@@ -33,7 +35,7 @@ func (c *Config) PrepareSendAllowance(limit int64) (*SendAllowanceEdit, error) {
 	if err != nil {
 		return nil, bad
 	}
-	identity, err := os.Lstat(c.source.path)
+	identity, err := filesnapshot.Lstat(c.source.path)
 	if err != nil || !identity.Mode().IsRegular() {
 		return nil, bad
 	}
@@ -76,7 +78,7 @@ func (e *SendAllowanceEdit) AfterDigest() string {
 func (e *SendAllowanceEdit) Commit() error {
 	bad := errors.New("send allowance configuration changed or could not be written")
 	unchanged := func() bool {
-		info, err := os.Lstat(e.cfg.source.path)
+		info, err := filesnapshot.Lstat(e.cfg.source.path)
 		return err == nil && info.Mode().IsRegular() && os.SameFile(e.identity, info) && e.cfg.CheckSources() == nil
 	}
 	if !unchanged() {
