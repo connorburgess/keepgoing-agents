@@ -46,7 +46,7 @@ function fetchLoops(rpc: Rpc, threadId: string, force = false) {
     .finally(notify);
 }
 
-function useLoop(threadId: string) {
+function useLoops(threadId: string) {
   const rpc = useRpc<typeof rpcContract>();
   const entry = useSyncExternalStore(subscribe, () => cache.get(threadId));
   const refresh = useCallback(() => fetchLoops(rpc, threadId, true), [rpc, threadId]);
@@ -56,7 +56,7 @@ function useLoop(threadId: string) {
     return () => clearInterval(timer);
   }, [rpc, threadId]);
   useRealtime("changed", refresh);
-  return { loop: entry?.loops[0], refresh, failed: entry?.failed ?? false, loaded: !!entry?.at };
+  return { loops: entry?.loops ?? [], refresh, failed: entry?.failed ?? false, loaded: !!entry?.at };
 }
 
 function label(loop: LoopView): string {
@@ -146,66 +146,77 @@ function StatusWarning({ refresh }: { refresh(): void }) {
 }
 
 // What a thread created with Keep going on shows about that request.
-function useThreadOutcome(threadId: string, loop: LoopView | undefined) {
+function useThreadOutcome(threadId: string, loops: LoopView[]) {
   const rpc = useRpc<typeof rpcContract>();
   const call = useCallback((input: Parameters<typeof rpc.call<"newThread">>[1]) => rpc.call("newThread", input), [rpc]);
   const start = useCallback((input: { action: "start"; threadId: string }) => rpc.call("setup", input), [rpc]);
-  const { outcome } = useOutcome(threadId, call, `${loop?.controlState ?? ""}:${loop?.checkedAt ?? ""}`);
+  const { outcome } = useOutcome(threadId, call, JSON.stringify(loops.map(l => [l.configPath, l.managedId, l.controlState, l.checkedAt])));
+  // New-thread controls belong only to one unambiguous saved setup for this
+  // thread, never the first reference or a loop inferred from its display name.
+  const setups = loops.filter(l => l.managedThreadId === threadId && l.managedId && !l.imported && (!l.referenceSource || l.referenceSource === "plugin_setup"));
+  const loop = setups.length === 1 ? setups[0] : undefined;
   // Pause and stop go to the loop's own recorded configuration, as the ordinary controls do.
   const control = useCallback((action: "pause" | "stop") => loop
     ? rpc.call("control", { configPath: loop.configPath, action, managedId: loop.managedId, expectedThreadId: threadId })
     : Promise.resolve({ ok: false, message: "Status is not loaded yet." }), [rpc, loop, threadId]);
-  return { outcome, start, control };
+  return { outcome, start, control, loop };
 }
 
 const READY_NOT_STARTED = "looptender: ready, not started";
 // A thread started from the New thread screen carries its own Pause and Stop.
 const KEEPING_GOING = "looptender: keeping this going";
 
+// Stable record/config identity keeps pending controls attached to the same loop
+// when a status refresh changes order or removes another reference.
+function loopKey(loop: LoopView) { return JSON.stringify([loop.configPath, loop.managedId ?? null]); }
+
+function CardLoop({ loop, threadId, refresh, failed, created, showName }: { loop: LoopView; threadId: string; refresh(): void; failed: boolean; created: string | null; showName: boolean }) {
+  return <section aria-label={`Loop ${loop.loop}`} style={{ overflowWrap: "anywhere", minWidth: 0 }}>
+    {showName && <strong style={{ fontSize: 12 }}>{loop.loop}</strong>}
+    <ContextRow icon="Repeat" label={failed ? "looptender: status unavailable (previous snapshot)" : created ?? label(loop)}
+      title={describe(loop).join("\n")} trailing={loop.handoffs > 0 ? `${loop.handoffs} handoffs` : undefined}
+      action={<>{!failed && created !== KEEPING_GOING && <ToggleButton loop={loop} threadId={threadId} onDone={refresh} />}</>} />
+  </section>;
+}
+
 function CardRow({ threadId }: { threadId: string }) {
-  const { loop, refresh, failed, loaded } = useLoop(threadId);
-  const { outcome, start, control } = useThreadOutcome(threadId, loop);
+  const { loops, refresh, failed, loaded } = useLoops(threadId);
+  const { outcome, start, control, loop } = useThreadOutcome(threadId, loops);
   const created = outcomeLabel(outcome, loop?.controlState, loop?.supervising);
   const [open, setOpen] = useState(false);
   return <div>
     {failed && <StatusWarning refresh={refresh} />}
     {loaded && !failed && <NewThreadOutcome threadId={threadId} outcome={outcome} controlState={loop?.controlState} supervising={loop?.supervising} start={start} control={control} onChanged={refresh} />}
-    {!loaded ? <ContextRow icon="Repeat" label="looptender: checking status" /> : !loop ? <ContextRow icon="Repeat" label="looptender" action={!failed && <button type="button" style={buttonStyle} onClick={() => setOpen(!open)} aria-expanded={open}>Add to Looptender</button>} /> : <ContextRow
-      icon="Repeat"
-      label={failed ? "looptender: status unavailable (previous snapshot)" : created ?? label(loop)}
-      title={describe(loop).join("\n")}
-      trailing={loop.handoffs > 0 ? `${loop.handoffs} handoffs` : undefined}
-      action={<>{!failed && created !== KEEPING_GOING && <ToggleButton loop={loop} threadId={threadId} onDone={refresh} />}{!failed && loop.managedId && <button type="button" style={buttonStyle} onClick={() => setOpen(!open)} aria-expanded={open}>Setup</button>}</>}
-    />}
+    {!loaded ? <ContextRow icon="Repeat" label="looptender: checking status" /> : !loops.length ? <ContextRow icon="Repeat" label="looptender" action={!failed && <button type="button" style={buttonStyle} onClick={() => setOpen(!open)} aria-expanded={open}>Add to Looptender</button>} /> : loops.map(l => <CardLoop key={loopKey(l)} loop={l} threadId={threadId} refresh={refresh} failed={failed} created={l === loop ? created : null} showName={loops.length > 1} />)}
+    {!failed && loops.some(l => l.managedId) && <button type="button" style={buttonStyle} onClick={() => setOpen(!open)} aria-expanded={open}>{loops.length > 1 ? "Thread setup" : "Setup"}</button>}
     {open && <div hidden={failed}><ThreadSetup key={threadId} threadId={threadId} onChanged={refresh} hideStart={created === READY_NOT_STARTED} /></div>}
   </div>;
 }
 
 function BannerSummary({ threadId, isExpanded, onToggle }: { threadId: string; isExpanded: boolean; onToggle(): void }) {
-  const { loop, failed, loaded } = useLoop(threadId);
-  const { outcome } = useThreadOutcome(threadId, loop);
+  const { loops, failed, loaded } = useLoops(threadId);
+  const { outcome, loop } = useThreadOutcome(threadId, loops);
   const created = outcomeLabel(outcome, loop?.controlState, loop?.supervising);
-  return (
-    <button type="button" onClick={onToggle} aria-expanded={isExpanded} title={failed ? "Status could not be refreshed. Open details to retry." : loop ? describe(loop).join("\n") : "Set up a loop for this thread"}
-      style={{ background: "none", border: 0, padding: 0, font: "inherit", color: "inherit", cursor: "pointer" }}>
-      {failed ? "looptender: status unavailable" : !loaded ? "looptender: checking status" : created ?? (loop ? label(loop) : "Add to Looptender")}
-    </button>
-  );
+  const only = loops.length === 1 ? loops[0] : undefined;
+  return <button type="button" onClick={onToggle} aria-expanded={isExpanded} title={failed ? "Status could not be refreshed. Open details to retry." : loops.length ? loops.map(l => describe(l).join("\n")).join("\n\n") : "Set up a loop for this thread"}
+    style={{ background: "none", border: 0, padding: 0, font: "inherit", color: "inherit", cursor: "pointer" }}>
+    {failed ? "looptender: status unavailable" : !loaded ? "looptender: checking status" : loops.length > 1 ? `looptender: ${loops.length} matching loops` : created ?? (only ? label(only) : "Add to Looptender")}
+  </button>;
 }
 
 function BannerDetails({ threadId, isExpanded }: { threadId: string; isExpanded: boolean }) {
-  const { loop, refresh, failed, loaded } = useLoop(threadId);
-  const { outcome, start, control } = useThreadOutcome(threadId, loop);
+  const { loops, refresh, failed, loaded } = useLoops(threadId);
+  const { outcome, start, control, loop } = useThreadOutcome(threadId, loops);
   const created = outcomeLabel(outcome, loop?.controlState, loop?.supervising);
   if (!isExpanded) return null;
   return <>
     {failed && <StatusWarning refresh={refresh} />}
     {loaded && !failed && <NewThreadOutcome threadId={threadId} outcome={outcome} controlState={loop?.controlState} supervising={loop?.supervising} start={start} control={control} onChanged={refresh} />}
-    {loop && <div style={{ display: "flex", gap: 10, alignItems: "center", flexWrap: "wrap", padding: "4px 12px 6px", fontSize: 12, opacity: 0.8 }}>
-      <div>{failed && <div>Previous snapshot</div>}{describe(loop).map((line, i) => <div key={i}>{line}</div>)}</div>
-      {!failed && created !== KEEPING_GOING && <ToggleButton loop={loop} threadId={threadId} onDone={refresh} />}
-    </div>}
-    {loaded && (!loop || loop.managedId) && <div hidden={failed}><ThreadSetup key={threadId} threadId={threadId} onChanged={refresh} hideStart={created === READY_NOT_STARTED} /></div>}
+    {loops.map(l => <section key={loopKey(l)} aria-label={`Loop ${l.loop}`} style={{ display: "flex", gap: 10, alignItems: "center", flexWrap: "wrap", padding: "4px 12px 6px", fontSize: 12, opacity: 0.8, overflowWrap: "anywhere", minWidth: 0 }}>
+      <div style={{ minWidth: 0, flex: "1 1 220px" }}>{failed && <div>Previous snapshot</div>}{describe(l).map((line, i) => <div key={i}>{line}</div>)}<div>{l === loop ? created ?? label(l) : label(l)}</div></div>
+      {!failed && !(l === loop && created === KEEPING_GOING) && <ToggleButton loop={l} threadId={threadId} onDone={refresh} />}
+    </section>)}
+    {loaded && (!loops.length || loops.some(l => l.managedId)) && <div hidden={failed}><ThreadSetup key={threadId} threadId={threadId} onChanged={refresh} hideStart={created === READY_NOT_STARTED} /></div>}
   </>;
 }
 

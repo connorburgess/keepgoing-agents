@@ -1,0 +1,1 @@
+- Show every matching loop in BB thread cards and expanded banners, with a count in the banner summary. Retired references no longer hide active or completed loops; status refreshes preserve each loop’s control identity, and new-thread controls require an unambiguous saved setup.
