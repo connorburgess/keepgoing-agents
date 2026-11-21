@@ -31,7 +31,8 @@ var claudeSpec = &Spec{
 		if !ok {
 			return Reading{Class: decide.ErrUnknown}
 		}
-		return Reading{Session: r.SessionID, Completed: !r.IsError && !r.Refused() && turn.ExitCode == 0, Class: r.Class(), Evidence: r.evidence(turn)}
+		class := r.Class()
+		return Reading{Session: r.SessionID, Completed: !r.IsError && class == decide.ErrUnknown && turn.ExitCode == 0, Class: class, Evidence: r.evidence(turn)}
 	},
 	Probe: ProbeSpec{
 		// stream-json carries the same final result object as json, plus the
@@ -221,6 +222,8 @@ func judgeClaudeProbe(stdout []byte, code int) ProbeVerdict {
 	case r.Refused():
 		// A declined probe is not a healthy candidate, whatever the exit code.
 		v.Class, v.Detail = decide.ErrRefused, "stop_reason=refusal"
+	case r.Class() != decide.ErrUnknown:
+		v.Class, v.Detail = r.Class(), "subtype="+r.Subtype
 	case !r.IsError && code == 0:
 		v.OK, v.Detail = true, "subtype="+r.Subtype
 	default:
