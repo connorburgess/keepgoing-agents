@@ -243,7 +243,7 @@ func TestCompleteOnAHeldLoopEndsTheWaitAndKeepsTheQuestion(t *testing.T) {
 	}
 	// The completion says a question was open without repeating its note.
 	code, out, errs := f.run("complete")
-	if code != 0 || !strings.Contains(out, "a question to a person was still open when completion was declared") || strings.Contains(out, "fictional question") {
+	if code != 0 || !strings.Contains(out, "completion ended the wait for a person") || !strings.Contains(out, "does not require a resume") || strings.Contains(out, "fictional question") {
 		t.Fatalf("%d %s %s", code, out, errs)
 	}
 	cfg, err := config.Load(f.cfg)
@@ -255,7 +255,7 @@ func TestCompleteOnAHeldLoopEndsTheWaitAndKeepsTheQuestion(t *testing.T) {
 	if err != nil || !ctl.Completed || ctl.AwaitingUser || !ctl.Paused || ctl.Note != "" || ctl.OpenQuestion == nil || ctl.OpenQuestion.Note != "fictional question" {
 		t.Fatalf("%+v %v", ctl, err)
 	}
-	if _, out, _ = f.run("status"); !strings.Contains(out, "open question: the loop was awaiting a person when completion was declared") || !strings.Contains(out, "fictional question") {
+	if _, out, _ = f.run("status"); !strings.Contains(out, "question history: the wait ended when completion was declared") || !strings.Contains(out, "fictional question") || strings.Contains(out, "open question:") {
 		t.Fatalf("status lost the question:\n%s", out)
 	}
 	// The history has no note, by design; it records that the hold was open.
@@ -265,7 +265,7 @@ func TestCompleteOnAHeldLoopEndsTheWaitAndKeepsTheQuestion(t *testing.T) {
 	}
 	// A second complete does not replace the question, and a new note for
 	// the completion does not either.
-	if code, out, _ = f.run("complete", "--note", "fictional summary"); code != 0 || strings.Contains(out, "still open") {
+	if code, out, _ = f.run("complete", "--note", "fictional summary"); code != 0 || strings.Contains(out, "prior question as history") {
 		t.Fatalf("%d %s", code, out)
 	}
 	if ctl, _ = control.Load(dir); ctl.OpenQuestion == nil || ctl.OpenQuestion.Note != "fictional question" || ctl.Note != "fictional summary" {
@@ -286,7 +286,7 @@ func TestCompleteOnAHeldLoopEndsTheWaitAndKeepsTheQuestion(t *testing.T) {
 func TestCompleteWithNothingHeldRecordsNoOpenQuestion(t *testing.T) {
 	f := newFixture(t)
 	for _, cmd := range []string{"enable", "complete"} {
-		if code, out, errs := f.run(cmd); code != 0 || strings.Contains(out, "still open") {
+		if code, out, errs := f.run(cmd); code != 0 || strings.Contains(out, "prior question as history") {
 			t.Fatal(cmd, out, errs)
 		}
 	}

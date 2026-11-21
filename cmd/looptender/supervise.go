@@ -858,7 +858,7 @@ func status(e env, cfg *config.Config, now time.Time, asJSON bool, staleAfter ti
 		fmt.Fprintln(w, "superseded: successor reference is recorded in control.json; resume and takeover are refused")
 	}
 	if q := ctl.OpenQuestion; q != nil {
-		fmt.Fprintf(w, "open question: the loop was awaiting a person when completion was declared at %s%s\n", when(q.At), noteSuffix(q.Note))
+		fmt.Fprintf(w, "question history: the wait ended when completion was declared at %s%s\n", when(q.At), noteSuffix(q.Note))
 	}
 	switch {
 	case out.controlUnreadable:
@@ -1580,7 +1580,7 @@ func controlCmdLanes(e env, cfg *config.Config, cmd, note string, lanes, dropQue
 	fmt.Fprintf(e.stdout, "%s: %s\n", cfg.Loop.Name, f.Summary())
 	if openQuestion && f.OpenQuestion != nil {
 		// The note is not repeated here; status shows it, as it shows any note.
-		fmt.Fprintln(e.stdout, "a question to a person was still open when completion was declared; `status` keeps it and its note until a resume")
+		fmt.Fprintln(e.stdout, "completion ended the wait for a person; `status` retains the prior question as history, which does not require a resume")
 	}
 	if cmd == "resume" && len(settledBriefs) > 0 {
 		current := state.Primary
