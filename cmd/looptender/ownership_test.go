@@ -42,7 +42,7 @@ func TestOwnerConflictsAndExplicitTransfer(t *testing.T) {
 	before, _ := os.ReadFile(filepath.Join(f.dir, "state", control.FileName))
 	calls := f.read("calls")
 	t.Setenv("BB_THREAD_ID", "thr_second")
-	for _, args := range [][]string{{"validate"}, {"enable"}, {"daemon"}, {"tick"}, {"resume"}, {"retarget", "primary"}, {"fallbacks", "check"}} {
+	for _, args := range [][]string{{"validate"}, {"enable"}, {"daemon"}, {"tick"}, {"retarget", "primary"}, {"fallbacks", "check"}} {
 		code, _, errs := f.run(args...)
 		if code != exitFailed || !strings.Contains(errs, "thr_first") || !strings.Contains(errs, "--take-over") {
 			t.Fatalf("%v: code=%d error=%s", args, code, errs)
@@ -539,5 +539,40 @@ func TestDaemonMarksItselfForItsLifetime(t *testing.T) {
 	}
 	if os.Getenv(control.SupervisedLoopVar) != "" {
 		t.Fatal("the daemon left its marker behind")
+	}
+}
+
+func TestResumeOwnerConflictGivesPersonRecoveryWithoutTransfer(t *testing.T) {
+	f := newFixture(t)
+	t.Setenv(control.SupervisedLoopVar, "")
+	t.Setenv("BB_THREAD_ID", "thr_primary")
+	if code, _, errs := f.run("enable"); code != exitOK {
+		t.Fatal(errs)
+	}
+	if code, _, errs := f.run("await-user", "--note", "Fictional permission request"); code != exitOK {
+		t.Fatal(errs)
+	}
+	path := filepath.Join(f.dir, "state", control.FileName)
+	before, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("BB_THREAD_ID", "thr_other")
+	code, _, errs := f.run("resume")
+	after, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if code != exitFailed || !strings.Contains(errs, "BB_THREAD_ID") || !strings.Contains(errs, "review Resume") || strings.Contains(errs, "--take-over") || !bytes.Equal(before, after) {
+		t.Fatalf("conflicting resume: code=%d error=%s changed=%t", code, errs, !bytes.Equal(before, after))
+	}
+	// An ordinary person terminal can resume without transferring the claim.
+	t.Setenv("BB_THREAD_ID", "")
+	if code, _, errs := f.run("resume"); code != exitOK {
+		t.Fatal(errs)
+	}
+	ctl := ownerControl(t, f)
+	if ctl.AwaitingUser || ctl.Note != "" || ctl.Ownership.ThreadID != "thr_primary" || ctl.Ownership.Generation != 1 {
+		t.Fatalf("resume changed ownership or retained hold: %+v", ctl)
 	}
 }
