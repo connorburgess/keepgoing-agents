@@ -290,6 +290,7 @@ func subject(t *testing.T, kind string) Subject {
 	if spec, ok := runner.SpecFor(kind); ok {
 		s.Rig = turnRig{r}
 		all[Crashed] = true
+		all[MissingTerminal] = true
 		c := spec.Capabilities
 		s.Declared = Declared{ExactResume: c.ExactResume, Stoppable: c.Stoppable, StructuredErrors: c.StructuredErrors, StructuredWaiting: c.StructuredWaiting}
 	}

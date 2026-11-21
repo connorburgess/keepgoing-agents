@@ -76,6 +76,11 @@ func (f *fakeAgent) Observe(ctx context.Context) (decide.Observation, error) {
 			return decide.Observation{State: decide.Idle}, nil
 		}
 		return decide.Observation{State: decide.Error, ErrorClass: decide.ErrUnknown}, nil
+	case MissingTerminal:
+		if f.fault == "healthy without terminal" {
+			return decide.Observation{State: decide.Idle}, nil
+		}
+		return decide.Observation{State: decide.Error, ErrorClass: decide.ErrUnknown}, nil
 	case Crashed:
 		if f.fault == "classifies a crash" {
 			return decide.Observation{State: decide.Error, ErrorClass: decide.ErrRateLimit}, nil
@@ -239,6 +244,7 @@ func TestEachFaultFailsItsOwnCase(t *testing.T) {
 		"invents a state":             {"never-guess", "is not one of idle, active, pending, stopping, error, unknown"},
 		"reads standard error":        {"structured-errors-only", "Never read standard error"},
 		"classifies an unmapped code": {"structured-errors-only", "Map only the codes you know"},
+		"healthy without terminal":    {"failed-is-not-healthy", "without a terminal event"},
 		"healthy on a failed exit":    {"failed-is-not-healthy", "Check the exit code before the output"},
 		"classifies a crash":          {"failed-is-not-healthy", "a turn with no result"},
 		"prompt in environment":       {"send-once", "environment"},

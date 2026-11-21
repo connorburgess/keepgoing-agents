@@ -39,6 +39,8 @@ const (
 	Oversized   Situation = "oversized"    // far more output than any real status
 	// ExitNonZero is output that looks healthy from a command that failed.
 	ExitNonZero Situation = "exit_nonzero"
+	// MissingTerminal is a valid stream prefix followed by exit zero without a terminal event.
+	MissingTerminal Situation = "missing_terminal"
 	// Crashed is a turn that ended without leaving any result.
 	Crashed Situation = "crashed"
 	// FailedUnmapped is a failure whose machine-readable code maps to no class.
@@ -495,8 +497,9 @@ func caseErrors(r *run) error {
 func caseNotHealthy(r *run) error {
 	ran := false
 	for situation, what := range map[Situation]string{
-		ExitNonZero: "output that looks healthy from a command that exited with a failure",
-		Crashed:     "a turn that ended without leaving a result",
+		ExitNonZero:     "output that looks healthy from a command that exited with a failure",
+		Crashed:         "a turn that ended without leaving a result",
+		MissingTerminal: "a valid stream that exited zero without a terminal event",
 	} {
 		if !r.s.Rig.Supports(situation) {
 			continue
