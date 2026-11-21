@@ -32,11 +32,22 @@ type buildWorld struct {
 func newBuildWorld(t *testing.T, dirName string) *buildWorld {
 	t.Helper()
 	f := newFixture(t)
-	f.run("enable")
+	if code, _, errs := f.run("enable"); code != exitOK {
+		t.Fatal(code, errs)
+	}
 	w := &buildWorld{f: f, t0: time.Date(2030, 1, 1, 12, 0, 0, 0, time.UTC)}
 	stateDir := filepath.Join(f.dir, "state")
 	stateDir, _ = canonicalFuturePath(stateDir)
-	w.entry = registry.Entry{ID: "loop_0123456789abcdef0123456789abcdef", Loop: "example-loop", ConfigPath: f.cfg, StateDir: stateDir}
+	// Enable publishes this loop; use that identity so the shared-installation
+	// guard recognizes this entry as the same loop, not a fictional second one.
+	refs, err := registry.Load(os.Getenv(registryDirEnv))
+	if err != nil || len(refs.Entries) != 1 {
+		t.Fatalf("enabled reference: %+v, %v", refs, err)
+	}
+	w.entry = refs.Entries[0]
+	if w.entry.ConfigPath != f.cfg || w.entry.StateDir != stateDir {
+		t.Fatal("enabled reference does not match build fixture")
+	}
 	bin := filepath.Join(f.dir, dirName)
 	if err := os.MkdirAll(bin, 0o700); err != nil {
 		t.Fatal(err)
