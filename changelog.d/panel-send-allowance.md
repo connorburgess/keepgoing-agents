@@ -1,0 +1,1 @@
+- Add a reviewed positive send-allowance editor to controls panels opened outside supervised threads. Show current, counted and proposed remaining attempts; preserve holds and send counts, reject changed evidence, and never retry a lost confirmation. Native-menu entry remains through the controls panel.

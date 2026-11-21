@@ -427,6 +427,16 @@ Nothing is retried by itself; a new attempt is a new review. A saved hold is not
 
 **What this does not protect against.** Everything under [what this protects against](#access-through-keepgoing-panel) still holds, with one more consequence: *anyone who can use your browser window, or who uses a `--no-open` address within its 30 seconds, can change loops*, not only read them. Use `--allow-changes` only when you mean to, and `keepgoing panel stop` when you are done. A program running as you can change loops anyway, with the same commands.
 
+## Change a send allowance (unreleased)
+
+Open a controls panel from the native menu or with `looptender panel --allow-changes` outside a supervised thread. On a loop's page, choose **Change send allowance…**, enter a positive total (for example, 500), and choose **Review allowance**. The review shows the current total, counted attempts and remaining attempts under the proposed total. **Save send allowance** changes only `loop.limits.max_sends`; it does not resume the loop, reset its count, start a provider or restart checks. If the loop is held, Resume remains a separate reviewed action.
+
+This editor cannot remove the limit or set zero. It requires a readable existing send ledger and plain editable YAML; missing counts, aliases, anchors and changed configuration are refused. Attempts made while no allowance was configured were not counted toward this limit. The page does not interpret a missing ledger as zero.
+
+Preparation and confirmation use the panel's existing same-origin/session/anti-forgery guards at `api/v1/send-allowance/<key>/{prepare,confirm}`. Confirmation is single-use and binds the registration, loaded configuration, controls, send ledger and requested total. A running check or changed evidence requires another review. Publication holds the tick and control locks, rechecks the configuration and uses a same-directory temporary file. Arbitrary external configuration writers do not participate in these locks; stop such writers before editing. The immutable panel startup caller must be outside a supervised thread; agents cannot use this feature to extend their own allowance.
+
+If a confirmation reply is lost, read the loop and inspect its configuration before making a new review. The page never retries the confirmation. Native menu/client commands do not edit the allowance directly; use **Open Panel with Controls…**. This is unreleased source with fictional HTTP/browser coverage; installed and native-platform acceptance remain separate.
+
 ## Planned slices
 
 This is the first slice. The rest is not implemented.
