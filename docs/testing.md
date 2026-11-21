@@ -668,3 +668,7 @@ survive successful completion. These fixtures do not establish live acceptance.
 
 `cmd/looptender/telegram_poll_test.go` separately covers `TG3` polling, update replay/staleness refusal and restrictive controls using offline stand-ins. No live Telegram Bot API call, real `@BotFather` bot, mobile client receipt, terminal QR rendering, `doctor` integration or background service wiring is established by these fixtures. See [Telegram remote channel](telegram.md) and [integration evidence](integrations.md).
 
+
+### Antigravity manual permission recovery
+
+The [2026-11-21 local walkthrough](antigravity.md#manual-recovery-of-permission-held-local-tests) verified two real permission holds with no repeated send, followed by person-driven continuation of the exact saved sessions and report completion. It used macOS and agy 1.5.13. Direct saved-control read-back confirmed completion and awaiting-user clearance. The tasks only read project documentation and wrote reports; listed project test commands were not executed. Original permission details were discarded, so this is not unattended approval/replay evidence. Owned stop was not exercised in this walkthrough, and remote-project attachment and installed Linux/Windows acceptance remain open.

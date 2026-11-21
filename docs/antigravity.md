@@ -2,7 +2,7 @@
 
 **Primary-only standalone adapter (unreleased source).** `adapter: antigravity` runs `agy acp --stdio` through the detached ACP runner (`runner.Antigravity`) with checkpointed prompt reservations, exact `session/resume`, owned process-tree stops, and durable `DeferredInteraction` holds on permission requests. `init --agent antigravity` creates a disabled loop. Fallbacks, switch-back, timing probes, and IDE-chat attachment remain unavailable.
 
-**Live CLI evidence (`agy 1.5.13`, macOS arm64):** `agy --version`, `agy acp --stdio` `initialize` (`sessionCapabilities.resume: {}`), a two-turn scratch-dir `session/new` → `session/resume` check (`stopReason: "end_turn"`, exit `0`), and `agy --print /usage --mode plan --output-format json` were verified on macOS arm64. The installed macOS two-turn/resume/stop walkthrough is recorded below; live permission-hold and installed Linux/Windows checks remain open; see [Installed testing and debugging](#installed-testing-and-debugging).
+**Live CLI evidence (`agy 1.5.13`, macOS arm64):** `agy --version`, `agy acp --stdio` `initialize` (`sessionCapabilities.resume: {}`), a two-turn scratch-dir `session/new` → `session/resume` check (`stopReason: "end_turn"`, exit `0`), and `agy --print /usage --mode plan --output-format json` were verified on macOS arm64. The installed macOS two-turn/resume/stop walkthrough is recorded below; live permission holds and manual same-session report completion were also verified; unattended permission recovery and installed Linux/Windows checks remain open; see [Installed testing and debugging](#installed-testing-and-debugging).
 
 For coordinator and lane model choices and quota habits on Antigravity and Gemini 4, see [Coordinating lanes — Antigravity and Gemini 4 model tiers](coordinating-lanes.md#antigravity-and-gemini-4-model-tiers).
 
@@ -96,7 +96,7 @@ Registration and guided setup are implemented. Per-message turn bounds, cancel-d
 
 1. **Questions asked in chat.** The gate advertises no elicitation, so an agent that needs an answer may ask in its message text and end the turn normally. That is indistinguishable from a returned turn, and a loop would wake it again instead of holding for a person. No typed evidence for this exists, and message text is never read.
 2. **Permission rules that apply without a request.** Existing rules can allow or deny a tool with no permission request. The absence of a request therefore proves nothing about what ran, and only a request can raise the hold.
-3. **Remaining installed checks.** macOS `agy 1.5.13` command, resume and stop evidence is recorded below. A live permission-hold walkthrough and installed Linux/Windows checks remain open. Native stand-in execution does not establish real provider behavior on those platforms.
+3. **Remaining installed checks.** macOS `agy 1.5.13` command, resume and stop evidence is recorded below. Live permission holds and manual same-session report completion are recorded below. Unattended recovery and installed Linux/Windows checks remain open. Native stand-in execution does not establish real provider behavior on those platforms.
 
 Unconfirmed-worker recovery is exposed through `looptender session clear-unconfirmed -c loop.yaml`. It preserves saved session and unadopted hold evidence; clearing uncertainty is not task completion or permission approval.
 
@@ -192,3 +192,13 @@ After building and installing `looptender` from `main` (for example `go install 
 `go test -race ./internal/supervise -run '^TestAntigravityRunnerSupervise'` and `go test -race ./internal/adapter/conformance -run '^TestAntigravityRunnerKeepsTheContract'` run full supervisor ticks and the shared adapter conformance suite directly against `runner.Antigravity` with a stand-in ACP agent: two-turn exact resume across rebuilt adapters, permission-request hold/adoption/resume, unknown error non-failover, owned stop, and all applicable adapter conformance contracts (with zero known gaps, including `bounded-output`).
 
 `go test -race ./internal/config -run '^TestAntigravity'` and `go test -race ./internal/adapter/factory -run '^TestFactoryBuildsAntigravityRunner'` verify YAML defaults, path resolution, primary-only constraints, JSON schema definitions, and factory wiring.
+
+## Manual recovery of permission-held local tests
+
+On 2026-11-21, two authorized bounded local report tasks on macOS with `agy 1.5.13` and a Looptender binary built from `25fcb250` each made one send and recorded `needsUser=true`. The next check adopted awaiting-user; a subsequent check made no additional send. The worker's exit 0 did not override the structured permission evidence.
+
+A person opened each saved session using `agy --conversation <saved-session-id>`. Each initially showed an interrupted turn, rather than a pending permission card. The person requested continuation of the original bounded task and reviewed the required permission. Both reports were written, and each completion command succeeded after permission for writing its loop state outside the workspace. Independent file read-back confirmed `completed=true` and `awaitingUser=false`. The reports listed documented verification commands; neither project's test suite was run.
+
+This verifies manual same-session recovery, not unattended ACP recovery. The original cancelled requests' tool/action details were not retained, so the later completion-command approval cannot identify or replay the original request. A permission handoff still needs actionable bounded evidence and a supported continuation path. This walkthrough did not test owned stop, install into a remote workspace, attach an existing IDE chat, or change blanket permission rules.
+
+Completed controls retained the historical `openQuestion`, even with awaiting-user cleared. Do not resume a completed test to remove that history. A different coordinator loop can remain held independently: continuing its chat is not an explicit supervision resume. A person's reviewed resume clears that loop's hold; client labels may lag until their next refresh.
