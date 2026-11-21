@@ -4,6 +4,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"strings"
 )
 
 var errBBPushCLI = errors.New("BB notification executable is unavailable or conflicts with BB_CLI")
@@ -31,6 +32,15 @@ func resolveBBPushCLI(selected, inherited string) (string, error) {
 	if err != nil {
 		return "", err
 	}
+	// Match the entrypoint's JavaScript String.trim, not Go's larger/different
+	// Unicode whitespace set. Only the comparison value changes; the literal
+	// selected path and inherited environment remain untouched.
+	inherited = strings.TrimFunc(inherited, func(r rune) bool {
+		return (r >= '\t' && r <= '\r') || r == ' ' || r == '\u00a0' ||
+			r == '\u1680' || (r >= '\u2000' && r <= '\u200a') ||
+			r == '\u2028' || r == '\u2029' || r == '\u202f' ||
+			r == '\u205f' || r == '\u3000' || r == '\ufeff'
+	})
 	if inherited != "" {
 		override, err := resolve(inherited)
 		if err != nil || override != canonical {

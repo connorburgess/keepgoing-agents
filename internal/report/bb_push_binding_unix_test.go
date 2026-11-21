@@ -39,3 +39,38 @@ func TestBBPushCLIBindingResolvesAliasesWithoutRunning(t *testing.T) {
 		t.Fatal("dangling alias did not fail closed")
 	}
 }
+
+func TestBBPushInheritedWhitespaceMatchesLauncher(t *testing.T) {
+	dir := t.TempDir()
+	selected := filepath.Join(dir, "configured-cli")
+	for _, suffix := range []string{"", " ", "\ufeff", "\u0085"} {
+		if err := os.WriteFile(selected+suffix, []byte("not executable\n"), 0600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	canonical, err := filepath.EvalSymlinks(selected)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, inherited := range []string{" \t\n", "\ufeff", " \t" + selected + "\r\n", "\ufeff" + selected + "\ufeff"} {
+		got, err := resolveBBPushCLI(selected, inherited)
+		if err != nil || got != canonical {
+			t.Fatalf("launcher-compatible override refused: %q %v", got, err)
+		}
+	}
+	for _, suffix := range []string{" ", "\ufeff"} {
+		if _, err := resolveBBPushCLI(selected+suffix, selected+suffix); err != errBBPushCLI {
+			t.Fatal("trimmed override redirected to different file")
+		}
+		// The selected pathname itself must never be trimmed.
+		got, err := resolveBBPushCLI(selected+suffix, " ")
+		if err != nil || got != canonical+suffix {
+			t.Fatal("literal selected path changed")
+		}
+	}
+	// U+0085 is Go whitespace but not JavaScript trim whitespace. Trimming it
+	// would incorrectly authorize an inherited override to a different file.
+	if _, err := resolveBBPushCLI(selected, selected+"\u0085"); err != errBBPushCLI {
+		t.Fatal("non-JavaScript whitespace was trimmed")
+	}
+}
