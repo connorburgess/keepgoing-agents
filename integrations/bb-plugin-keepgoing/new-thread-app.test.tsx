@@ -101,5 +101,5 @@ test("the banner summary names setup that is under way or could not go ahead; an
     assert.ok(await failed.findByRole("button", { name: "Preview setup" }));
   } finally { failed.lifecycle.unmount(); cleanup(); }
   const ordinary = renderSlot({ component: segment.summary }, props("thr_ordinary"), { rpc: { forThread: () => ({ loops: [], errors: [] }), newThread: () => ({ ok: true, message: "", outcome: { state: "none", message: "" } }) } });
-  try { await ordinary.findByRole("button", { name: "Supervise this thread" }); } finally { ordinary.lifecycle.unmount(); cleanup(); }
+  try { await ordinary.findByRole("button", { name: "Add to Looptender" }); } finally { ordinary.lifecycle.unmount(); cleanup(); }
 });

@@ -29,7 +29,7 @@ test("card shows completion and evidence; failed refresh labels retained data an
     phase = "lost"; await ui.behavior.emitRealtime("changed", {});
     await ui.findByRole("alert"); assert.ok(ui.getByText(/previous snapshot/));
     assert.equal(ui.queryByText(/A person resumes this from an ordinary terminal/), null);
-    assert.equal(ui.queryByRole("button", { name: "Supervise this thread" }), null);
+    assert.equal(ui.queryByRole("button", { name: "Add to Looptender" }), null);
     assert.ok(!ui.container.textContent?.includes("PRIVATE"));
     phase = "ready"; fireEvent.click(ui.getByRole("button", { name: "Refresh status" }));
     await ui.findByText(/A person resumes this from an ordinary terminal/); assert.equal(ui.queryByRole("alert"), null);
@@ -42,7 +42,7 @@ test("returned lookup errors do not offer setup as though the thread had no supe
   } });
   try {
     await ui.findByRole("alert");
-    assert.equal(ui.queryByRole("button", { name: "Supervise this thread" }), null);
+    assert.equal(ui.queryByRole("button", { name: "Add to Looptender" }), null);
     assert.ok(!ui.container.textContent?.includes("PRIVATE"));
   } finally { ui.lifecycle.unmount(); cleanup(); }
 });
@@ -76,7 +76,7 @@ test("thread setup exposes registry attachment through the typed RPC without cre
     forThread:()=>({loops:[],errors:[]}),setup:()=>({ok:true,message:"No saved setup"}),transfer:()=>({ok:true,message:"No moves",choices:[]}),
     attachment:(raw:unknown)=>{const input=raw as {action:string;threadId:string}; calls.push(input.action);assert.equal(input.threadId,"thr_attach_flow");return {ok:true,candidates:[],message:"Registry read"};},
   }});
-  try{fireEvent.click(await ui.findByRole("button",{name:"Supervise this thread"}));fireEvent.click(await ui.findByRole("button",{name:"Find registered loops"}));await ui.findByText("Registry read");assert.deepEqual(calls,["list"]);}finally{ui.lifecycle.unmount();cleanup();}
+  try{fireEvent.click(await ui.findByRole("button",{name:"Add to Looptender"}));fireEvent.click(await ui.findByRole("button",{name:"Find registered loops"}));await ui.findByText("Registry read");assert.deepEqual(calls,["list"]);}finally{ui.lifecycle.unmount();cleanup();}
 });
 
 test("responsive imported startup with no recorded first check stays unverified",async()=>{
