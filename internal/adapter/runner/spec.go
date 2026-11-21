@@ -40,8 +40,8 @@ type Spec struct {
 	Capabilities Capabilities
 
 	// MaxOutput bounds the turn output that is read, in bytes. Zero keeps
-	// the built-in runners' unbounded read. A turn that printed more is an
-	// unclassified failed turn: nothing is read from it.
+	// an unbounded read for specifications that omit a limit. A turn that
+	// printed more is an unclassified failed turn: nothing is read from it.
 	MaxOutput int64
 	// ValidSession, when set, says whether a saved session may be passed
 	// back to the agent.

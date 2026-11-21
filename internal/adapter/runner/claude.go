@@ -23,6 +23,7 @@ var claudeSpec = &Spec{
 	AccountEnv:   "CLAUDE_CONFIG_DIR",
 	SettingNames: []string{"cli", "workdir", "model", "effort", "permission_mode", "max_budget_usd", "extra_args", "env"},
 	Prompt:       PromptStdin,
+	MaxOutput:    8 << 20, // Bound observation memory; the private output file is unchanged.
 	Capabilities: Capabilities{ExactResume: true, Stoppable: true, StructuredErrors: true},
 	Argv:         func(set Settings, session, _ string) []string { return claudeArgv(set, session) },
 	Read: func(turn Status) Reading {

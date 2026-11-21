@@ -185,6 +185,9 @@ jobs:
       - name: Verify Antigravity turn snapshot replacement on Windows
         if: steps.scope.outputs.scope != 'docs'
         run: go test -race -v ./internal/adapter/runner -run '^TestAntigravityTurnSnapshot' -count=1
+      - name: Verify headless observation output boundaries on Windows
+        if: steps.scope.outputs.scope != 'docs'
+        run: go test -race -v ./internal/adapter/runner -run '^TestBuiltinOutputReadBoundaries$' -count=1
       - name: Verify the adapter contract cases on Windows
         if: steps.scope.outputs.scope != 'docs'
         run: go test -race -v ./internal/adapter/conformance -count=1
