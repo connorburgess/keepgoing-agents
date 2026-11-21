@@ -53,7 +53,7 @@ func TestDockReadsTimeOutG2(t *testing.T) {
 	// increment. Each bounded read must retain its own deadline, signal, cleanup
 	// and failure path; generic reviewed changes deliberately keep unknown-save
 	// semantics without automatic timeout/replay.
-	owners := []string{"function getJSON(url) {", "function loadUsage() {", "function loadSavedAccounts(retry) {", "function accountQuotaPost(id, step, form, recovery) {", "function post(path, form, body) {", "function accountConnectPost(c, step, form, attempt) {"}
+	owners := []string{"function getJSON(url) {", "function loadUsage() {", "function loadSavedAccounts(retry) {", "function accountQuotaPost(id, step, form, recovery) {", "function post(path, form, body) {", "function accountConnectPost(c, step, form, attempt) {", "function allowancePost(key, step, form, amount) {"}
 	ownedFetches := 0
 	for _, head := range owners {
 		source := jsFunction(t, js, head)
@@ -74,6 +74,7 @@ func TestDockReadsTimeOutG2(t *testing.T) {
 		{"function loadUsage() {", []string{"new AbortController()", "abort.abort()", "usageTimeout()", "signal: abort.signal", "if (!r.ok) throw", ".catch(function () { state.usageFailed = true; })", "clearTimeout(timer)", "state.usageBusy = false"}},
 		{"function loadSavedAccounts(retry) {", []string{"new AbortController()", "ctl.abort()", "readTimeoutMs()", "signal: ctl.signal", "if (!r.ok) throw", ".catch(function () { if (current()) savedAccounts.status = \"failed\"; })", ".finally(function () {", "clearTimeout(timer)", "seq === savedAccounts.serial", "state.data.accountsReference === ref", "state.identifiers === asked"}},
 		{"function accountConnectPost(c, step, form, attempt) {", []string{"new AbortController()", "ctl.abort()", "15000", "signal: ctl.signal", "if (!r.ok)", ".finally(function () { clearTimeout(timer); });"}},
+		{"function allowancePost(key, step, form, amount) {", []string{"new AbortController()", "abort.abort()", "15000", "signal: abort.signal", "if (!r.ok)", "allowanceReply(d, key, step)", ".finally(function () { clearTimeout(timer); });"}},
 		{"function accountQuotaPost(id, step, form, recovery) {", []string{"new AbortController()", "abort.abort()", "15000", "signal: abort.signal", "if (!r.ok)", ".finally(function () { clearTimeout(timer); });"}},
 	} {
 		source := jsFunction(t, js, tc.head)

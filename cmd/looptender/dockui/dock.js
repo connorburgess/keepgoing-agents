@@ -1141,6 +1141,7 @@
     var c = state.change && state.change.key === l.key ? state.change : null;
     if (!changesOn() && !c) return null;
     var box = el("section", "panel change");
+    if (c && c.editing && (!changesOn() || state.server.sendAllowanceEdit !== true)) { state.change = null; return null; }
     if (c && c.editing) {
       var form = el("form", "route-editor");
       form.noValidate = true;
@@ -2355,6 +2356,13 @@
     return !!s && !s.isCollapsed && $("layout").contains(s.anchorNode);
   }
 
+  function editingAllowanceInput(r, pane) {
+    var c = state.change, active = document.activeElement;
+    return r.view === "loop" && c && c.key === r.key && c.action === "set_send_allowance" && c.editing &&
+      changesOn() && state.server.sendAllowanceEdit === true && loopByKey(r.key) &&
+      pane.contains(active) && active.id === "allowance-input";
+  }
+
   // force redraws even while text is selected: hiding identifiers must not wait.
   function render(navigated, force) {
     var d = state.data;
@@ -2365,6 +2373,9 @@
     state.pending = false;
     var r = route(), pane = $("pane");
     if (!navigated && !force && r.view === "routes" && pane.contains(document.activeElement) && document.activeElement.matches("input, select, textarea")) { state.pending = true; renderReadline(); return; }
+    // Keep the live input (including caret and selection) while typing through
+    // periodic reads. Explicit privacy/navigation/capability changes still win.
+    if (!navigated && !force && editingAllowanceInput(r, pane)) { state.pending = true; renderReadline(); return; }
     var top = navigated ? 0 : window.scrollY;
     var active = document.activeElement, inPane = pane.contains(active), inPicker = $("picker").contains(active);
     var key = inPane ? focusKey(active, pane) : inPicker ? focusKey(active, $("picker")) : null;
@@ -2494,10 +2505,10 @@
     getJSON(SERVER)
       .then(function (d) {
         if (!d || d.schemaVersion !== 1) return;
-        var was = changesOn();
+        var was = changesOn(), allowanceWas = state.server && state.server.sendAllowanceEdit === true;
         state.server = d;
         renderServed();
-        if (changesOn() !== was && state.data) render(false, true);
+        if ((changesOn() !== was || allowanceWas !== (d.sendAllowanceEdit === true)) && state.data) render(false, true);
       })
       .catch(function () { /* the page works without it */ });
   }
