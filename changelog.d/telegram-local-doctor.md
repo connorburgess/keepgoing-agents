@@ -1,0 +1,1 @@
+- Add opt-in `doctor --telegram` local pairing and token-file presence diagnostics, with an explicit directory option and no credential reads, network requests or state changes. Delivery and polling health remain unverified.
