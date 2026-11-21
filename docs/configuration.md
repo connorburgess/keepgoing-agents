@@ -474,8 +474,8 @@ See [operations.md](operations.md).
 | `report.url_env`, `report.secret_env` | `LOOPTENDER_WEBHOOK_URL`, `LOOPTENDER_WEBHOOK_SECRET`; each is also read under its [earlier name](#environment-variables). With `format: telegram`, defaults to `LOOPTENDER_TELEGRAM_API_URL` (optional, defaults to `https://api.telegram.org`) and `LOOPTENDER_TELEGRAM_BOT_TOKEN` (or the paired `token.env` from `telegram setup`). |
 | `report.secret_file` | none |
 | `report.source` | the loop name |
-| `report.scheme` | `standard-webhooks` (or `bearer`; `telegram-bot` when `format: telegram`) |
-| `report.format` | `standard` (or `text`; unreleased `sessionpipe` requires `scheme: bearer`, see [Sessionpipe setup and report-only authentication resume](sessionpipe.md); unreleased `telegram` defaults to `scheme: telegram-bot`, see [Telegram remote channel](telegram.md)) |
+| `report.scheme` | `standard-webhooks` (or `bearer`, required/default for `ntfy`; `telegram-bot` when `format: telegram`) |
+| `report.format` | `standard` (or `text`; unreleased `ntfy` uses the [bounded phone notification preset](#ntfy-notification-preset); unreleased `sessionpipe` requires `scheme: bearer`, see [Sessionpipe setup and report-only authentication resume](sessionpipe.md); unreleased `telegram` defaults to `scheme: telegram-bot`, see [Telegram remote channel](telegram.md)) |
 | `report.events` | `handoff, switch_back, timing, degraded, recovered, await_user, limit_wait, network_wait, child_error, child_recovery, refusal_streak, complete, stop, error` (the `complete` event requires v0.1.3 or newer; `limit_wait`, `network_wait`, `child_error` and `child_recovery` are v0.2.0; `child_recovery` is sent only by a loop with `bb.children.retry_errored`; `timing`, unreleased, reports applied steps and failures; `refusal_streak`, unreleased, is sent when a streak of refused turns reaches 3, 10 and every 10 after; `check_gap`, also v0.2.0, is not a default and must be named) |
 | `report.timeout` | `20s` |
 | `yield.busy_command`, `yield.timeout` | required, `10s` |
@@ -644,3 +644,20 @@ the current goal and assignment revisions and explicitly attests whole-objective
 completion, including zero-child objectives. It is not inferred authorization or
 proof of acceptance. See [completion review](assignments.md#whole-objective-completion-review-unreleased)
 for query bounds, historical completed-lane absence and hold/source checks.
+
+## ntfy notification preset
+
+Unreleased `format: ntfy` uses ntfy's [plain-text publishing API](https://docs.ntfy.sh/publish/). Choose your own topic and credential; looptender does not create an account or configure topic access.
+
+```yaml
+  report:
+    format: ntfy
+    source: example-device
+    events: [await_user, error, complete, stop]
+```
+
+Set `LOOPTENDER_NTFY_URL` to a full HTTPS topic URL (for example `https://example.com/example-topic`) and `LOOPTENDER_NTFY_TOKEN` to your bearer access token through the environment or existing private `report.secret_file`. Never commit the token or a private topic URL. Custom `url_env` and `secret_env` names are supported. The scheme defaults to and requires `bearer`. Anonymous publishing is not supported by this preset. Topic paths are limited to one 1–64 character ASCII letter/digit/underscore/hyphen name; credentials in the URL, encoded path aliases, queries and fragments are refused. HTTP is allowed only for local loopback fixtures.
+
+The UTF-8 body contains the loop label, configured source/device label and an allowlisted event name. Labels are bounded to 120 characters with control/format characters removed; choose labels you intend to disclose. Unknown event names become `unknown`. Event text, arbitrary data, task content, transcripts, paths and account details are not copied into the preset. There are no click/action/attachment headers or inbound controls.
+
+Every selected event makes one attempt, without redirects or automatic retry after an uncertain result. Existing delivery history records HTTP acceptance/rejection or transport failure with receipt still unverified; it never retains the topic, token or response body. HTTP acceptance does not establish notification delivery to a phone. Bearer authentication does not establish subscriber privacy: configure the topic's access controls at your ntfy service. Local stand-in tests are the current evidence; live delivery remains unverified.

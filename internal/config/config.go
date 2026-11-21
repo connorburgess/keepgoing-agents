@@ -374,7 +374,7 @@ type Report struct {
 	SecretFile string   `yaml:"secret_file,omitempty"`
 	Source     string   `yaml:"source,omitempty"`
 	Scheme     string   `yaml:"scheme,omitempty"` // standard-webhooks or bearer
-	Format     string   `yaml:"format,omitempty"` // standard, text or sessionpipe
+	Format     string   `yaml:"format,omitempty"` // standard, text, sessionpipe, telegram or ntfy
 	Events     []string `yaml:"events,omitempty"`
 	Timeout    Duration `yaml:"timeout,omitempty"`
 }
@@ -692,7 +692,17 @@ func (c *Config) applyDefaults() {
 		if r.Format == "" {
 			r.Format = "standard"
 		}
-		if r.Format == "telegram" {
+		if r.Format == "ntfy" {
+			if r.URLEnv == "" {
+				r.URLEnv = "LOOPTENDER_NTFY_URL"
+			}
+			if r.SecretEnv == "" {
+				r.SecretEnv = "LOOPTENDER_NTFY_TOKEN"
+			}
+			if r.Scheme == "" {
+				r.Scheme = "bearer"
+			}
+		} else if r.Format == "telegram" {
 			if r.URLEnv == "" {
 				r.URLEnv = "LOOPTENDER_TELEGRAM_API_URL"
 			}
@@ -882,8 +892,11 @@ func (c *Config) Validate() error {
 		if r.Scheme != "standard-webhooks" && r.Scheme != "bearer" && r.Scheme != "telegram-bot" {
 			add("loop.report.scheme must be standard-webhooks, bearer or telegram-bot")
 		}
-		if r.Format != "standard" && r.Format != "text" && r.Format != "sessionpipe" && r.Format != "telegram" {
-			add("loop.report.format must be standard, text, sessionpipe or telegram")
+		if r.Format != "standard" && r.Format != "text" && r.Format != "sessionpipe" && r.Format != "telegram" && r.Format != "ntfy" {
+			add("loop.report.format must be standard, text, sessionpipe, telegram or ntfy")
+		}
+		if r.Format == "ntfy" && r.Scheme != "bearer" {
+			add("loop.report: ntfy format requires bearer scheme")
 		}
 		if r.Format == "sessionpipe" && r.Scheme != "bearer" {
 			add("loop.report: sessionpipe format requires bearer scheme")
