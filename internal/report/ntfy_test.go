@@ -3,9 +3,12 @@ package report
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -47,6 +50,9 @@ func TestNtfyRedactedSingleAttempt(t *testing.T) {
 			}
 			var d Delivery
 			err = w.report(context.Background(), Event{Type: "await_user", Loop: "example-loop", Text: "private transcript", Data: map[string]any{"account": "private account", "path": "/private/example/task"}}, func(v Delivery) { d = v })
+			if status != 202 && !errors.Is(err, ErrNoRetry) {
+				t.Fatal("attempted delivery can be retried")
+			}
 			if (err == nil) != (status == 202) {
 				t.Fatalf("wrong result: %v", err)
 			}
@@ -117,10 +123,39 @@ func TestNtfyTransportUncertaintyIsNotRetried(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err = w.Report(context.Background(), Event{Type: "error", Loop: "example-loop"}); err == nil || err.Error() != "report: request failed" {
+	if err = w.Report(context.Background(), Event{Type: "error", Loop: "example-loop"}); err == nil || !errors.Is(err, ErrNoRetry) {
 		t.Fatalf("unexpected transport result: %v", err)
 	}
 	if calls.Load() != 1 {
 		t.Fatalf("retried ambiguous delivery: %d", calls.Load())
+	}
+}
+
+func TestNtfyHistoryFailureDoesNotReplayAcceptedPOST(t *testing.T) {
+	var calls atomic.Int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { calls.Add(1); w.WriteHeader(202) }))
+	defer srv.Close()
+	t.Setenv("KG_TEST_URL", srv.URL+"/example-topic")
+	t.Setenv("KG_TEST_SECRET", "fictional-token")
+	c := cfg("")
+	c.Format = "ntfy"
+	c.Scheme = "bearer"
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, DeliveryFile), []byte("corrupt"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	w, err := NewRecorded(c, dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	err = w.Report(context.Background(), Event{Type: "error", Loop: "example-loop"})
+	if !errors.Is(err, ErrNoRetry) || !errors.Is(err, ErrDeliveryHistory) || calls.Load() != 1 {
+		t.Fatalf("accepted POST replayable: %v calls=%d", err, calls.Load())
+	}
+	t.Setenv("KG_TEST_SECRET", "")
+	w, _ = NewRecorded(c, t.TempDir())
+	err = w.Report(context.Background(), Event{Type: "error"})
+	if err == nil || errors.Is(err, ErrNoRetry) || calls.Load() != 1 {
+		t.Fatalf("setup failure changed retry semantics: %v", err)
 	}
 }

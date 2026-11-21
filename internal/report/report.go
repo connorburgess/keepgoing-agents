@@ -198,7 +198,7 @@ func (w *Webhook) Report(ctx context.Context, e Event) error {
 
 // observe receives only typed transport evidence, never the payload or errors.
 // It must not change sending, retry, redirect or completion semantics.
-func (w *Webhook) report(ctx context.Context, e Event, observe func(Delivery)) error {
+func (w *Webhook) report(ctx context.Context, e Event, observe func(Delivery)) (result error) {
 	if !w.cfg.ReportsEvent(e.Type) {
 		return nil
 	}
@@ -209,6 +209,11 @@ func (w *Webhook) report(ctx context.Context, e Event, observe func(Delivery)) e
 		return w.reportPipe(ctx, e, observe)
 	}
 	d := Delivery{Event: eventName(e.Type), StartedAt: w.now().UTC(), Receipt: "unverified", Attempts: []Attempt{}}
+	defer func() {
+		if w.cfg.Format == "ntfy" && len(d.Attempts) > 0 && result != nil {
+			result = errors.Join(result, ErrNoRetry)
+		}
+	}()
 	snapshot := func(outcome string) {
 		d.Outcome, d.UpdatedAt = outcome, w.now().UTC()
 		if observe != nil {
