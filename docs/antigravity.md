@@ -66,7 +66,7 @@ Adoption is what separates an explicit resume from an automatic restart. While t
 
 Human-input evidence is recorded once per turn. Further permission requests while the same cancelled turn drains add nothing, also after adoption and resume; a runner must keep reporting that turn as running until its worker has exited. Handoff and switch-back send to a target without consulting these records, so a future adapter must stay primary-only or check them first. A deferred interaction does not request an early daemon check; it is held on the next ordinary tick.
 
-Permission-hold evidence currently comes from fixtures: the real stream exchange writes the real records, and supervisor ticks exercise their adoption and restart behavior with a stand-in agent. The registered detached runner reports the same observation for configured primary loops; the live permission-hold walkthrough remains open.
+Permission-hold fixtures exercise the real stream exchange and saved records, with supervisor ticks testing adoption and restart behavior against a stand-in agent. The registered detached runner reports the same observation for configured primary loops. Two live macOS permission-hold and manual recovery walkthroughs are now recorded [below](#manual-recovery-of-permission-held-local-tests); unattended permission recovery remains open.
 
 ## Detached runner
 
