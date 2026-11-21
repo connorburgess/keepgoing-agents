@@ -475,7 +475,7 @@ See [operations.md](operations.md).
 | `report.secret_file` | none |
 | `report.source` | the loop name |
 | `report.scheme` | `standard-webhooks` (or `bearer`, required/default for `ntfy`; `telegram-bot` when `format: telegram`) |
-| `report.format` | `standard` (or `text`; unreleased `ntfy` uses the [bounded phone notification preset](#ntfy-notification-preset); unreleased `sessionpipe` requires `scheme: bearer`, see [Sessionpipe setup and report-only authentication resume](sessionpipe.md); unreleased `telegram` defaults to `scheme: telegram-bot`, see [Telegram remote channel](telegram.md)) |
+| `report.format` | `standard` (or `text`; unreleased `slack` uses the [incoming webhook preset](#slack-notification-preset); unreleased `ntfy` uses the [bounded phone notification preset](#ntfy-notification-preset); unreleased `sessionpipe` requires `scheme: bearer`, see [Sessionpipe setup and report-only authentication resume](sessionpipe.md); unreleased `telegram` defaults to `scheme: telegram-bot`, see [Telegram remote channel](telegram.md)) |
 | `report.events` | `handoff, switch_back, timing, degraded, recovered, await_user, limit_wait, network_wait, child_error, child_recovery, refusal_streak, complete, stop, error` (the `complete` event requires v0.1.3 or newer; `limit_wait`, `network_wait`, `child_error` and `child_recovery` are v0.2.0; `child_recovery` is sent only by a loop with `bb.children.retry_errored`; `timing`, unreleased, reports applied steps and failures; `refusal_streak`, unreleased, is sent when a streak of refused turns reaches 3, 10 and every 10 after; `check_gap`, also v0.2.0, is not a default and must be named) |
 | `report.timeout` | `20s` |
 | `yield.busy_command`, `yield.timeout` | required, `10s` |
@@ -661,3 +661,21 @@ Set `LOOPTENDER_NTFY_URL` to a full HTTPS topic URL (for example `https://exampl
 The UTF-8 body contains the loop label, configured source/device label and an allowlisted event name. Labels are bounded to 120 characters with control/format characters removed; choose labels you intend to disclose. Unknown event names become `unknown`. Event text, arbitrary data, task content, transcripts, paths and account details are not copied into the preset. There are no click/action/attachment headers or inbound controls.
 
 Every selected event makes one attempt, without redirects or automatic retry after an uncertain result. Existing delivery history records HTTP acceptance/rejection or transport failure with receipt still unverified; it never retains the topic, token or response body. HTTP acceptance does not establish notification delivery to a phone. Bearer authentication does not establish subscriber privacy: configure the topic's access controls at your ntfy service. Local stand-in tests are the current evidence; live delivery remains unverified.
+
+
+## Slack notification preset
+
+Unreleased `format: slack` uses an existing [Slack incoming webhook](https://docs.slack.dev/messaging/sending-messages-using-incoming-webhooks/). The person creates and authorizes the webhook separately; looptender never creates an app or chooses a channel.
+
+```yaml
+  report:
+    format: slack
+    source: example-device
+    events: [await_user, error, complete, stop]
+```
+
+The default scheme is `slack-webhook`, valid only with this format. Set `LOOPTENDER_SLACK_WEBHOOK_URL` in the environment or an existing private `report.secret_file` (a dotenv file). `url_env` can select another variable. The URL is the credential: do not put it in configuration, command arguments, logs or committed files. Omit `secret_env`; there is no separate signing key or bearer token. Only HTTPS `hooks.slack.com` and `hooks.slack-gov.com` incoming `/services/…/…/…` URLs are accepted, with no port, userinfo, encoded path, query or fragment. Loopback HTTP is available for local fixtures.
+
+The payload contains a constant fallback and one [plain-text section](https://docs.slack.dev/reference/block-kit/composition-objects/text-object/) with bounded loop label, configured source/device label and allowlisted event name. Each label is limited to 120 characters with control/format characters removed. Labels are never interpreted as `mrkdwn`; no arbitrary report text/data, attachments, interactive controls, channel overrides or private transcripts are included. Choose labels intended for the channel's members. Link/media unfurling is disabled.
+
+Every selected event makes one POST without redirects. An attempted send that fails or loses its delivery-history write stops episode retries; setup failures retain their existing retry behavior. A crash before episode-state publication is outside this guarantee. The bounded successful reply must be HTTP 200 with `ok`; malformed success responses remain protocol failures, without retaining their body. Delivery history contains only status/evidence and always marks receipt unverified. HTTP acceptance is not proof that a phone received an alert. Local fixtures are the evidence; live Slack and phone delivery remain unverified.

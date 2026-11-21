@@ -15,6 +15,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"net/http"
 	"net/url"
 	"os"
@@ -67,6 +68,12 @@ const MaxBody = 1 << 20
 // New resolves credentials from the environment, then the secret file.
 // Secrets are never logged or included in errors.
 func New(cfg config.Report) (*Webhook, error) {
+	if cfg.Format == "slack" && cfg.SecretEnv != "" {
+		return nil, errors.New("report: slack uses only the webhook URL")
+	}
+	if (cfg.Format == "slack") != (cfg.Scheme == "slack-webhook") {
+		return nil, errors.New("report: slack format requires slack-webhook scheme exclusively")
+	}
 	if cfg.Format == "ntfy" && cfg.Scheme != "bearer" {
 		return nil, errors.New("report: ntfy format requires bearer scheme")
 	}
@@ -105,10 +112,16 @@ func New(cfg config.Report) (*Webhook, error) {
 		return newTelegramWebhook(cfg, get)
 	}
 	w := &Webhook{cfg: cfg, url: get(cfg.URLEnv), secret: get(cfg.SecretEnv), client: &http.Client{Timeout: cfg.Timeout.Duration}, now: time.Now}
-	if w.url == "" || w.secret == "" {
+	if cfg.Format == "slack" && w.url == "" {
+		return nil, errors.New("report: Slack webhook URL must be set in the environment or secret file")
+	}
+	if w.url == "" || (cfg.Format != "slack" && w.secret == "") {
 		return nil, fmt.Errorf("report: %s and %s must be set in the environment or the secret file", cfg.URLEnv, cfg.SecretEnv)
 	}
 	u, err := url.Parse(w.url)
+	if cfg.Format == "slack" && (err != nil || !validSlackURL(u)) {
+		return nil, errors.New("report: invalid Slack incoming webhook URL")
+	}
 	if cfg.Format == "sessionpipe" && (err != nil || u.User != nil || (u.Path != "" && u.Path != "/") || u.RawQuery != "" || u.Fragment != "") {
 		return nil, errors.New("report: sessionpipe URL must be an origin without credentials, path, query or fragment")
 	}
@@ -121,7 +134,7 @@ func New(cfg config.Report) (*Webhook, error) {
 	if u.Scheme != "https" && !(u.Scheme == "http" && isLoopback(u.Hostname())) {
 		return nil, errors.New("report: the webhook URL must use https (http is allowed only for localhost)")
 	}
-	if strings.ContainsAny(w.secret, " \t\r\n") {
+	if cfg.Format != "slack" && strings.ContainsAny(w.secret, " \t\r\n") {
 		return nil, errors.New("report: the webhook secret is malformed")
 	}
 	if cfg.Scheme == "standard-webhooks" {
@@ -148,6 +161,9 @@ func (w *Webhook) Body(e Event) ([]byte, error) {
 	}
 	if w.cfg.Format == "sessionpipe" {
 		return pipeBody(e, pipeState{Version: 1, ID: "00000000000000000000000000000000", Next: 1}, w.now())
+	}
+	if w.cfg.Format == "slack" {
+		return slackBody(e, w.cfg.Source)
 	}
 	if w.cfg.Format == "ntfy" {
 		return ntfyBody(e, w.cfg.Source), nil
@@ -210,7 +226,7 @@ func (w *Webhook) report(ctx context.Context, e Event, observe func(Delivery)) (
 	}
 	d := Delivery{Event: eventName(e.Type), StartedAt: w.now().UTC(), Receipt: "unverified", Attempts: []Attempt{}}
 	defer func() {
-		if w.cfg.Format == "ntfy" && len(d.Attempts) > 0 && result != nil {
+		if (w.cfg.Format == "ntfy" || w.cfg.Format == "slack") && len(d.Attempts) > 0 && result != nil {
 			result = errors.Join(result, ErrNoRetry)
 		}
 	}()
@@ -232,7 +248,7 @@ func (w *Webhook) report(ctx context.Context, e Event, observe func(Delivery)) (
 	}
 	if w.cfg.Scheme == "bearer" {
 		headers["authorization"] = "Bearer " + w.secret
-	} else {
+	} else if w.cfg.Scheme != "slack-webhook" {
 		id := make([]byte, 12)
 		rand.Read(id)
 		sig, err := Sign(w.secret, "msg_"+hex.EncodeToString(id), w.now(), body)
@@ -249,7 +265,7 @@ func (w *Webhook) report(ctx context.Context, e Event, observe func(Delivery)) (
 	// A limit_wait, child_error or check_gap report is requested once and, like a
 	// completion, makes one attempt: an uncertain delivery must not page a
 	// person twice.
-	if w.cfg.Format == "ntfy" || (e.Type == "error" && e.Data["cause"] == "configuration_unavailable") || e.Type == "complete" || e.Type == "limit_wait" || e.Type == "child_error" || e.Type == "child_recovery" || e.Type == "network_wait" || e.Type == "check_gap" || e.Type == "hung_turn" || e.Type == "refusal_streak" {
+	if w.cfg.Format == "ntfy" || w.cfg.Format == "slack" || (e.Type == "error" && e.Data["cause"] == "configuration_unavailable") || e.Type == "complete" || e.Type == "limit_wait" || e.Type == "child_error" || e.Type == "child_recovery" || e.Type == "network_wait" || e.Type == "check_gap" || e.Type == "hung_turn" || e.Type == "refusal_streak" {
 		attempts = 1
 		copy := *w.client
 		copy.CheckRedirect = func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }
@@ -276,9 +292,19 @@ func (w *Webhook) report(ctx context.Context, e Event, observe func(Delivery)) (
 			last = errors.New("report: request failed") // the error may embed the URL; keep it out
 			continue
 		}
+		var slackReply []byte
+		var slackErr error
+		if w.cfg.Format == "slack" {
+			slackReply, slackErr = io.ReadAll(io.LimitReader(resp.Body, 65))
+		}
 		resp.Body.Close()
 		a.HTTPStatus = resp.StatusCode
 		if resp.StatusCode >= 200 && resp.StatusCode < 300 {
+			if w.cfg.Format == "slack" && (resp.StatusCode != 200 || slackErr != nil || len(slackReply) > 64 || strings.TrimSpace(string(slackReply)) != "ok") {
+				a.Outcome = "protocol_failed"
+				snapshot("protocol_failed")
+				return errors.New("report: Slack response not verified")
+			}
 			a.Outcome = "http_accepted"
 			snapshot("http_accepted")
 			return nil

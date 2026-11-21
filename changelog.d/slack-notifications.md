@@ -1,0 +1,1 @@
+- Add an opt-in Slack incoming webhook preset with URL credential handling, bounded plain-text loop/device/event labels, one attempt without redirects, and preserved no-retry evidence after attempted sends. Local fixture evidence only; live Slack and phone receipt remain unverified.
