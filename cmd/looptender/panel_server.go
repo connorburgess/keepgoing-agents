@@ -424,6 +424,7 @@ func (h *panelHandler) served(w http.ResponseWriter) func(session string) {
 			out.AccountQuota = true
 			out.AccountQuotaProviders = panelQuotaProvidersFor(runtime.GOOS, runtime.GOARCH)
 			out.AccountSelectionReview = true
+			out.SendAllowanceEdit = h.changes.caller == ""
 			out.AccountConnectProviders = panelConnectProvidersFor(runtime.GOOS, runtime.GOARCH)
 			out.ChangesText = txt("Changes allowed for "+dockSpan(now.Sub(since))+": started with looptender panel --allow-changes at ", tm(since, "clock"), ". "+panelExposure+" looptender panel stop turns them off.")
 		}

@@ -44,7 +44,7 @@ const (
 	panelChangeOrigin   = "panel"
 	panelPrepareContext = "keepgoing-panel-prepare\x00"
 	// panelExposure is said wherever changes are turned on.
-	panelExposure = "While changes are allowed, anyone using this window can pause, stop or resume loops, replace their check builds with this panel's build, edit routes within the startup caller's authority, review unchanged account selections in this panel's environment, start isolated provider sign-in for selected account rows, and read selected Codex subscription quota or retrieve supported Claude usage (provider freshness unknown)."
+	panelExposure = "While changes are allowed, anyone using this window can pause, stop or resume loops, replace their check builds with this panel's build, edit routes within the startup caller's authority, review send allowances when opened outside a supervised thread, review unchanged account selections in this panel's environment, start isolated provider sign-in for selected account rows, and read selected Codex subscription quota or retrieve supported Claude usage (provider freshness unknown)."
 )
 
 // panelChanges is the change half of a panel server started with changes
@@ -86,6 +86,7 @@ type panelForm struct {
 	quota     *accountQuotaSelection
 	connect   *panelAccountConnectReview
 	selection *panelAccountSelectionReview
+	allowance *panelSendAllowanceReview
 }
 
 func newPanelChanges(ctx context.Context, registryDir string, reader *dockReader, since time.Time, now func() time.Time) (*panelChanges, error) {
@@ -244,6 +245,10 @@ var panelDone = map[string]string{"pause": "paused", "stop": "stopped", "resume"
 
 // serve answers one change request. rest is the path under the session.
 func (c *panelChanges) serve(w http.ResponseWriter, r *http.Request, rest, session string) {
+	if strings.HasPrefix(rest, panelSendAllowancePrefix) {
+		c.serveSendAllowance(w, r, rest, session)
+		return
+	}
 	if strings.HasPrefix(rest, panelAccountConnectPrefix) {
 		c.serveAccountConnect(w, r, rest, session)
 		return

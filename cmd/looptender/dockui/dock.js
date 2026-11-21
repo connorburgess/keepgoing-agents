@@ -1044,14 +1044,48 @@
     var n = document.querySelector('[data-focus="' + name + '"]');
     if (n) n.focus();
   }
-  function prepareChange(key, action) {
+  function allowanceReply(d, key, step) {
+    function text(v) { return typeof v === "string" && v.trim().length > 0 && v.length <= 16384; }
+    if (!d || d.schemaVersion !== 1 || (!!d.preview === !!d.result)) throw new Error("allowance reply");
+    if (d.result) {
+      var outcomes = step === "prepare" ? ["refused", "review_again"] : ["done", "refused", "review_again"];
+      if (outcomes.indexOf(d.result.outcome) < 0 || !text(d.result.text)) throw new Error("allowance outcome");
+      return d;
+    }
+    var p = d.preview;
+    if (step !== "prepare" || p.action !== "set_send_allowance" || p.key !== key ||
+        !text(p.title) || !text(p.confirm) || !text(p.lost) || !text(p.refused) ||
+        typeof p.form !== "string" || !/^[a-f0-9]{64}$/.test(p.form) ||
+        !isFinite(Date.parse(p.expiresAt)) || !Array.isArray(p.lines) || !p.lines.length || p.lines.length > 32 ||
+        !p.lines.every(function (line) { return Array.isArray(line) && line.length > 0 && line.length <= 32 && line.every(function (part) { return part && text(part.t) && !part.at; }); })) throw new Error("allowance review");
+    return d;
+  }
+  function allowancePost(key, step, form, amount) {
+    var abort = new AbortController(), timer = setTimeout(function () { abort.abort(); }, 15000);
+    var body = { action: "set_send_allowance" };
+    if (step === "prepare") body.allowance = amount;
+    return fetch("api/v1/send-allowance/" + key + "/" + step, {
+      method: "POST", cache: "no-store", credentials: "same-origin", signal: abort.signal,
+      headers: { "Content-Type": "application/json", Accept: "application/json", "X-Keepgoing-Form": form }, body: JSON.stringify(body)
+    }).then(function (r) {
+      if (!r.ok) { var e = new Error("status " + r.status); e.status = r.status; throw e; }
+      return r.json();
+    }).then(function (d) { return allowanceReply(d, key, step); })
+      .finally(function () { clearTimeout(timer); });
+  }
+  function editAllowance(key) {
+    state.change = { key: key, action: "set_send_allowance", editing: true, draft: "" };
+    render(false, true);
+    focusOn("allowance-input");
+  }
+  function prepareChange(key, action, amount) {
     if (!changesOn()) return;
     state.change = { key: key, action: action, busy: true };
     render(false, true);
-    post("api/v1/loops/" + key + "/prepare", state.server.form, { action: action })
+    (action === "set_send_allowance" ? allowancePost(key, "prepare", state.server.form, amount) : post("api/v1/loops/" + key + "/prepare", state.server.form, { action: action }))
       .then(function (d) { state.change = d.preview ? { key: key, action: action, preview: d.preview } : { key: key, action: action, result: d.result }; })
       .catch(function () {
-        state.change = { key: key, action: action, result: { outcome: "refused", retry: true, text: "The review could not be prepared: the panel did not answer. Nothing was changed." } };
+        state.change = { key: key, action: action, result: { outcome: "refused", retry: action !== "set_send_allowance", text: "The review could not be prepared: the panel did not answer. Nothing was changed." } };
       })
       .then(function () {
         render(false, true);
@@ -1072,13 +1106,13 @@
       if (option.lanes && option.dropQueued) body.dropQueued = true;
       if (p.stop.immediately) body.immediately = true;
     }
-    post("api/v1/loops/" + c.key + "/confirm", p.form, body)
+    (c.action === "set_send_allowance" ? allowancePost(c.key, "confirm", p.form) : post("api/v1/loops/" + c.key + "/confirm", p.form, body))
       .then(function (d) { state.change = { key: c.key, action: c.action, result: d.result }; })
       // A refusal (4xx) comes before anything is done. Anything else, or no
       // reply: whether it was saved is not known, and it is not sent again.
       .catch(function (err) {
         var refused = err && err.status >= 400 && err.status < 500;
-        state.change = { key: c.key, action: c.action, result: refused ? { outcome: "refused", retry: true, text: p.refused } : { outcome: "uncertain", text: p.lost } };
+        state.change = { key: c.key, action: c.action, result: refused ? { outcome: "refused", retry: c.action !== "set_send_allowance", text: p.refused } : { outcome: "uncertain", text: p.lost } };
       })
       .then(function () {
         render(false, true);
@@ -1107,6 +1141,36 @@
     var c = state.change && state.change.key === l.key ? state.change : null;
     if (!changesOn() && !c) return null;
     var box = el("section", "panel change");
+    if (c && c.editing) {
+      var form = el("form", "route-editor");
+      form.noValidate = true;
+      var title = el("h2", null, "Change send allowance"); title.id = "allowance-title";
+      form.setAttribute("aria-labelledby", title.id); form.appendChild(title);
+      form.appendChild(el("p", "sub", "Choose a total allowance for automatic sends. You will review counted and remaining attempts before saving. Existing holds stay in place."));
+      var field = el("div", "route-field"), label = el("label", null, "Total send allowance"), input = el("input");
+      label.htmlFor = "allowance-input"; input.id = "allowance-input"; input.name = "allowance";
+      input.type = "text"; input.inputMode = "numeric"; input.maxLength = 16; input.placeholder = "For example, 500";
+      input.value = c.draft; input.dataset.focus = "allowance-input"; input.setAttribute("aria-describedby", "allowance-help");
+      input.addEventListener("input", function () { c.draft = input.value; input.removeAttribute("aria-invalid"); });
+      field.appendChild(label); field.appendChild(input);
+      var help = el("p", "sub", c.error || "Enter a positive whole number. This editor does not remove the allowance."); help.id = "allowance-help";
+      if (c.error) input.setAttribute("aria-invalid", "true");
+      field.appendChild(help); form.appendChild(field);
+      var controls = el("div", "change-buttons");
+      controls.appendChild(button("Cancel", "change-cancel", "", cancelChange));
+      var submit = el("button", "btn is-primary", "Review allowance"); submit.type = "submit"; submit.dataset.focus = "allowance-review"; controls.appendChild(submit);
+      form.appendChild(controls);
+      form.addEventListener("submit", function (ev) {
+        ev.preventDefault();
+        var value = c.draft.trim(), amount = Number(value);
+        if (!/^[0-9]+$/.test(value) || !Number.isSafeInteger(amount) || amount < 1) {
+          c.error = "Enter a positive whole number no larger than 9007199254740991.";
+          render(false, true); focusOn("allowance-input"); announce(c.error); return;
+        }
+        prepareChange(l.key, "set_send_allowance", amount);
+      });
+      box.appendChild(form); return box;
+    }
     if (c && c.preview) {
       var p = c.preview;
       box.classList.add("is-review");
@@ -1152,13 +1216,15 @@
     var can = list(l.can);
     // The build change, for one loop only, labelled by the server.
     var bc = !all && l.buildChange && l.buildChange.action ? l.buildChange : null;
-    if (!can.length && !bc) return c ? box : null;
+    var allowance = !all && changesOn() && state.server.sendAllowanceEdit === true;
+    if (!can.length && !bc && !allowance) return c ? box : null;
     var actions = el("div", "change-buttons");
     actions.setAttribute("role", "group");
     actions.setAttribute("aria-label", all ? "Change every loop" : "Change this loop");
     can.forEach(function (a) {
       if (ACTION_LABEL[a]) actions.appendChild(button(ACTION_LABEL[a] + (all ? " all…" : "…"), "act-" + a, "", function () { prepareChange(l.key, a); }));
     });
+    if (allowance) actions.appendChild(button("Change send allowance…", "act-set_send_allowance", "", function () { editAllowance(l.key); }));
     if (bc) actions.appendChild(button(bc.label + "…", "act-" + bc.action, "", function () { prepareChange(l.key, bc.action); }));
     box.appendChild(actions);
     return box;
