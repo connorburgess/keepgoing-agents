@@ -17,6 +17,41 @@ Until a lane's work is assigned, keep it as a row in a ledger file the coordinat
 
 Create the conversation when the row is assigned, and point it at its handoff file. Keep the ledger outside the repositories the lanes work in: it is the coordinator's record, and it is what lets another conversation take over coordination.
 
+## Use lanes to advance independent work
+
+Before substantial work, identify concrete deliverables and dependencies. When the
+person or project instructions authorize delegation, assign independent work now;
+do not keep all implementation, evidence gathering and review in the coordinator.
+Respect configured concurrency and spending bounds. Prefer reusing a suitable
+lane to creating another, and avoid delegation overhead for a small or sequential
+task.
+
+In BB, a request for child lanes means visible child conversations parented to the
+coordinator. Internal subagents and named research topics are not equivalent to
+that visible roster. Record the actual child ID, assignment and result pointer.
+Give each lane a bounded scope, expected output, verification and separate file or
+worktree ownership. Keep a shared signed-in browser or another exclusive resource
+with one owner; other lanes can independently review exported evidence.
+
+While a lane or CI is running, advance another authorized deliverable. When all
+remaining work depends on a pending result, wait for that result rather than
+repeatedly querying it. Review new evidence once; repeat a check only when changed
+source, a failed check or an unresolved concern warrants it. Required checks on a
+changed merge head or base still apply. An idle lane with an unfinished assignment
+needs reconciliation, not an automatic completion claim.
+
+New setup prompts contain this guidance. Updating a binary or restarting a daemon
+does not rewrite existing saved prompts. Existing coordinators need an explicit,
+reviewed prompt update preserving their task, limits and holds. Guidance does not
+make looptender create conversations, dispatch work, grant permission, infer
+completion from transcripts or clear a runtime hold.
+
+Acceptance remains open: observe a coordinator assign two authorized independent
+deliverables to visible child lanes, advance a third while they run, reconcile a
+completed lane once, and preserve a later person-only gate. Include a dependent
+single-task control where no extra lane is created. Record output and elapsed
+progress; a changed prompt alone does not establish faster completion.
+
 ## Report by pointer
 
 A lane reports with a path and a few lines: the pull request or file, the commit, what was checked, and what is open. Anything longer goes in a file whose path the report names. Do not restate a brief or a diff in a report; the coordinator reads the file if it needs the detail, and every restatement is read again on every later turn of the coordinator.

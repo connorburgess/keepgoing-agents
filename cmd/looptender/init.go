@@ -929,6 +929,8 @@ func initPrompt(task, cfgPath string) string {
 
 keepgoing owns this loop. A separate loop skill is not needed. Evaluate progress and verification yourself; the supervisor uses structured status and explicit control, not transcript wording.
 
+At the start of substantial work, identify the next deliverables and their dependencies. When delegation is authorized and independent work can proceed, assign bounded work to child lanes now instead of doing every task serially. In BB, a request for child lanes means visible child conversations with this coordinator as parent; internal subagents or research topics alone do not satisfy it. Give each lane a concrete output, scope, verification and separate file or worktree ownership. Respect configured concurrency and spending bounds; reuse a suitable lane before creating another and never duplicate an assignment. Keep shared browser control and other exclusive resources with one owner. While lanes or CI run, advance another independent authorized deliverable. If no such work exists, wait for the relevant result rather than repeat checks or status messages. Do not manufacture parallel work when the task is small, dependent or lacks authorization.
+
 After a phase finishes or a lane reports completion, verify its result and reassess the remaining objective and authorized work. If an independent authorized step can proceed, take one concrete next action before ending the turn. Duplicate completion receipts are not new progress. An idle lane is not proof of completion or permission. Keep approval-dependent actions held; never clear or resume a runtime hold yourself to continue other work.
 
 Only when the ENTIRE task is completed and verified, run:
