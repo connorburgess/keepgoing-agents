@@ -60,6 +60,8 @@ Agent tools have their own loops, retries and background agents, and each of the
 
 BB threads get the most: lane awareness, retrying a failed turn by reference, and the BB plugin. Headless Claude Code and Codex sessions get the general behaviour (wakes, limited re-prompts with exact session resume, routes, limits and reports) but nothing for lanes. Cursor and Antigravity run as standalone first routes only and cannot be fallbacks ([Antigravity details](docs/antigravity.md)). Agents defined in configuration have been tested only with stand-ins. Much of the rest is fixture-tested and the full live walkthrough is unfinished; the table below says what has been verified where.
 
+Generic process adapters retain at most 1 MiB of command stdout in unreleased source. Overflow reports an unknown outcome; it is not treated as a configured rate-limit exit. Excess bytes are discarded while the command finishes under its existing timeout. This does not add descendant cleanup or an automatic retry guarantee.
+
 ## Current availability
 
 **Version guide: CLI [v0.2.0](https://github.com/looptender/looptender/releases/tag/v0.2.0) + BB plugin v0.3.0, from the same tag.** v0.2.0 is the first release under the [Sustainable Use License 1.0](LICENSE); v0.1.5 and earlier stay Apache-2.0. Its [release notes](docs/releases/v0.2.0.md) say what is new, what changes on upgrade and how to go back. Package evidence is [recorded here](docs/release-verification.md#v020-release-preparation). Check `keepgoing version` for the installed package. Installing a release does not upgrade a separately deployed supervisor executable or install the BB plugin or macOS companion.

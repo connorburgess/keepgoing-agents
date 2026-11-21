@@ -425,7 +425,7 @@ Unless a row says otherwise, none of these is fixed. Each needs a decision or is
 | **An idle headless session is woken at every check**, with the whole task prompt, until it declares completion or a limit stops it. | Headless Claude Code, Codex, Cursor | The scenario above; [operations](operations.md#bounds-on-repeated-work) |
 | **No typed permission state.** A headless turn cannot wait for approval, and a denial is not reported as waiting on a person. | Headless Claude Code, Codex, Cursor | Matrix, permission prompts |
 | **A session the provider no longer has is not recognised.** It fails as `unknown` until the re-prompts are spent. | Headless Claude Code, Codex, Cursor | Reasoning from the code; not tested against a real expired session |
-| **Status and turn output is read without a size bound.** A status command or a finished turn that prints far more than any real result is read whole into memory. Found by the `bounded-output` contract case. | Generic process, headless Claude Code, Codex; BB and Cursor not checked | [`TestBuiltInAdaptersKeepTheContract`](../internal/adapter/conformance/builtin_test.go) |
+| **Status and turn output is read without a size bound.** A status command or a finished turn that prints far more than any real result is read whole into memory. Found by the `bounded-output` contract case. | Headless Claude Code, Codex; BB and Cursor not checked. Generic process stdout is bounded to 1 MiB in unreleased source. | [`TestBuiltInAdaptersKeepTheContract`](../internal/adapter/conformance/builtin_test.go) |
 | **Cursor reports every failure as `unknown`**, so it has no limits, no handoff and no probes. | Cursor | Matrix |
 | **No live evidence for a headless loop** beyond probes and one Codex limit: no real multi-turn run, resume or stop. | Headless Claude Code, Codex, Cursor | [integrations](integrations.md#agent-providers) |
 
@@ -458,7 +458,7 @@ Current results, with stand-ins only:
 
 | Adapter | Result |
 | --- | --- |
-| Generic process | Passes every case except `bounded-output`. `exact-resume` does not apply: the wrapper owns its session. A turn that ends without a result is not staged: the adapter starts no turn. |
+| Generic process | Passes the staged cases, including `bounded-output` in unreleased source (1 MiB retained stdout limit). `exact-resume` does not apply: the wrapper owns its session. A turn that ends without a result is not staged: the adapter starts no turn. |
 | Headless Claude Code | Passes every case except `bounded-output`. `waiting-on-person` does not apply: it has no such state. |
 | Headless Codex | The same as Claude Code. |
 | BB, Cursor | Not run. Neither has a stand-in for the kit yet; their own fixtures are the evidence in the matrix. |
