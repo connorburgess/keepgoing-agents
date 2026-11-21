@@ -1330,6 +1330,8 @@ Offline fixtures verify conflicting identities, preview and explicit takeover, s
 
 ### The supervised session cannot clear its own hold
 
+A reply in a conversation does not release an awaiting-user hold. Use explicit Resume in the menu/panel or `keepgoing resume -c <config>` from an ordinary terminal outside BB. In unreleased source, a resume carrying a different `BB_THREAD_ID` explains this recovery path instead of recommending `enable --take-over`. Older builds may still suggest takeover; resuming the existing loop does not require transferring its owner. The visible status can lag until the next client refresh.
+
 Unreleased source. Supervision never clears a hold; a person does. On top of the ownership rule above, `resume`, `retarget`, `client prepare-resume`, `client resume`, and the panel's and `client review`'s resume refuse two callers, even when they own the loop:
 
 - **The loop's current target thread.** `BB_THREAD_ID` equals the BB thread of the route the loop is on now. Every command the session runs, and a BB terminal opened on that thread, carries that ID.

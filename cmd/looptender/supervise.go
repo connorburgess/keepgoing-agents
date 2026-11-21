@@ -1498,6 +1498,9 @@ func controlCmdLanes(e env, cfg *config.Config, cmd, note string, lanes, dropQue
 				return err
 			}
 			if err := control.CheckOwner(*f, os.Getenv("BB_THREAD_ID"), false); err != nil {
+				if errors.Is(err, control.ErrOwnerConflict) {
+					return errors.New("resume refused: BB_THREAD_ID identifies a different thread from this loop's owner; nothing changed. A person can review Resume in the looptender menu or panel started from an ordinary terminal outside BB. Resuming does not require an ownership transfer")
+				}
 				return err
 			}
 			if err := checkHoldClearer(cfg, os.Getenv("BB_THREAD_ID")); err != nil {
