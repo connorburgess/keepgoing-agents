@@ -88,7 +88,7 @@ func TestWithChildErrorsIsFixedWording(t *testing.T) {
 	want := "Continue the fictional loop.\n\n[keepgoing:child-errors count=3]\n" +
 		"keepgoing notice: 3 direct child thread(s) of this thread were in an error state at this check. " +
 		"keepgoing has not retried, messaged or stopped them and has not read their content. " +
-		"You own that work: decide whether to retry or replace it. " +
+		"You own that work. " + childReview +
 		"This notice is sent once when a child newly enters an error state.\n"
 	if got.Text != want || got.GoalID != m.GoalID || got.GoalRevision != m.GoalRevision {
 		t.Fatalf("got %q", got.Text)
@@ -103,7 +103,7 @@ func TestChildErrorsOnlyIsFixedWordingWithoutATaskPrompt(t *testing.T) {
 		"keepgoing notice: 2 direct child thread(s) of this thread were in an error state at this check, and 3 other direct child thread(s) are still running. " +
 		"keepgoing has not retried, messaged or stopped any of them and has not read their content. " +
 		"This is not an instruction to continue the task: the running children are still working. " +
-		"You own the errored work: decide whether to retry or replace it. " +
+		"You own the errored work. " + childReview +
 		"This notice is sent once when a child newly enters an error state.\n"
 	if got.Text != want || got.GoalID != "" || got.GoalRevision != 0 {
 		t.Fatalf("got %+v", got)
@@ -118,5 +118,33 @@ func TestWakeHeaderIsFixedWording(t *testing.T) {
 	m := WithWakeHeader("example-loop", Message{Text: "Continue the fictional task.", GoalID: "goal_example", GoalRevision: 2})
 	if m.Text != want+"\n\nContinue the fictional task." || m.GoalID != "goal_example" || m.GoalRevision != 2 {
 		t.Fatalf("%+v", m)
+	}
+}
+
+func TestChildNoticesSeparateExecutionFromObligations(t *testing.T) {
+	for name, m := range map[string]Message{
+		"ordinary":             WithChildErrors(Message{Text: "Continue fictional authorized work.", GoalID: "goal_example", GoalRevision: 2}, 2),
+		"notice-only":          ChildErrorsOnly(2, 1),
+		"ordinary-recovery":    WithChildErrorsRetried(Message{Text: "Continue fictional authorized work."}, 2, 1),
+		"notice-only-recovery": ChildErrorsOnlyRetried(2, 1, 1),
+	} {
+		t.Run(name, func(t *testing.T) {
+			for _, required := range []string{"structured execution and pending input separately", "explicit assignment outcome", "Idle, error or disappearance is not completion", "newer owner direction", "do not replay completed or superseded work", "duplicate a running retry, or clear a hold"} {
+				if !strings.Contains(m.Text, required) {
+					t.Fatalf("missing reconciliation boundary %q: %s", required, m.Text)
+				}
+			}
+			if strings.Contains(m.Text, "decide whether to retry or replace") {
+				t.Fatal("status alone still directs replay/replacement")
+			}
+			if strings.HasPrefix(name, "notice-only") {
+				if !m.NoticeOnly || strings.Contains(m.Text, "Continue fictional") || !strings.Contains(m.Text, "not an instruction to continue the task") {
+					t.Fatal(m)
+				}
+			}
+			if name == "ordinary" && (m.GoalID != "goal_example" || m.GoalRevision != 2) {
+				t.Fatal("guidance changed goal metadata")
+			}
+		})
 	}
 }

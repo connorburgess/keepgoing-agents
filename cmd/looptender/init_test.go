@@ -85,7 +85,7 @@ func TestInitCreatesDisabledPrivateSetup(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, s := range []string{"ENTIRE task", "complete -c", "await-user -c", "Complete and verify the fictional example task.", commandQuote(filepath.Join(f.destination, config.FileName))} {
+	for _, s := range []string{"reconcile existing direct children", "newer owner instruction", "actual runtime hold still wins", "assignment inventory/review", "ENTIRE task", "complete -c", "await-user -c", "Complete and verify the fictional example task.", commandQuote(filepath.Join(f.destination, config.FileName))} {
 		if !strings.Contains(prompt, s) {
 			t.Errorf("missing prompt instruction %q", s)
 		}

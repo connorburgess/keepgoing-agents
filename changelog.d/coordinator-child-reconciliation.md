@@ -1,0 +1,1 @@
+- Clarify coordinator reconciliation of existing direct lanes in new setup prompts, child-error notices and the BB skill. Separate execution from assignment outcome, preserve completed and unfinished obligations, and review newer owner direction explicitly without replaying work or clearing runtime holds.
