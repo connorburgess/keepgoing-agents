@@ -76,6 +76,8 @@ func doctor(e env, args []string, run doctorRun) int {
 	bbAutomation := fs.String("bb-automation", "", "inspect an existing BB script automation ID (requires --bb-project)")
 	bbProject := fs.String("bb-project", "", "project owning the selected BB automation")
 	bbCLI := fs.String("bb-cli", "bb", "BB executable for the selected automation query")
+	telegramCheck := fs.Bool("telegram", false, "inspect saved local Telegram pairing without contacting Telegram")
+	telegramDir := fs.String("telegram-dir", "", "Telegram pairing directory (requires --telegram)")
 	if err := fs.Parse(args); err != nil {
 		if errors.Is(err, flag.ErrHelp) {
 			return exitOK
@@ -90,7 +92,14 @@ func doctor(e env, args []string, run doctorRun) int {
 		e.errf("doctor: --bb-automation and --bb-project require valid BB IDs together; --bb-cli requires that selection")
 		return exitUsage
 	}
+	if *telegramDir != "" && !*telegramCheck {
+		e.errf("doctor: --telegram-dir requires --telegram")
+		return exitUsage
+	}
 	r := doctorReport{SchemaVersion: 1, Version: version, CheckedAt: time.Now().UTC(), StaleAfter: stale.String(), NextCheck: unknownNextCheck, Checks: []doctorCheck{}}
+	if *telegramCheck {
+		doctorTelegram(&r, *telegramDir)
+	}
 	var cfg *config.Config
 	var err error
 	*path, err = configPath(fs, *path)
