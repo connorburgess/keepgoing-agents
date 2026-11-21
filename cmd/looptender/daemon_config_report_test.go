@@ -13,7 +13,6 @@ import (
 	"time"
 
 	"github.com/looptender/looptender/internal/config"
-	"github.com/looptender/looptender/internal/registry"
 	"github.com/looptender/looptender/internal/state"
 )
 
@@ -145,8 +144,10 @@ func TestConfigurationErrorCrashWindowAndFailedPersistence(t *testing.T) {
 func TestMissingConfigurationIsShownByStatusDoctorAndPanel(t *testing.T) {
 	f, _, raw, _ := configReportFixture(t)
 	g := startGoneDaemonFixture(t, f)
-	if _, err := registry.Add(filepath.Join(f.dir, "registry"), "example-loop", f.cfg, filepath.Join(f.dir, "state")); err != nil {
-		t.Fatal(err)
+	// Repeat publication through the CLI so its canonical runtime path matches
+	// the reference already published by enable, including macOS path aliases.
+	if code, _, errs := f.run("registry", "add"); code != exitOK {
+		t.Fatal(errs)
 	}
 	// A wake poll may run after the first check while this fixture is still
 	// enabled. Hold the tick lock while taking the baseline and pausing so
