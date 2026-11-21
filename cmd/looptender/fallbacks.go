@@ -234,7 +234,7 @@ func reportTest(e env, cfg *config.Config, dryRun bool) int {
 		e.errf("%v", err)
 		return exitFailed
 	}
-	fmt.Fprintln(e.stdout, "report HTTP accepted; receipt unverified")
+	fmt.Fprintln(e.stdout, "report accepted by transport; receipt unverified")
 	return exitOK
 }
 
