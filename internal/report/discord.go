@@ -58,10 +58,40 @@ func validDiscordReply(body []byte, webhook string) bool {
 	if len(body) > maxDiscordReply {
 		return false
 	}
-	var msg struct {
-		ID        string `json:"id"`
-		WebhookID string `json:"webhook_id"`
-	}
 	d := json.NewDecoder(bytes.NewReader(body))
-	return d.Decode(&msg) == nil && d.Decode(new(any)) == io.EOF && discordSnowflake(msg.ID) && msg.WebhookID == webhook
+	open, err := d.Token()
+	if err != nil || open != json.Delim('{') {
+		return false
+	}
+	fields := map[string]string{}
+	for d.More() {
+		token, err := d.Token()
+		key, ok := token.(string)
+		if err != nil || !ok {
+			return false
+		}
+		required := strings.EqualFold(key, "id") || strings.EqualFold(key, "webhook_id")
+		if required {
+			if key != "id" && key != "webhook_id" {
+				return false
+			}
+			if _, seen := fields[key]; seen {
+				return false
+			}
+			var value *string
+			if d.Decode(&value) != nil || value == nil {
+				return false
+			}
+			fields[key] = *value
+		} else {
+			// Real message objects contain unrelated fields. Skip their bounded JSON,
+			// without projecting them or enabling case-insensitive struct matching.
+			var ignored json.RawMessage
+			if d.Decode(&ignored) != nil {
+				return false
+			}
+		}
+	}
+	close, err := d.Token()
+	return err == nil && close == json.Delim('}') && d.Decode(new(any)) == io.EOF && discordSnowflake(fields["id"]) && fields["webhook_id"] == webhook
 }

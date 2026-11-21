@@ -146,3 +146,33 @@ func TestDiscordLocalTransport(t *testing.T) {
 		})
 	}
 }
+
+func TestDiscordAmbiguousAcknowledgementRefused(t *testing.T) {
+	for name, body := range map[string]string{
+		"id-case":                    `{"ID":"1","webhook_id":"123456789012345678"}`,
+		"webhook-case":               `{"id":"1","WEBHOOK_ID":"123456789012345678"}`,
+		"duplicate-id-null":          `{"id":"1","id":null,"webhook_id":"123456789012345678"}`,
+		"duplicate-webhook-null":     `{"id":"1","webhook_id":"123456789012345678","webhook_id":null}`,
+		"duplicate-wrong-then-right": `{"id":"1","webhook_id":"999","webhook_id":"123456789012345678"}`,
+		"mixed-case-conflict":        `{"id":"1","webhook_id":"999","WEBHOOK_ID":"123456789012345678"}`,
+	} {
+		t.Run(name, func(t *testing.T) {
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { io.WriteString(w, body) }))
+			defer srv.Close()
+			t.Setenv("KG_TEST_URL", srv.URL+"/api/webhooks/123456789012345678/fictional")
+			c := cfg("")
+			c.Format = "discord"
+			c.Scheme = "discord-webhook"
+			c.SecretEnv = ""
+			sender, err := New(c)
+			if err != nil {
+				t.Fatal(err)
+			}
+			var d Delivery
+			err = sender.report(context.Background(), Event{Type: "error", Loop: "example"}, func(v Delivery) { d = v })
+			if err == nil || !errors.Is(err, ErrNoRetry) || d.Outcome != "protocol_failed" {
+				t.Fatalf("ambiguous acknowledgement accepted: error=%v outcome=%s", err, d.Outcome)
+			}
+		})
+	}
+}
