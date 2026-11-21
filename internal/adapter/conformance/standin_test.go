@@ -202,6 +202,8 @@ func standInClaude(dir string, situation Situation, args []string, generation st
 	record(dir, Sent{Prompt: string(prompt), Argv: args, Session: session})
 	ok := `{"type":"result","subtype":"success","is_error":false,"session_id":"` + standInSession + `","api_error_status":null}`
 	switch situation {
+	case MissingTerminal:
+		fmt.Println(`{"type":"system","subtype":"init","session_id":"` + standInSession + `"}`)
 	case Idle:
 		fmt.Println(ok)
 	case FailedCoded:
@@ -273,6 +275,9 @@ func standInCodex(dir string, situation Situation, args []string, generation str
 	record(dir, Sent{Prompt: string(prompt), Argv: args, Session: session})
 	started := `{"type":"thread.started","thread_id":"` + standInSession + `"}`
 	switch situation {
+	case MissingTerminal:
+		fmt.Println(started)
+		fmt.Println(`{"type":"turn.started"}`)
 	case Idle:
 		fmt.Println(started)
 		fmt.Println(`{"type":"turn.completed","usage":{}}`)
