@@ -62,7 +62,7 @@ BB threads get the most: lane awareness, retrying a failed turn by reference, an
 
 In unreleased source, a recognized structured Claude error takes precedence over a success flag or exit zero in turn status and fallback probes. This is covered by local fixtures; it does not establish live provider behavior.
 
-Generic process adapters retain at most 1 MiB of command stdout in unreleased source. Overflow reports an unknown outcome; it is not treated as a configured rate-limit exit. Excess bytes are discarded while the command finishes under its existing timeout. This does not add descendant cleanup or an automatic retry guarantee.
+Generic process adapters retain at most 1 MiB of command stdout in unreleased source. Overflow reports an unknown outcome; it is not treated as a configured rate-limit exit. Excess bytes are discarded while the command finishes under its existing timeout. Headless Claude Code and Codex observations read at most 8 MiB of a completed turn; larger output stays unknown and supplies no session or limit evidence. Their private output files are not size-capped. These bounds do not add descendant cleanup or an automatic retry guarantee.
 
 ## Current availability
 

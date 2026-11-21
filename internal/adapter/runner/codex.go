@@ -24,6 +24,7 @@ var codexSpec = &Spec{
 	AccountEnv:   "CODEX_HOME",
 	SettingNames: []string{"cli", "workdir", "model", "sandbox", "skip_git_repo_check", "extra_args", "env"},
 	Prompt:       PromptStdin,
+	MaxOutput:    8 << 20, // Bound observation memory; the private output file is unchanged.
 	Capabilities: Capabilities{ExactResume: true, Stoppable: true, StructuredErrors: true, TurnUsage: true},
 	Argv:         func(set Settings, session, _ string) []string { return codexArgv(set, session) },
 	Read: func(turn Status) Reading {

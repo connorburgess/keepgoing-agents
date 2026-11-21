@@ -307,14 +307,7 @@ func subject(t *testing.T, kind string) Subject {
 // a way that breaks the case differently is not hidden behind its entry.
 type gap struct{ why, says string }
 
-var known = map[string]map[string]gap{
-	"claude": {
-		"bounded-output": {"a turn's output is read without a bound", "output far larger than any real status was read as"},
-	},
-	"codex": {
-		"bounded-output": {"a turn's output is read without a bound", "output far larger than any real status was read as"},
-	},
-}
+var known = map[string]map[string]gap{}
 
 // Every built-in adapter that can run without a provider is run against the
 // same contracts.
