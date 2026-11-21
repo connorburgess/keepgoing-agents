@@ -99,9 +99,10 @@ func TestAnUnregisteredLoopIsFoundThroughTheSessionRecord(t *testing.T) {
 	if code, _, _ := f.run("enable"); code != exitOK {
 		t.Fatal("enable")
 	}
-	entries, err := os.ReadDir(os.Getenv(registryDirEnv))
-	if err == nil && len(entries) > 0 {
-		t.Fatalf("the fixture loop is registered: %v", entries)
+	// Explicitly remove discovery metadata; the session claim must still
+	// prevent duplicate supervision independently of dock registration.
+	if err := os.RemoveAll(os.Getenv(registryDirEnv)); err != nil {
+		t.Fatal(err)
 	}
 	other := secondLoop(t, f, "example-loop-b", nil)
 	if code, _, errs := runWith("enable", "-c", other); code != exitFailed || !strings.Contains(errs, "loop example-loop (") {

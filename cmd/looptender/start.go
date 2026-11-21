@@ -21,7 +21,7 @@ import (
 	"github.com/looptender/looptender/internal/state"
 )
 
-type startReady func(control.File) error
+type startReady func(control.File, bool) error
 
 func startCommand(e env, args []string, ready startReady) int {
 	fs := flag.NewFlagSet("start", flag.ContinueOnError)
@@ -75,11 +75,12 @@ func startCommand(e env, args []string, ready startReady) int {
 // startJSON is start --json's result. A refusal for a second loop on a
 // session is a refusedResult instead.
 type startJSON struct {
-	SchemaVersion int    `json:"schemaVersion"`
-	Outcome       string `json:"outcome"` // started or failed
-	PID           int    `json:"pid,omitempty"`
-	Control       string `json:"control,omitempty"`
-	ExitCode      int    `json:"exitCode,omitempty"`
+	ReferenceUnavailable bool   `json:"referenceUnavailable,omitempty"`
+	SchemaVersion        int    `json:"schemaVersion"`
+	Outcome              string `json:"outcome"` // started or failed
+	PID                  int    `json:"pid,omitempty"`
+	Control              string `json:"control,omitempty"`
+	ExitCode             int    `json:"exitCode,omitempty"`
 	// Reason is set for a failure before any configuration was read:
 	// ambiguous_default_config when -c was not given and both
 	// looptender.yaml and keepgoing.yaml are in the working directory as two
@@ -180,10 +181,11 @@ func startForeground(e env, cfg *config.Config, path string, ready startReady, a
 		return ownershipError(e, err)
 	}
 	noteSupervisor(cfg)
+	registered := publishEnabledLoop(e, cfg)
 	// Nothing can run a tick until setup and the owner claim are committed.
 	_ = tick.Release()
 	if ready != nil {
-		if err := ready(f); err != nil {
+		if err := ready(f, registered); err != nil {
 			e.errf("start: startup acknowledgement failed; daemon is exiting")
 			return exitFailed
 		}
@@ -264,17 +266,18 @@ func startPreflight(ctx context.Context, cfg *config.Config) error {
 // A one-shot pipe handshake belongs to this child, unlike a stale PID or
 // endpoint file. No shell, config contents, or task text is passed in argv.
 type startReply struct {
-	Code    int    `json:"code"`
-	PID     int    `json:"pid,omitempty"`
-	Control string `json:"control,omitempty"`
-	Message string `json:"message,omitempty"`
+	ReferenceUnavailable bool   `json:"referenceUnavailable,omitempty"`
+	Code                 int    `json:"code"`
+	PID                  int    `json:"pid,omitempty"`
+	Control              string `json:"control,omitempty"`
+	Message              string `json:"message,omitempty"`
 }
 
 func startChild(e env, args []string) int {
 	var errs bytes.Buffer
 	acknowledged := false
-	code := startCommand(env{e.ctx, io.Discard, &errs}, args, func(f control.File) error {
-		err := json.NewEncoder(e.stdout).Encode(startReply{PID: os.Getpid(), Control: f.Summary()})
+	code := startCommand(env{e.ctx, io.Discard, &errs}, args, func(f control.File, registered bool) error {
+		err := json.NewEncoder(e.stdout).Encode(startReply{PID: os.Getpid(), Control: f.Summary(), ReferenceUnavailable: !registered})
 		acknowledged = err == nil
 		return err
 	})
@@ -348,11 +351,19 @@ func startBackground(e env, executable, path string, allowShare bool) int {
 			return exitFailed
 		}
 		started = true
-		if _, asJSON := e.stdout.(*startJSONWriter); asJSON {
-			_ = json.NewEncoder(e.stdout).Encode(startJSON{SchemaVersion: 1, Outcome: "started", PID: r.reply.PID, Control: r.reply.Control})
-			return exitOK
-		}
-		fmt.Fprintf(e.stdout, "started background daemon (PID %d); control: %s\nUse status to inspect, pause to hold, or stop to stop the agent. No service was installed.\n", r.reply.PID, r.reply.Control)
+		return reportStarted(e, r.reply)
+	}
+}
+
+// reportStarted preserves partial discovery failure in both output modes.
+func reportStarted(e env, reply startReply) int {
+	if reply.ReferenceUnavailable {
+		e.errf("%s", registryPublicationWarning)
+	}
+	if _, asJSON := e.stdout.(*startJSONWriter); asJSON {
+		_ = json.NewEncoder(e.stdout).Encode(startJSON{SchemaVersion: 1, Outcome: "started", PID: reply.PID, Control: reply.Control, ReferenceUnavailable: reply.ReferenceUnavailable})
 		return exitOK
 	}
+	fmt.Fprintf(e.stdout, "started background daemon (PID %d); control: %s\nUse status to inspect, pause to hold, or stop to stop the agent. No service was installed.\n", reply.PID, reply.Control)
+	return exitOK
 }

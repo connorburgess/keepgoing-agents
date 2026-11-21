@@ -396,6 +396,7 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 		code := controlCmd(e, cfg, cmd, *f.note, *f.takeOver)
 		if code == exitOK {
 			noteSupervisor(cfg)
+			publishEnabledLoop(e, cfg)
 		}
 		return code
 	case "stop":

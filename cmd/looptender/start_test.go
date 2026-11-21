@@ -37,8 +37,11 @@ func TestStartPreservesHoldsAndClaimsOwner(t *testing.T) {
 			defer cancel()
 			var errs bytes.Buffer
 			ready := false
-			code := startCommand(env{ctx, io.Discard, &errs}, []string{"--foreground", "-c", f.cfg}, func(got control.File) error {
+			code := startCommand(env{ctx, io.Discard, &errs}, []string{"--foreground", "-c", f.cfg}, func(got control.File, registered bool) error {
 				ready = true
+				if _, err := os.Stat(filepath.Join(os.Getenv(registryDirEnv), "registry.json")); err != nil {
+					t.Fatalf("start did not publish reference: %v", err)
+				}
 				j := controlHistory(t, f)
 				if len(j.Records) != 1 || j.Records[0].Kind != "control" || j.Records[0].ControlChange.Operation != "start" || j.Records[0].ControlBefore.Enabled || !j.Records[0].ControlAfter.Enabled {
 					t.Fatal(j)
@@ -130,7 +133,7 @@ func TestStartRefusesBeforeEnabling(t *testing.T) {
 			}
 			before, _ := os.ReadFile(filepath.Join(dir, control.FileName))
 			var errs bytes.Buffer
-			code := startForeground(env{ctx, io.Discard, &errs}, cfg, f.cfg, func(control.File) error { t.Error("unexpected readiness"); return nil }, false)
+			code := startForeground(env{ctx, io.Discard, &errs}, cfg, f.cfg, func(control.File, bool) error { t.Error("unexpected readiness"); return nil }, false)
 			after, _ := os.ReadFile(filepath.Join(dir, control.FileName))
 			if code != want || !bytes.Equal(before, after) || f.read("calls") != "" || f.read("probes") != "" {
 				t.Fatalf("code=%d want=%d mutated=%v errs=%s", code, want, !bytes.Equal(before, after), &errs)
