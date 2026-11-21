@@ -14,6 +14,7 @@ import (
 	"github.com/looptender/looptender/internal/adapter"
 	"github.com/looptender/looptender/internal/decide"
 	"github.com/looptender/looptender/internal/evidence"
+	"github.com/looptender/looptender/internal/snapshot"
 )
 
 // AntigravityConfig is what the runner needs to start one ACP turn. Command is
@@ -102,19 +103,33 @@ func (d Dir) antigravityTurnDir(turn string) Dir {
 // readAntigravityObject requires a bounded regular file holding one JSON
 // object with exactly n keys and version 1. A missing file is (nil, nil).
 func (d Dir) readAntigravityObject(name string, n int) (map[string]json.RawMessage, error) {
+	return d.readAntigravityObjectOpened(name, n, nil)
+}
+
+// afterOpen is a per-call test seam for holding the actual reader during
+// publication; production callers leave it nil.
+func (d Dir) readAntigravityObjectOpened(name string, n int, afterOpen func()) (map[string]json.RawMessage, error) {
 	p := d.path(name)
-	info, err := os.Lstat(p)
+	stat, open := snapshot.Lstat, snapshot.Open
+	if name == antigravityTurnName {
+		// False absence here can make a target appear eligible for a new send.
+		stat, open = snapshot.LstatRecord, snapshot.OpenRecord
+	}
+	info, err := stat(p)
 	if errors.Is(err, os.ErrNotExist) {
 		return nil, nil
 	}
 	if err != nil || !info.Mode().IsRegular() || info.Size() > antigravityACPHoldLimit {
 		return nil, errAntigravityRecords
 	}
-	f, err := os.Open(p)
+	f, err := open(p)
 	if err != nil {
 		return nil, errAntigravityRecords
 	}
 	defer f.Close()
+	if afterOpen != nil {
+		afterOpen()
+	}
 	b, err := io.ReadAll(io.LimitReader(f, antigravityACPHoldLimit+1))
 	if err != nil || len(b) > antigravityACPHoldLimit {
 		return nil, errAntigravityRecords
@@ -161,7 +176,7 @@ func (d Dir) saveAntigravityTurn(turn string) error {
 	if err != nil {
 		return err
 	}
-	return os.Rename(f.Name(), d.path(antigravityTurnName))
+	return snapshot.Replace(f.Name(), d.path(antigravityTurnName))
 }
 
 // antigravitySession reads the conversation this target resumes. Empty means

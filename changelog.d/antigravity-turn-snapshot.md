@@ -1,0 +1,1 @@
+- Antigravity current-turn publication uses shared snapshot reads and replacement on Windows, so a cooperating observer can keep reading the old complete pointer while a new turn is published. A previously published but missing pointer is unavailable rather than treated as a new target. Immutable turn records remain create-once.
