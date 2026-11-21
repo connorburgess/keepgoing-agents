@@ -263,7 +263,7 @@ func clientResume(ctx context.Context, directory, id, operation, ticket string, 
 			}
 			// A reviewed resume (expect) is refused before its ticket would
 			// replace one another client prepared.
-			if expect != "" && controlDigest(checked) != expect {
+			if expect != "" && !expectDigestMatches(controlDigest(checked), expect) {
 				return fail("observation_changed")
 			}
 			snapshot := readClientStatus(ctx, dir, id, private, true, defaultStaleAfter, now().UTC(), inspectDaemon)
@@ -300,7 +300,7 @@ func clientResume(ctx context.Context, directory, id, operation, ticket string, 
 			if err != nil || !reflect.DeepEqual(checked, *f) {
 				return fail("resume_evidence_unavailable")
 			}
-			if expect != "" && controlDigest(checked) != expect {
+			if expect != "" && !expectDigestMatches(controlDigest(checked), expect) {
 				return fail("observation_changed")
 			}
 			t, err := loadClientTicket(entry.StateDir)
