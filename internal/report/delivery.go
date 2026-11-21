@@ -75,7 +75,7 @@ func LoadDeliveries(dir string) (DeliveryHistory, error) {
 	}
 	defer f.Close()
 	b, err := io.ReadAll(io.LimitReader(f, MaxDeliveryBytes+1))
-	if err != nil || len(b) > MaxDeliveryBytes {
+	if err != nil || len(b) > MaxDeliveryBytes || !validDeliveryJSON(b) {
 		return DeliveryHistory{}, ErrDeliveryHistory
 	}
 	var h DeliveryHistory

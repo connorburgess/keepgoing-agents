@@ -1436,6 +1436,9 @@ records remain intact; later HTTP writes preserve schema 2. HTTP-only histories
 remain schema 1. This is history support only: the BB notification sender is
 not yet enabled by this groundwork.
 
+Both supported history versions reject duplicate, case-aliased or unknown fields
+before decoding; a refused read or save leaves the damaged bytes unchanged.
+
 Older binaries reject schema 2 as unavailable and cannot append to it. Do not
 run old and new writers against the same state directory, reset the version, or
 delete records to hide the incompatibility. Before downgrading, disable the new

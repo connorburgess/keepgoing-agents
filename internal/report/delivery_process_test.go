@@ -91,3 +91,44 @@ func TestProcessDeliveryHistoryPromotionAndMixedRoundTrip(t *testing.T) {
 		t.Fatal("version 1 accepted process outcomes")
 	}
 }
+
+func TestProcessDeliveryAmbiguousHistoryRefusesSaveWithoutRepair(t *testing.T) {
+	dir := t.TempDir()
+	if _, err := saveDelivery(dir, processRecord("process_accepted")); err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(dir, DeliveryFile)
+	good, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, pair := range [][2]string{
+		{`"schemaVersion":2`, `"schemaVersion":1,"SchemaVersion":2`},
+		{`"outcome":"process_accepted"`, `"outcome":"process_accepted","outcome":null`},
+		{`"outcome":"process_accepted"`, `"outcome":"process_failed","Outcome":"process_accepted"`},
+		{`"attempts":[{`, `"attempts":[{"httpStatus":200,"HTTPStatus":0,`},
+		{`"receipt":"unverified"`, `"receipt":"unverified","Receipt":"unverified"`},
+		{`"schemaVersion":2`, `"schemaVersion":null`},
+		{`"schemaVersion":2`, `"schemaVersion":2,"unknown":0`},
+	} {
+		bad := bytes.Replace(good, []byte(pair[0]), []byte(pair[1]), 1)
+		if bytes.Equal(good, bad) {
+			t.Fatal("fixture failed to mutate history")
+		}
+		if err := os.WriteFile(path, bad, 0600); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := LoadDeliveries(dir); err != ErrDeliveryHistory {
+			t.Fatalf("accepted damaged history: %s", bad)
+		}
+		http := processRecord("http_accepted")
+		http.Attempts[0].HTTPStatus = 202
+		if _, err := saveDelivery(dir, http); err != ErrDeliveryHistory {
+			t.Fatal("save repaired damaged history")
+		}
+		after, err := os.ReadFile(path)
+		if err != nil || !bytes.Equal(bad, after) {
+			t.Fatal("refusal changed history bytes")
+		}
+	}
+}
