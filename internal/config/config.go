@@ -692,7 +692,14 @@ func (c *Config) applyDefaults() {
 		if r.Format == "" {
 			r.Format = "standard"
 		}
-		if r.Format == "ntfy" {
+		if r.Format == "slack" {
+			if r.URLEnv == "" {
+				r.URLEnv = "LOOPTENDER_SLACK_WEBHOOK_URL"
+			}
+			if r.Scheme == "" {
+				r.Scheme = "slack-webhook"
+			}
+		} else if r.Format == "ntfy" {
 			if r.URLEnv == "" {
 				r.URLEnv = "LOOPTENDER_NTFY_URL"
 			}
@@ -889,11 +896,17 @@ func (c *Config) Validate() error {
 		}
 	}
 	if r := l.Report; r != nil {
-		if r.Scheme != "standard-webhooks" && r.Scheme != "bearer" && r.Scheme != "telegram-bot" {
-			add("loop.report.scheme must be standard-webhooks, bearer or telegram-bot")
+		if r.Scheme != "standard-webhooks" && r.Scheme != "bearer" && r.Scheme != "telegram-bot" && r.Scheme != "slack-webhook" {
+			add("loop.report.scheme must be standard-webhooks, bearer, telegram-bot or slack-webhook")
 		}
-		if r.Format != "standard" && r.Format != "text" && r.Format != "sessionpipe" && r.Format != "telegram" && r.Format != "ntfy" {
-			add("loop.report.format must be standard, text, sessionpipe, telegram or ntfy")
+		if r.Format != "standard" && r.Format != "text" && r.Format != "sessionpipe" && r.Format != "telegram" && r.Format != "ntfy" && r.Format != "slack" {
+			add("loop.report.format must be standard, text, sessionpipe, telegram, ntfy or slack")
+		}
+		if (r.Format == "slack") != (r.Scheme == "slack-webhook") {
+			add("loop.report: slack format requires slack-webhook scheme exclusively")
+		}
+		if r.Format == "slack" && r.SecretEnv != "" {
+			add("loop.report: slack uses only the webhook URL; secret_env must be omitted")
 		}
 		if r.Format == "ntfy" && r.Scheme != "bearer" {
 			add("loop.report: ntfy format requires bearer scheme")
