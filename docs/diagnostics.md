@@ -445,3 +445,9 @@ Acceptance tests run the command on the existing BB/process/Claude/Codex fixture
 ### Configuration file unavailable in a running daemon
 
 Unreleased source adds optional `configUnavailableSince` to the authenticated live daemon snapshot and the status/doctor daemon object. It dates when that daemon first recorded an unavailable configuration source; a successful source-verified reload clears it. This is separate from historical checks and from the generic overdue rule. The panel uses the existing `unreadable` need with `sinceEvidence: daemon_reported`, including when the registered configuration binding cannot load; it does not infer a current target or enable controls from that response. No incident or timeline format changes. See [configuration recovery and at-most-once reporting limits](operations.md#when-the-configuration-file-is-unavailable).
+
+## Local Telegram setup
+
+Opt in with `looptender doctor --telegram --offline -c example.yaml`. `--telegram-dir /private/example/telegram` selects the same private pairing directory as `telegram status --dir`; without it, the user state directory is used. `--telegram-dir` requires `--telegram`. This local check also runs when the selected loop configuration is unavailable; ordinary configuration diagnostics still determine the command exit status.
+
+The `telegram.pairing` check distinguishes absent, locally valid and unreadable/invalid saved pairing. `telegram.token_file` checks only whether a regular saved token file exists: it does not open that file, read environment credentials, validate a token or certify permissions. `telegram.delivery` remains unavailable because no network request or poller inspection takes place. Pairing identities, paths and raw parser errors are withheld. No directory, token, pairing, hold or loop is changed. Local evidence does not establish remote authorization or successful alert receipt.
