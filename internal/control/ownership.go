@@ -22,6 +22,9 @@ type Handoff struct {
 	At       time.Time `json:"at"`
 }
 
+// ErrOwnerConflict identifies a valid claim held by a different BB thread.
+var ErrOwnerConflict = errors.New("loop ownership conflict")
+
 var ownerID = regexp.MustCompile(`^thr_[A-Za-z0-9_-]{1,128}$`)
 
 // CheckOwner is pure. Missing caller identity represents an external scheduler
@@ -41,7 +44,7 @@ func CheckOwner(f File, caller string, takeOver bool) error {
 		return errors.New("invalid loop ownership metadata; restore a valid control file before claiming this loop")
 	}
 	if caller != "" && caller != o.ThreadID && !takeOver {
-		return fmt.Errorf("loop is owned by BB thread %s; use enable --take-over from the new owning thread to transfer ownership", o.ThreadID)
+		return fmt.Errorf("%w: loop is owned by BB thread %s; use enable --take-over from the new owning thread to transfer ownership", ErrOwnerConflict, o.ThreadID)
 	}
 	return nil
 }
