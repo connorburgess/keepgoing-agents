@@ -25,7 +25,7 @@ type Rpc = ReturnType<typeof useRpc<typeof rpcContract>>;
 // One cached lookup per thread, shared by the card row, the banner segment,
 // and its visibility check, so a thread is fetched once per refresh.
 const STALE_MS = 25_000;
-const cache = new Map<string, { loops: LoopView[]; at: number; inflight: boolean; failed: boolean }>();
+const cache = new Map<string, { loops: LoopView[]; at: number; inflight: boolean; failed: boolean; references: Map<string, number> }>();
 const listeners = new Set<() => void>();
 const notify = () => {
   for (const l of listeners) l();
@@ -38,11 +38,15 @@ const subscribe = (l: () => void) => {
 function fetchLoops(rpc: Rpc, threadId: string, force = false) {
   const entry = cache.get(threadId);
   if (entry?.inflight || (!force && entry && Date.now() - entry.at < STALE_MS)) return;
-  cache.set(threadId, { loops: entry?.loops ?? [], at: entry?.at ?? 0, inflight: true, failed: entry?.failed ?? false });
+  cache.set(threadId, { loops: entry?.loops ?? [], at: entry?.at ?? 0, inflight: true, failed: entry?.failed ?? false, references: entry?.references ?? new Map() });
   rpc
     .call("forThread", { threadId })
-    .then((result) => cache.set(threadId, { loops: result.loops, at: Date.now(), inflight: false, failed: result.errors.length > 0 }))
-    .catch(() => cache.set(threadId, { loops: entry?.loops ?? [], at: Date.now(), inflight: false, failed: true }))
+    .then((result) => {
+      const references = new Map(entry?.references);
+      for (const loop of result.loops) if (!references.has(loopKey(loop))) references.set(loopKey(loop), references.size + 1);
+      cache.set(threadId, { loops: result.loops, at: Date.now(), inflight: false, failed: result.errors.length > 0, references });
+    })
+    .catch(() => cache.set(threadId, { loops: entry?.loops ?? [], at: Date.now(), inflight: false, failed: true, references: entry?.references ?? new Map() }))
     .finally(notify);
 }
 
@@ -56,7 +60,7 @@ function useLoops(threadId: string) {
     return () => clearInterval(timer);
   }, [rpc, threadId]);
   useRealtime("changed", refresh);
-  return { loops: entry?.loops ?? [], refresh, failed: entry?.failed ?? false, loaded: !!entry?.at };
+  return { loops: entry?.loops ?? [], references: entry?.references ?? new Map<string, number>(), refresh, failed: entry?.failed ?? false, loaded: !!entry?.at };
 }
 
 function label(loop: LoopView): string {
@@ -170,9 +174,18 @@ const KEEPING_GOING = "looptender: keeping this going";
 // when a status refresh changes order or removes another reference.
 function loopKey(loop: LoopView) { return JSON.stringify([loop.configPath, loop.managedId ?? null]); }
 
-function CardLoop({ loop, threadId, refresh, failed, created, showName }: { loop: LoopView; threadId: string; refresh(): void; failed: boolean; created: string | null; showName: boolean }) {
-  return <section aria-label={`Loop ${loop.loop}`} style={{ overflowWrap: "anywhere", minWidth: 0 }}>
-    {showName && <strong style={{ fontSize: 12 }}>{loop.loop}</strong>}
+function referenceName(loop: LoopView, loops: LoopView[], references: Map<string, number>) {
+  return loops.filter(l => l.loop === loop.loop).length > 1 ? `${loop.loop} · reference ${references.get(loopKey(loop))}` : loop.loop;
+}
+
+function ReferenceDetails({ loop, name }: { loop: LoopView; name: string }) {
+  return name === loop.loop ? null : <details><summary>Configuration reference</summary><code>{loop.configPath}</code><div>Reference numbers identify rows in this plugin session; they are not loop IDs.</div></details>;
+}
+
+function CardLoop({ loop, name, threadId, refresh, failed, created, showName }: { loop: LoopView; name: string; threadId: string; refresh(): void; failed: boolean; created: string | null; showName: boolean }) {
+  return <section aria-label={`Loop ${name}`} style={{ overflowWrap: "anywhere", minWidth: 0 }}>
+    {showName && <strong style={{ fontSize: 12 }}>{name}</strong>}
+    <ReferenceDetails loop={loop} name={name} />
     <ContextRow icon="Repeat" label={failed ? "looptender: status unavailable (previous snapshot)" : created ?? label(loop)}
       title={describe(loop).join("\n")} trailing={loop.handoffs > 0 ? `${loop.handoffs} handoffs` : undefined}
       action={<>{!failed && created !== KEEPING_GOING && <ToggleButton loop={loop} threadId={threadId} onDone={refresh} />}</>} />
@@ -180,14 +193,14 @@ function CardLoop({ loop, threadId, refresh, failed, created, showName }: { loop
 }
 
 function CardRow({ threadId }: { threadId: string }) {
-  const { loops, refresh, failed, loaded } = useLoops(threadId);
+  const { loops, references, refresh, failed, loaded } = useLoops(threadId);
   const { outcome, start, control, loop } = useThreadOutcome(threadId, loops);
   const created = outcomeLabel(outcome, loop?.controlState, loop?.supervising);
   const [open, setOpen] = useState(false);
   return <div>
     {failed && <StatusWarning refresh={refresh} />}
     {loaded && !failed && <NewThreadOutcome threadId={threadId} outcome={outcome} controlState={loop?.controlState} supervising={loop?.supervising} start={start} control={control} onChanged={refresh} />}
-    {!loaded ? <ContextRow icon="Repeat" label="looptender: checking status" /> : !loops.length ? <ContextRow icon="Repeat" label="looptender" action={!failed && <button type="button" style={buttonStyle} onClick={() => setOpen(!open)} aria-expanded={open}>Add to Looptender</button>} /> : loops.map(l => <CardLoop key={loopKey(l)} loop={l} threadId={threadId} refresh={refresh} failed={failed} created={l === loop ? created : null} showName={loops.length > 1} />)}
+    {!loaded ? <ContextRow icon="Repeat" label="looptender: checking status" /> : !loops.length ? <ContextRow icon="Repeat" label="looptender" action={!failed && <button type="button" style={buttonStyle} onClick={() => setOpen(!open)} aria-expanded={open}>Add to Looptender</button>} /> : loops.map(l => <CardLoop key={loopKey(l)} loop={l} name={referenceName(l, loops, references)} threadId={threadId} refresh={refresh} failed={failed} created={l === loop ? created : null} showName={loops.length > 1} />)}
     {!failed && loops.some(l => l.managedId) && <button type="button" style={buttonStyle} onClick={() => setOpen(!open)} aria-expanded={open}>{loops.length > 1 ? "Thread setup" : "Setup"}</button>}
     {open && <div hidden={failed}><ThreadSetup key={threadId} threadId={threadId} onChanged={refresh} hideStart={created === READY_NOT_STARTED} /></div>}
   </div>;
@@ -205,15 +218,15 @@ function BannerSummary({ threadId, isExpanded, onToggle }: { threadId: string; i
 }
 
 function BannerDetails({ threadId, isExpanded }: { threadId: string; isExpanded: boolean }) {
-  const { loops, refresh, failed, loaded } = useLoops(threadId);
+  const { loops, references, refresh, failed, loaded } = useLoops(threadId);
   const { outcome, start, control, loop } = useThreadOutcome(threadId, loops);
   const created = outcomeLabel(outcome, loop?.controlState, loop?.supervising);
   if (!isExpanded) return null;
   return <>
     {failed && <StatusWarning refresh={refresh} />}
     {loaded && !failed && <NewThreadOutcome threadId={threadId} outcome={outcome} controlState={loop?.controlState} supervising={loop?.supervising} start={start} control={control} onChanged={refresh} />}
-    {loops.map(l => <section key={loopKey(l)} aria-label={`Loop ${l.loop}`} style={{ display: "flex", gap: 10, alignItems: "center", flexWrap: "wrap", padding: "4px 12px 6px", fontSize: 12, opacity: 0.8, overflowWrap: "anywhere", minWidth: 0 }}>
-      <div style={{ minWidth: 0, flex: "1 1 220px" }}>{failed && <div>Previous snapshot</div>}{describe(l).map((line, i) => <div key={i}>{line}</div>)}<div>{l === loop ? created ?? label(l) : label(l)}</div></div>
+    {loops.map(l => <section key={loopKey(l)} aria-label={`Loop ${referenceName(l, loops, references)}`} style={{ display: "flex", gap: 10, alignItems: "center", flexWrap: "wrap", padding: "4px 12px 6px", fontSize: 12, opacity: 0.8, overflowWrap: "anywhere", minWidth: 0 }}>
+      <div style={{ minWidth: 0, flex: "1 1 220px" }}>{failed && <div>Previous snapshot</div>}{describe(l).map((line, i) => <div key={i}>{i === 0 ? `Loop ${referenceName(l, loops, references)}` : line}</div>)}<ReferenceDetails loop={l} name={referenceName(l, loops, references)} /><div>{l === loop ? created ?? label(l) : label(l)}</div></div>
       {!failed && !(l === loop && created === KEEPING_GOING) && <ToggleButton loop={l} threadId={threadId} onDone={refresh} />}
     </section>)}
     {loaded && (!loops.length || loops.some(l => l.managedId)) && <div hidden={failed}><ThreadSetup key={threadId} threadId={threadId} onChanged={refresh} hideStart={created === READY_NOT_STARTED} /></div>}

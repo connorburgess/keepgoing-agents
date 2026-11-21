@@ -94,3 +94,38 @@ test("ambiguous saved setups do not gain new-thread Start or Stop through array 
     assert.equal(ui.queryByRole("button", { name: "Start keeping this going" }), null);
   } finally { ui.lifecycle.unmount(); cleanup(); }
 });
+
+test("duplicate names have stable visible references and explicit path disclosure in card and banner", async () => {
+  for (const surface of ["card", "banner"] as const) {
+    const threadId = `thr_example_duplicate_${surface}`;
+    const first = { ...fixture("same-example"), configPath: "/example/first/looptender.yaml", managedId: "first-record" };
+    const second = { ...first, configPath: "/example/second/looptender.yaml", managedId: "second-record" };
+    let loops = [first, second]; const calls: unknown[] = [];
+    const slot = surface === "card" ? app.threadContextCardRows[0]! : { component: app.threadContextSegments[0]!.details! };
+    const ui = renderSlot(slot, { threadId, projectId: "proj_example", environment: null, isExpanded: true }, { rpc: {
+      forThread: () => ({ loops, errors: [] }),
+      control: (input: unknown) => { calls.push(input); return { ok: true }; },
+    } });
+    try {
+      const name = "Loop same-example · reference 2";
+      await ui.findByRole("region", { name });
+      const region = () => within(ui.getByRole("region", { name }));
+      const disclosure = region().getByText("Configuration reference").closest("details")!;
+      assert.equal(disclosure.open, false);
+      fireEvent.click(region().getByText("Configuration reference"));
+      assert.equal(disclosure.open, true);
+      assert.ok(region().getByText(second.configPath));
+      assert.ok(!ui.container.textContent?.includes(second.managedId));
+      loops = [second, first]; await ui.behavior.emitRealtime("changed", {});
+      assert.equal(region().getByText("Configuration reference").closest("details")!.open, true);
+      fireEvent.click(region().getByRole("button", { name: "Pause" }));
+      await waitFor(() => assert.equal(calls.length, 1));
+      assert.deepEqual(calls[0], { configPath: second.configPath, action: "pause", managedId: second.managedId, expectedThreadId: threadId });
+      // Removing a different match must not recycle reference 1 onto this record.
+      loops = [second]; await ui.behavior.emitRealtime("changed", {});
+      loops = [second, first]; await ui.behavior.emitRealtime("changed", {});
+      assert.ok(region().getByText(second.configPath));
+      assert.equal(ui.getAllByRole("region", { name: /^Loop / }).length, 2);
+    } finally { ui.lifecycle.unmount(); cleanup(); }
+  }
+});
