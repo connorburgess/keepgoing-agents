@@ -1,0 +1,1 @@
+- Guide new coordinators to assign authorized independent work to bounded child lanes, distinguish visible BB children from internal subagents, and advance useful work while lanes or CI run. Existing saved prompts and runtime holds are unchanged; behavioral acceptance remains open.
