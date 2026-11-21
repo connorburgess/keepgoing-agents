@@ -1,0 +1,1 @@
+- Add an opt-in Pushover notification preset using existing private application and user keys, bounded labels/events, credential-free previews and one-attempt delivery. Local fixtures only; live phone delivery remains unverified.

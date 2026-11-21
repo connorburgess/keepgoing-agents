@@ -61,6 +61,7 @@ type Webhook struct {
 	now       func() time.Time
 	tg        *telegramSender
 	discordID string
+	userKey   string
 }
 
 // MaxBody caps a report's size.
@@ -69,6 +70,12 @@ const MaxBody = 1 << 20
 // New resolves credentials from the environment, then the secret file.
 // Secrets are never logged or included in errors.
 func New(cfg config.Report) (*Webhook, error) {
+	if (cfg.Format == "pushover") != (cfg.Scheme == "pushover") {
+		return nil, errors.New("report: pushover format requires pushover scheme exclusively")
+	}
+	if cfg.Format != "pushover" && cfg.UserEnv != "" {
+		return nil, errors.New("report: user_env requires pushover format")
+	}
 	if (cfg.Format == "discord") != (cfg.Scheme == "discord-webhook") {
 		return nil, errors.New("report: discord format requires discord-webhook scheme exclusively")
 	}
@@ -119,6 +126,19 @@ func New(cfg config.Report) (*Webhook, error) {
 		return newTelegramWebhook(cfg, get)
 	}
 	w := &Webhook{cfg: cfg, url: get(cfg.URLEnv), secret: get(cfg.SecretEnv), client: &http.Client{Timeout: cfg.Timeout.Duration}, now: time.Now}
+	if cfg.Format == "pushover" {
+		if w.url == "" {
+			w.url = "https://api.pushover.net/1/messages.json"
+		}
+		w.userKey = get(cfg.UserEnv)
+		if !validPushoverKey(w.secret) || !validPushoverKey(w.userKey) {
+			return nil, errors.New("report: Pushover application token and user key must each be 30 ASCII letters or digits")
+		}
+		u, err := url.Parse(w.url)
+		if err != nil || !validPushoverURL(u) {
+			return nil, errors.New("report: invalid Pushover message endpoint")
+		}
+	}
 	if cfg.Format == "discord" && w.url == "" {
 		return nil, errors.New("report: Discord webhook URL must be set in the environment or secret file")
 	}
@@ -170,6 +190,9 @@ func key(secret string) ([]byte, error) {
 
 // Body renders the payload in the configured format.
 func (w *Webhook) Body(e Event) ([]byte, error) {
+	if w.cfg.Format == "pushover" {
+		return ntfyBody(e, w.cfg.Source), nil
+	}
 	if e.At.IsZero() {
 		e.At = w.now()
 	}
@@ -246,7 +269,7 @@ func (w *Webhook) report(ctx context.Context, e Event, observe func(Delivery)) (
 	}
 	d := Delivery{Event: eventName(e.Type), StartedAt: w.now().UTC(), Receipt: "unverified", Attempts: []Attempt{}}
 	defer func() {
-		if (w.cfg.Format == "ntfy" || w.cfg.Format == "slack" || w.cfg.Format == "discord") && len(d.Attempts) > 0 && result != nil {
+		if (w.cfg.Format == "ntfy" || w.cfg.Format == "slack" || w.cfg.Format == "discord" || w.cfg.Format == "pushover") && len(d.Attempts) > 0 && result != nil {
 			result = errors.Join(result, ErrNoRetry)
 		}
 	}()
@@ -263,6 +286,11 @@ func (w *Webhook) report(ctx context.Context, e Event, observe func(Delivery)) (
 		return err
 	}
 	headers := map[string]string{"content-type": "application/json"}
+	if w.cfg.Format == "pushover" {
+		// Body is also printed by report test --dry-run. Add credentials only here.
+		body = []byte(url.Values{"token": {w.secret}, "user": {w.userKey}, "message": {string(body)}}.Encode())
+		headers["content-type"] = "application/x-www-form-urlencoded"
+	}
 	if w.cfg.Format == "ntfy" {
 		headers["content-type"] = "text/plain; charset=utf-8"
 	}
@@ -271,7 +299,7 @@ func (w *Webhook) report(ctx context.Context, e Event, observe func(Delivery)) (
 	}
 	if w.cfg.Scheme == "bearer" {
 		headers["authorization"] = "Bearer " + w.secret
-	} else if w.cfg.Scheme != "slack-webhook" && w.cfg.Scheme != "discord-webhook" {
+	} else if w.cfg.Scheme != "slack-webhook" && w.cfg.Scheme != "discord-webhook" && w.cfg.Scheme != "pushover" {
 		id := make([]byte, 12)
 		rand.Read(id)
 		sig, err := Sign(w.secret, "msg_"+hex.EncodeToString(id), w.now(), body)
@@ -288,7 +316,7 @@ func (w *Webhook) report(ctx context.Context, e Event, observe func(Delivery)) (
 	// A limit_wait, child_error or check_gap report is requested once and, like a
 	// completion, makes one attempt: an uncertain delivery must not page a
 	// person twice.
-	if w.cfg.Format == "ntfy" || w.cfg.Format == "slack" || w.cfg.Format == "discord" || (e.Type == "error" && e.Data["cause"] == "configuration_unavailable") || e.Type == "complete" || e.Type == "limit_wait" || e.Type == "child_error" || e.Type == "child_recovery" || e.Type == "network_wait" || e.Type == "check_gap" || e.Type == "hung_turn" || e.Type == "refusal_streak" {
+	if w.cfg.Format == "ntfy" || w.cfg.Format == "slack" || w.cfg.Format == "discord" || w.cfg.Format == "pushover" || (e.Type == "error" && e.Data["cause"] == "configuration_unavailable") || e.Type == "complete" || e.Type == "limit_wait" || e.Type == "child_error" || e.Type == "child_recovery" || e.Type == "network_wait" || e.Type == "check_gap" || e.Type == "hung_turn" || e.Type == "refusal_streak" {
 		attempts = 1
 		copy := *w.client
 		copy.CheckRedirect = func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }
@@ -325,9 +353,19 @@ func (w *Webhook) report(ctx context.Context, e Event, observe func(Delivery)) (
 		if w.cfg.Format == "discord" {
 			discordReply, discordErr = io.ReadAll(io.LimitReader(resp.Body, maxDiscordReply+1))
 		}
+		var pushoverReply []byte
+		var pushoverErr error
+		if w.cfg.Format == "pushover" {
+			pushoverReply, pushoverErr = io.ReadAll(io.LimitReader(resp.Body, maxPushoverReply+1))
+		}
 		resp.Body.Close()
 		a.HTTPStatus = resp.StatusCode
 		if resp.StatusCode >= 200 && resp.StatusCode < 300 {
+			if w.cfg.Format == "pushover" && (resp.StatusCode != 200 || pushoverErr != nil || !validPushoverReply(pushoverReply)) {
+				a.Outcome = "protocol_failed"
+				snapshot("protocol_failed")
+				return errors.New("report: Pushover response not verified")
+			}
 			if w.cfg.Format == "discord" && (resp.StatusCode != 200 || discordErr != nil || !validDiscordReply(discordReply, w.discordID)) {
 				a.Outcome = "protocol_failed"
 				snapshot("protocol_failed")
