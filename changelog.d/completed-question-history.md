@@ -1,0 +1,1 @@
+- Label questions retained after completion as history in CLI status and explain that this history does not require a resume; preserve the saved note, control state and existing resume behavior.
