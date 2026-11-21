@@ -28,10 +28,13 @@ import (
 // local socket: the usual test directory on macOS is not.
 func panelShortDir(t *testing.T) string {
 	t.Helper()
+	// Avoid t.TempDir's test-name component on Windows too: a long test
+	// name can exceed the same bounded local-socket path checked by fixtures.
+	root := "/tmp"
 	if runtime.GOOS == "windows" {
-		return t.TempDir()
+		root = "" // the platform temporary directory
 	}
-	dir, err := os.MkdirTemp("/tmp", "kgp")
+	dir, err := os.MkdirTemp(root, "kgp")
 	if err != nil {
 		t.Fatal(err)
 	}
