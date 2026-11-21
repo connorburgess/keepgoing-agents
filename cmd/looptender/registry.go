@@ -212,10 +212,14 @@ func registriesUnderBothNames() []string {
 	return dirs
 }
 
+const registryPublicationWarning = "warning: supervision changed, but its dock/panel reference could not be saved; use registry add with this configuration to repair visibility"
+
 // publishEnabledLoop records discovery metadata only after an explicit enable
 // or start succeeds. Failure must not undo or replay that lifecycle operation.
-func publishEnabledLoop(e env, cfg *config.Config) {
+func publishEnabledLoop(e env, cfg *config.Config) bool {
 	if cfg.CheckSources() != nil || registryCommand(env{e.ctx, io.Discard, io.Discard}, []string{"add", "-c", cfg.Path()}) != exitOK {
-		e.errf("warning: supervision changed, but its dock/panel reference could not be saved; use registry add with this configuration to repair visibility")
+		e.errf("%s", registryPublicationWarning)
+		return false
 	}
+	return true
 }

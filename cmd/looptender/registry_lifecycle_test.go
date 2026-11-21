@@ -1,7 +1,9 @@
 package main
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"strings"
@@ -78,5 +80,52 @@ func TestRefusedEnableDoesNotPublish(t *testing.T) {
 	refs, err := registry.Load(os.Getenv(registryDirEnv))
 	if err != nil || len(refs.Entries) != 0 {
 		t.Fatal(refs, err)
+	}
+}
+
+type publicationAckWriter struct {
+	bytes.Buffer
+	cancel context.CancelFunc
+}
+
+func (w *publicationAckWriter) Write(p []byte) (int, error) {
+	n, err := w.Buffer.Write(p)
+	w.cancel()
+	return n, err
+}
+func TestBackgroundPublicationWarningSurvivesAcknowledgement(t *testing.T) {
+	f := newFixture(t)
+	if err := os.WriteFile(os.Getenv(registryDirEnv), []byte("blocked"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	out := &publicationAckWriter{cancel: cancel}
+	var errs bytes.Buffer
+	code := startChild(env{ctx, out, &errs}, []string{"--foreground", "-c", f.cfg})
+	var reply startReply
+	if code != exitOK || json.Unmarshal(out.Bytes(), &reply) != nil || reply.PID != os.Getpid() || !reply.ReferenceUnavailable {
+		t.Fatalf("lost warning: %d %s", code, out.String())
+	}
+	for _, asJSON := range []bool{false, true} {
+		var text, warnings bytes.Buffer
+		if asJSON {
+			structured := &startJSONWriter{}
+			if reportStarted(env{ctx, structured, &warnings}, reply) != exitOK {
+				t.Fatal("success changed")
+			}
+			var result startJSON
+			if json.Unmarshal(structured.buf.Bytes(), &result) != nil || !result.ReferenceUnavailable || result.Outcome != "started" {
+				t.Fatal("JSON lost partial success")
+			}
+		} else if reportStarted(env{ctx, &text, &warnings}, reply) != exitOK || !strings.Contains(text.String(), "started background") {
+			t.Fatal("text success changed")
+		}
+		if !strings.Contains(warnings.String(), registryPublicationWarning) {
+			t.Fatal("parent lost warning")
+		}
+	}
+	if f.read("calls") != "" || f.read("probes") != "" {
+		t.Fatal("provider called")
 	}
 }
