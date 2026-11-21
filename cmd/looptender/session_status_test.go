@@ -17,7 +17,7 @@ import (
 const savedExampleID = "00000000-0000-4000-8000-000000000001"
 
 func TestHeadlessSavedSessionStatusAndDoctor(t *testing.T) {
-	for _, provider := range []string{"claude", "codex", "cursor"} {
+	for _, provider := range []string{"claude", "codex", "cursor", "antigravity"} {
 		for _, content := range []string{"missing", savedExampleID, doctorPrivate} {
 			// TempDir includes the test name on some platforms. Keep the
 			// privacy marker out of paths that status intentionally displays.
@@ -37,11 +37,20 @@ func TestHeadlessSavedSessionStatusAndDoctor(t *testing.T) {
 					t.Fatal(err)
 				}
 				sessionFile := filepath.Join(f.state, "targets", "primary", "session")
+				stored := content
+				if provider == "antigravity" {
+					sessionFile = filepath.Join(f.state, "targets", "primary", "acp-session.json")
+					b, err := json.Marshal(map[string]any{"version": 1, "sessionId": content})
+					if err != nil {
+						t.Fatal(err)
+					}
+					stored = string(b)
+				}
 				if content != "missing" {
 					if err := os.MkdirAll(filepath.Dir(sessionFile), 0o700); err != nil {
 						t.Fatal(err)
 					}
-					if err := os.WriteFile(sessionFile, []byte(content), 0o600); err != nil {
+					if err := os.WriteFile(sessionFile, []byte(stored), 0o600); err != nil {
 						t.Fatal(err)
 					}
 				}
@@ -62,6 +71,9 @@ func TestHeadlessSavedSessionStatusAndDoctor(t *testing.T) {
 				if s == nil || s.State != want || s.ID != wantID || s.LiveVerified || result.ControlState != "paused" {
 					t.Fatalf("%+v", result)
 				}
+				if provider == "antigravity" && (s.Source != "antigravity_acp_session_file" || (want == "saved" && !strings.Contains(s.Message, "--conversation "+savedExampleID))) {
+					t.Fatalf("missing ACP recovery guidance: %+v", s)
+				}
 				if strings.Contains(out.String(), doctorPrivate) {
 					t.Fatal("private session bytes exposed")
 				}
@@ -78,7 +90,7 @@ func TestHeadlessSavedSessionStatusAndDoctor(t *testing.T) {
 				}
 				if content != "missing" {
 					b, _ := os.ReadFile(sessionFile)
-					if string(b) != content {
+					if string(b) != stored {
 						t.Fatal("session changed")
 					}
 				}
