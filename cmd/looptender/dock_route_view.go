@@ -692,6 +692,8 @@ func dockWordDelivery(ev *dockEvent, d report.Delivery) {
 	switch d.Outcome {
 	case "http_accepted":
 		ev.Phrase, ev.Detail = fmt.Sprintf("Report sent: %s", event), "Accepted by the receiver; whether a person saw it is not known."
+	case "process_accepted":
+		ev.Phrase, ev.Detail = fmt.Sprintf("Report accepted: %s", event), "Accepted by the notification command; whether a person saw it is not known."
 	case "not_sent":
 		ev.Phrase = fmt.Sprintf("Report not sent for lack of time: %s", event)
 	default:

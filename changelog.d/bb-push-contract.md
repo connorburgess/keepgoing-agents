@@ -1,0 +1,1 @@
+- Add notification-command delivery-history groundwork with explicit process outcomes, schema-2 compatibility, receipt-unverified status wording, bounded BB acknowledgement/text validation and metadata-only CLI selection checks. This does not yet enable a BB notification sender; owned-process execution and installed acceptance remain open.
