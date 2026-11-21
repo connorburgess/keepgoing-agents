@@ -110,6 +110,20 @@ This is a separate coordination acceptance case. Observed coordinator stalling i
 
 ### Completing the whole objective
 
+When a phase finishes, verify its result and reassess the remaining objective
+before deciding what to do next. If an independent authorized step can proceed,
+take one concrete next action; repeated terminal receipts are not new progress.
+For example, a fictional implementation phase has verified results and all its
+lanes are idle. An offline integration review is authorized, while a later live
+release needs a person. Continue the review and keep the release held. Missing
+authorization or a runtime hold still prevents the affected action; idle lanes
+alone establish neither completion nor permission.
+
+New `init` prompts include this guidance. Existing saved prompts are not rewritten.
+This is a coordinator instruction, not automatic dispatch or a runtime guarantee.
+The phase-settlement acceptance case remains open until observed coordinator
+behavior verifies continuation, duplicate-receipt handling and preserved holds.
+
 Establish the goal's objective/acceptance/scope references before assigning lanes;
 record each lane's explicit scope and reconcile its handoff. A finished milestone,
 an idle roster or a worker disappearing is not a declaration that the whole
