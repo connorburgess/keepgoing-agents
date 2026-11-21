@@ -1,0 +1,1 @@
+- Guide newly initialized coordinators to reassess remaining work after phase completion and continue independent authorized steps, while preserving approval and runtime holds. Existing saved prompts are unchanged; coordinator compliance remains an open acceptance case.
