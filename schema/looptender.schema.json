@@ -280,6 +280,9 @@
           "type": "object",
           "additionalProperties": false,
           "allOf": [
+            {"if": {"properties": {"format": {"const": "pushover"}}, "required": ["format"]}, "then": {"properties": {"scheme": {"const": "pushover"}}}},
+            {"if": {"properties": {"scheme": {"const": "pushover"}}, "required": ["scheme"]}, "then": {"properties": {"format": {"const": "pushover"}}, "required": ["format"]}},
+            {"if": {"required": ["user_env"], "properties": {"user_env": {"minLength": 1}}}, "then": {"properties": {"format": {"const": "pushover"}}, "required": ["format"]}},
             {"if": {"properties": {"format": {"const": "discord"}}, "required": ["format"]}, "then": {"properties": {"scheme": {"const": "discord-webhook"}, "secret_env": {"const": ""}}}},
             {"if": {"properties": {"scheme": {"const": "discord-webhook"}}, "required": ["scheme"]}, "then": {"properties": {"format": {"const": "discord"}}, "required": ["format"]}},
             {"if": {"properties": {"format": {"const": "slack"}}, "required": ["format"]}, "then": {"properties": {"scheme": {"const": "slack-webhook"}, "secret_env": {"const": ""}}}},
@@ -290,6 +293,7 @@
             {"if": {"properties": {"scheme": {"const": "telegram-bot"}}, "required": ["scheme"]}, "then": {"properties": {"format": {"const": "telegram"}}, "required": ["format"]}}
           ],
           "properties": {
+            "user_env": {"type": "string"},
             "url_env": {
               "type": "string",
               "default": "LOOPTENDER_WEBHOOK_URL"
@@ -310,7 +314,8 @@
                 "bearer",
                 "telegram-bot",
                 "slack-webhook",
-                "discord-webhook"
+                "discord-webhook",
+                "pushover"
               ]
             },
             "format": {
@@ -321,7 +326,8 @@
                 "telegram",
                 "ntfy",
                 "slack",
-                "discord"
+                "discord",
+                "pushover"
               ]
             },
             "events": {

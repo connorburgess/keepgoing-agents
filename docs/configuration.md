@@ -475,7 +475,7 @@ See [operations.md](operations.md).
 | `report.secret_file` | none |
 | `report.source` | the loop name |
 | `report.scheme` | `standard-webhooks` (or `bearer`, required/default for `ntfy`; `telegram-bot` when `format: telegram`) |
-| `report.format` | `standard` (or `text`; unreleased `discord` uses the [incoming webhook preset](#discord-notification-preset); unreleased `slack` uses the [incoming webhook preset](#slack-notification-preset); unreleased `ntfy` uses the [bounded phone notification preset](#ntfy-notification-preset); unreleased `sessionpipe` requires `scheme: bearer`, see [Sessionpipe setup and report-only authentication resume](sessionpipe.md); unreleased `telegram` defaults to `scheme: telegram-bot`, see [Telegram remote channel](telegram.md)) |
+| `report.format` | `standard` (or `text`; unreleased `pushover` uses the [phone notification preset](#pushover-notification-preset); unreleased `discord` uses the [incoming webhook preset](#discord-notification-preset); unreleased `slack` uses the [incoming webhook preset](#slack-notification-preset); unreleased `ntfy` uses the [bounded phone notification preset](#ntfy-notification-preset); unreleased `sessionpipe` requires `scheme: bearer`, see [Sessionpipe setup and report-only authentication resume](sessionpipe.md); unreleased `telegram` defaults to `scheme: telegram-bot`, see [Telegram remote channel](telegram.md)) |
 | `report.events` | `handoff, switch_back, timing, degraded, recovered, await_user, limit_wait, network_wait, child_error, child_recovery, refusal_streak, complete, stop, error` (the `complete` event requires v0.1.3 or newer; `limit_wait`, `network_wait`, `child_error` and `child_recovery` are v0.2.0; `child_recovery` is sent only by a loop with `bb.children.retry_errored`; `timing`, unreleased, reports applied steps and failures; `refusal_streak`, unreleased, is sent when a streak of refused turns reaches 3, 10 and every 10 after; `check_gap`, also v0.2.0, is not a default and must be named) |
 | `report.timeout` | `20s` |
 | `yield.busy_command`, `yield.timeout` | required, `10s` |
@@ -699,3 +699,23 @@ Only HTTPS `discord.com/api/webhooks/{id}/{token}` and `/api/v10/webhooks/{id}/{
 Content contains bounded configured loop/device labels and an allowlisted event name. Labels use the same 120-character/control-removal rules as ntfy, with Markdown punctuation escaped. `allowed_mentions.parse` is explicitly empty, embeds are suppressed, and text-to-speech is false. There are no files, components, polls, identity overrides, arbitrary report text/data, or inbound controls. Choose labels intended for the destination channel's members.
 
 Every selected event makes one POST without redirects. Attempted failures, including rate limits and accepted sends whose history cannot be saved, prevent episode retry; setup failures retain their prior behavior. A crash before episode-state publication remains outside this guarantee. A successful acknowledgement must be HTTP200 with a bounded JSON message containing a canonical message ID and the selected webhook ID. Malformed/truncated/oversized replies and204 remain unverified failures. Returned message bodies and identities are not retained in delivery history. Message acknowledgement is not human or phone receipt; live Discord delivery remains unverified. See the [API version and client contract](https://docs.discord.com/developers/reference#api-versioning).
+
+
+## Pushover notification preset
+
+Unreleased `format: pushover` uses an existing application token and one user/group key. Obtain and authorize these separately; looptender does not register applications or accounts. The format-bound scheme is `pushover`.
+
+```yaml
+  report:
+    format: pushover
+    events: [complete, error, limit_wait, child_error]
+    source: example-device
+```
+
+Store `LOOPTENDER_PUSHOVER_APP_TOKEN` and `LOOPTENDER_PUSHOVER_USER_KEY` in the environment or an existing private dotenv `report.secret_file`. `secret_env` and `user_env` can choose alternative variable names; the latter is exclusive to this format. Both values must be 30 ASCII letters or digits. Comma-separated recipients are refused. A configured group key uses that group's existing membership. Never put key values in configuration, arguments or committed files.
+
+The endpoint defaults to `https://api.pushover.net/1/messages.json`. `LOOPTENDER_PUSHOVER_API_URL` (or a variable selected by `url_env`) can select only that exact production endpoint or loopback HTTP for fixtures. No production port, credentials, query, fragment or encoded path is accepted. Credentials are added to the form POST only at send time; `report test --dry-run` prints just the bounded notification content. There are no bearer or signing headers.
+
+Only cleaned loop/device labels and an allowlisted event are sent. Free-form event text/data is excluded. Normal priority and default recipient settings apply; no emergency retries, callbacks, attachments, HTML, supplementary URLs or device overrides are supplied. This is not an end-to-end encrypted payload.
+
+Every selected event makes one POST without redirects. Attempted failures and accepted POSTs whose history cannot be saved retain no-retry evidence across subsequent checks; setup failures retain their existing semantics. A crash before episode-state publication remains outside the durable guarantee. Unlike the API's optional retry advice for temporary errors, this preset does not automatically repeat uncertain sends. Acknowledgement requires HTTP200 and a bounded complete JSON object with one exact non-null numeric `status: 1`; unknown fields are not retained. API acknowledgement means queued, not phone or human receipt. No live delivery is verified. See the [official Pushover API contract](https://pushover.net/api).
