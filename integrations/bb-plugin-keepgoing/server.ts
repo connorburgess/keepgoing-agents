@@ -328,7 +328,7 @@ export default async function plugin(bb: BbPluginApi) {
       catch { return "manual"; }
     },
     unavailable: async () => {
-      if (!hookAvailable) return "This version of BB does not offer the hook Keep going needs to learn which thread a message created, so it is unavailable here. Supervise this thread still works on an existing thread.";
+      if (!hookAvailable) return "This version of BB does not offer the hook Keep going needs to learn which thread a message created, so it is unavailable here. Add to Looptender still works on an existing thread.";
       const { bin } = await configured();
       const result = await run(bin, ["version"]);
       return result.code === 0 ? null : "The looptender program (installed as keepgoing up to v0.2.0) was not found or did not run. Install it, or set its path in this plugin's settings, then check again.";

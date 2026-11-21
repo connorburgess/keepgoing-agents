@@ -74,7 +74,7 @@ test("context card keeps an in-flight move panel mounted while realtime adds the
     },
   } });
   try {
-    fireEvent.click(await ui.findByRole("button", { name: "Supervise this thread" }));
+    fireEvent.click(await ui.findByRole("button", { name: "Add to Looptender" }));
     await ui.findByRole("option", { name: /example-loop/ });
     fireEvent.change(ui.getByLabelText("Existing loop"), { target: { value: "record" } });
     fireEvent.click(ui.getByRole("button", { name: "Preview move" })); await ui.findByText("Preview ready");

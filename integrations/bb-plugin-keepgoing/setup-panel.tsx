@@ -39,7 +39,7 @@ export function SetupPanel({ threadId, call, onChanged, hideStart = false }: { t
   }
   const edit = () => setResult(undefined);
   return <section aria-label="Set up thread supervision" style={{ display: "grid", gap: 8, padding: 12, minWidth: 240, maxWidth: 560, fontSize: 12 }}>
-    <strong>Supervise this thread</strong>
+    <strong>Add to Looptender</strong>
     <span>Target: {threadId}</span>
     {!result?.record && <>
       <label>Loop name<input aria-label="Loop name" value={name} disabled={busy} onChange={e => { setName(e.target.value); edit(); }} style={{ display: "block", width: "100%" }} /></label>

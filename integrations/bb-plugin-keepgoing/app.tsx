@@ -170,7 +170,7 @@ function CardRow({ threadId }: { threadId: string }) {
   return <div>
     {failed && <StatusWarning refresh={refresh} />}
     {loaded && !failed && <NewThreadOutcome threadId={threadId} outcome={outcome} controlState={loop?.controlState} supervising={loop?.supervising} start={start} control={control} onChanged={refresh} />}
-    {!loaded ? <ContextRow icon="Repeat" label="looptender: checking status" /> : !loop ? <ContextRow icon="Repeat" label="looptender" action={!failed && <button type="button" style={buttonStyle} onClick={() => setOpen(!open)} aria-expanded={open}>Supervise this thread</button>} /> : <ContextRow
+    {!loaded ? <ContextRow icon="Repeat" label="looptender: checking status" /> : !loop ? <ContextRow icon="Repeat" label="looptender" action={!failed && <button type="button" style={buttonStyle} onClick={() => setOpen(!open)} aria-expanded={open}>Add to Looptender</button>} /> : <ContextRow
       icon="Repeat"
       label={failed ? "looptender: status unavailable (previous snapshot)" : created ?? label(loop)}
       title={describe(loop).join("\n")}
@@ -188,7 +188,7 @@ function BannerSummary({ threadId, isExpanded, onToggle }: { threadId: string; i
   return (
     <button type="button" onClick={onToggle} aria-expanded={isExpanded} title={failed ? "Status could not be refreshed. Open details to retry." : loop ? describe(loop).join("\n") : "Set up a loop for this thread"}
       style={{ background: "none", border: 0, padding: 0, font: "inherit", color: "inherit", cursor: "pointer" }}>
-      {failed ? "looptender: status unavailable" : !loaded ? "looptender: checking status" : created ?? (loop ? label(loop) : "Supervise this thread")}
+      {failed ? "looptender: status unavailable" : !loaded ? "looptender: checking status" : created ?? (loop ? label(loop) : "Add to Looptender")}
     </button>
   );
 }
