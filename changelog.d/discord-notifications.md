@@ -1,0 +1,1 @@
+- Add an opt-in Discord incoming webhook preset with URL credential transport, bounded loop/device/event content, explicit mention/embed suppression and saved-message acknowledgement. One attempt without redirects preserves no-retry evidence after attempted sends; local fixtures only, with live Discord and phone delivery unverified.

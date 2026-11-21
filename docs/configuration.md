@@ -475,7 +475,7 @@ See [operations.md](operations.md).
 | `report.secret_file` | none |
 | `report.source` | the loop name |
 | `report.scheme` | `standard-webhooks` (or `bearer`, required/default for `ntfy`; `telegram-bot` when `format: telegram`) |
-| `report.format` | `standard` (or `text`; unreleased `slack` uses the [incoming webhook preset](#slack-notification-preset); unreleased `ntfy` uses the [bounded phone notification preset](#ntfy-notification-preset); unreleased `sessionpipe` requires `scheme: bearer`, see [Sessionpipe setup and report-only authentication resume](sessionpipe.md); unreleased `telegram` defaults to `scheme: telegram-bot`, see [Telegram remote channel](telegram.md)) |
+| `report.format` | `standard` (or `text`; unreleased `discord` uses the [incoming webhook preset](#discord-notification-preset); unreleased `slack` uses the [incoming webhook preset](#slack-notification-preset); unreleased `ntfy` uses the [bounded phone notification preset](#ntfy-notification-preset); unreleased `sessionpipe` requires `scheme: bearer`, see [Sessionpipe setup and report-only authentication resume](sessionpipe.md); unreleased `telegram` defaults to `scheme: telegram-bot`, see [Telegram remote channel](telegram.md)) |
 | `report.events` | `handoff, switch_back, timing, degraded, recovered, await_user, limit_wait, network_wait, child_error, child_recovery, refusal_streak, complete, stop, error` (the `complete` event requires v0.1.3 or newer; `limit_wait`, `network_wait`, `child_error` and `child_recovery` are v0.2.0; `child_recovery` is sent only by a loop with `bb.children.retry_errored`; `timing`, unreleased, reports applied steps and failures; `refusal_streak`, unreleased, is sent when a streak of refused turns reaches 3, 10 and every 10 after; `check_gap`, also v0.2.0, is not a default and must be named) |
 | `report.timeout` | `20s` |
 | `yield.busy_command`, `yield.timeout` | required, `10s` |
@@ -679,3 +679,23 @@ The default scheme is `slack-webhook`, valid only with this format. Set `LOOPTEN
 The payload contains a constant fallback and one [plain-text section](https://docs.slack.dev/reference/block-kit/composition-objects/text-object/) with bounded loop label, configured source/device label and allowlisted event name. Each label is limited to 120 characters with control/format characters removed. Labels are never interpreted as `mrkdwn`; no arbitrary report text/data, attachments, interactive controls, channel overrides or private transcripts are included. Choose labels intended for the channel's members. Link/media unfurling is disabled.
 
 Every selected event makes one POST without redirects. An attempted send that fails or loses its delivery-history write stops episode retries; setup failures retain their existing retry behavior. A crash before episode-state publication is outside this guarantee. The bounded successful reply must be HTTP 200 with `ok`; malformed success responses remain protocol failures, without retaining their body. Delivery history contains only status/evidence and always marks receipt unverified. HTTP acceptance is not proof that a phone received an alert. Local fixtures are the evidence; live Slack and phone delivery remain unverified.
+
+
+## Discord notification preset
+
+Unreleased `format: discord` sends to an existing ordinary-channel [incoming webhook](https://docs.discord.com/developers/resources/webhook#execute-webhook). Create and authorize it separately; looptender does not create webhooks, channels or accounts.
+
+```yaml
+  report:
+    format: discord
+    source: example-device
+    events: [await_user, error, complete, stop]
+```
+
+The default, format-bound scheme is `discord-webhook`. Set `LOOPTENDER_DISCORD_WEBHOOK_URL` in the environment or an existing private dotenv `report.secret_file`; `url_env` can choose another variable. The URL contains the credential. Keep it out of configuration, command arguments, logs and committed files. Omit `secret_env`: no bearer token or signing key is sent.
+
+Only HTTPS `discord.com/api/webhooks/{id}/{token}` and `/api/v10/webhooks/{id}/{token}` are accepted, with no production port, userinfo, query, fragment or encoded path. The webhook ID must be a nonzero canonical unsigned 64-bit decimal. Requests pin API v10 and add only `wait=true`, since Discord's default can omit an error for an unsaved message. Loopback HTTP is available for fixtures. No thread selection or creation is supplied: forum/media webhooks requiring a thread are unsupported; errors never cause automatic channel creation or unarchiving.
+
+Content contains bounded configured loop/device labels and an allowlisted event name. Labels use the same 120-character/control-removal rules as ntfy, with Markdown punctuation escaped. `allowed_mentions.parse` is explicitly empty, embeds are suppressed, and text-to-speech is false. There are no files, components, polls, identity overrides, arbitrary report text/data, or inbound controls. Choose labels intended for the destination channel's members.
+
+Every selected event makes one POST without redirects. Attempted failures, including rate limits and accepted sends whose history cannot be saved, prevent episode retry; setup failures retain their prior behavior. A crash before episode-state publication remains outside this guarantee. A successful acknowledgement must be HTTP200 with a bounded JSON message containing a canonical message ID and the selected webhook ID. Malformed/truncated/oversized replies and204 remain unverified failures. Returned message bodies and identities are not retained in delivery history. Message acknowledgement is not human or phone receipt; live Discord delivery remains unverified. See the [API version and client contract](https://docs.discord.com/developers/reference#api-versioning).

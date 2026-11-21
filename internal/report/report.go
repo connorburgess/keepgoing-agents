@@ -53,13 +53,14 @@ func (Nop) Report(context.Context, Event) error { return nil }
 
 // Webhook posts to one endpoint.
 type Webhook struct {
-	stateDir string
-	cfg      config.Report
-	url      string
-	secret   string
-	client   *http.Client
-	now      func() time.Time
-	tg       *telegramSender
+	stateDir  string
+	cfg       config.Report
+	url       string
+	secret    string
+	client    *http.Client
+	now       func() time.Time
+	tg        *telegramSender
+	discordID string
 }
 
 // MaxBody caps a report's size.
@@ -68,6 +69,12 @@ const MaxBody = 1 << 20
 // New resolves credentials from the environment, then the secret file.
 // Secrets are never logged or included in errors.
 func New(cfg config.Report) (*Webhook, error) {
+	if (cfg.Format == "discord") != (cfg.Scheme == "discord-webhook") {
+		return nil, errors.New("report: discord format requires discord-webhook scheme exclusively")
+	}
+	if cfg.Format == "discord" && cfg.SecretEnv != "" {
+		return nil, errors.New("report: discord uses only the webhook URL")
+	}
 	if cfg.Format == "slack" && cfg.SecretEnv != "" {
 		return nil, errors.New("report: slack uses only the webhook URL")
 	}
@@ -112,11 +119,21 @@ func New(cfg config.Report) (*Webhook, error) {
 		return newTelegramWebhook(cfg, get)
 	}
 	w := &Webhook{cfg: cfg, url: get(cfg.URLEnv), secret: get(cfg.SecretEnv), client: &http.Client{Timeout: cfg.Timeout.Duration}, now: time.Now}
+	if cfg.Format == "discord" && w.url == "" {
+		return nil, errors.New("report: Discord webhook URL must be set in the environment or secret file")
+	}
 	if cfg.Format == "slack" && w.url == "" {
 		return nil, errors.New("report: Slack webhook URL must be set in the environment or secret file")
 	}
-	if w.url == "" || (cfg.Format != "slack" && w.secret == "") {
+	if w.url == "" || (cfg.Format != "slack" && cfg.Format != "discord" && w.secret == "") {
 		return nil, fmt.Errorf("report: %s and %s must be set in the environment or the secret file", cfg.URLEnv, cfg.SecretEnv)
+	}
+	if cfg.Format == "discord" {
+		var ok bool
+		w.url, w.discordID, ok = discordDestination(w.url)
+		if !ok {
+			return nil, errors.New("report: invalid Discord incoming webhook URL")
+		}
 	}
 	u, err := url.Parse(w.url)
 	if cfg.Format == "slack" && (err != nil || !validSlackURL(u)) {
@@ -134,7 +151,7 @@ func New(cfg config.Report) (*Webhook, error) {
 	if u.Scheme != "https" && !(u.Scheme == "http" && isLoopback(u.Hostname())) {
 		return nil, errors.New("report: the webhook URL must use https (http is allowed only for localhost)")
 	}
-	if cfg.Format != "slack" && strings.ContainsAny(w.secret, " \t\r\n") {
+	if cfg.Format != "slack" && cfg.Format != "discord" && strings.ContainsAny(w.secret, " \t\r\n") {
 		return nil, errors.New("report: the webhook secret is malformed")
 	}
 	if cfg.Scheme == "standard-webhooks" {
@@ -161,6 +178,9 @@ func (w *Webhook) Body(e Event) ([]byte, error) {
 	}
 	if w.cfg.Format == "sessionpipe" {
 		return pipeBody(e, pipeState{Version: 1, ID: "00000000000000000000000000000000", Next: 1}, w.now())
+	}
+	if w.cfg.Format == "discord" {
+		return discordBody(e, w.cfg.Source)
 	}
 	if w.cfg.Format == "slack" {
 		return slackBody(e, w.cfg.Source)
@@ -226,7 +246,7 @@ func (w *Webhook) report(ctx context.Context, e Event, observe func(Delivery)) (
 	}
 	d := Delivery{Event: eventName(e.Type), StartedAt: w.now().UTC(), Receipt: "unverified", Attempts: []Attempt{}}
 	defer func() {
-		if (w.cfg.Format == "ntfy" || w.cfg.Format == "slack") && len(d.Attempts) > 0 && result != nil {
+		if (w.cfg.Format == "ntfy" || w.cfg.Format == "slack" || w.cfg.Format == "discord") && len(d.Attempts) > 0 && result != nil {
 			result = errors.Join(result, ErrNoRetry)
 		}
 	}()
@@ -246,9 +266,12 @@ func (w *Webhook) report(ctx context.Context, e Event, observe func(Delivery)) (
 	if w.cfg.Format == "ntfy" {
 		headers["content-type"] = "text/plain; charset=utf-8"
 	}
+	if w.cfg.Format == "discord" {
+		headers["user-agent"] = "DiscordBot (https://github.com/looptender/looptender, 0.2.0)"
+	}
 	if w.cfg.Scheme == "bearer" {
 		headers["authorization"] = "Bearer " + w.secret
-	} else if w.cfg.Scheme != "slack-webhook" {
+	} else if w.cfg.Scheme != "slack-webhook" && w.cfg.Scheme != "discord-webhook" {
 		id := make([]byte, 12)
 		rand.Read(id)
 		sig, err := Sign(w.secret, "msg_"+hex.EncodeToString(id), w.now(), body)
@@ -265,7 +288,7 @@ func (w *Webhook) report(ctx context.Context, e Event, observe func(Delivery)) (
 	// A limit_wait, child_error or check_gap report is requested once and, like a
 	// completion, makes one attempt: an uncertain delivery must not page a
 	// person twice.
-	if w.cfg.Format == "ntfy" || w.cfg.Format == "slack" || (e.Type == "error" && e.Data["cause"] == "configuration_unavailable") || e.Type == "complete" || e.Type == "limit_wait" || e.Type == "child_error" || e.Type == "child_recovery" || e.Type == "network_wait" || e.Type == "check_gap" || e.Type == "hung_turn" || e.Type == "refusal_streak" {
+	if w.cfg.Format == "ntfy" || w.cfg.Format == "slack" || w.cfg.Format == "discord" || (e.Type == "error" && e.Data["cause"] == "configuration_unavailable") || e.Type == "complete" || e.Type == "limit_wait" || e.Type == "child_error" || e.Type == "child_recovery" || e.Type == "network_wait" || e.Type == "check_gap" || e.Type == "hung_turn" || e.Type == "refusal_streak" {
 		attempts = 1
 		copy := *w.client
 		copy.CheckRedirect = func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }
@@ -297,9 +320,19 @@ func (w *Webhook) report(ctx context.Context, e Event, observe func(Delivery)) (
 		if w.cfg.Format == "slack" {
 			slackReply, slackErr = io.ReadAll(io.LimitReader(resp.Body, 65))
 		}
+		var discordReply []byte
+		var discordErr error
+		if w.cfg.Format == "discord" {
+			discordReply, discordErr = io.ReadAll(io.LimitReader(resp.Body, maxDiscordReply+1))
+		}
 		resp.Body.Close()
 		a.HTTPStatus = resp.StatusCode
 		if resp.StatusCode >= 200 && resp.StatusCode < 300 {
+			if w.cfg.Format == "discord" && (resp.StatusCode != 200 || discordErr != nil || !validDiscordReply(discordReply, w.discordID)) {
+				a.Outcome = "protocol_failed"
+				snapshot("protocol_failed")
+				return errors.New("report: Discord response not verified")
+			}
 			if w.cfg.Format == "slack" && (resp.StatusCode != 200 || slackErr != nil || len(slackReply) > 64 || strings.TrimSpace(string(slackReply)) != "ok") {
 				a.Outcome = "protocol_failed"
 				snapshot("protocol_failed")

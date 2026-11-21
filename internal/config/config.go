@@ -692,7 +692,14 @@ func (c *Config) applyDefaults() {
 		if r.Format == "" {
 			r.Format = "standard"
 		}
-		if r.Format == "slack" {
+		if r.Format == "discord" {
+			if r.URLEnv == "" {
+				r.URLEnv = "LOOPTENDER_DISCORD_WEBHOOK_URL"
+			}
+			if r.Scheme == "" {
+				r.Scheme = "discord-webhook"
+			}
+		} else if r.Format == "slack" {
 			if r.URLEnv == "" {
 				r.URLEnv = "LOOPTENDER_SLACK_WEBHOOK_URL"
 			}
@@ -896,11 +903,17 @@ func (c *Config) Validate() error {
 		}
 	}
 	if r := l.Report; r != nil {
-		if r.Scheme != "standard-webhooks" && r.Scheme != "bearer" && r.Scheme != "telegram-bot" && r.Scheme != "slack-webhook" {
-			add("loop.report.scheme must be standard-webhooks, bearer, telegram-bot or slack-webhook")
+		if r.Scheme != "standard-webhooks" && r.Scheme != "bearer" && r.Scheme != "telegram-bot" && r.Scheme != "slack-webhook" && r.Scheme != "discord-webhook" {
+			add("loop.report.scheme must be standard-webhooks, bearer, telegram-bot, slack-webhook or discord-webhook")
 		}
-		if r.Format != "standard" && r.Format != "text" && r.Format != "sessionpipe" && r.Format != "telegram" && r.Format != "ntfy" && r.Format != "slack" {
-			add("loop.report.format must be standard, text, sessionpipe, telegram, ntfy or slack")
+		if r.Format != "standard" && r.Format != "text" && r.Format != "sessionpipe" && r.Format != "telegram" && r.Format != "ntfy" && r.Format != "slack" && r.Format != "discord" {
+			add("loop.report.format must be standard, text, sessionpipe, telegram, ntfy, slack or discord")
+		}
+		if (r.Format == "discord") != (r.Scheme == "discord-webhook") {
+			add("loop.report: discord format requires discord-webhook scheme exclusively")
+		}
+		if r.Format == "discord" && r.SecretEnv != "" {
+			add("loop.report: discord uses only the webhook URL; secret_env must be omitted")
 		}
 		if (r.Format == "slack") != (r.Scheme == "slack-webhook") {
 			add("loop.report: slack format requires slack-webhook scheme exclusively")

@@ -280,6 +280,8 @@
           "type": "object",
           "additionalProperties": false,
           "allOf": [
+            {"if": {"properties": {"format": {"const": "discord"}}, "required": ["format"]}, "then": {"properties": {"scheme": {"const": "discord-webhook"}, "secret_env": {"const": ""}}}},
+            {"if": {"properties": {"scheme": {"const": "discord-webhook"}}, "required": ["scheme"]}, "then": {"properties": {"format": {"const": "discord"}}, "required": ["format"]}},
             {"if": {"properties": {"format": {"const": "slack"}}, "required": ["format"]}, "then": {"properties": {"scheme": {"const": "slack-webhook"}, "secret_env": {"const": ""}}}},
             {"if": {"properties": {"scheme": {"const": "slack-webhook"}}, "required": ["scheme"]}, "then": {"properties": {"format": {"const": "slack"}}, "required": ["format"]}},
             {"if": {"properties": {"format": {"const": "ntfy"}}, "required": ["format"]}, "then": {"properties": {"scheme": {"const": "bearer"}}}},
@@ -307,7 +309,8 @@
                 "standard-webhooks",
                 "bearer",
                 "telegram-bot",
-                "slack-webhook"
+                "slack-webhook",
+                "discord-webhook"
               ]
             },
             "format": {
@@ -317,7 +320,8 @@
                 "sessionpipe",
                 "telegram",
                 "ntfy",
-                "slack"
+                "slack",
+                "discord"
               ]
             },
             "events": {
