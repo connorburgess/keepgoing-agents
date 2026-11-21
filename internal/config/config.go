@@ -369,6 +369,7 @@ type ErrorRules struct {
 
 // Report configures signed webhook reports.
 type Report struct {
+	UserEnv    string   `yaml:"user_env,omitempty"`
 	URLEnv     string   `yaml:"url_env,omitempty"`
 	SecretEnv  string   `yaml:"secret_env,omitempty"`
 	SecretFile string   `yaml:"secret_file,omitempty"`
@@ -692,7 +693,20 @@ func (c *Config) applyDefaults() {
 		if r.Format == "" {
 			r.Format = "standard"
 		}
-		if r.Format == "discord" {
+		if r.Format == "pushover" {
+			if r.URLEnv == "" {
+				r.URLEnv = "LOOPTENDER_PUSHOVER_API_URL"
+			}
+			if r.SecretEnv == "" {
+				r.SecretEnv = "LOOPTENDER_PUSHOVER_APP_TOKEN"
+			}
+			if r.UserEnv == "" {
+				r.UserEnv = "LOOPTENDER_PUSHOVER_USER_KEY"
+			}
+			if r.Scheme == "" {
+				r.Scheme = "pushover"
+			}
+		} else if r.Format == "discord" {
 			if r.URLEnv == "" {
 				r.URLEnv = "LOOPTENDER_DISCORD_WEBHOOK_URL"
 			}
@@ -903,11 +917,17 @@ func (c *Config) Validate() error {
 		}
 	}
 	if r := l.Report; r != nil {
-		if r.Scheme != "standard-webhooks" && r.Scheme != "bearer" && r.Scheme != "telegram-bot" && r.Scheme != "slack-webhook" && r.Scheme != "discord-webhook" {
-			add("loop.report.scheme must be standard-webhooks, bearer, telegram-bot, slack-webhook or discord-webhook")
+		if r.Scheme != "standard-webhooks" && r.Scheme != "bearer" && r.Scheme != "telegram-bot" && r.Scheme != "slack-webhook" && r.Scheme != "discord-webhook" && r.Scheme != "pushover" {
+			add("loop.report.scheme must be standard-webhooks, bearer, telegram-bot, slack-webhook, discord-webhook or pushover")
 		}
-		if r.Format != "standard" && r.Format != "text" && r.Format != "sessionpipe" && r.Format != "telegram" && r.Format != "ntfy" && r.Format != "slack" && r.Format != "discord" {
-			add("loop.report.format must be standard, text, sessionpipe, telegram, ntfy, slack or discord")
+		if r.Format != "standard" && r.Format != "text" && r.Format != "sessionpipe" && r.Format != "telegram" && r.Format != "ntfy" && r.Format != "slack" && r.Format != "discord" && r.Format != "pushover" {
+			add("loop.report.format must be standard, text, sessionpipe, telegram, ntfy, slack, discord or pushover")
+		}
+		if (r.Format == "pushover") != (r.Scheme == "pushover") {
+			add("loop.report: pushover format requires pushover scheme exclusively")
+		}
+		if r.Format != "pushover" && r.UserEnv != "" {
+			add("loop.report.user_env requires pushover format")
 		}
 		if (r.Format == "discord") != (r.Scheme == "discord-webhook") {
 			add("loop.report: discord format requires discord-webhook scheme exclusively")
