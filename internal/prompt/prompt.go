@@ -73,6 +73,11 @@ func WithWakeHeader(loop string, m Message) Message {
 	return m
 }
 
+// childReview is fixed guidance, not a conclusion about any lane obligation.
+const childReview = "Inspect current structured execution and pending input separately from the explicit assignment outcome. " +
+	"Idle, error or disappearance is not completion. Reconcile unfinished obligations and newer owner direction before choosing an authorized action; " +
+	"do not replay completed or superseded work, duplicate a running retry, or clear a hold. "
+
 // WithChildErrors appends a fixed notice that n direct child threads are in
 // error. The wording never varies and carries only the count: no child ID,
 // title, task text or error detail.
@@ -90,7 +95,7 @@ func WithChildErrorsRetried(m Message, n, retried int) Message {
 		m.Text += fmt.Sprintf("\n\n[keepgoing:child-errors count=%d]\n"+
 			"keepgoing notice: %d direct child thread(s) of this thread were in an error state at this check. "+
 			"keepgoing has not retried, messaged or stopped them and has not read their content. "+
-			"You own that work: decide whether to retry or replace it. "+
+			"You own that work. "+childReview+
 			"This notice is sent once when a child newly enters an error state.\n", n, n)
 		return m
 	}
@@ -106,7 +111,7 @@ func WithChildErrorsRetried(m Message, n, retried int) Message {
 func retriedSentence(n, retried int) string {
 	return fmt.Sprintf("keepgoing is recovering %d of them itself: it asks BB to retry their failed turn, by reference and without sending a message, "+
 		"and it will tell you if it gives one up. It does not name them, has not messaged any child and has not read their content. "+
-		"The other %d are yours: decide whether to retry or replace that work. "+
+		"The other %d are yours to reconcile. "+childReview+
 		"Before you retry or replace any child, check its current state, so that work keepgoing has restarted is not started twice.", retried, max(0, n-retried))
 }
 
@@ -126,7 +131,7 @@ func ChildErrorsOnlyRetried(errored, running, retried int) Message {
 			"keepgoing notice: %d direct child thread(s) of this thread were in an error state at this check, and %d other direct child thread(s) are still running. "+
 			"keepgoing has not retried, messaged or stopped any of them and has not read their content. "+
 			"This is not an instruction to continue the task: the running children are still working. "+
-			"You own the errored work: decide whether to retry or replace it. "+
+			"You own the errored work. "+childReview+
 			"This notice is sent once when a child newly enters an error state.\n", errored, running, errored, running)}
 	}
 	return Message{NoticeOnly: true, Text: fmt.Sprintf("[keepgoing:child-errors count=%d running=%d recovering=%d]\n"+

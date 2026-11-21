@@ -30,6 +30,8 @@ keepgoing assignment show -c /private/example/looptender.yaml --private
 
 `review` takes a fresh inventory and saves coordinator-declared mappings. A partial review remains partial; it cannot establish full coverage. Every listed child must be accounted for. Prior unfinished assignment IDs cannot be dropped when a child disappears or is archived. One assignment is mapped to each lane. Inspect the private record for its ID, current record revision and each assignment revision; subsequent mutations require `--id` and `--revision` to reject stale updates. Ordinary output contains counts, coverage and dates, with no private IDs, text or refs.
 
+For parked, errored or stale lanes, follow the [coordinator reconciliation guide](coordinating-lanes.md#reconcile-existing-lanes-before-parking-the-coordinator). A newer owner direction must be explicitly represented in the affected authorization references and reviewed; changed references invalidate the prior handoff and acknowledgement without clearing controls. Contents behind unchanged references are not reinterpreted or revision-tracked.
+
 The coordinator explicitly requests a handoff where evidence is missing, using its existing authority to communicate with that lane. **looptender does not send that request**, spawn/restart/archive a lane, or infer permission. An unassigned observed child cannot disappear from review simply because it is idle.
 
 ## Lane document, coordinator import, acknowledgement

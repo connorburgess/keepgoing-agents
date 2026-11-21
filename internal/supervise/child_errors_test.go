@@ -79,6 +79,9 @@ func TestErroredChildrenAreAnnouncedOnlyWhenOneNewlyFails(t *testing.T) {
 			continue
 		}
 		want := "[keepgoing:child-errors count=" + string(rune('0'+step.wantNote)) + "]"
+		if !strings.Contains(text, "Reconcile unfinished obligations and newer owner direction") || !strings.Contains(text, "do not replay completed or superseded work") || !strings.Contains(text, "or clear a hold") {
+			t.Fatalf("%s: delivered notice omitted coordinator boundaries: %q", step.name, text)
+		}
 		if !strings.HasPrefix(text, "keep going\n\n"+want+"\n") || strings.Contains(text, "thr_child") {
 			t.Fatalf("%s: %q", step.name, text)
 		}

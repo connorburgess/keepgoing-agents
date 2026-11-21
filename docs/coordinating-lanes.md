@@ -17,6 +17,24 @@ Until a lane's work is assigned, keep it as a row in a ledger file the coordinat
 
 Create the conversation when the row is assigned, and point it at its handoff file. Keep the ledger outside the repositories the lanes work in: it is the coordinator's record, and it is what lets another conversation take over coordination.
 
+## Reconcile existing lanes before parking the coordinator
+
+Execution status is not an assignment outcome. Reconcile existing **direct** children against their explicit handoffs and the latest owner direction before declaring the objective finished or all work person-blocked. Do not wake every old lane merely because it is idle.
+
+| Evidence | Coordinator’s next step |
+| --- | --- |
+| Idle, with an explicitly complete handoff | Verify the result and acknowledge the exact revision; do not replay finished work. Completion of one assignment does not complete the objective. |
+| Idle, with unfinished work or no handoff | Retain the obligation. Request the missing handoff through an already-authorized channel, or take the next authorized action for known unfinished work. Idle alone supplies no completion or delegation permission. |
+| Error after a host disconnect | Inspect current structured status, queued/provider retry and pending input separately from the handoff. An execution error does not say whether work finished before disconnect. Do not duplicate an active retry or replay a known complete result. |
+| Superseded handoff, archived or disappeared child | Retain remaining work and its declared next owner/successor. Archive/disappearance does not finish it; supersession does not grant authority over a successor. |
+| Pending person gate | Keep that action held. Continue independent authorized work only if existing runtime controls permit it; never answer a pending interaction or clear/resume a hold on the coordinator’s own authority. |
+
+An earlier coordinator instruction to park a lane is not permanent when the owner explicitly directs that work forward later. Record the newer direction and reconcile the affected assignment, preserving unrelated holds. With the unreleased [assignment lifecycle](assignments.md), run `assignment inventory`, review all observed children with explicit scope/authorization references, and import/acknowledge current handoffs. A changed authorization reference advances the assignment revision and invalidates its prior handoff/acknowledgement; it does not clear controls. References are opaque: editing the contents behind an unchanged reference does not automatically update the assignment. Never infer a new owner instruction from transcript text at runtime.
+
+For a fictional example, an idle docs lane was parked for merge approval. The owner subsequently authorizes its independent documentation fix. Review that newer authorization explicitly, retire the old person-wait declaration, obtain a current unfinished handoff and acknowledge it. The coordinator then performs or delegates the authorized fix under its existing authority. If the loop is actually paused, stopped or awaiting-user, that runtime hold remains until separately released by an authorized person. A metadata review alone neither dispatches the fix nor verifies progress.
+
+The CLI regression covers changed authorization, retained unfinished history, old-handoff replay refusal, current handoff acknowledgement, privacy and unchanged runtime holds. Actual agent reconciliation/dispatch and host-disconnect recovery acceptance remain open; prompt guidance is not a host-enforced turn-end hook or an automatic scheduler.
+
 ## Report by pointer
 
 A lane reports with a path and a few lines: the pull request or file, the commit, what was checked, and what is open. Anything longer goes in a file whose path the report names. Do not restate a brief or a diff in a report; the coordinator reads the file if it needs the detail, and every restatement is read again on every later turn of the coordinator.
@@ -81,7 +99,7 @@ Point the coordinator at this page, or a copy of it, from its handoff file rathe
 
 looptender supervises the loop's own conversation. For a BB loop it also knows the loop's direct lanes by count and state, and acts on them in two cases only. The rules are in [architecture](architecture.md#rules-that-do-not-bend) and the [glossary](glossary.md); in short:
 
-- **Does:** count lanes and their states; let a working lane keep the loop from looking idle, and wake the loop when a lane finishes; escalate a lane's pending question to a person; report lanes in error; retry a failed lane's turn when the loop opts in with `bb.children.retry_errored` ([lane recovery](operations.md#lane-recovery)); stop lanes when a person asks with `stop --lanes`; say in a handoff brief how many lanes were working. See [BB child awareness](operations.md#bb-child-awareness).
+- **Does:** count lanes and their states; let a working lane keep the loop from looking idle, and allow an ordinary parent wake when no child is active, without inferring completion; escalate a lane's pending question to a person; report lanes in error; retry a failed lane's turn when the loop opts in with `bb.children.retry_errored` ([lane recovery](operations.md#lane-recovery)); stop lanes when a person asks with `stop --lanes`; say in a handoff brief how many lanes were working. See [BB child awareness](operations.md#bb-child-awareness).
 - **Does not:** create, message or move a lane; read a lane's message text; maintain an automatic assignment ledger or know about lanes not yet created; record or check approvals; choose a lane's model or effort; limit nesting or report size.
 
 The unreleased opt-in record below adds explicit assignment evidence and an explicit awaiting-user precondition; it does not add automatic scheduling or approval authority. Remaining planned coordinator support is listed in the [roadmap](roadmap.md#coordinating-lanes-planned).
