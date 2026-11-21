@@ -60,7 +60,7 @@ Agent tools have their own loops, retries and background agents, and each of the
 
 BB threads get the most: lane awareness, retrying a failed turn by reference, and the BB plugin. Headless Claude Code and Codex sessions get the general behaviour (wakes, limited re-prompts with exact session resume, routes, limits and reports) but nothing for lanes. Cursor and Antigravity run as standalone first routes only and cannot be fallbacks ([Antigravity details](docs/antigravity.md)). Agents defined in configuration have been tested only with stand-ins. Much of the rest is fixture-tested and the full live walkthrough is unfinished; the table below says what has been verified where.
 
-Generic process adapters retain at most 1 MiB of command stdout in unreleased source. Overflow reports an unknown outcome; it is not treated as a configured rate-limit exit. Excess bytes are discarded while the command finishes under its existing timeout. This does not add descendant cleanup or an automatic retry guarantee.
+Generic process adapters retain at most 1 MiB of command stdout in unreleased source. Overflow reports an unknown outcome; it is not treated as a configured rate-limit exit. Excess bytes are discarded while the command finishes under its existing timeout. Headless Claude Code and Codex observations read at most 8 MiB of a completed turn; larger output stays unknown and supplies no session or limit evidence. Their private output files are not size-capped. These bounds do not add descendant cleanup or an automatic retry guarantee.
 
 ## Current availability
 
