@@ -672,3 +672,30 @@ survive successful completion. These fixtures do not establish live acceptance.
 ### Antigravity manual permission recovery
 
 The [2026-11-21 local walkthrough](antigravity.md#manual-recovery-of-permission-held-local-tests) verified two real permission holds with no repeated send, followed by person-driven continuation of the exact saved sessions and report completion. It used macOS and agy 1.5.13. Direct saved-control read-back confirmed completion and awaiting-user clearance. The tasks only read project documentation and wrote reports; listed project test commands were not executed. Original permission details were discarded, so this is not unattended approval/replay evidence. Owned stop was not exercised in this walkthrough, and remote-project attachment and installed Linux/Windows acceptance remain open.
+
+### Owned supervisor shutdown (unreleased source)
+
+`TestShutdownInvocationAndLegacy`, `TestShutdownOldInvocationCannotCancelReplacement`,
+`TestShutdownUnsignedRequestNeverReachesValidator` and
+`TestShutdownLostReplyIsUnknown` exercise the authenticated loopback transport:
+legacy capability refusal, state/build/start mismatch, copied endpoints, old
+requests against a replacement, forged requests and a lost acknowledgement.
+The Unix command fixtures `TestDaemonShutdownPreservesControls`,
+`TestDaemonShutdownBindingRefusals` and
+`TestDaemonShutdownRetainsCheckLockUntilJoin` exercise all six control states,
+foreign caller, owner generation, changed target/goal/config, retirement, busy
+checks, cancellation, replay refusal and the retained check lock.
+`TestDaemonShutdownUnverifiedExitIsBounded` refuses to treat acknowledgement
+alone as completion and exercises the five-second join deadline. Removing the
+retained-lock guard makes its regression fixture fail (acceptance released the
+check lock); the guard was restored before final validation. Fixtures use
+fictional loops and local stand-ins; no real provider or installed daemon is used.
+
+Native macOS execution and race checks are separate from Windows/Linux
+cross-compilation. The transport tests are portable; command fixtures are
+Unix-only. Native Windows/Linux execution, installed upgrade, service-manager
+restart, reboot, legacy bootstrap and live-provider acceptance remain unverified.
+The command refuses a busy check instead of cancelling provider work in flight.
+No process-level force-exit or arbitrary PID signal is provided. Read the
+[shutdown and legacy bootstrap limits](operations.md#shut-down-only-the-supervisor-unreleased-source)
+before planning rollout; a new binary cannot change an old running process.

@@ -267,6 +267,10 @@ func daemon(e env, cfg *config.Config, cfgPath string, dryRun bool, takeOver ...
 
 // The caller owns daemon.lock and the diagnostic endpoint for this entire loop.
 func daemonLoop(e env, cfg *config.Config, cfgPath string, dryRun bool, lease *ownerLease, monitor *daemoninfo.Server) int {
+	ctx, cancel := context.WithCancel(e.ctx)
+	e.ctx = ctx
+	defer cancel()
+	defer enableDaemonShutdown(monitor, cfg, cfgPath, lease, cancel)()
 	state.Append(cfg.Loop.StateDir, state.Event{Loop: cfg.Loop.Name, Event: "daemon", Reason: "started"})
 	defer state.Append(cfg.Loop.StateDir, state.Event{Loop: cfg.Loop.Name, Event: "daemon", Reason: "stopped"})
 	// stopDone is the control signature of the last saved stop this daemon

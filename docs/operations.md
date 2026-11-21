@@ -1447,3 +1447,48 @@ marker. Prefer upgrading again to inspect that history. An intentionally fresh
 state directory loses diagnostic and episode continuity and must not be treated
 as permission to replay an uncertain delivery. No automatic migration, downcast
 or deletion occurs.
+
+## Shut down only the supervisor (unreleased source)
+
+`looptender daemon-shutdown -c looptender.yaml` asks one authenticated running
+supervisor to exit. It does not request target Stop, stop lanes, clear a hold,
+resume work, install a build or launch a replacement. Enabled, disabled, paused,
+stop, awaiting-user and completed controls remain unchanged. A scheduler may
+start supervision again; this command does not remove or disable its job.
+
+The command challenges the private loopback endpoint, then signs a request for
+that invocation's random identity, start, state identity and executing version. The daemon checks
+the exact configuration path and source digest, current control/goal/active-target
+binding, unchanged owner generation and caller under the check and control locks.
+It refuses retired/transferring loops, foreign owners, changed sources and busy
+checks. The source binding is the configuration loaded when this invocation
+started; an edited or unavailable startup source requires the original owned
+lifecycle manager. Caller identity is retained, with the same local-user trust
+boundary as existing CLI ownership checks; the endpoint is not person attestation.
+
+On acceptance it cancels its own context and retains the check lock until its
+loop returns. It starts no new provider work and does not cancel an in-flight
+provider command: a busy check is refused instead. Cancellation acknowledgement
+is only intent. The CLI waits at most five seconds for endpoint removal and
+release of `daemon.lock`, and otherwise reports exit unverified. A lost response
+is unknown: inspect the same invocation and lock before any later launch. Do not
+retry automatically, signal a saved PID, or infer absence from an unavailable
+endpoint. Completion is a point-in-time observation, not a reservation against
+another scheduler or caller starting a daemon.
+
+### Legacy bootstrap limit
+
+Installing a new executable or moving a `current` symlink cannot add this endpoint
+to an already running old process. A legacy daemon refuses this operation or has
+no endpoint. Its bootstrap shutdown must use its original foreground session or
+a separately verified owning service manager. If neither is available, migration
+is blocked pending an identity-safe operator procedure; there is no PID fallback.
+Service replacement must retain the existing owner checks and every hold. A
+retired predecessor must not be reinstalled by default.
+
+After a separately authorized shutdown and verified exit, an explicitly requested
+`looptender daemon -c looptender.yaml` starts supervision with existing controls.
+Re-read sources and ownership first. `start --background` enables supervision and
+is not a state-preserving restart; `stop` acts on the target and `resume` clears
+holds. This facility adds no combined restart operation. Source fixtures do not
+establish installed legacy migration, service restart or live-provider acceptance.

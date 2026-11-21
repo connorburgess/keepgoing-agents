@@ -39,6 +39,7 @@ Supervision (read -c FILE; default ./looptender.yaml, or ./keepgoing.yaml when o
   start                    Validate, enable, and run (--foreground or --background)
   service install|remove|status  Manage a macOS/Linux user service
   daemon                   Run passes on an interval; control changes act within seconds
+  daemon-shutdown          Shut down only the owned supervisor; preserve loop controls
   status                   Show control, active target, window, and fallback health
   context                  Show what a supervised session may know about its loop: owner, holds,
                            bounds used and remaining, lane policy, session commands and retained
@@ -190,6 +191,8 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 		return serviceCommand(e, rest, localServiceHost())
 	case "__service-daemon":
 		return serviceDaemon(e, rest)
+	case "daemon-shutdown":
+		return daemonShutdownCommand(e, rest)
 	case "start":
 		return startCommand(e, rest, nil)
 	case "__start-background":

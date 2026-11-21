@@ -52,7 +52,7 @@ internal/lock               named advisory locks for ticks, daemon, controls, an
 internal/snapshot           read-only opens and atomic replacement that do not block each other on Windows; used for the records in the state directory that one command replaces while another reads; also where the records a check saves (state, the send ledger, controls, the incident and delivery journals) are flushed to the device before they are published, which only a test binary can turn off
 internal/testexec           test-only installer for shell stand-in CLIs; see testing.md
 internal/scenario           test-only scenario suite that drives the built binary, and its stand-in for bb, claude and codex; see testing.md
-internal/daemoninfo         private loopback diagnostics for a running daemon
+internal/daemoninfo         private loopback diagnostics and authenticated shutdown transport for a running daemon
 internal/netretry           retry only while the network is down
 internal/ciwait             wait for CI on an exact commit
 ```
@@ -448,3 +448,5 @@ replacement connections retain the old directory and revise only the selected ro
 Neither path grants loop, route or BB provider authority. Cancellation never
 claims credential rollback; failed/uncertain directories remain private and are
 not automatically adopted. See [explicit connection limits](accounts.md#explicit-provider-sign-in-unreleased-source).
+
+The unreleased `daemon-shutdown` command keeps lifecycle authority in the command layer: daemoninfo authenticates the invocation-bound request, then the command validator rechecks sources, controls, owner lease and caller under tick/control locks. Acceptance retains tick.lock through loop return and only cancels that supervisor. Busy checks refuse. It never calls target Stop or updates controls; legacy processes need their original owned lifecycle manager. See [shutdown limits](operations.md#shut-down-only-the-supervisor-unreleased-source).

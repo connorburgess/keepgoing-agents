@@ -1,4 +1,5 @@
-// Package daemoninfo exposes bounded, loopback-only diagnostics for a daemon.
+// Package daemoninfo exposes bounded, loopback-only diagnostics and an optional
+// authenticated shutdown transport for a daemon.
 // The private endpoint record contains a random key, not process identity.
 // A fresh challenge proves that a responder owns that key; stale records alone
 // never establish liveness. No task, account, or provider data is exchanged.
@@ -35,6 +36,8 @@ type endpoint struct {
 
 // Snapshot is a response from a running daemon, not a persisted heartbeat.
 type Snapshot struct {
+	ShutdownID   string     `json:"shutdownID,omitempty"`
+	Shutdown     bool       `json:"shutdown,omitempty"`
 	ProcessID    int        `json:"processID,omitempty"`
 	InvocationID string     `json:"invocationID,omitempty"`
 	StateID      string     `json:"stateID"` // binds the response to its state directory without exposing the path
@@ -67,6 +70,7 @@ type Server struct {
 	mu       sync.Mutex
 	passAt   time.Time // when the pass under way began
 	snapshot Snapshot
+	shutdown func(ShutdownRequest) error
 }
 
 func Start(stateDir, version string, dryRun bool) (*Server, error) {
@@ -83,6 +87,8 @@ func Start(stateDir, version string, dryRun bool) (*Server, error) {
 		return nil, err
 	}
 	s := &Server{listener: l, path: filepath.Join(stateDir, FileName), endpoint: endpoint{l.Addr().String(), hex.EncodeToString(key)}, done: make(chan struct{}), snapshot: Snapshot{ProcessID: os.Getpid(), InvocationID: localInvocationID(), StateID: identity, Version: version, StartedAt: time.Now().UTC(), Phase: "checking", DryRun: dryRun}}
+	runID := sha256.Sum256(key)
+	s.snapshot.ShutdownID = hex.EncodeToString(runID[:])
 	b, _ := json.Marshal(s.endpoint)
 	f, err := os.CreateTemp(stateDir, ".daemon-endpoint-*")
 	if err != nil {
@@ -192,7 +198,7 @@ func (s *Server) serve() {
 		}
 		// Serial and bounded: a local caller cannot create unbounded goroutines.
 		_ = c.SetDeadline(time.Now().Add(200 * time.Millisecond))
-		nonce, err := bufio.NewReader(io.LimitReader(c, 65)).ReadString('\n')
+		nonce, err := bufio.NewReader(io.LimitReader(c, 8192)).ReadString('\n')
 		if err == nil && validKey(strings.TrimSuffix(nonce, "\n")) {
 			s.mu.Lock()
 			snap := s.snapshot
@@ -200,6 +206,9 @@ func (s *Server) serve() {
 			s.mu.Unlock()
 			b, _ := json.Marshal(snap)
 			_ = json.NewEncoder(c).Encode(response{b, sign(s.endpoint.Key, nonce, b)})
+		}
+		if err == nil && strings.HasPrefix(nonce, "{") {
+			s.serveShutdown(c, nonce)
 		}
 		_ = c.Close()
 	}
