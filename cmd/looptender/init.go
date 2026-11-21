@@ -929,6 +929,8 @@ func initPrompt(task, cfgPath string) string {
 
 keepgoing owns this loop. A separate loop skill is not needed. Evaluate progress and verification yourself; the supervisor uses structured status and explicit control, not transcript wording.
 
+After a phase finishes or a lane reports completion, verify its result and reassess the remaining objective and authorized work. If an independent authorized step can proceed, take one concrete next action before ending the turn. Duplicate completion receipts are not new progress. An idle lane is not proof of completion or permission. Keep approval-dependent actions held; never clear or resume a runtime hold yourself to continue other work.
+
 Only when the ENTIRE task is completed and verified, run:
 %s complete -c %s --note 'Task completed and verified'
 Then report the result. Completing one step is not completion of the whole task.

@@ -32,6 +32,8 @@ Review the generated task and configuration, then run the exact `start --foregro
 
 The generated prompt tells the agent to honor newer user instructions, finish and verify the entire task before calling `complete`, and call `await-user` when only human-dependent work remains. The agent needs permission to run these control commands and write the private state directory. Setup preserves the provider's current sandbox and permission settings; it does not bypass a permission request. Completion holds across supervisor restarts until an explicit `resume`.
 
+After a phase or lane finishes, new prompts ask the coordinator to verify the result and take a concrete independent authorized next step when one is available. Duplicate receipts and idle lanes are not completion or permission evidence. This is guidance for newly generated prompts, not automatic scheduling or a change to existing saved prompts; runtime holds still win.
+
 <a id="optional-goal-during-setup-unreleased"></a>
 
 ## Optional goal during setup
