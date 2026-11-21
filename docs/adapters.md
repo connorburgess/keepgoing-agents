@@ -439,7 +439,7 @@ The matrix says what each adapter supports. The contract says what every adapter
 | `never-guess` | Output that is not the agent's status format reads as unknown, never as idle, active or a specific error class. |
 | `waiting-on-person` | An agent blocked on a person is reported as awaiting input, so the supervisor holds and does not send to it. |
 | `structured-errors-only` | A failure is classified from a machine-readable code. Prose on standard output or standard error, even prose that names a limit, is `unknown`, and so is a code that maps to no class. Neither can cause a handoff. |
-| `failed-is-not-healthy` | A command that exits with a failure, or a turn that ends without leaving a result, is a failure of class unknown whatever it printed. |
+| `failed-is-not-healthy` | A command that exits with a failure, or a turn that ends without leaving a result, is a failure of class unknown whatever it printed. Headless fixtures also cover exit zero after a valid stream prefix without a terminal event. |
 | `send-once` | One send delivers the prompt exactly once, unchanged, on standard input or in a file only the owner can read, never in a command's arguments or environment. Reading status again or restarting the supervisor does not deliver it again. |
 | `send-while-working` | A send while the agent is working is refused or reaches that same agent. It never starts a second agent beside the first. |
 | `observe-during-send` | Status can be read while a send is in progress: every read is one valid state and the prompt is still delivered once. |
@@ -451,7 +451,7 @@ The matrix says what each adapter supports. The contract says what every adapter
 | `writes-stay-inside` | Nothing is created, changed or removed in the project, the home directory or the temporary directory. |
 | `declared-matches` | Every capability the adapter declares (exact resume, can be stopped, structured errors, structured waiting) passed its case. |
 
-The cases live in `internal/adapter/conformance`. The test suite runs all of them against the process adapter and the headless Claude Code and Codex adapters, each built by the real factory and driven by a stand-in executable that is put into each situation in turn. The Codex stand-in fails the way the recorded Codex limit does: the turn's output carries only prose, and the limit is told from any other failure by what the stand-in's app-server answers. A second test breaks an in-memory adapter in twenty-six ways and requires each fault to fail its own case with a message that says what to change.
+The cases live in `internal/adapter/conformance`. The test suite runs all of them against the process adapter and the headless Claude Code and Codex adapters, each built by the real factory and driven by a stand-in executable that is put into each situation in turn. The Codex stand-in fails the way the recorded Codex limit does: the turn's output carries only prose, and the limit is told from any other failure by what the stand-in's app-server answers. A second test breaks an in-memory adapter in twenty-seven ways and requires each fault to fail its own case with a message that says what to change.
 
 Current results, with stand-ins only:
 
