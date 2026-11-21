@@ -51,3 +51,17 @@ func (d Dir) ResetPending() bool {
 	_, err := os.Lstat(d.path(sessionResetFile))
 	return err == nil
 }
+
+// InspectAntigravitySession reads only ACP session metadata. Diagnostics expose
+// UUID-shaped IDs; the runner continues to support its wider opaque ID format.
+// This does not observe a worker, approve a request, or verify resumability.
+func (d Dir) InspectAntigravitySession() (string, error) {
+	id, err := d.antigravitySession()
+	if err != nil {
+		return "", errors.New("saved ACP session metadata is inaccessible or unrecognized")
+	}
+	if id != "" && !sessionIDPattern.MatchString(id) {
+		return "", errors.New("saved ACP session identifier has an unrecognized format")
+	}
+	return id, nil
+}

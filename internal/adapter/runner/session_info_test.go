@@ -85,3 +85,31 @@ func TestInspectSessionRejectsNonRegularRecords(t *testing.T) {
 		t.Fatal("followed session symlink")
 	}
 }
+
+func TestInspectAntigravitySessionMetadata(t *testing.T) {
+	const id = "00000000-0000-4000-8000-000000000001"
+	for _, tc := range []struct {
+		name, content, want string
+		bad                 bool
+	}{
+		{"missing", "", "", false},
+		{"saved", `{"version":1,"sessionId":"` + id + `"}`, id, false},
+		{"opaque", `{"version":1,"sessionId":"private-opaque-id"}`, "", true},
+		{"duplicate", `{"version":1,"sessionId":"` + id + `","sessionId":"` + id + `"}`, "", true},
+		{"version", `{"version":2,"sessionId":"` + id + `"}`, "", true},
+		{"extra", `{"version":1,"sessionId":"` + id + `","private":"content"}`, "", true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			d := Dir(t.TempDir())
+			if tc.content != "" {
+				if err := os.WriteFile(d.path(antigravitySessionName), []byte(tc.content), 0600); err != nil {
+					t.Fatal(err)
+				}
+			}
+			got, err := d.InspectAntigravitySession()
+			if got != tc.want || (err != nil) != tc.bad {
+				t.Fatalf("got %q error %v", got, err)
+			}
+		})
+	}
+}
