@@ -67,6 +67,9 @@ const MaxBody = 1 << 20
 // New resolves credentials from the environment, then the secret file.
 // Secrets are never logged or included in errors.
 func New(cfg config.Report) (*Webhook, error) {
+	if cfg.Format == "ntfy" && cfg.Scheme != "bearer" {
+		return nil, errors.New("report: ntfy format requires bearer scheme")
+	}
 	if cfg.Format == "sessionpipe" && cfg.Scheme != "bearer" {
 		return nil, errors.New("report: sessionpipe format requires bearer scheme")
 	}
@@ -109,6 +112,9 @@ func New(cfg config.Report) (*Webhook, error) {
 	if cfg.Format == "sessionpipe" && (err != nil || u.User != nil || (u.Path != "" && u.Path != "/") || u.RawQuery != "" || u.Fragment != "") {
 		return nil, errors.New("report: sessionpipe URL must be an origin without credentials, path, query or fragment")
 	}
+	if cfg.Format == "ntfy" && (err != nil || u.User != nil || u.RawQuery != "" || u.ForceQuery || u.Fragment != "" || !validNtfyTopic(u.EscapedPath())) {
+		return nil, errors.New("report: ntfy URL must name one topic without credentials, query or fragment")
+	}
 	if err != nil || u.Host == "" {
 		return nil, errors.New("report: the webhook URL is malformed")
 	}
@@ -142,6 +148,9 @@ func (w *Webhook) Body(e Event) ([]byte, error) {
 	}
 	if w.cfg.Format == "sessionpipe" {
 		return pipeBody(e, pipeState{Version: 1, ID: "00000000000000000000000000000000", Next: 1}, w.now())
+	}
+	if w.cfg.Format == "ntfy" {
+		return ntfyBody(e, w.cfg.Source), nil
 	}
 	var v any
 	if w.cfg.Format == "text" {
@@ -189,7 +198,7 @@ func (w *Webhook) Report(ctx context.Context, e Event) error {
 
 // observe receives only typed transport evidence, never the payload or errors.
 // It must not change sending, retry, redirect or completion semantics.
-func (w *Webhook) report(ctx context.Context, e Event, observe func(Delivery)) error {
+func (w *Webhook) report(ctx context.Context, e Event, observe func(Delivery)) (result error) {
 	if !w.cfg.ReportsEvent(e.Type) {
 		return nil
 	}
@@ -200,6 +209,11 @@ func (w *Webhook) report(ctx context.Context, e Event, observe func(Delivery)) e
 		return w.reportPipe(ctx, e, observe)
 	}
 	d := Delivery{Event: eventName(e.Type), StartedAt: w.now().UTC(), Receipt: "unverified", Attempts: []Attempt{}}
+	defer func() {
+		if w.cfg.Format == "ntfy" && len(d.Attempts) > 0 && result != nil {
+			result = errors.Join(result, ErrNoRetry)
+		}
+	}()
 	snapshot := func(outcome string) {
 		d.Outcome, d.UpdatedAt = outcome, w.now().UTC()
 		if observe != nil {
@@ -213,6 +227,9 @@ func (w *Webhook) report(ctx context.Context, e Event, observe func(Delivery)) e
 		return err
 	}
 	headers := map[string]string{"content-type": "application/json"}
+	if w.cfg.Format == "ntfy" {
+		headers["content-type"] = "text/plain; charset=utf-8"
+	}
 	if w.cfg.Scheme == "bearer" {
 		headers["authorization"] = "Bearer " + w.secret
 	} else {
@@ -232,7 +249,7 @@ func (w *Webhook) report(ctx context.Context, e Event, observe func(Delivery)) e
 	// A limit_wait, child_error or check_gap report is requested once and, like a
 	// completion, makes one attempt: an uncertain delivery must not page a
 	// person twice.
-	if (e.Type == "error" && e.Data["cause"] == "configuration_unavailable") || e.Type == "complete" || e.Type == "limit_wait" || e.Type == "child_error" || e.Type == "child_recovery" || e.Type == "network_wait" || e.Type == "check_gap" || e.Type == "hung_turn" || e.Type == "refusal_streak" {
+	if w.cfg.Format == "ntfy" || (e.Type == "error" && e.Data["cause"] == "configuration_unavailable") || e.Type == "complete" || e.Type == "limit_wait" || e.Type == "child_error" || e.Type == "child_recovery" || e.Type == "network_wait" || e.Type == "check_gap" || e.Type == "hung_turn" || e.Type == "refusal_streak" {
 		attempts = 1
 		copy := *w.client
 		copy.CheckRedirect = func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }

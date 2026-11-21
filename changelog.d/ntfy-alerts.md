@@ -1,0 +1,1 @@
+- Add an explicit bearer-authenticated ntfy report preset with bounded loop/device labels and event names, single-attempt delivery, no redirects or phone controls, and retained HTTP evidence. Live phone receipt remains unverified.
