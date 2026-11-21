@@ -1,0 +1,1 @@
+- Bound generic process command stdout to 1 MiB; discard excess bytes and report an unknown outcome instead of accepting an oversized status or interpreting its exit as a rate limit. Headless-agent output bounds remain separate.

@@ -308,9 +308,6 @@ func subject(t *testing.T, kind string) Subject {
 type gap struct{ why, says string }
 
 var known = map[string]map[string]gap{
-	"process": {
-		"bounded-output": {"the status command's output is read without a bound", "output far larger than any real status was read as"},
-	},
 	"claude": {
 		"bounded-output": {"a turn's output is read without a bound", "output far larger than any real status was read as"},
 	},
