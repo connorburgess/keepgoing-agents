@@ -1422,3 +1422,28 @@ The panel keeps its receipt and backups privately under `build-replacements/<key
 Unreleased source: `keepgoing status -c <config>` (including `--json`) and offline `doctor` report Antigravity's saved ACP session metadata, with source `antigravity_acp_session_file`. A recognized UUID-shaped ID is shown with guidance to use the configured Antigravity CLI's `--conversation` option. The diagnostic reads only the bounded session metadata for the selected target; it does not run the CLI, inspect transcripts or permission arguments, or change any record or hold.
 
 This is saved identity evidence, not proof that a worker is idle or that the provider can resume the session. Do not start an interactive continuation alongside a running worker. Missing, inaccessible, malformed, or unrecognized IDs remain unavailable; the runner's wider opaque-ID support is unchanged. Manual continuation and explicit supervision resume are separate actions. A cancelled permission request is not approved or replayed by displaying its conversation ID.
+
+## Process delivery history compatibility (unreleased)
+
+Delivery history can retain `process_accepted`, `process_failed` and
+`process_protocol_failed` outcomes without inventing an HTTP status. They have
+one finished attempt, HTTP status zero and unverified receipt. A failed command
+or invalid reply does not prove that no notification was delivered. Status,
+doctor, timeline and dock distinguish transport acceptance from receipt.
+
+The first process outcome promotes `deliveries.json` to schema 2. Existing HTTP
+records remain intact; later HTTP writes preserve schema 2. HTTP-only histories
+remain schema 1. This is history support only: the BB notification sender is
+not yet enabled by this groundwork.
+
+Both supported history versions reject duplicate, case-aliased or unknown fields
+before decoding; a refused read or save leaves the damaged bytes unchanged.
+
+Older binaries reject schema 2 as unavailable and cannot append to it. Do not
+run old and new writers against the same state directory, reset the version, or
+delete records to hide the incompatibility. Before downgrading, disable the new
+reporting configuration and preserve a private backup of history and its snapshot
+marker. Prefer upgrading again to inspect that history. An intentionally fresh
+state directory loses diagnostic and episode continuity and must not be treated
+as permission to replay an uncertain delivery. No automatic migration, downcast
+or deletion occurs.

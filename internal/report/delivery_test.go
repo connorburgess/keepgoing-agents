@@ -226,7 +226,7 @@ func TestDeliveryHistoryRetentionValidationAndReadOnly(t *testing.T) {
 		t.Fatal("updated evicted record")
 	}
 	good, _ := json.Marshal(h)
-	for _, bad := range []string{"{}", string(good) + " {}", strings.Replace(string(good), `"schemaVersion":1`, `"schemaVersion":2`, 1), strings.Replace(string(good), `"await_user"`, `"private-event"`, 1), strings.Repeat(" ", MaxDeliveryBytes+1)} {
+	for _, bad := range []string{"{}", string(good) + " {}", strings.Replace(string(good), `"schemaVersion":1`, `"schemaVersion":3`, 1), strings.Replace(string(good), `"await_user"`, `"private-event"`, 1), strings.Repeat(" ", MaxDeliveryBytes+1)} {
 		os.WriteFile(filepath.Join(dir, DeliveryFile), []byte(bad), 0600)
 		if s := InspectDeliveries(dir); s.State != "unavailable" {
 			t.Fatal(s)
